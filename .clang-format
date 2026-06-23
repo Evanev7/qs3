@@ -1,0 +1,16 @@
+BasedOnStyle: WebKit
+ColumnLimit: 100
+IndentWidth: 4
+ContinuationIndentWidth: 4
+PointerAlignment: Left
+DerivePointerAlignment: false
+BinPackParameters: false
+BinPackArguments: false
+AllowShortFunctionsOnASingleLine: Empty
+BreakBeforeBraces: Custom
+AllowAllArgumentsOnNextLine: false
+AlignAfterOpenBracket: BlockIndent
+BraceWrapping:
+  AfterFunction: true
+  AfterStruct: false
+  AfterControlStatement: Never

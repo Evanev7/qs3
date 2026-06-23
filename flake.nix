@@ -7,6 +7,11 @@
     flake-utils.inputs.nixpkgs.follows = "nixpkgs";
   };
 
+  nixConfig = {
+    extra-trusted-public-keys = "cache.nixos-cuda.org:74DUi4Ye579gUqzH4ziL9IyiJBlDpMRn9MBN8oNan9M=";
+    extra-substituters = "https://cache.nixos-cuda.org";
+  };
+
   outputs = inputs:
     inputs.flake-utils.lib.eachSystem [ "aarch64-linux" "x86_64-linux" ] (system:
       let
@@ -14,35 +19,20 @@
           inherit system;
           config = {
             allowUnfree = true;
-            cudaForwardCompat = false;
           };
         };
         inherit (inputs.nixpkgs) lib;
         cudaPackages = pkgs.cudaPackages_13;
         cudaLibs = with cudaPackages; [
-          cuda_crt
           cuda_cudart
           cuda_cccl
-          cuda_cupti
           cuda_nvrtc
-          cuda_nvtx
-          cudnn
-          libcufile
-          libcublas
-          libcufft
-          libcurand
-          libcusolver
-          libcusparse
-          libcusparse_lt
-          libnvjitlink
-          libnvshmem
-          nccl
+          cuda_nvcc
         ];
         cudaRoot = pkgs.symlinkJoin {
           name = "cuda-merged-exo";
           paths = builtins.concatMap 
-            (p: [ (lib.getInclude p) (lib.getBin p) (lib.getLib p) (lib.getDev p) ])
-            (cudaLibs ++ [ cudaPackages.cuda_nvcc ]);
+            (p: [ (lib.getInclude p) (lib.getBin p) (lib.getLib p) (lib.getDev p) ]) cudaLibs;
         };
       in
     {
@@ -54,19 +44,21 @@
           rustfmt
           clippy
           gcc
+          clang-tools
           tinycc
           python3
           uv
           gdb
+          just
           cudaRoot
         ];
+
         env = {
           RUST_SRC_PATH = "${pkgs.rust.packages.stable.rustPlatform.rustLibSrc}";
           LD_LIBRARY_PATH = 
             "$LD_LIBRARY_PATH:${builtins.toString (pkgs.lib.makeLibraryPath buildInputs)}";
           TORCH_CUDA_ARCH_LIST = lib.concatStringsSep ";" cudaPackages.flags.cudaCapabilities;
           CUDA_HOME = "${cudaRoot}";
-
         };
       };
     });
