@@ -1,0 +1,6 @@
+[submodule "3pty/flashinfer"]
+	path = 3pty/flashinfer
+	url = https://github.com/flashinfer-ai/flashinfer
+[submodule "3pty/ds4"]
+	path = 3pty/ds4
+	url = https://github.com/antirez/ds4
