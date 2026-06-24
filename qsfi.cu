@@ -28,9 +28,7 @@ struct qsfi_context {
     cudaStream_t stream;
     void* float_workspace;
     size_t float_workspace_bytes;
-    void* int_workspace;
     size_t int_workspace_bytes;
-    void* host_int_workspace;
     size_t host_int_workspace_bytes;
     uint64_t scratch_generation;
     qsfi_error_info_t last_error;
@@ -38,11 +36,17 @@ struct qsfi_context {
 
 struct qsfi_plan {
     qsfi_plan_kind_t kind;
+    int32_t device_ordinal;
+    cudaStream_t stream;
     qsfi_attention_desc_t attention;
     uint32_t batch_size;
     uint32_t num_indices;
     uint32_t total_tokens;
     uint64_t scratch_generation;
+    void* int_workspace;
+    size_t int_workspace_bytes;
+    void* host_int_workspace;
+    size_t host_int_workspace_bytes;
     flashinfer::DecodePlanInfo decode;
     flashinfer::PrefillPlanInfo prefill;
 };
@@ -161,14 +165,62 @@ qsfi_status_t require_scratch(qsfi_context_t* ctx)
 {
     if (ctx == nullptr)
         return QSFI_STATUS_INVALID_ARGUMENT;
-    if (ctx->float_workspace == nullptr || ctx->int_workspace == nullptr
-        || ctx->host_int_workspace == nullptr) {
+    if (ctx->float_workspace == nullptr || ctx->int_workspace_bytes == 0
+        || ctx->host_int_workspace_bytes == 0) {
         return set_error(
             ctx,
             QSFI_STATUS_INVALID_ARGUMENT,
             QSFI_ERROR_SOURCE_QSFI,
             0,
-            "scratch workspaces are not reserved"
+            "scratch workspace sizes are not reserved"
+        );
+    }
+    return QSFI_STATUS_OK;
+}
+
+void destroy_plan(qsfi_plan_t* plan)
+{
+    if (plan == nullptr)
+        return;
+    if (plan->device_ordinal >= 0)
+        cudaSetDevice(plan->device_ordinal);
+    if (plan->int_workspace != nullptr)
+        cudaFree(plan->int_workspace);
+    if (plan->host_int_workspace != nullptr)
+        cudaFreeHost(plan->host_int_workspace);
+    delete plan;
+}
+
+qsfi_status_t allocate_plan_workspaces(qsfi_context_t* ctx, qsfi_plan_t* plan)
+{
+    if (ctx->int_workspace_bytes != 0) {
+        cudaError_t err = cudaMalloc(&plan->int_workspace, ctx->int_workspace_bytes);
+        if (err != cudaSuccess)
+            return set_cuda_error(ctx, err, "cudaMalloc plan int workspace");
+        plan->int_workspace_bytes = ctx->int_workspace_bytes;
+    }
+    if (ctx->host_int_workspace_bytes != 0) {
+        cudaError_t err = cudaHostAlloc(
+            &plan->host_int_workspace,
+            ctx->host_int_workspace_bytes,
+            cudaHostAllocDefault
+        );
+        if (err != cudaSuccess)
+            return set_cuda_error(ctx, err, "cudaHostAlloc plan host int workspace");
+        plan->host_int_workspace_bytes = ctx->host_int_workspace_bytes;
+    }
+    return QSFI_STATUS_OK;
+}
+
+qsfi_status_t require_plan_stream(qsfi_context_t* ctx, const qsfi_plan_t* plan)
+{
+    if (plan->stream != ctx->stream) {
+        return set_error(
+            ctx,
+            QSFI_STATUS_INVALID_ARGUMENT,
+            QSFI_ERROR_SOURCE_QSFI,
+            0,
+            "plan must execute on the stream used for plan creation"
         );
     }
     return QSFI_STATUS_OK;
@@ -615,6 +667,7 @@ qsfi_status_t validate_page_table_exec(
 template <typename T, flashinfer::PosEncodingMode Pos, bool Sliding, bool Logits>
 cudaError_t decode_plan_impl(
     qsfi_context_t* ctx,
+    const qsfi_plan_t* plan,
     const qsfi_attention_desc_t* attention,
     const qsfi_paged_kv_plan_t* page_table,
     flashinfer::DecodePlanInfo* out
@@ -638,9 +691,9 @@ cudaError_t decode_plan_impl(
                 status = flashinfer::DecodePlan<HEAD_DIM, Pos, AttentionVariant, Params>(
                     ctx->float_workspace,
                     ctx->float_workspace_bytes,
-                    ctx->int_workspace,
-                    ctx->host_int_workspace,
-                    ctx->int_workspace_bytes,
+                    plan->int_workspace,
+                    plan->host_int_workspace,
+                    plan->int_workspace_bytes,
                     *out,
                     const_cast<int32_t*>(page_table->indptr),
                     page_table->batch_size,
@@ -659,34 +712,37 @@ cudaError_t decode_plan_impl(
 template <typename T, flashinfer::PosEncodingMode Pos, bool Sliding>
 cudaError_t decode_plan_logits(
     qsfi_context_t* ctx,
+    const qsfi_plan_t* plan,
     const qsfi_attention_desc_t* attention,
     const qsfi_paged_kv_plan_t* page_table,
     flashinfer::DecodePlanInfo* out
 )
 {
     if (attention->logits_soft_cap > 0.0f) {
-        return decode_plan_impl<T, Pos, Sliding, true>(ctx, attention, page_table, out);
+        return decode_plan_impl<T, Pos, Sliding, true>(ctx, plan, attention, page_table, out);
     }
-    return decode_plan_impl<T, Pos, Sliding, false>(ctx, attention, page_table, out);
+    return decode_plan_impl<T, Pos, Sliding, false>(ctx, plan, attention, page_table, out);
 }
 
 template <typename T, flashinfer::PosEncodingMode Pos>
 cudaError_t decode_plan_sliding(
     qsfi_context_t* ctx,
+    const qsfi_plan_t* plan,
     const qsfi_attention_desc_t* attention,
     const qsfi_paged_kv_plan_t* page_table,
     flashinfer::DecodePlanInfo* out
 )
 {
     if (attention->window_left >= 0) {
-        return decode_plan_logits<T, Pos, true>(ctx, attention, page_table, out);
+        return decode_plan_logits<T, Pos, true>(ctx, plan, attention, page_table, out);
     }
-    return decode_plan_logits<T, Pos, false>(ctx, attention, page_table, out);
+    return decode_plan_logits<T, Pos, false>(ctx, plan, attention, page_table, out);
 }
 
 template <typename T>
 cudaError_t decode_plan_dtype(
     qsfi_context_t* ctx,
+    const qsfi_plan_t* plan,
     const qsfi_attention_desc_t* attention,
     const qsfi_paged_kv_plan_t* page_table,
     flashinfer::DecodePlanInfo* out
@@ -695,6 +751,7 @@ cudaError_t decode_plan_dtype(
     if (attention->pos_encoding == QSFI_POS_ENCODING_ROPE_LLAMA) {
         return decode_plan_sliding<T, flashinfer::PosEncodingMode::kRoPELlama>(
             ctx,
+            plan,
             attention,
             page_table,
             out
@@ -702,6 +759,7 @@ cudaError_t decode_plan_dtype(
     }
     return decode_plan_sliding<T, flashinfer::PosEncodingMode::kNone>(
         ctx,
+        plan,
         attention,
         page_table,
         out
@@ -710,15 +768,16 @@ cudaError_t decode_plan_dtype(
 
 cudaError_t decode_plan_dispatch(
     qsfi_context_t* ctx,
+    const qsfi_plan_t* plan,
     const qsfi_attention_desc_t* attention,
     const qsfi_paged_kv_plan_t* page_table,
     flashinfer::DecodePlanInfo* out
 )
 {
     if (attention->q_dtype == QSFI_DTYPE_BF16) {
-        return decode_plan_dtype<__nv_bfloat16>(ctx, attention, page_table, out);
+        return decode_plan_dtype<__nv_bfloat16>(ctx, plan, attention, page_table, out);
     }
-    return decode_plan_dtype<half>(ctx, attention, page_table, out);
+    return decode_plan_dtype<half>(ctx, plan, attention, page_table, out);
 }
 
 template <typename T, flashinfer::PosEncodingMode Pos, bool Sliding, bool Logits>
@@ -763,19 +822,19 @@ cudaError_t decode_execute_impl(
     params.rope_rcp_scale = 1.0f / default_one(attention.rope_scale);
     params.rope_rcp_theta = 1.0f / (attention.rope_theta == 0.0f ? 10000.0f : attention.rope_theta);
     params.request_indices = flashinfer::GetPtrFromBaseOffset<int32_t>(
-        ctx->int_workspace,
+        plan->int_workspace,
         plan->decode.request_indices_offset
     );
     params.kv_tile_indices = flashinfer::GetPtrFromBaseOffset<int32_t>(
-        ctx->int_workspace,
+        plan->int_workspace,
         plan->decode.kv_tile_indices_offset
     );
     params.o_indptr = flashinfer::GetPtrFromBaseOffset<int32_t>(
-        ctx->int_workspace,
+        plan->int_workspace,
         plan->decode.o_indptr_offset
     );
     params.kv_chunk_size_ptr = flashinfer::GetPtrFromBaseOffset<int32_t>(
-        ctx->int_workspace,
+        plan->int_workspace,
         plan->decode.kv_chunk_size_ptr_offset
     );
     params.block_valid_mask = nullptr;
@@ -846,6 +905,7 @@ cudaError_t decode_execute_dispatch(
 
 cudaError_t prefill_plan_dispatch(
     qsfi_context_t* ctx,
+    const qsfi_plan_t* plan,
     const qsfi_attention_desc_t* attention,
     const qsfi_qo_plan_t* qo,
     const qsfi_paged_kv_plan_t* page_table,
@@ -855,9 +915,9 @@ cudaError_t prefill_plan_dispatch(
     return flashinfer::PrefillPlan<int32_t>(
         ctx->float_workspace,
         ctx->float_workspace_bytes,
-        ctx->int_workspace,
-        ctx->host_int_workspace,
-        ctx->int_workspace_bytes,
+        plan->int_workspace,
+        plan->host_int_workspace,
+        plan->int_workspace_bytes,
         *out,
         const_cast<int32_t*>(qo->indptr),
         const_cast<int32_t*>(page_table->indptr),
@@ -928,23 +988,23 @@ cudaError_t prefill_execute_impl(
     params.rope_rcp_scale = 1.0f / default_one(attention.rope_scale);
     params.rope_rcp_theta = 1.0f / (attention.rope_theta == 0.0f ? 10000.0f : attention.rope_theta);
     params.request_indices = flashinfer::GetPtrFromBaseOffset<int32_t>(
-        ctx->int_workspace,
+        plan->int_workspace,
         plan->prefill.request_indices_offset
     );
     params.qo_tile_indices = flashinfer::GetPtrFromBaseOffset<int32_t>(
-        ctx->int_workspace,
+        plan->int_workspace,
         plan->prefill.qo_tile_indices_offset
     );
     params.kv_tile_indices = flashinfer::GetPtrFromBaseOffset<int32_t>(
-        ctx->int_workspace,
+        plan->int_workspace,
         plan->prefill.kv_tile_indices_offset
     );
     params.o_indptr = flashinfer::GetPtrFromBaseOffset<int32_t>(
-        ctx->int_workspace,
+        plan->int_workspace,
         plan->prefill.o_indptr_offset
     );
     params.kv_chunk_size_ptr = flashinfer::GetPtrFromBaseOffset<int32_t>(
-        ctx->int_workspace,
+        plan->int_workspace,
         plan->prefill.kv_chunk_size_ptr_offset
     );
     params.merge_indptr = nullptr;
@@ -962,7 +1022,7 @@ cudaError_t prefill_execute_impl(
     float* tmp_s = nullptr;
     if (plan->prefill.split_kv) {
         params.merge_indptr = flashinfer::GetPtrFromBaseOffset<int32_t>(
-            ctx->int_workspace,
+            plan->int_workspace,
             plan->prefill.merge_indptr_offset
         );
         tmp_v = flashinfer::GetPtrFromBaseOffset<T>(ctx->float_workspace, plan->prefill.v_offset);
@@ -1291,9 +1351,7 @@ qsfi_status_t qsfi_context_create(const qsfi_context_desc_t* desc, qsfi_context_
     ctx->stream = desc != nullptr ? static_cast<cudaStream_t>(desc->stream) : nullptr;
     ctx->float_workspace = nullptr;
     ctx->float_workspace_bytes = 0;
-    ctx->int_workspace = nullptr;
     ctx->int_workspace_bytes = 0;
-    ctx->host_int_workspace = nullptr;
     ctx->host_int_workspace_bytes = 0;
     ctx->scratch_generation = 0;
     clear_error(&ctx->last_error);
@@ -1317,10 +1375,6 @@ void qsfi_context_destroy(qsfi_context_t* ctx)
         cudaSetDevice(ctx->device_ordinal);
     if (ctx->float_workspace != nullptr)
         cudaFree(ctx->float_workspace);
-    if (ctx->int_workspace != nullptr)
-        cudaFree(ctx->int_workspace);
-    if (ctx->host_int_workspace != nullptr)
-        cudaFreeHost(ctx->host_int_workspace);
     delete ctx;
 }
 
@@ -1347,43 +1401,16 @@ qsfi_status_t qsfi_context_reserve_scratch(
     if (status != QSFI_STATUS_OK)
         return status;
     void* new_float = nullptr;
-    void* new_int = nullptr;
-    void* new_host_int = nullptr;
     if (float_workspace_bytes != 0) {
         cudaError_t err = cudaMalloc(&new_float, float_workspace_bytes);
         if (err != cudaSuccess)
             return set_cuda_error(ctx, err, "cudaMalloc float workspace");
     }
-    if (int_workspace_bytes != 0) {
-        cudaError_t err = cudaMalloc(&new_int, int_workspace_bytes);
-        if (err != cudaSuccess) {
-            if (new_float != nullptr)
-                cudaFree(new_float);
-            return set_cuda_error(ctx, err, "cudaMalloc int workspace");
-        }
-    }
-    if (host_int_workspace_bytes != 0) {
-        cudaError_t err
-            = cudaHostAlloc(&new_host_int, host_int_workspace_bytes, cudaHostAllocDefault);
-        if (err != cudaSuccess) {
-            if (new_float != nullptr)
-                cudaFree(new_float);
-            if (new_int != nullptr)
-                cudaFree(new_int);
-            return set_cuda_error(ctx, err, "cudaHostAlloc host int workspace");
-        }
-    }
     if (ctx->float_workspace != nullptr)
         cudaFree(ctx->float_workspace);
-    if (ctx->int_workspace != nullptr)
-        cudaFree(ctx->int_workspace);
-    if (ctx->host_int_workspace != nullptr)
-        cudaFreeHost(ctx->host_int_workspace);
     ctx->float_workspace = new_float;
     ctx->float_workspace_bytes = float_workspace_bytes;
-    ctx->int_workspace = new_int;
     ctx->int_workspace_bytes = int_workspace_bytes;
-    ctx->host_int_workspace = new_host_int;
     ctx->host_int_workspace_bytes = host_int_workspace_bytes;
     ctx->scratch_generation += 1;
     return QSFI_STATUS_OK;
@@ -1468,19 +1495,26 @@ qsfi_status_t qsfi_batch_decode_plan_create(
         );
     }
     plan->kind = QSFI_PLAN_BATCH_DECODE;
+    plan->device_ordinal = ctx->device_ordinal;
+    plan->stream = ctx->stream;
     plan->attention = *attention;
     plan->batch_size = page_table->batch_size;
     plan->num_indices = page_table->num_indices;
     plan->total_tokens = page_table->batch_size;
     plan->scratch_generation = ctx->scratch_generation;
+    status = allocate_plan_workspaces(ctx, plan);
+    if (status != QSFI_STATUS_OK) {
+        destroy_plan(plan);
+        return status;
+    }
     try {
-        cudaError_t err = decode_plan_dispatch(ctx, attention, page_table, &plan->decode);
+        cudaError_t err = decode_plan_dispatch(ctx, plan, attention, page_table, &plan->decode);
         if (err != cudaSuccess) {
-            delete plan;
+            destroy_plan(plan);
             return set_cuda_error(ctx, err, "flashinfer decode plan");
         }
     } catch (const std::exception& ex) {
-        delete plan;
+        destroy_plan(plan);
         return set_flashinfer_error(ctx, "flashinfer decode plan", ex);
     }
     *out = plan;
@@ -1506,6 +1540,9 @@ qsfi_status_t qsfi_batch_decode_execute(
             "plan is not a decode plan"
         );
     }
+    status = require_plan_stream(ctx, plan);
+    if (status != QSFI_STATUS_OK)
+        return status;
     if (plan->scratch_generation != ctx->scratch_generation) {
         return set_error(
             ctx,
@@ -1585,19 +1622,27 @@ qsfi_status_t qsfi_batch_prefill_plan_create(
         );
     }
     plan->kind = QSFI_PLAN_BATCH_PREFILL;
+    plan->device_ordinal = ctx->device_ordinal;
+    plan->stream = ctx->stream;
     plan->attention = *attention;
     plan->batch_size = page_table->batch_size;
     plan->num_indices = page_table->num_indices;
     plan->total_tokens = qo->total_tokens;
     plan->scratch_generation = ctx->scratch_generation;
+    status = allocate_plan_workspaces(ctx, plan);
+    if (status != QSFI_STATUS_OK) {
+        destroy_plan(plan);
+        return status;
+    }
     try {
-        cudaError_t err = prefill_plan_dispatch(ctx, attention, qo, page_table, &plan->prefill);
+        cudaError_t err
+            = prefill_plan_dispatch(ctx, plan, attention, qo, page_table, &plan->prefill);
         if (err != cudaSuccess) {
-            delete plan;
+            destroy_plan(plan);
             return set_cuda_error(ctx, err, "flashinfer prefill plan");
         }
     } catch (const std::exception& ex) {
-        delete plan;
+        destroy_plan(plan);
         return set_flashinfer_error(ctx, "flashinfer prefill plan", ex);
     }
     *out = plan;
@@ -1623,6 +1668,9 @@ qsfi_status_t qsfi_batch_prefill_execute(
             "plan is not a prefill plan"
         );
     }
+    status = require_plan_stream(ctx, plan);
+    if (status != QSFI_STATUS_OK)
+        return status;
     if (plan->scratch_generation != ctx->scratch_generation) {
         return set_error(
             ctx,
@@ -1655,7 +1703,7 @@ qsfi_status_t qsfi_plan_kind(const qsfi_plan_t* plan, qsfi_plan_kind_t* out)
 
 void qsfi_plan_destroy(qsfi_plan_t* plan)
 {
-    delete plan;
+    destroy_plan(plan);
 }
 
 qsfi_status_t qsfi_append_paged_kv_decode(

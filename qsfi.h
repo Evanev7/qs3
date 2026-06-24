@@ -189,6 +189,11 @@ qsfi_status_t qsfi_context_create(const qsfi_context_desc_t* desc, qsfi_context_
 void qsfi_context_destroy(qsfi_context_t* ctx);
 
 qsfi_status_t qsfi_context_set_stream(qsfi_context_t* ctx, qsfi_cuda_stream_t stream);
+/*
+ * Reserves the context-owned float temporary workspace and records the per-plan
+ * int/pinned-int workspace sizes. FlashInfer plan schedule arrays are owned by
+ * each qsfi_plan_t, not by the context.
+ */
 qsfi_status_t qsfi_context_reserve_scratch(
     qsfi_context_t* ctx,
     size_t float_workspace_bytes,
@@ -200,6 +205,12 @@ void qsfi_context_clear_last_error(qsfi_context_t* ctx);
 
 qsfi_status_t qsfi_load_kernels(qsfi_context_t* ctx, qsfi_kernel_flags_t modules);
 
+/*
+ * Plan creation snapshots the plan-time page-table shape and writes persistent
+ * FlashInfer schedule arrays into plan-owned storage. Recreate the plan if the
+ * host indptr contents used here change. Execute on the same stream used for
+ * plan creation.
+ */
 qsfi_status_t qsfi_batch_decode_plan_create(
     qsfi_context_t* ctx,
     const qsfi_attention_desc_t* attention,
@@ -211,6 +222,11 @@ qsfi_status_t qsfi_batch_decode_execute(
     qsfi_context_t* ctx, const qsfi_plan_t* plan, const qsfi_batch_decode_execute_desc_t* desc
 );
 
+/*
+ * Plan creation snapshots qo->indptr and page_table->indptr into a persistent
+ * FlashInfer schedule. Recreate the plan if either host indptr changes. Execute
+ * on the same stream used for plan creation.
+ */
 qsfi_status_t qsfi_batch_prefill_plan_create(
     qsfi_context_t* ctx,
     const qsfi_attention_desc_t* attention,
