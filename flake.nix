@@ -19,14 +19,30 @@
           inherit system;
           config = {
             allowUnfree = true;
+            cudaCapabilities = [ "12.1" ];
+            cudaForwardCompat = false;
           };
         };
         inherit (inputs.nixpkgs) lib;
         cudaPackages = pkgs.cudaPackages_13;
         cudaLibs = with cudaPackages; [
+          cuda_crt
           cuda_cudart
           cuda_cccl
+          cuda_cupti
           cuda_nvrtc
+          cuda_nvtx
+          cudnn
+          libcufile
+          libcublas
+          libcufft
+          libcurand
+          libcusolver
+          libcusparse
+          libcusparse_lt
+          libnvjitlink
+          libnvshmem
+          nccl
           cuda_nvcc
         ];
         cudaRoot = pkgs.symlinkJoin {
@@ -50,6 +66,7 @@
           uv
           gdb
           just
+          ninja
           cudaRoot
         ];
 
@@ -58,6 +75,7 @@
           LD_LIBRARY_PATH = 
             "$LD_LIBRARY_PATH:${builtins.toString (pkgs.lib.makeLibraryPath buildInputs)}";
           TORCH_CUDA_ARCH_LIST = lib.concatStringsSep ";" cudaPackages.flags.cudaCapabilities;
+          FLASHINFER_CUDA_ARCH_LIST = lib.concatStringsSep " " cudaPackages.flags.cudaCapabilities;
           CUDA_HOME = "${cudaRoot}";
         };
       };
