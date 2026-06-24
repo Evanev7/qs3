@@ -5,7 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
-    "flashinfer-python",
+    "flashinfer-python[cu13]",
 ]
 
 [tool.uv.sources]
