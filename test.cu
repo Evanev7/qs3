@@ -1,4 +1,4 @@
-#include "flashinfer.h"
+#include "qsfi.h"
 
 #include <cuda_runtime.h>
 

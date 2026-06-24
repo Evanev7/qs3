@@ -1,5 +1,5 @@
-#include "flashinfer.h"
-#include "flashinfer_macros.h"
+#include "qsfi.h"
+#include "qsfi_macros.h"
 
 #include <cuda_bf16.h>
 #include <cuda_fp16.h>
