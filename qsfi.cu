@@ -806,7 +806,7 @@ cudaError_t decode_execute_impl(
 
     Params params;
     params.q = static_cast<T*>(desc->q.data);
-    params.q_rope_offset = nullptr;
+    params.q_rope_offset = static_cast<int32_t*>(desc->q_rope_offset);
     params.paged_kv = paged_kv;
     params.o = static_cast<T*>(desc->o.data);
     params.lse = static_cast<float*>(desc->lse);
@@ -973,7 +973,7 @@ cudaError_t prefill_execute_impl(
     params.maybe_custom_mask = nullptr;
     params.q_indptr = static_cast<int32_t*>(desc->qo_indptr);
     params.maybe_mask_indptr = nullptr;
-    params.maybe_q_rope_offset = nullptr;
+    params.maybe_q_rope_offset = static_cast<int32_t*>(desc->q_rope_offset);
     params.o = static_cast<T*>(desc->o.data);
     params.lse = static_cast<float*>(desc->lse);
     params.maybe_alibi_slopes = nullptr;

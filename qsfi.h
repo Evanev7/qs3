@@ -143,6 +143,7 @@ typedef struct qsfi_paged_kv_table {
 
 typedef struct qsfi_batch_decode_execute_desc {
     qsfi_tensor_desc_t q;
+    qsfi_device_ptr_t q_rope_offset;
     qsfi_tensor_desc_t o;
     qsfi_device_ptr_t lse;
     qsfi_paged_kv_cache_t kv_cache;
@@ -155,6 +156,7 @@ typedef struct qsfi_batch_decode_execute_desc {
 
 typedef struct qsfi_batch_prefill_execute_desc {
     qsfi_tensor_desc_t q;
+    qsfi_device_ptr_t q_rope_offset;
     qsfi_tensor_desc_t o;
     qsfi_device_ptr_t lse;
     qsfi_device_ptr_t qo_indptr;
