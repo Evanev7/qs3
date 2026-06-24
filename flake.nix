@@ -15,16 +15,19 @@
   outputs = inputs:
     inputs.flake-utils.lib.eachSystem [ "aarch64-linux" "x86_64-linux" ] (system:
       let
-        pkgs = import inputs.nixpkgs {
+        pkgs = (import inputs.nixpkgs {
           inherit system;
           config = {
+            allowUnfreePredicate = pkgs._cuda.lib.allowUnfreeCudaPredicate;
+            cudaForwardCompat = false;
+            cudaSupport = true;
             allowUnfree = true;
             cudaCapabilities = [ "12.1" ];
-            cudaForwardCompat = false;
           };
-        };
+        }).cudaPackages_13_0.pkgs;
+
         inherit (inputs.nixpkgs) lib;
-        cudaPackages = pkgs.cudaPackages_13;
+        inherit (pkgs) cudaPackages;
         cudaLibs = with cudaPackages; [
           cuda_crt
           cuda_cudart
@@ -41,8 +44,8 @@
           libcusparse
           libcusparse_lt
           libnvjitlink
-          libnvshmem
-          nccl
+          #libnvshmem
+          #nccl
           cuda_nvcc
         ];
         cudaRoot = pkgs.symlinkJoin {
