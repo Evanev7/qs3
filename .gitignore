@@ -1,2 +1,3 @@
 .direnv
 build
+flashinfer_macros.h

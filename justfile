@@ -7,6 +7,7 @@ maybe-build:
         fi
 build:
         mkdir -p build
+        build_tools/generate_macros.c > flashinfer_macros.h
         nvcc -std=c++17 -I3pty/flashinfer/include -c flashinfer.cu -o build/qsfi.o
 test: maybe-build
     nvcc -std=c++17 -I3pty/flashinfer/include test.cu build/qsfi.o -o build/qsfi_test

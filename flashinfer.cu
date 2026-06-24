@@ -1,4 +1,5 @@
 #include "flashinfer.h"
+#include "flashinfer_macros.h"
 
 #include <cuda_bf16.h>
 #include <cuda_fp16.h>
@@ -622,30 +623,35 @@ cudaError_t decode_plan_impl(
     using Params = flashinfer::BatchDecodeParams<T, T, T, int32_t>;
     using AttentionVariant = flashinfer::DefaultAttention<false, Sliding, Logits, false>;
     cudaError_t status = cudaSuccess;
-    DISPATCH_HEAD_DIM(attention->head_dim_qk, HEAD_DIM, {
-        DISPATCH_GQA_GROUP_SIZE(attention->num_qo_heads / attention->num_kv_heads, GROUP_SIZE, {
-            auto work_estimation = flashinfer::BatchDecodeWithPagedKVCacheWorkEstimationDispatched<
-                GROUP_SIZE,
-                HEAD_DIM,
-                Pos,
-                AttentionVariant,
-                Params>;
-            status = flashinfer::DecodePlan<HEAD_DIM, Pos, AttentionVariant, Params>(
-                ctx->float_workspace,
-                ctx->float_workspace_bytes,
-                ctx->int_workspace,
-                ctx->host_int_workspace,
-                ctx->int_workspace_bytes,
-                *out,
-                const_cast<int32_t*>(page_table->indptr),
-                page_table->batch_size,
-                attention->num_qo_heads,
-                attention->page_size,
-                false,
-                ctx->stream,
-                work_estimation
-            );
-        });
+    QSFI_DISPATCH_HEAD_DIM(attention->head_dim_qk, HEAD_DIM, {
+        QSFI_DISPATCH_GQA_GROUP_SIZE(
+            attention->num_qo_heads / attention->num_kv_heads,
+            GROUP_SIZE,
+            {
+                auto work_estimation
+                    = flashinfer::BatchDecodeWithPagedKVCacheWorkEstimationDispatched<
+                        GROUP_SIZE,
+                        HEAD_DIM,
+                        Pos,
+                        AttentionVariant,
+                        Params>;
+                status = flashinfer::DecodePlan<HEAD_DIM, Pos, AttentionVariant, Params>(
+                    ctx->float_workspace,
+                    ctx->float_workspace_bytes,
+                    ctx->int_workspace,
+                    ctx->host_int_workspace,
+                    ctx->int_workspace_bytes,
+                    *out,
+                    const_cast<int32_t*>(page_table->indptr),
+                    page_table->batch_size,
+                    attention->num_qo_heads,
+                    attention->page_size,
+                    false,
+                    ctx->stream,
+                    work_estimation
+                );
+            }
+        );
     });
     return status;
 }
@@ -783,7 +789,7 @@ cudaError_t decode_execute_impl(
             = flashinfer::GetPtrFromBaseOffset<float>(ctx->float_workspace, plan->decode.s_offset);
     }
     cudaError_t status = cudaSuccess;
-    DISPATCH_HEAD_DIM(attention.head_dim_qk, HEAD_DIM, {
+    QSFI_DISPATCH_HEAD_DIM(attention.head_dim_qk, HEAD_DIM, {
         status = flashinfer::BatchDecodeWithPagedKVCacheDispatched<HEAD_DIM, Pos, AttentionVariant>(
             params,
             tmp_v,
@@ -965,8 +971,8 @@ cudaError_t prefill_execute_impl(
     }
 
     cudaError_t status = cudaSuccess;
-    DISPATCH_HEAD_DIM(attention.head_dim_qk, HEAD_DIM, {
-        DISPATCH_CTA_TILE_Q(plan->prefill.cta_tile_q, CTA_TILE_Q, {
+    QSFI_DISPATCH_HEAD_DIM(attention.head_dim_qk, HEAD_DIM, {
+        QSFI_DISPATCH_CTA_TILE_Q(plan->prefill.cta_tile_q, CTA_TILE_Q, {
             status = flashinfer::BatchPrefillWithPagedKVCacheDispatched<
                 CTA_TILE_Q,
                 HEAD_DIM,
