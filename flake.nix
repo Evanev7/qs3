@@ -75,12 +75,11 @@
 
         env = {
           RUST_SRC_PATH = "${pkgs.rust.packages.stable.rustPlatform.rustLibSrc}";
-          LD_LIBRARY_PATH = 
-            "$LD_LIBRARY_PATH:${builtins.toString (pkgs.lib.makeLibraryPath buildInputs)}";
           TORCH_CUDA_ARCH_LIST = lib.concatStringsSep ";" cudaPackages.flags.cudaCapabilities;
           FLASHINFER_CUDA_ARCH_LIST = lib.concatStringsSep " " cudaPackages.flags.cudaCapabilities;
           CUDA_HOME = "${cudaRoot}";
         };
+        shellHook = ''export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:${lib.makeLibraryPath buildInputs}'';
       };
     });
 }

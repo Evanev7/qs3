@@ -1,15 +1,21 @@
-maybe-build:
-        #!/usr/bin/env bash
-        if [ ! -e build/qsfi.o ] \
-        || [ qsfi.cu -nt build/qsfi.o ] \
-        || [ qsfi.h -nt build/qsfi.o ];
-        then just build;
-        fi
 build: always
         mkdir -p build
-        nvcc -std=c++17 -Ibuild -c qsfi.cu -o build/qsfi.o
-test: maybe-build
-        nvcc -std=c++17 test.cu build/qsfi.o -o build/qsfi_test
+        nvcc -std=c++17 -arch=sm_121 -c qsfi.cu -o build/qsfi.o \
+          -I3pty/flashinfer/3rdparty/cccl/libcudacxx/include \
+          -I3pty/flashinfer/3rdparty/cccl/cub \
+          -I3pty/flashinfer/3rdparty/cccl/thrust \
+          -I3pty/flashinfer/3rdparty/cccl/cudax/include \
+          -I3pty/flashinfer/include \
+          -Ibuild
+test: append-test
+append-test: build
+        nvcc -std=c++17 -arch=sm_121 test.cu build/qsfi.o -o build/qsfi_test \
+          -I3pty/flashinfer/3rdparty/cccl/libcudacxx/include \
+          -I3pty/flashinfer/3rdparty/cccl/cub \
+          -I3pty/flashinfer/3rdparty/cccl/thrust \
+          -I3pty/flashinfer/3rdparty/cccl/cudax/include \
+          -I3pty/flashinfer/include \
+          -Ibuild
         build/qsfi_test
 fmt: always
         rg --files -g '!{3pty}' -tcuda -tc -tcpp | xargs clang-format -style=file -Werror -i
