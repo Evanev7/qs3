@@ -141,6 +141,7 @@ flashinfer::QKVLayout to_flashinfer_layout(qsfi_kv_layout_t layout)
     case QSFI_KV_LAYOUT_NHD:
         return flashinfer::QKVLayout::kNHD;
     }
+    return flashinfer::QKVLayout::kNHD;
 }
 
 float default_sm_scale(const qsfi_attention_desc_t& attention)
@@ -357,6 +358,8 @@ qsfi_status_t validate_paged_kv_plan(
             "page_table.indptr[0] must be 0"
         );
     }
+    // TODO(qsfi): validate physical page ids when the cache capacity is available. Planning
+    // only sees CSR shape, so bad indices can still become device-side OOB later.
     for (uint32_t i = 0; i < page_table->batch_size; ++i) {
         const int32_t begin = page_table->indptr[i];
         const int32_t end = page_table->indptr[i + 1];
@@ -509,6 +512,8 @@ qsfi_status_t validate_tensor(
             );
         }
     }
+    // TODO(qsfi): reject stride values that overflow the int32/uint32 fields passed to
+    // FlashInfer before the execute paths cast them down.
     return QSFI_STATUS_OK;
 }
 
@@ -572,6 +577,8 @@ qsfi_status_t validate_kv_cache(
             );
         }
     }
+    // TODO(qsfi): require num_pages to fit FlashInfer's uint32 page arithmetic and check
+    // execution page indices against it on paths that have both table and cache descriptors.
     if (out_num_pages != nullptr)
         *out_num_pages = static_cast<uint32_t>(num_pages);
     return QSFI_STATUS_OK;
@@ -599,6 +606,8 @@ qsfi_status_t validate_page_table_exec(
             "execution page table shape does not match plan"
         );
     }
+    // TODO(qsfi): decide whether execution must use the same table contents captured at
+    // plan time, or explicitly document which page-table mutations preserve plan validity.
     return QSFI_STATUS_OK;
 }
 
@@ -1406,6 +1415,7 @@ qsfi_status_t qsfi_load_kernels(qsfi_context_t* ctx, qsfi_kernel_flags_t modules
             "unknown kernel module flags"
         );
     }
+    // STUB: decide on dynamic kernel loading
     return QSFI_STATUS_OK;
 }
 
