@@ -151,7 +151,6 @@ typedef struct qsfi_batch_decode_execute_desc {
     float q_scale;
     float k_scale;
     float v_scale;
-    uint32_t enable_pdl;
 } qsfi_batch_decode_execute_desc_t;
 
 typedef struct qsfi_batch_prefill_execute_desc {
@@ -165,7 +164,6 @@ typedef struct qsfi_batch_prefill_execute_desc {
     float q_scale;
     float k_scale;
     float v_scale;
-    uint32_t enable_pdl;
 } qsfi_batch_prefill_execute_desc_t;
 
 typedef struct qsfi_append_decode {

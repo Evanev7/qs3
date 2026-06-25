@@ -151,7 +151,6 @@ typedef struct qs_session_layer {
     float q_scale;
     float k_scale;
     float v_scale;
-    uint32_t enable_pdl;
 } qs_session_layer_t;
 
 typedef qs_session_layer_t qs_session_append_layer_t;

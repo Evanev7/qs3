@@ -1,0 +1,6 @@
+#ifndef QSFI_BUILD_CONSTANTS_H
+#define QSFI_BUILD_CONSTANTS_H
+
+#define QSFI_ENABLE_PDL 1
+
+#endif

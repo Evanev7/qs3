@@ -1,4 +1,5 @@
 #include "qsfi.h"
+#include "qsfi_build_constants.h"
 #include "qsfi_macros.h"
 
 #include <cuda_bf16.h>
@@ -853,7 +854,7 @@ cudaError_t decode_execute_impl(
             params,
             tmp_v,
             tmp_s,
-            desc->enable_pdl != 0,
+            QSFI_ENABLE_PDL != 0,
             ctx->stream
         );
     });
@@ -1041,7 +1042,7 @@ cudaError_t prefill_execute_impl(
                 false,
                 Mask,
                 AttentionVariant,
-                Params>(params, tmp_v, tmp_s, desc->enable_pdl != 0, ctx->stream);
+                Params>(params, tmp_v, tmp_s, QSFI_ENABLE_PDL != 0, ctx->stream);
         });
     });
     return status;
