@@ -1,10 +1,21 @@
 CompileFlags:
   Add:
+    - -Ibuild
+
+If:
+  PathMatch: [.*\.cu]
+CompileFlags:
+  Add:
     - -std=c++17
     - -I3pty/flashinfer/3rdparty/cccl/libcudacxx/include
     - -I3pty/flashinfer/3rdparty/cccl/cub
     - -I3pty/flashinfer/3rdparty/cccl/thrust
     - -I3pty/flashinfer/3rdparty/cccl/cudax/include
     - -I3pty/flashinfer/include
-    - -Ibuild
     - --cuda-host-only
+    
+If:
+  PathMatch: [.*\.h, .*\.c]
+CompileFlags:
+  Add:
+  - -std=c11
