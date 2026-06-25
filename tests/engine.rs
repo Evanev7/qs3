@@ -8,6 +8,7 @@ use std::{mem, ptr};
 const CUDA_SUCCESS: i32 = 0;
 const CUDA_MEMCPY_HOST_TO_DEVICE: i32 = 1;
 const CUDA_MEMCPY_DEVICE_TO_HOST: i32 = 2;
+const F16_ONE: u16 = 0x3C00;
 
 unsafe extern "C" {
     fn cudaGetDeviceCount(count: *mut i32) -> i32;
@@ -85,7 +86,7 @@ impl<T> DeviceBuffer<T> {
 }
 
 impl DeviceBuffer<u16> {
-    fn assert_zero(&self, what: &str) {
+    fn assert_all_close_f16(&self, expected: f32, abs_tol: f32, what: &str) {
         let mut host = vec![u16::MAX; self.len];
         assert_cuda(
             unsafe {
@@ -98,10 +99,13 @@ impl DeviceBuffer<u16> {
             },
             what,
         );
-        assert!(
-            host.iter().all(|value| *value == 0),
-            "{what}: expected all output elements to be zero"
-        );
+        for (idx, value) in host.iter().enumerate() {
+            let actual = f16_to_f32(*value);
+            assert!(
+                (actual - expected).abs() <= abs_tol,
+                "{what}: output[{idx}] = {actual}, expected {expected} +/- {abs_tol}"
+            );
+        }
     }
 }
 
@@ -135,6 +139,27 @@ fn assert_cuda(err: i32, what: &str) {
         "{what}: {} ({err})",
         cuda_error_string(err)
     );
+}
+
+fn f16_to_f32(bits: u16) -> f32 {
+    let sign = u32::from(bits & 0x8000) << 16;
+    let exp = u32::from((bits >> 10) & 0x1f);
+    let frac = u32::from(bits & 0x03ff);
+    let f32_bits = if exp == 0 {
+        if frac == 0 {
+            sign
+        } else {
+            let shift = frac.leading_zeros() - 22;
+            let mant = (frac << (shift + 1)) & 0x03ff;
+            let exp32 = 112u32 - shift;
+            sign | (exp32 << 23) | (mant << 13)
+        }
+    } else if exp == 0x1f {
+        sign | 0x7f80_0000 | (frac << 13)
+    } else {
+        sign | ((exp + 112) << 23) | (frac << 13)
+    };
+    f32::from_bits(f32_bits)
 }
 
 fn cuda_device_available() -> bool {
@@ -223,11 +248,11 @@ fn append_and_decode_layer_execute() {
 
     append_q.memset(0);
     append_k.memset(0);
-    append_v.memset(0);
+    append_v.copy_from_slice(&vec![F16_ONE; append_kv_elems]);
     append_o.memset(0xA5);
     decode_q.memset(0);
     decode_k.memset(0);
-    decode_v.memset(0);
+    decode_v.copy_from_slice(&vec![F16_ONE; decode_kv_elems]);
     decode_o.memset(0xA5);
 
     let mut session = Engine::new(config).unwrap();
@@ -279,7 +304,7 @@ fn append_and_decode_layer_execute() {
         session.append_layer(&append_layer).unwrap();
     }
     assert_cuda(unsafe { cudaDeviceSynchronize() }, "sync append layer");
-    append_o.assert_zero("append layer zero output");
+    append_o.assert_all_close_f16(1.0, 1.0e-3, "append layer unit-v output");
     session
         .commit_batch(Commit {
             accepted_token_counts: None,
@@ -335,7 +360,7 @@ fn append_and_decode_layer_execute() {
         session.decode_layer(&decode_layer).unwrap();
     }
     assert_cuda(unsafe { cudaDeviceSynchronize() }, "sync decode layer");
-    decode_o.assert_zero("decode layer zero output");
+    decode_o.assert_all_close_f16(1.0, 1.0e-3, "decode layer unit-v output");
     session
         .commit_batch(Commit {
             accepted_token_counts: None,
