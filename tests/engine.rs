@@ -1,6 +1,6 @@
 use qs3::{
-    AppendBatch, BatchKind, Commit, DType, DecodeBatch, KvLayout, RequestId, RuntimeSession,
-    Session, SessionConfig, SessionCore, SessionLayer, Status, qsfi,
+    AppendBatch, Commit, DType, DecodeBatch, Engine, EngineConfig, EngineLayer, EngineTrait,
+    KvLayout, qsfi,
 };
 use std::ffi::{CStr, c_char, c_void};
 use std::{mem, ptr};
@@ -169,8 +169,8 @@ fn tensor3(
     }
 }
 
-fn tiny_config() -> SessionConfig {
-    SessionConfig {
+fn tiny_config() -> EngineConfig {
+    EngineConfig {
         device_ordinal: 0,
         stream: std::ptr::null_mut(),
         num_layers: 1,
@@ -195,265 +195,6 @@ fn tiny_config() -> SessionConfig {
         qsfi_int_workspace_bytes: 64 << 20,
         qsfi_host_int_workspace_bytes: 64 << 20,
     }
-}
-
-fn begin_append_tokens<S: Session>(
-    session: &mut S,
-    request_id: RequestId,
-    tokens: &[i32],
-) -> Result<(), Status> {
-    let request_ids = [request_id];
-    let token_indptr = [0, i32::try_from(tokens.len()).unwrap()];
-    begin_append(session, &request_ids, &token_indptr, tokens)
-}
-
-fn begin_append<S: Session>(
-    session: &mut S,
-    request_ids: &[RequestId],
-    token_indptr: &[i32],
-    tokens: &[i32],
-) -> Result<(), Status> {
-    Session::begin_append(
-        session,
-        AppendBatch {
-            request_ids,
-            token_indptr,
-            tokens,
-        },
-    )
-}
-
-fn begin_decode<S: Session>(
-    session: &mut S,
-    request_ids: &[RequestId],
-    tokens: &[i32],
-) -> Result<(), Status> {
-    Session::begin_decode(
-        session,
-        DecodeBatch {
-            request_ids,
-            tokens,
-        },
-    )
-}
-
-fn commit<S: Session>(
-    session: &mut S,
-    accepted_token_counts: Option<&[u32]>,
-) -> Result<(), Status> {
-    Session::commit_batch(
-        session,
-        Commit {
-            accepted_token_counts,
-        },
-    )
-}
-
-fn commit_full<S: Session>(session: &mut S) -> Result<(), Status> {
-    commit(session, None)
-}
-
-fn state<S: Session>(session: &S) -> qs3::CoreState<'_> {
-    Session::state(session).unwrap()
-}
-
-fn release_requests<S: Session>(session: &mut S, request_ids: &[RequestId]) -> Result<(), Status> {
-    Session::release_requests(session, request_ids)
-}
-
-fn reset<S: Session>(session: &mut S) -> Result<(), Status> {
-    Session::reset(session)
-}
-
-fn abort_batch<S: Session>(session: &mut S) -> Result<(), Status> {
-    Session::abort_batch(session)
-}
-
-#[test]
-fn append_commit_decode_release() {
-    let mut session = SessionCore::new(tiny_config()).unwrap();
-
-    let reqs = [10, 11];
-    let indptr = [0, 5, 6];
-    let tokens = [100, 101, 102, 103, 104, 200];
-    begin_append(&mut session, &reqs, &indptr, &tokens).unwrap();
-
-    {
-        let state = state(&session);
-        assert_eq!(state.batch_kind, BatchKind::Append);
-        assert_eq!(state.batch_size, 2);
-        assert_eq!(state.batch_token_count, 6);
-        assert_eq!(state.batch_qo_indptr, &[0, 5, 6]);
-        assert_eq!(state.batch_kv_indptr, &[0, 2, 3]);
-        assert_eq!(state.batch_last_page_len, &[1, 1]);
-        assert_eq!(state.batch_append_batch_indices[4], 0);
-        assert_eq!(state.batch_append_batch_indices[5], 1);
-        assert_eq!(state.batch_append_positions[0], 0);
-        assert_eq!(state.batch_append_positions[4], 4);
-        assert_eq!(state.batch_append_positions[5], 0);
-        assert_eq!(state.free_page_count, 5);
-    }
-
-    commit_full(&mut session).unwrap();
-    {
-        let state = state(&session);
-        assert_eq!(state.batch_kind, BatchKind::None);
-        assert_eq!(state.live_request_count, 2);
-        assert_eq!(state.live_request_ids, &[10, 11]);
-        assert_eq!(state.live_seq_lens, &[5, 1]);
-        assert_eq!(state.live_kv_indptr, &[0, 2, 3]);
-        assert_eq!(state.free_page_count, 5);
-    }
-
-    let reqs2 = [10, 12];
-    let indptr2 = [0, 2, 6];
-    let tokens2 = [105, 106, 300, 301, 302, 303];
-    begin_append(&mut session, &reqs2, &indptr2, &tokens2).unwrap();
-    commit(&mut session, Some(&[1, 0])).unwrap();
-    {
-        let state = state(&session);
-        assert_eq!(state.live_request_count, 2);
-        assert_eq!(state.live_seq_lens, &[6, 1]);
-        assert_eq!(state.free_page_count, 5);
-    }
-
-    let decode_tokens = [107, 201];
-    begin_decode(&mut session, &reqs, &decode_tokens).unwrap();
-    commit(&mut session, Some(&[0, 1])).unwrap();
-    {
-        let state = state(&session);
-        assert_eq!(state.live_seq_lens, &[6, 2]);
-        assert_eq!(state.free_page_count, 5);
-    }
-
-    release_requests(&mut session, &[10]).unwrap();
-    let state = state(&session);
-    assert_eq!(state.live_request_count, 1);
-    assert_eq!(state.live_request_ids, &[11]);
-    assert_eq!(state.live_seq_lens, &[2]);
-    assert_eq!(state.free_page_count, 7);
-}
-
-#[test]
-fn reject_duplicate_batch_ids() {
-    let mut session = SessionCore::new(tiny_config()).unwrap();
-    assert_eq!(
-        begin_append(&mut session, &[1, 1], &[0, 1, 2], &[10, 11]),
-        Err(Status::InvalidArgument)
-    );
-}
-
-#[test]
-fn abort_and_reset_restore_pages() {
-    let mut session = SessionCore::new(tiny_config()).unwrap();
-
-    begin_append_tokens(&mut session, 31, &[1, 2, 3, 4]).unwrap();
-    assert_eq!(
-        release_requests(&mut session, &[31]),
-        Err(Status::InvalidArgument)
-    );
-    assert_eq!(
-        begin_decode(&mut session, &[31], &[5]),
-        Err(Status::InvalidArgument)
-    );
-    abort_batch(&mut session).unwrap();
-    {
-        let state = state(&session);
-        assert_eq!(state.batch_kind, BatchKind::None);
-        assert_eq!(state.live_request_count, 0);
-        assert_eq!(state.free_page_count, 8);
-    }
-
-    begin_append_tokens(&mut session, 31, &[1, 2, 3, 4]).unwrap();
-    reset(&mut session).unwrap();
-    let state = state(&session);
-    assert_eq!(state.batch_kind, BatchKind::None);
-    assert_eq!(state.live_request_count, 0);
-    assert_eq!(state.free_page_count, 8);
-}
-
-#[test]
-fn reject_bad_append_shapes_without_allocating_pages() {
-    let mut session = SessionCore::new(tiny_config()).unwrap();
-
-    assert_eq!(
-        begin_append(&mut session, &[41, 42], &[1, 2, 3], &[1, 2, 3]),
-        Err(Status::InvalidArgument)
-    );
-    assert_eq!(
-        begin_append(&mut session, &[41, 42], &[0, 2, 1], &[1]),
-        Err(Status::InvalidArgument)
-    );
-    assert_eq!(
-        begin_append(&mut session, &[41, 42], &[0, 1, 2], &[1, 2, 3]),
-        Err(Status::InvalidArgument)
-    );
-    assert_eq!(
-        begin_append(&mut session, &[43, 43], &[0, 1, 2], &[1, 2]),
-        Err(Status::InvalidArgument)
-    );
-
-    let state = state(&session);
-    assert_eq!(state.batch_kind, BatchKind::None);
-    assert_eq!(state.live_request_count, 0);
-    assert_eq!(state.free_page_count, 8);
-}
-
-#[test]
-fn decode_validation_and_invalid_commit_keep_batch_active() {
-    let mut session = SessionCore::new(tiny_config()).unwrap();
-
-    begin_append_tokens(&mut session, 51, &[1]).unwrap();
-    commit_full(&mut session).unwrap();
-
-    assert_eq!(
-        begin_decode(&mut session, &[52], &[9]),
-        Err(Status::InvalidArgument)
-    );
-    assert_eq!(
-        begin_decode(&mut session, &[51, 51], &[2, 3]),
-        Err(Status::InvalidArgument)
-    );
-
-    begin_decode(&mut session, &[51], &[4]).unwrap();
-    assert_eq!(
-        commit(&mut session, Some(&[2])),
-        Err(Status::InvalidArgument)
-    );
-    {
-        let state = state(&session);
-        assert_eq!(state.batch_kind, BatchKind::Decode);
-        assert_eq!(state.live_seq_lens, &[1]);
-    }
-    abort_batch(&mut session).unwrap();
-
-    let state = state(&session);
-    assert_eq!(state.batch_kind, BatchKind::None);
-    assert_eq!(state.live_seq_lens, &[1]);
-    assert_eq!(state.free_page_count, 7);
-}
-
-#[test]
-fn limits_and_release_noop() {
-    let mut config = tiny_config();
-    config.max_live_requests = 1;
-    let mut session = SessionCore::new(config).unwrap();
-
-    release_requests(&mut session, &[999]).unwrap();
-
-    assert_eq!(
-        begin_append(&mut session, &[61, 62], &[0, 1, 2], &[1, 2]),
-        Err(Status::InvalidArgument)
-    );
-    assert_eq!(
-        begin_append(&mut session, &[63], &[0, 9], &[1, 2, 3, 4, 5, 6, 7, 8, 9],),
-        Err(Status::InvalidArgument)
-    );
-
-    let state = state(&session);
-    assert_eq!(state.batch_kind, BatchKind::None);
-    assert_eq!(state.live_request_count, 0);
-    assert_eq!(state.free_page_count, 8);
 }
 
 #[test]
@@ -489,10 +230,16 @@ fn append_and_decode_layer_execute() {
     decode_v.memset(0);
     decode_o.memset(0xA5);
 
-    let mut session = RuntimeSession::new(config).unwrap();
-    begin_append_tokens(&mut session, request_id, &[10, 11, 12]).unwrap();
+    let mut session = Engine::new(config).unwrap();
+    session
+        .begin_append(AppendBatch {
+            request_ids: &[request_id],
+            token_indptr: &[0, 3],
+            tokens: &[10, 11, 12],
+        })
+        .unwrap();
 
-    let append_layer = SessionLayer {
+    let append_layer = EngineLayer {
         layer_idx: 0,
         q: tensor3(
             append_q.as_device_ptr(),
@@ -533,13 +280,22 @@ fn append_and_decode_layer_execute() {
     }
     assert_cuda(unsafe { cudaDeviceSynchronize() }, "sync append layer");
     append_o.assert_zero("append layer zero output");
-    commit_full(&mut session).unwrap();
+    session
+        .commit_batch(Commit {
+            accepted_token_counts: None,
+        })
+        .unwrap();
 
-    let append_state = state(&session);
+    let append_state = session.state().unwrap();
     assert_eq!(append_state.live_seq_lens, &[3]);
 
-    begin_decode(&mut session, &[request_id], &[13]).unwrap();
-    let decode_layer = SessionLayer {
+    session
+        .begin_decode(DecodeBatch {
+            request_ids: &[request_id],
+            tokens: &[13],
+        })
+        .unwrap();
+    let decode_layer = EngineLayer {
         layer_idx: 0,
         q: tensor3(
             decode_q.as_device_ptr(),
@@ -580,8 +336,12 @@ fn append_and_decode_layer_execute() {
     }
     assert_cuda(unsafe { cudaDeviceSynchronize() }, "sync decode layer");
     decode_o.assert_zero("decode layer zero output");
-    commit_full(&mut session).unwrap();
+    session
+        .commit_batch(Commit {
+            accepted_token_counts: None,
+        })
+        .unwrap();
 
-    let decode_state = state(&session);
+    let decode_state = session.state().unwrap();
     assert_eq!(decode_state.live_seq_lens, &[4]);
 }

@@ -12,12 +12,12 @@ build: always
         mkdir -p build
         nvcc -std=c++17 -arch=sm_121 -c qsfi.cu -o build/qsfi.o {{nvccflags}}
         cargo build --lib
-test: append-test session-test
+test: append-test engine-test
 append-test: build
         nvcc -std=c++17 -arch=sm_121 test.cu build/qsfi.o -o build/qsfi_test {{nvccflags}}
         build/qsfi_test
-session-test: build
-        LIBRARY_PATH="{{cuda_lib_path}}:${LIBRARY_PATH:-}" cargo test --test session
+engine-test: build
+        LIBRARY_PATH="{{cuda_lib_path}}:${LIBRARY_PATH:-}" cargo test --test engine
 fmt: always
         rg --files -g '!{3pty}' -tcuda -tc -tcpp | xargs clang-format -style=file -Werror -i
 always:

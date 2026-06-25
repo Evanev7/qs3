@@ -1,4 +1,12 @@
-use crate::{Status, qsfi_sys as sys};
+pub mod sys {
+    #![allow(non_camel_case_types)]
+    #![allow(non_snake_case)]
+    #![allow(non_upper_case_globals)]
+    #![allow(dead_code)]
+    include!(concat!(env!("OUT_DIR"), "/qsfi_bindings.rs"));
+}
+
+use crate::engine::Status;
 
 use std::ptr::{self, NonNull};
 
