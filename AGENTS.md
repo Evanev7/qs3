@@ -1,21 +1,49 @@
-this is quasar3, a minimal qwen3.6 runtime built from flashinfer, inspired by dwarfstar4
-rarely record durable facts that take significant information gathering here
-- do not worry about backward compatibility, abi stability or versioning
-- no cmake, we'll figure out a build system later
+this is quasar3, a minimal qwen3.6 runtime built from flashinfer, inspired by
+dwarfstar4.
 
-todo:
-- write focused tests before building higher-level runtime code. cover tensor
-  descriptor validation, paged kv table shape/layout checks, append position
-  math, decode/prefill plan lifecycle, and basic flashinfer output parity 
-  against small reference cases.
-- build a narrow `engine/session` layer above flashinfer after the wrapper is
-  tested. the session should own tokens, per-layer paged kv caches, page tables,
-  flashinfer plans, logits, and prefix sync/rebuild policy.
-- treat paged kv state as first-class runtime state: page allocator, indptr,
-  indices, last-page lengths, and append positions should be explicit session
-  data rather than temporary sampler-loop arrays.
-- reuse flashinfer plans across layers and tokens where the shape permits.
-  separate prefill and decode paths, with chunked prefill for long suffixes and
-  decode for short/live generation.
-- keep the runtime qwen3.6-specific. validate early, fail loudly, avoid generic 
-  runtime compatibility work.
+rarely record durable facts here unless they took significant information
+gathering.
+
+ground rules:
+- do not worry about backward compatibility, abi stability or versioning.
+- no cmake; we'll figure out a build system later.
+- keep the runtime qwen3.6-specific. validate early, fail loudly, avoid generic
+  runtime compatibility work. take the time to remove old functions once they
+  become simple wrappers of others.
+
+current state:
+- `EngineCore` already owns request ids, sequence lengths, a page allocator,
+  page tables, last-page lengths, append positions, and staged batch state.
+- `runtime::EngineInner` already owns per-layer paged K/V caches and reuses
+  FlashInfer prefill/decode plans when the batch/page-table shape permits.
+- the current repo can run FlashInfer attention over externally supplied Q/K/V
+  tensors. it is not yet a runnable model runtime.
+
+DS4 lessons worth preserving:
+- keep the public boundary narrow: a loaded model/runtime object plus mutable
+  inference timelines. higher layers should not know tensor internals.
+- durable session state is more than a token count. keep exact request tokens,
+  last logits, paged KV tables, page ownership, and append/frontier positions as
+  explicit engine state.
+- prefix sync policy should be conservative. if a requested prompt extends the
+  live token prefix, append only the suffix. if it rewrites behind the live tail,
+  rebuild or restore an older checkpoint; do not patch only the token vector.
+- separate paths:
+  - long suffix/prompt: chunked prefill.
+  - short/live generation: decode.
+- cache/snapshot payloads, when added, should be engine-owned: exact tokens,
+  logits, page-table/frontier state, and KV contents needed to make the next
+  token match an uninterrupted session.
+
+fastest path to actually running the model:
+- target one qwen3.6 shape first, fp16/bf16 first, no generic checkpoint matrix.
+- add model loading for config + safetensors, map fixed Qwen tensor names, upload
+  weights to CUDA.
+- add the missing non-attention kernels/wrappers: embedding gather, RMSNorm,
+  QKV/output projections, gated SiLU MLP, final norm, LM head, logits, and a
+  minimal sampler.
+- build a `ModelRunner` above `Engine` that computes layer activations, supplies
+  Q/K/V to the existing attention engine, stores logits, samples next tokens,
+  and owns exact-prefix sync/rebuild.
+- first runnable CLI may accept and print token ids. tokenizer/chat template can
+  follow immediately after the model produces tokens.

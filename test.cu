@@ -28,7 +28,7 @@ bool check_cuda(cudaError_t got, const char* what)
     return false;
 }
 
-bool check_status(qsfi_status_t got, qsfi_status_t want, const char* what)
+bool check_status(qsfi_status got, qsfi_status want, const char* what)
 {
     if (got == want)
         return true;
@@ -70,12 +70,11 @@ size_t append_offset(int item, int head, int dim)
     return (static_cast<size_t>(item) * kKvHeads + head) * kHeadDim + dim;
 }
 
-qsfi_tensor_desc_t tensor3(void* data, int64_t n)
+qsfi_tensor3 tensor3(void* data, int64_t n)
 {
-    qsfi_tensor_desc_t tensor {};
+    qsfi_tensor3 tensor {};
     tensor.data = data;
     tensor.dtype = QSFI_DTYPE_F16;
-    tensor.ndim = 3;
     tensor.shape[0] = n;
     tensor.shape[1] = kKvHeads;
     tensor.shape[2] = kHeadDim;
@@ -85,12 +84,11 @@ qsfi_tensor_desc_t tensor3(void* data, int64_t n)
     return tensor;
 }
 
-qsfi_tensor_desc_t cache_tensor(void* data)
+qsfi_tensor4 cache_tensor(void* data)
 {
-    qsfi_tensor_desc_t tensor {};
+    qsfi_tensor4 tensor {};
     tensor.data = data;
     tensor.dtype = QSFI_DTYPE_F16;
-    tensor.ndim = 4;
     tensor.shape[0] = kNumPages;
     tensor.shape[1] = kPageSize;
     tensor.shape[2] = kKvHeads;
@@ -102,9 +100,9 @@ qsfi_tensor_desc_t cache_tensor(void* data)
     return tensor;
 }
 
-qsfi_attention_desc_t attention_desc()
+qsfi_attention_desc attention_desc()
 {
-    qsfi_attention_desc_t attention {};
+    qsfi_attention_desc attention {};
     attention.num_qo_heads = kKvHeads;
     attention.num_kv_heads = kKvHeads;
     attention.head_dim_qk = kHeadDim;
@@ -122,17 +120,17 @@ qsfi_attention_desc_t attention_desc()
     return attention;
 }
 
-qsfi_paged_kv_cache_t cache_desc(void* k, void* v)
+qsfi_paged_kv_cache cache_desc(void* k, void* v)
 {
-    qsfi_paged_kv_cache_t cache {};
+    qsfi_paged_kv_cache cache {};
     cache.k = cache_tensor(k);
     cache.v = cache_tensor(v);
     return cache;
 }
 
-qsfi_paged_kv_table_t page_table_desc(void* indptr, void* indices, void* last_page_len)
+qsfi_paged_kv_table page_table_desc(void* indptr, void* indices, void* last_page_len)
 {
-    qsfi_paged_kv_table_t table {};
+    qsfi_paged_kv_table table {};
     table.indptr = indptr;
     table.indices = indices;
     table.last_page_len = last_page_len;
@@ -141,9 +139,9 @@ qsfi_paged_kv_table_t page_table_desc(void* indptr, void* indices, void* last_pa
     return table;
 }
 
-bool make_context(qsfi_context_t** out)
+bool make_context(qsfi_context** out)
 {
-    qsfi_context_desc_t desc {};
+    qsfi_context_desc desc {};
     desc.device_ordinal = 0;
     desc.stream = nullptr;
     return check_status(qsfi_context_create(&desc, out), QSFI_STATUS_OK, "create context");
@@ -233,7 +231,7 @@ void check_cache_sentinel(const std::vector<uint16_t>& cache, int page, int entr
 
 void test_decode_append_uses_post_append_last_page_len()
 {
-    qsfi_context_t* ctx = nullptr;
+    qsfi_context* ctx = nullptr;
     if (!make_context(&ctx))
         return;
 
@@ -265,13 +263,13 @@ void test_decode_append_uses_post_append_last_page_len()
         return;
     }
 
-    qsfi_append_decode_t append {};
+    qsfi_append_decode_desc append {};
     append.k = tensor3(d_k_append, kBatch);
     append.v = tensor3(d_v_append, kBatch);
     append.kv_cache = cache_desc(d_k_cache, d_v_cache);
     append.page_table = page_table_desc(d_indptr, d_indices, d_last_page_len);
 
-    const qsfi_attention_desc_t attention = attention_desc();
+    const qsfi_attention_desc attention = attention_desc();
     check_status(
         qsfi_append_paged_kv_decode(ctx, &attention, &append),
         QSFI_STATUS_OK,
@@ -316,7 +314,7 @@ void test_decode_append_uses_post_append_last_page_len()
 
 void test_prefill_append_maps_positions_through_page_table()
 {
-    qsfi_context_t* ctx = nullptr;
+    qsfi_context* ctx = nullptr;
     if (!make_context(&ctx))
         return;
 
@@ -361,7 +359,7 @@ void test_prefill_append_maps_positions_through_page_table()
         return;
     }
 
-    qsfi_append_prefill_t append {};
+    qsfi_append_prefill_desc append {};
     append.k = tensor3(d_k_append, num_tokens);
     append.v = tensor3(d_v_append, num_tokens);
     append.batch_indices = d_batch_indices;
@@ -370,7 +368,7 @@ void test_prefill_append_maps_positions_through_page_table()
     append.page_table = page_table_desc(d_indptr, d_indices, d_last_page_len);
     append.num_tokens = num_tokens;
 
-    const qsfi_attention_desc_t attention = attention_desc();
+    const qsfi_attention_desc attention = attention_desc();
     check_status(
         qsfi_append_paged_kv_prefill(ctx, &attention, &append),
         QSFI_STATUS_OK,

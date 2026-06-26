@@ -182,15 +182,14 @@ fn tensor3(
     n: usize,
     heads: u32,
     head_dim: u32,
-) -> qsfi::TensorDesc {
+) -> qsfi::Tensor3 {
     let heads = i64::from(heads);
     let head_dim = i64::from(head_dim);
-    qsfi::TensorDesc {
+    qsfi::Tensor3 {
         data,
         dtype,
-        ndim: 3,
-        shape: [n as i64, heads, head_dim, 0, 0],
-        stride: [heads * head_dim, head_dim, 1, 0, 0],
+        shape: [n as i64, heads, head_dim],
+        stride: [heads * head_dim, head_dim, 1],
     }
 }
 

@@ -32,14 +32,19 @@ struct qsfi_context {
     size_t int_workspace_bytes;
     size_t host_int_workspace_bytes;
     uint64_t scratch_generation;
-    qsfi_error_info_t last_error;
+    qsfi_error_info last_error;
+};
+
+enum qsfi_plan_kind {
+    QSFI_PLAN_BATCH_DECODE = 1,
+    QSFI_PLAN_BATCH_PREFILL = 2,
 };
 
 struct qsfi_plan {
-    qsfi_plan_kind_t kind;
+    qsfi_plan_kind kind;
     int32_t device_ordinal;
     cudaStream_t stream;
-    qsfi_attention_desc_t attention;
+    qsfi_attention_desc attention;
     uint32_t batch_size;
     uint32_t num_indices;
     uint32_t total_tokens;
@@ -52,9 +57,17 @@ struct qsfi_plan {
     flashinfer::PrefillPlanInfo prefill;
 };
 
+struct qsfi_batch_decode_plan {
+    qsfi_plan impl;
+};
+
+struct qsfi_batch_prefill_plan {
+    qsfi_plan impl;
+};
+
 namespace {
 
-void clear_error(qsfi_error_info_t* err)
+void clear_error(qsfi_error_info* err)
 {
     if (err == nullptr)
         return;
@@ -64,10 +77,10 @@ void clear_error(qsfi_error_info_t* err)
     err->message[0] = '\0';
 }
 
-qsfi_status_t set_error(
-    qsfi_context_t* ctx,
-    qsfi_status_t status,
-    qsfi_error_source_t source,
+qsfi_status set_error(
+    qsfi_context* ctx,
+    qsfi_status status,
+    qsfi_error_source source,
     int32_t native_code,
     const char* fmt,
     ...
@@ -86,11 +99,11 @@ qsfi_status_t set_error(
     return status;
 }
 
-qsfi_status_t set_cuda_error(qsfi_context_t* ctx, cudaError_t err, const char* op)
+qsfi_status set_cuda_error(qsfi_context* ctx, cudaError_t err, const char* op)
 {
     if (err == cudaSuccess)
         return QSFI_STATUS_OK;
-    const qsfi_status_t status
+    const qsfi_status status
         = (err == cudaErrorMemoryAllocation) ? QSFI_STATUS_OUT_OF_MEMORY : QSFI_STATUS_CUDA_ERROR;
     return set_error(
         ctx,
@@ -103,7 +116,7 @@ qsfi_status_t set_cuda_error(qsfi_context_t* ctx, cudaError_t err, const char* o
     );
 }
 
-qsfi_status_t set_flashinfer_error(qsfi_context_t* ctx, const char* op, const std::exception& ex)
+qsfi_status set_flashinfer_error(qsfi_context* ctx, const char* op, const std::exception& ex)
 {
     return set_error(
         ctx,
@@ -116,7 +129,7 @@ qsfi_status_t set_flashinfer_error(qsfi_context_t* ctx, const char* op, const st
     );
 }
 
-qsfi_status_t activate_context(qsfi_context_t* ctx)
+qsfi_status activate_context(qsfi_context* ctx)
 {
     if (ctx == nullptr)
         return QSFI_STATUS_INVALID_ARGUMENT;
@@ -128,18 +141,21 @@ qsfi_status_t activate_context(qsfi_context_t* ctx)
     return QSFI_STATUS_OK;
 }
 
-bool valid_dtype(qsfi_dtype_t dtype)
+bool valid_dtype(qsfi_dtype dtype)
 {
-    return dtype == QSFI_DTYPE_F16 || dtype == QSFI_DTYPE_BF16 || dtype == QSFI_DTYPE_FP8_E4M3
-        || dtype == QSFI_DTYPE_FP8_E5M2 || dtype == QSFI_DTYPE_NVFP4_E2M1;
+    return dtype == QSFI_DTYPE_F32 || dtype == QSFI_DTYPE_F16 || dtype == QSFI_DTYPE_BF16
+        || dtype == QSFI_DTYPE_FP8_E4M3 || dtype == QSFI_DTYPE_FP8_E5M2
+        || dtype == QSFI_DTYPE_NVFP4_E2M1 || dtype == QSFI_DTYPE_MXFP4_E2M1
+        || dtype == QSFI_DTYPE_MXFP8_E4M3 || dtype == QSFI_DTYPE_I32 || dtype == QSFI_DTYPE_U32
+        || dtype == QSFI_DTYPE_I8 || dtype == QSFI_DTYPE_U8;
 }
 
-bool supported_attention_dtype(qsfi_dtype_t dtype)
+bool supported_attention_dtype(qsfi_dtype dtype)
 {
     return dtype == QSFI_DTYPE_F16 || dtype == QSFI_DTYPE_BF16;
 }
 
-flashinfer::QKVLayout to_flashinfer_layout(qsfi_kv_layout_t layout)
+flashinfer::QKVLayout to_flashinfer_layout(qsfi_kv_layout layout)
 {
     switch (layout) {
     case QSFI_KV_LAYOUT_HND:
@@ -150,7 +166,7 @@ flashinfer::QKVLayout to_flashinfer_layout(qsfi_kv_layout_t layout)
     return flashinfer::QKVLayout::kNHD;
 }
 
-float default_sm_scale(const qsfi_attention_desc_t& attention)
+float default_sm_scale(const qsfi_attention_desc& attention)
 {
     if (attention.sm_scale != 0.0f)
         return attention.sm_scale;
@@ -162,7 +178,7 @@ float default_one(float value)
     return value == 0.0f ? 1.0f : value;
 }
 
-qsfi_status_t require_scratch(qsfi_context_t* ctx)
+qsfi_status require_scratch(qsfi_context* ctx)
 {
     if (ctx == nullptr)
         return QSFI_STATUS_INVALID_ARGUMENT;
@@ -179,7 +195,7 @@ qsfi_status_t require_scratch(qsfi_context_t* ctx)
     return QSFI_STATUS_OK;
 }
 
-void destroy_plan(qsfi_plan_t* plan)
+void destroy_plan(qsfi_plan* plan)
 {
     if (plan == nullptr)
         return;
@@ -189,10 +205,27 @@ void destroy_plan(qsfi_plan_t* plan)
         cudaFree(plan->int_workspace);
     if (plan->host_int_workspace != nullptr)
         cudaFreeHost(plan->host_int_workspace);
+    plan->int_workspace = nullptr;
+    plan->host_int_workspace = nullptr;
+}
+
+void destroy_decode_plan(qsfi_batch_decode_plan* plan)
+{
+    if (plan == nullptr)
+        return;
+    destroy_plan(&plan->impl);
     delete plan;
 }
 
-qsfi_status_t allocate_plan_workspaces(qsfi_context_t* ctx, qsfi_plan_t* plan)
+void destroy_prefill_plan(qsfi_batch_prefill_plan* plan)
+{
+    if (plan == nullptr)
+        return;
+    destroy_plan(&plan->impl);
+    delete plan;
+}
+
+qsfi_status allocate_plan_workspaces(qsfi_context* ctx, qsfi_plan* plan)
 {
     if (ctx->int_workspace_bytes != 0) {
         cudaError_t err = cudaMalloc(&plan->int_workspace, ctx->int_workspace_bytes);
@@ -213,7 +246,7 @@ qsfi_status_t allocate_plan_workspaces(qsfi_context_t* ctx, qsfi_plan_t* plan)
     return QSFI_STATUS_OK;
 }
 
-qsfi_status_t require_plan_stream(qsfi_context_t* ctx, const qsfi_plan_t* plan)
+qsfi_status require_plan_stream(qsfi_context* ctx, const qsfi_plan* plan)
 {
     if (plan->stream != ctx->stream) {
         return set_error(
@@ -245,7 +278,7 @@ bool pointer_is_host_readable(const void* ptr)
 #endif
 }
 
-qsfi_status_t require_host_readable_i32(qsfi_context_t* ctx, const int32_t* ptr, const char* name)
+qsfi_status require_host_readable_i32(qsfi_context* ctx, const int32_t* ptr, const char* name)
 {
     if (ptr == nullptr) {
         return set_error(
@@ -270,7 +303,7 @@ qsfi_status_t require_host_readable_i32(qsfi_context_t* ctx, const int32_t* ptr,
     return QSFI_STATUS_OK;
 }
 
-qsfi_status_t validate_attention(qsfi_context_t* ctx, const qsfi_attention_desc_t* attention)
+qsfi_status validate_attention(qsfi_context* ctx, const qsfi_attention_desc* attention)
 {
     if (attention == nullptr) {
         return set_error(
@@ -368,10 +401,10 @@ qsfi_status_t validate_attention(qsfi_context_t* ctx, const qsfi_attention_desc_
     return QSFI_STATUS_OK;
 }
 
-qsfi_status_t validate_paged_kv_plan(
-    qsfi_context_t* ctx,
-    const qsfi_attention_desc_t* attention,
-    const qsfi_paged_kv_plan_t* page_table
+qsfi_status validate_paged_kv_plan(
+    qsfi_context* ctx,
+    const qsfi_attention_desc* attention,
+    const qsfi_paged_kv_plan* page_table
 )
 {
     if (page_table == nullptr) {
@@ -392,7 +425,7 @@ qsfi_status_t validate_paged_kv_plan(
             "page_table batch_size must be non-zero"
         );
     }
-    qsfi_status_t status = require_host_readable_i32(ctx, page_table->indptr, "page_table.indptr");
+    qsfi_status status = require_host_readable_i32(ctx, page_table->indptr, "page_table.indptr");
     if (status != QSFI_STATUS_OK)
         return status;
     status = require_host_readable_i32(ctx, page_table->last_page_len, "page_table.last_page_len");
@@ -461,7 +494,7 @@ qsfi_status_t validate_paged_kv_plan(
     return QSFI_STATUS_OK;
 }
 
-qsfi_status_t validate_qo_plan(qsfi_context_t* ctx, const qsfi_qo_plan_t* qo)
+qsfi_status validate_qo_plan(qsfi_context* ctx, const qsfi_qo_plan* qo)
 {
     if (qo == nullptr) {
         return set_error(
@@ -481,7 +514,7 @@ qsfi_status_t validate_qo_plan(qsfi_context_t* ctx, const qsfi_qo_plan_t* qo)
             "qo batch_size must be non-zero"
         );
     }
-    qsfi_status_t status = require_host_readable_i32(ctx, qo->indptr, "qo.indptr");
+    qsfi_status status = require_host_readable_i32(ctx, qo->indptr, "qo.indptr");
     if (status != QSFI_STATUS_OK)
         return status;
     if (qo->indptr[0] != 0) {
@@ -516,12 +549,13 @@ qsfi_status_t validate_qo_plan(qsfi_context_t* ctx, const qsfi_qo_plan_t* qo)
     return QSFI_STATUS_OK;
 }
 
-qsfi_status_t validate_tensor(
-    qsfi_context_t* ctx,
-    const qsfi_tensor_desc_t& tensor,
+template <typename Tensor>
+qsfi_status validate_tensor(
+    qsfi_context* ctx,
+    const Tensor& tensor,
     const char* name,
-    qsfi_dtype_t dtype,
-    uint32_t ndim
+    qsfi_dtype dtype,
+    uint32_t expected_rank
 )
 {
     if (tensor.data == nullptr) {
@@ -544,17 +578,18 @@ qsfi_status_t validate_tensor(
             name
         );
     }
-    if (tensor.ndim != ndim) {
+    constexpr uint32_t rank = sizeof(tensor.shape) / sizeof(tensor.shape[0]);
+    if (rank != expected_rank) {
         return set_error(
             ctx,
             QSFI_STATUS_INVALID_ARGUMENT,
             QSFI_ERROR_SOURCE_QSFI,
             0,
-            "%s ndim mismatch",
+            "%s rank mismatch",
             name
         );
     }
-    for (uint32_t i = 0; i < ndim; ++i) {
+    for (uint32_t i = 0; i < rank; ++i) {
         if (tensor.shape[i] <= 0 || tensor.stride[i] <= 0) {
             return set_error(
                 ctx,
@@ -571,14 +606,14 @@ qsfi_status_t validate_tensor(
     return QSFI_STATUS_OK;
 }
 
-qsfi_status_t validate_kv_cache(
-    qsfi_context_t* ctx,
-    const qsfi_attention_desc_t& attention,
-    const qsfi_paged_kv_cache_t& kv_cache,
+qsfi_status validate_kv_cache(
+    qsfi_context* ctx,
+    const qsfi_attention_desc& attention,
+    const qsfi_paged_kv_cache& kv_cache,
     uint32_t* out_num_pages
 )
 {
-    qsfi_status_t status = validate_tensor(ctx, kv_cache.k, "kv_cache.k", attention.kv_dtype, 4);
+    qsfi_status status = validate_tensor(ctx, kv_cache.k, "kv_cache.k", attention.kv_dtype, 4);
     if (status != QSFI_STATUS_OK)
         return status;
     status = validate_tensor(ctx, kv_cache.v, "kv_cache.v", attention.kv_dtype, 4);
@@ -638,8 +673,8 @@ qsfi_status_t validate_kv_cache(
     return QSFI_STATUS_OK;
 }
 
-qsfi_status_t validate_page_table_exec(
-    qsfi_context_t* ctx, const qsfi_plan_t* plan, const qsfi_paged_kv_table_t& table
+qsfi_status validate_page_table_exec(
+    qsfi_context* ctx, const qsfi_plan* plan, const qsfi_paged_kv_table& table
 )
 {
     if (table.indptr == nullptr || table.indices == nullptr || table.last_page_len == nullptr) {
@@ -667,10 +702,10 @@ qsfi_status_t validate_page_table_exec(
 
 template <typename T, flashinfer::PosEncodingMode Pos, bool Sliding, bool Logits>
 cudaError_t decode_plan_impl(
-    qsfi_context_t* ctx,
-    const qsfi_plan_t* plan,
-    const qsfi_attention_desc_t* attention,
-    const qsfi_paged_kv_plan_t* page_table,
+    qsfi_context* ctx,
+    const qsfi_plan* plan,
+    const qsfi_attention_desc* attention,
+    const qsfi_paged_kv_plan* page_table,
     flashinfer::DecodePlanInfo* out
 )
 {
@@ -712,10 +747,10 @@ cudaError_t decode_plan_impl(
 
 template <typename T, flashinfer::PosEncodingMode Pos, bool Sliding>
 cudaError_t decode_plan_logits(
-    qsfi_context_t* ctx,
-    const qsfi_plan_t* plan,
-    const qsfi_attention_desc_t* attention,
-    const qsfi_paged_kv_plan_t* page_table,
+    qsfi_context* ctx,
+    const qsfi_plan* plan,
+    const qsfi_attention_desc* attention,
+    const qsfi_paged_kv_plan* page_table,
     flashinfer::DecodePlanInfo* out
 )
 {
@@ -727,10 +762,10 @@ cudaError_t decode_plan_logits(
 
 template <typename T, flashinfer::PosEncodingMode Pos>
 cudaError_t decode_plan_sliding(
-    qsfi_context_t* ctx,
-    const qsfi_plan_t* plan,
-    const qsfi_attention_desc_t* attention,
-    const qsfi_paged_kv_plan_t* page_table,
+    qsfi_context* ctx,
+    const qsfi_plan* plan,
+    const qsfi_attention_desc* attention,
+    const qsfi_paged_kv_plan* page_table,
     flashinfer::DecodePlanInfo* out
 )
 {
@@ -742,10 +777,10 @@ cudaError_t decode_plan_sliding(
 
 template <typename T>
 cudaError_t decode_plan_dtype(
-    qsfi_context_t* ctx,
-    const qsfi_plan_t* plan,
-    const qsfi_attention_desc_t* attention,
-    const qsfi_paged_kv_plan_t* page_table,
+    qsfi_context* ctx,
+    const qsfi_plan* plan,
+    const qsfi_attention_desc* attention,
+    const qsfi_paged_kv_plan* page_table,
     flashinfer::DecodePlanInfo* out
 )
 {
@@ -768,10 +803,10 @@ cudaError_t decode_plan_dtype(
 }
 
 cudaError_t decode_plan_dispatch(
-    qsfi_context_t* ctx,
-    const qsfi_plan_t* plan,
-    const qsfi_attention_desc_t* attention,
-    const qsfi_paged_kv_plan_t* page_table,
+    qsfi_context* ctx,
+    const qsfi_plan* plan,
+    const qsfi_attention_desc* attention,
+    const qsfi_paged_kv_plan* page_table,
     flashinfer::DecodePlanInfo* out
 )
 {
@@ -783,12 +818,12 @@ cudaError_t decode_plan_dispatch(
 
 template <typename T, flashinfer::PosEncodingMode Pos, bool Sliding, bool Logits>
 cudaError_t decode_execute_impl(
-    qsfi_context_t* ctx, const qsfi_plan_t* plan, const qsfi_batch_decode_execute_desc_t* desc
+    qsfi_context* ctx, const qsfi_plan* plan, const qsfi_batch_decode_execute_desc* desc
 )
 {
     using Params = flashinfer::BatchDecodeParams<T, T, T, int32_t>;
     using AttentionVariant = flashinfer::DefaultAttention<false, Sliding, Logits, false>;
-    const qsfi_attention_desc_t& attention = plan->attention;
+    const qsfi_attention_desc& attention = plan->attention;
     const flashinfer::QKVLayout layout = to_flashinfer_layout(attention.kv_layout);
     flashinfer::paged_kv_t<T, int32_t> paged_kv(
         attention.num_kv_heads,
@@ -863,7 +898,7 @@ cudaError_t decode_execute_impl(
 
 template <typename T, flashinfer::PosEncodingMode Pos, bool Sliding>
 cudaError_t decode_execute_logits(
-    qsfi_context_t* ctx, const qsfi_plan_t* plan, const qsfi_batch_decode_execute_desc_t* desc
+    qsfi_context* ctx, const qsfi_plan* plan, const qsfi_batch_decode_execute_desc* desc
 )
 {
     if (plan->attention.logits_soft_cap > 0.0f) {
@@ -874,7 +909,7 @@ cudaError_t decode_execute_logits(
 
 template <typename T, flashinfer::PosEncodingMode Pos>
 cudaError_t decode_execute_sliding(
-    qsfi_context_t* ctx, const qsfi_plan_t* plan, const qsfi_batch_decode_execute_desc_t* desc
+    qsfi_context* ctx, const qsfi_plan* plan, const qsfi_batch_decode_execute_desc* desc
 )
 {
     if (plan->attention.window_left >= 0) {
@@ -885,7 +920,7 @@ cudaError_t decode_execute_sliding(
 
 template <typename T>
 cudaError_t decode_execute_dtype(
-    qsfi_context_t* ctx, const qsfi_plan_t* plan, const qsfi_batch_decode_execute_desc_t* desc
+    qsfi_context* ctx, const qsfi_plan* plan, const qsfi_batch_decode_execute_desc* desc
 )
 {
     if (plan->attention.pos_encoding == QSFI_POS_ENCODING_ROPE_LLAMA) {
@@ -895,7 +930,7 @@ cudaError_t decode_execute_dtype(
 }
 
 cudaError_t decode_execute_dispatch(
-    qsfi_context_t* ctx, const qsfi_plan_t* plan, const qsfi_batch_decode_execute_desc_t* desc
+    qsfi_context* ctx, const qsfi_plan* plan, const qsfi_batch_decode_execute_desc* desc
 )
 {
     if (plan->attention.q_dtype == QSFI_DTYPE_BF16) {
@@ -905,11 +940,11 @@ cudaError_t decode_execute_dispatch(
 }
 
 cudaError_t prefill_plan_dispatch(
-    qsfi_context_t* ctx,
-    const qsfi_plan_t* plan,
-    const qsfi_attention_desc_t* attention,
-    const qsfi_qo_plan_t* qo,
-    const qsfi_paged_kv_plan_t* page_table,
+    qsfi_context* ctx,
+    const qsfi_plan* plan,
+    const qsfi_attention_desc* attention,
+    const qsfi_qo_plan* qo,
+    const qsfi_paged_kv_plan* page_table,
     flashinfer::PrefillPlanInfo* out
 )
 {
@@ -946,12 +981,12 @@ template <
     bool Logits,
     flashinfer::MaskMode Mask>
 cudaError_t prefill_execute_impl(
-    qsfi_context_t* ctx, const qsfi_plan_t* plan, const qsfi_batch_prefill_execute_desc_t* desc
+    qsfi_context* ctx, const qsfi_plan* plan, const qsfi_batch_prefill_execute_desc* desc
 )
 {
     using Params = flashinfer::BatchPrefillPagedParams<T, T, T, int32_t>;
     using AttentionVariant = flashinfer::DefaultAttention<false, Sliding, Logits, false>;
-    const qsfi_attention_desc_t& attention = plan->attention;
+    const qsfi_attention_desc& attention = plan->attention;
     const flashinfer::QKVLayout layout = to_flashinfer_layout(attention.kv_layout);
     flashinfer::paged_kv_t<T, int32_t> paged_kv(
         attention.num_kv_heads,
@@ -1050,7 +1085,7 @@ cudaError_t prefill_execute_impl(
 
 template <typename T, flashinfer::PosEncodingMode Pos, bool Sliding, bool Logits>
 cudaError_t prefill_execute_mask(
-    qsfi_context_t* ctx, const qsfi_plan_t* plan, const qsfi_batch_prefill_execute_desc_t* desc
+    qsfi_context* ctx, const qsfi_plan* plan, const qsfi_batch_prefill_execute_desc* desc
 )
 {
     if (plan->attention.mask_mode == QSFI_MASK_MODE_CAUSAL) {
@@ -1069,7 +1104,7 @@ cudaError_t prefill_execute_mask(
 
 template <typename T, flashinfer::PosEncodingMode Pos, bool Sliding>
 cudaError_t prefill_execute_logits(
-    qsfi_context_t* ctx, const qsfi_plan_t* plan, const qsfi_batch_prefill_execute_desc_t* desc
+    qsfi_context* ctx, const qsfi_plan* plan, const qsfi_batch_prefill_execute_desc* desc
 )
 {
     if (plan->attention.logits_soft_cap > 0.0f) {
@@ -1080,7 +1115,7 @@ cudaError_t prefill_execute_logits(
 
 template <typename T, flashinfer::PosEncodingMode Pos>
 cudaError_t prefill_execute_sliding(
-    qsfi_context_t* ctx, const qsfi_plan_t* plan, const qsfi_batch_prefill_execute_desc_t* desc
+    qsfi_context* ctx, const qsfi_plan* plan, const qsfi_batch_prefill_execute_desc* desc
 )
 {
     if (plan->attention.window_left >= 0) {
@@ -1091,7 +1126,7 @@ cudaError_t prefill_execute_sliding(
 
 template <typename T>
 cudaError_t prefill_execute_dtype(
-    qsfi_context_t* ctx, const qsfi_plan_t* plan, const qsfi_batch_prefill_execute_desc_t* desc
+    qsfi_context* ctx, const qsfi_plan* plan, const qsfi_batch_prefill_execute_desc* desc
 )
 {
     if (plan->attention.pos_encoding == QSFI_POS_ENCODING_ROPE_LLAMA) {
@@ -1101,7 +1136,7 @@ cudaError_t prefill_execute_dtype(
 }
 
 cudaError_t prefill_execute_dispatch(
-    qsfi_context_t* ctx, const qsfi_plan_t* plan, const qsfi_batch_prefill_execute_desc_t* desc
+    qsfi_context* ctx, const qsfi_plan* plan, const qsfi_batch_prefill_execute_desc* desc
 )
 {
     if (plan->attention.q_dtype == QSFI_DTYPE_BF16) {
@@ -1112,7 +1147,7 @@ cudaError_t prefill_execute_dispatch(
 
 template <typename T>
 cudaError_t append_decode_impl(
-    qsfi_context_t* ctx, const qsfi_attention_desc_t* attention, const qsfi_append_decode_t* append
+    qsfi_context* ctx, const qsfi_attention_desc* attention, const qsfi_append_decode_desc* append
 )
 {
     flashinfer::paged_kv_t<T, int32_t> paged_kv(
@@ -1139,7 +1174,7 @@ cudaError_t append_decode_impl(
 
 template <typename T>
 cudaError_t append_prefill_impl(
-    qsfi_context_t* ctx, const qsfi_attention_desc_t* attention, const qsfi_append_prefill_t* append
+    qsfi_context* ctx, const qsfi_attention_desc* attention, const qsfi_append_prefill_desc* append
 )
 {
     flashinfer::paged_kv_t<T, int32_t> paged_kv(
@@ -1172,7 +1207,7 @@ cudaError_t append_prefill_impl(
 }
 
 cudaError_t append_decode_dispatch(
-    qsfi_context_t* ctx, const qsfi_attention_desc_t* attention, const qsfi_append_decode_t* append
+    qsfi_context* ctx, const qsfi_attention_desc* attention, const qsfi_append_decode_desc* append
 )
 {
     if (attention->kv_dtype == QSFI_DTYPE_BF16) {
@@ -1182,7 +1217,7 @@ cudaError_t append_decode_dispatch(
 }
 
 cudaError_t append_prefill_dispatch(
-    qsfi_context_t* ctx, const qsfi_attention_desc_t* attention, const qsfi_append_prefill_t* append
+    qsfi_context* ctx, const qsfi_attention_desc* attention, const qsfi_append_prefill_desc* append
 )
 {
     if (attention->kv_dtype == QSFI_DTYPE_BF16) {
@@ -1191,8 +1226,8 @@ cudaError_t append_prefill_dispatch(
     return append_prefill_impl<half>(ctx, attention, append);
 }
 
-qsfi_status_t validate_decode_execute(
-    qsfi_context_t* ctx, const qsfi_plan_t* plan, const qsfi_batch_decode_execute_desc_t* desc
+qsfi_status validate_decode_execute(
+    qsfi_context* ctx, const qsfi_plan* plan, const qsfi_batch_decode_execute_desc* desc
 )
 {
     if (desc == nullptr) {
@@ -1204,8 +1239,8 @@ qsfi_status_t validate_decode_execute(
             "decode execute desc must not be null"
         );
     }
-    const qsfi_attention_desc_t& attention = plan->attention;
-    qsfi_status_t status = validate_tensor(ctx, desc->q, "q", attention.q_dtype, 3);
+    const qsfi_attention_desc& attention = plan->attention;
+    qsfi_status status = validate_tensor(ctx, desc->q, "q", attention.q_dtype, 3);
     if (status != QSFI_STATUS_OK)
         return status;
     status = validate_tensor(ctx, desc->o, "o", attention.o_dtype, 3);
@@ -1248,8 +1283,8 @@ qsfi_status_t validate_decode_execute(
     return validate_page_table_exec(ctx, plan, desc->page_table);
 }
 
-qsfi_status_t validate_prefill_execute(
-    qsfi_context_t* ctx, const qsfi_plan_t* plan, const qsfi_batch_prefill_execute_desc_t* desc
+qsfi_status validate_prefill_execute(
+    qsfi_context* ctx, const qsfi_plan* plan, const qsfi_batch_prefill_execute_desc* desc
 )
 {
     if (desc == nullptr) {
@@ -1270,8 +1305,8 @@ qsfi_status_t validate_prefill_execute(
             "prefill qo_indptr device pointer must not be null"
         );
     }
-    const qsfi_attention_desc_t& attention = plan->attention;
-    qsfi_status_t status = validate_tensor(ctx, desc->q, "q", attention.q_dtype, 3);
+    const qsfi_attention_desc& attention = plan->attention;
+    qsfi_status status = validate_tensor(ctx, desc->q, "q", attention.q_dtype, 3);
     if (status != QSFI_STATUS_OK)
         return status;
     status = validate_tensor(ctx, desc->o, "o", attention.o_dtype, 3);
@@ -1318,7 +1353,7 @@ qsfi_status_t validate_prefill_execute(
 
 extern "C" {
 
-const char* qsfi_status_string(qsfi_status_t status)
+const char* qsfi_status_string(qsfi_status status)
 {
     switch (status) {
     case QSFI_STATUS_OK:
@@ -1340,12 +1375,12 @@ const char* qsfi_status_string(qsfi_status_t status)
     }
 }
 
-qsfi_status_t qsfi_context_create(const qsfi_context_desc_t* desc, qsfi_context_t** out)
+qsfi_status qsfi_context_create(const qsfi_context_desc* desc, qsfi_context** out)
 {
     if (out == nullptr)
         return QSFI_STATUS_INVALID_ARGUMENT;
     *out = nullptr;
-    qsfi_context_t* ctx = new (std::nothrow) qsfi_context_t;
+    qsfi_context* ctx = new (std::nothrow) qsfi_context;
     if (ctx == nullptr)
         return QSFI_STATUS_OUT_OF_MEMORY;
     ctx->device_ordinal = desc != nullptr ? desc->device_ordinal : -1;
@@ -1368,7 +1403,7 @@ qsfi_status_t qsfi_context_create(const qsfi_context_desc_t* desc, qsfi_context_
     return QSFI_STATUS_OK;
 }
 
-void qsfi_context_destroy(qsfi_context_t* ctx)
+void qsfi_context_destroy(qsfi_context* ctx)
 {
     if (ctx == nullptr)
         return;
@@ -1379,7 +1414,7 @@ void qsfi_context_destroy(qsfi_context_t* ctx)
     delete ctx;
 }
 
-qsfi_status_t qsfi_context_set_stream(qsfi_context_t* ctx, qsfi_cuda_stream_t stream)
+qsfi_status qsfi_context_set_stream(qsfi_context* ctx, qsfi_cuda_stream stream)
 {
     if (ctx == nullptr)
         return QSFI_STATUS_INVALID_ARGUMENT;
@@ -1388,8 +1423,69 @@ qsfi_status_t qsfi_context_set_stream(qsfi_context_t* ctx, qsfi_cuda_stream_t st
     return QSFI_STATUS_OK;
 }
 
-qsfi_status_t qsfi_context_reserve_scratch(
-    qsfi_context_t* ctx,
+qsfi_status qsfi_get_build_config(qsfi_build_config* out)
+{
+    if (out == nullptr)
+        return QSFI_STATUS_INVALID_ARGUMENT;
+    out->target_sm = QSFI_TARGET_SM;
+    out->target_compute_capability_major = QSFI_TARGET_COMPUTE_CAPABILITY_MAJOR;
+    out->target_compute_capability_minor = QSFI_TARGET_COMPUTE_CAPABILITY_MINOR;
+    out->assume_fp8 = QSFI_ENABLE_FP8;
+    out->assume_fp4 = QSFI_ENABLE_FP4;
+    out->assume_pdl = QSFI_ENABLE_PDL;
+    out->gemm_backend = QSFI_GEMM_BACKEND;
+    out->moe_backend = QSFI_MOE_BACKEND;
+    return QSFI_STATUS_OK;
+}
+
+qsfi_status qsfi_context_get_info(qsfi_context* ctx, qsfi_context_info* out)
+{
+    if (ctx == nullptr || out == nullptr)
+        return QSFI_STATUS_INVALID_ARGUMENT;
+    clear_error(&ctx->last_error);
+    qsfi_status status = activate_context(ctx);
+    if (status != QSFI_STATUS_OK)
+        return status;
+    int device = ctx->device_ordinal;
+    if (device < 0) {
+        cudaError_t err = cudaGetDevice(&device);
+        if (err != cudaSuccess)
+            return set_cuda_error(ctx, err, "cudaGetDevice");
+    }
+    cudaDeviceProp prop {};
+    cudaError_t err = cudaGetDeviceProperties(&prop, device);
+    if (err != cudaSuccess)
+        return set_cuda_error(ctx, err, "cudaGetDeviceProperties");
+    out->runtime_compute_capability_major = static_cast<uint32_t>(prop.major);
+    out->runtime_compute_capability_minor = static_cast<uint32_t>(prop.minor);
+    return QSFI_STATUS_OK;
+}
+
+qsfi_status qsfi_context_validate_target(qsfi_context* ctx)
+{
+    qsfi_context_info info {};
+    qsfi_status status = qsfi_context_get_info(ctx, &info);
+    if (status != QSFI_STATUS_OK)
+        return status;
+    if (info.runtime_compute_capability_major != QSFI_TARGET_COMPUTE_CAPABILITY_MAJOR
+        || info.runtime_compute_capability_minor != QSFI_TARGET_COMPUTE_CAPABILITY_MINOR) {
+        return set_error(
+            ctx,
+            QSFI_STATUS_UNSUPPORTED,
+            QSFI_ERROR_SOURCE_QSFI,
+            0,
+            "runtime compute capability %u.%u does not match qsfi build target %u.%u",
+            info.runtime_compute_capability_major,
+            info.runtime_compute_capability_minor,
+            QSFI_TARGET_COMPUTE_CAPABILITY_MAJOR,
+            QSFI_TARGET_COMPUTE_CAPABILITY_MINOR
+        );
+    }
+    return QSFI_STATUS_OK;
+}
+
+qsfi_status qsfi_context_reserve_workspace(
+    qsfi_context* ctx,
     size_t float_workspace_bytes,
     size_t int_workspace_bytes,
     size_t host_int_workspace_bytes
@@ -1398,7 +1494,7 @@ qsfi_status_t qsfi_context_reserve_scratch(
     if (ctx == nullptr)
         return QSFI_STATUS_INVALID_ARGUMENT;
     clear_error(&ctx->last_error);
-    qsfi_status_t status = activate_context(ctx);
+    qsfi_status status = activate_context(ctx);
     if (status != QSFI_STATUS_OK)
         return status;
     void* new_float = nullptr;
@@ -1417,7 +1513,7 @@ qsfi_status_t qsfi_context_reserve_scratch(
     return QSFI_STATUS_OK;
 }
 
-qsfi_status_t qsfi_context_get_last_error(const qsfi_context_t* ctx, qsfi_error_info_t* out)
+qsfi_status qsfi_context_get_last_error(const qsfi_context* ctx, qsfi_error_info* out)
 {
     if (ctx == nullptr || out == nullptr)
         return QSFI_STATUS_INVALID_ARGUMENT;
@@ -1425,46 +1521,25 @@ qsfi_status_t qsfi_context_get_last_error(const qsfi_context_t* ctx, qsfi_error_
     return QSFI_STATUS_OK;
 }
 
-void qsfi_context_clear_last_error(qsfi_context_t* ctx)
+void qsfi_context_clear_last_error(qsfi_context* ctx)
 {
     if (ctx == nullptr)
         return;
     clear_error(&ctx->last_error);
 }
 
-qsfi_status_t qsfi_load_kernels(qsfi_context_t* ctx, qsfi_kernel_flags_t modules)
-{
-    if (ctx == nullptr)
-        return QSFI_STATUS_INVALID_ARGUMENT;
-    clear_error(&ctx->last_error);
-    qsfi_status_t status = activate_context(ctx);
-    if (status != QSFI_STATUS_OK)
-        return status;
-    if ((modules & ~QSFI_KERNEL_MODULE_ALL) != 0) {
-        return set_error(
-            ctx,
-            QSFI_STATUS_INVALID_ARGUMENT,
-            QSFI_ERROR_SOURCE_QSFI,
-            0,
-            "unknown kernel module flags"
-        );
-    }
-    // STUB: decide on dynamic kernel loading
-    return QSFI_STATUS_OK;
-}
-
-qsfi_status_t qsfi_batch_decode_plan_create(
-    qsfi_context_t* ctx,
-    const qsfi_attention_desc_t* attention,
-    const qsfi_paged_kv_plan_t* page_table,
-    qsfi_plan_t** out
+qsfi_status qsfi_batch_decode_plan_create(
+    qsfi_context* ctx,
+    const qsfi_attention_desc* attention,
+    const qsfi_paged_kv_plan* page_table,
+    qsfi_batch_decode_plan** out
 )
 {
     if (ctx == nullptr || out == nullptr)
         return QSFI_STATUS_INVALID_ARGUMENT;
     clear_error(&ctx->last_error);
     *out = nullptr;
-    qsfi_status_t status = activate_context(ctx);
+    qsfi_status status = activate_context(ctx);
     if (status != QSFI_STATUS_OK)
         return status;
     status = require_scratch(ctx);
@@ -1485,8 +1560,8 @@ qsfi_status_t qsfi_batch_decode_plan_create(
     status = validate_paged_kv_plan(ctx, attention, page_table);
     if (status != QSFI_STATUS_OK)
         return status;
-    qsfi_plan_t* plan = new (std::nothrow) qsfi_plan_t {};
-    if (plan == nullptr) {
+    qsfi_batch_decode_plan* handle = new (std::nothrow) qsfi_batch_decode_plan {};
+    if (handle == nullptr) {
         return set_error(
             ctx,
             QSFI_STATUS_OUT_OF_MEMORY,
@@ -1495,6 +1570,7 @@ qsfi_status_t qsfi_batch_decode_plan_create(
             "failed to allocate decode plan"
         );
     }
+    qsfi_plan* plan = &handle->impl;
     plan->kind = QSFI_PLAN_BATCH_DECODE;
     plan->device_ordinal = ctx->device_ordinal;
     plan->stream = ctx->stream;
@@ -1505,33 +1581,34 @@ qsfi_status_t qsfi_batch_decode_plan_create(
     plan->scratch_generation = ctx->scratch_generation;
     status = allocate_plan_workspaces(ctx, plan);
     if (status != QSFI_STATUS_OK) {
-        destroy_plan(plan);
+        destroy_decode_plan(handle);
         return status;
     }
     try {
         cudaError_t err = decode_plan_dispatch(ctx, plan, attention, page_table, &plan->decode);
         if (err != cudaSuccess) {
-            destroy_plan(plan);
+            destroy_decode_plan(handle);
             return set_cuda_error(ctx, err, "flashinfer decode plan");
         }
     } catch (const std::exception& ex) {
-        destroy_plan(plan);
+        destroy_decode_plan(handle);
         return set_flashinfer_error(ctx, "flashinfer decode plan", ex);
     }
-    *out = plan;
+    *out = handle;
     return QSFI_STATUS_OK;
 }
 
-qsfi_status_t qsfi_batch_decode_execute(
-    qsfi_context_t* ctx, const qsfi_plan_t* plan, const qsfi_batch_decode_execute_desc_t* desc
+qsfi_status qsfi_batch_decode_execute(
+    qsfi_context* ctx, const qsfi_batch_decode_plan* handle, const qsfi_batch_decode_execute_desc* desc
 )
 {
-    if (ctx == nullptr || plan == nullptr)
+    if (ctx == nullptr || handle == nullptr)
         return QSFI_STATUS_INVALID_ARGUMENT;
     clear_error(&ctx->last_error);
-    qsfi_status_t status = activate_context(ctx);
+    qsfi_status status = activate_context(ctx);
     if (status != QSFI_STATUS_OK)
         return status;
+    const qsfi_plan* plan = &handle->impl;
     if (plan->kind != QSFI_PLAN_BATCH_DECODE) {
         return set_error(
             ctx,
@@ -1566,19 +1643,19 @@ qsfi_status_t qsfi_batch_decode_execute(
     return QSFI_STATUS_OK;
 }
 
-qsfi_status_t qsfi_batch_prefill_plan_create(
-    qsfi_context_t* ctx,
-    const qsfi_attention_desc_t* attention,
-    const qsfi_qo_plan_t* qo,
-    const qsfi_paged_kv_plan_t* page_table,
-    qsfi_plan_t** out
+qsfi_status qsfi_batch_prefill_plan_create(
+    qsfi_context* ctx,
+    const qsfi_attention_desc* attention,
+    const qsfi_qo_plan* qo,
+    const qsfi_paged_kv_plan* page_table,
+    qsfi_batch_prefill_plan** out
 )
 {
     if (ctx == nullptr || out == nullptr)
         return QSFI_STATUS_INVALID_ARGUMENT;
     clear_error(&ctx->last_error);
     *out = nullptr;
-    qsfi_status_t status = activate_context(ctx);
+    qsfi_status status = activate_context(ctx);
     if (status != QSFI_STATUS_OK)
         return status;
     status = require_scratch(ctx);
@@ -1612,8 +1689,8 @@ qsfi_status_t qsfi_batch_prefill_plan_create(
             "qo and page_table batch sizes must match"
         );
     }
-    qsfi_plan_t* plan = new (std::nothrow) qsfi_plan_t {};
-    if (plan == nullptr) {
+    qsfi_batch_prefill_plan* handle = new (std::nothrow) qsfi_batch_prefill_plan {};
+    if (handle == nullptr) {
         return set_error(
             ctx,
             QSFI_STATUS_OUT_OF_MEMORY,
@@ -1622,6 +1699,7 @@ qsfi_status_t qsfi_batch_prefill_plan_create(
             "failed to allocate prefill plan"
         );
     }
+    qsfi_plan* plan = &handle->impl;
     plan->kind = QSFI_PLAN_BATCH_PREFILL;
     plan->device_ordinal = ctx->device_ordinal;
     plan->stream = ctx->stream;
@@ -1632,34 +1710,37 @@ qsfi_status_t qsfi_batch_prefill_plan_create(
     plan->scratch_generation = ctx->scratch_generation;
     status = allocate_plan_workspaces(ctx, plan);
     if (status != QSFI_STATUS_OK) {
-        destroy_plan(plan);
+        destroy_prefill_plan(handle);
         return status;
     }
     try {
         cudaError_t err
             = prefill_plan_dispatch(ctx, plan, attention, qo, page_table, &plan->prefill);
         if (err != cudaSuccess) {
-            destroy_plan(plan);
+            destroy_prefill_plan(handle);
             return set_cuda_error(ctx, err, "flashinfer prefill plan");
         }
     } catch (const std::exception& ex) {
-        destroy_plan(plan);
+        destroy_prefill_plan(handle);
         return set_flashinfer_error(ctx, "flashinfer prefill plan", ex);
     }
-    *out = plan;
+    *out = handle;
     return QSFI_STATUS_OK;
 }
 
-qsfi_status_t qsfi_batch_prefill_execute(
-    qsfi_context_t* ctx, const qsfi_plan_t* plan, const qsfi_batch_prefill_execute_desc_t* desc
+qsfi_status qsfi_batch_prefill_execute(
+    qsfi_context* ctx,
+    const qsfi_batch_prefill_plan* handle,
+    const qsfi_batch_prefill_execute_desc* desc
 )
 {
-    if (ctx == nullptr || plan == nullptr)
+    if (ctx == nullptr || handle == nullptr)
         return QSFI_STATUS_INVALID_ARGUMENT;
     clear_error(&ctx->last_error);
-    qsfi_status_t status = activate_context(ctx);
+    qsfi_status status = activate_context(ctx);
     if (status != QSFI_STATUS_OK)
         return status;
+    const qsfi_plan* plan = &handle->impl;
     if (plan->kind != QSFI_PLAN_BATCH_PREFILL) {
         return set_error(
             ctx,
@@ -1694,27 +1775,18 @@ qsfi_status_t qsfi_batch_prefill_execute(
     return QSFI_STATUS_OK;
 }
 
-qsfi_status_t qsfi_plan_kind(const qsfi_plan_t* plan, qsfi_plan_kind_t* out)
-{
-    if (plan == nullptr || out == nullptr)
-        return QSFI_STATUS_INVALID_ARGUMENT;
-    *out = plan->kind;
-    return QSFI_STATUS_OK;
-}
+void qsfi_batch_decode_plan_destroy(qsfi_batch_decode_plan* plan) { destroy_decode_plan(plan); }
 
-void qsfi_plan_destroy(qsfi_plan_t* plan)
-{
-    destroy_plan(plan);
-}
+void qsfi_batch_prefill_plan_destroy(qsfi_batch_prefill_plan* plan) { destroy_prefill_plan(plan); }
 
-qsfi_status_t qsfi_append_paged_kv_decode(
-    qsfi_context_t* ctx, const qsfi_attention_desc_t* attention, const qsfi_append_decode_t* append
+qsfi_status qsfi_append_paged_kv_decode(
+    qsfi_context* ctx, const qsfi_attention_desc* attention, const qsfi_append_decode_desc* append
 )
 {
     if (ctx == nullptr)
         return QSFI_STATUS_INVALID_ARGUMENT;
     clear_error(&ctx->last_error);
-    qsfi_status_t status = activate_context(ctx);
+    qsfi_status status = activate_context(ctx);
     if (status != QSFI_STATUS_OK)
         return status;
     status = validate_attention(ctx, attention);
@@ -1773,7 +1845,7 @@ qsfi_status_t qsfi_append_paged_kv_decode(
     status = validate_kv_cache(ctx, *attention, append->kv_cache, nullptr);
     if (status != QSFI_STATUS_OK)
         return status;
-    qsfi_plan_t shape_plan {};
+    qsfi_plan shape_plan {};
     shape_plan.batch_size = append->page_table.batch_size;
     shape_plan.num_indices = append->page_table.num_indices;
     status = validate_page_table_exec(ctx, &shape_plan, append->page_table);
@@ -1789,14 +1861,14 @@ qsfi_status_t qsfi_append_paged_kv_decode(
     return QSFI_STATUS_OK;
 }
 
-qsfi_status_t qsfi_append_paged_kv_prefill(
-    qsfi_context_t* ctx, const qsfi_attention_desc_t* attention, const qsfi_append_prefill_t* append
+qsfi_status qsfi_append_paged_kv_prefill(
+    qsfi_context* ctx, const qsfi_attention_desc* attention, const qsfi_append_prefill_desc* append
 )
 {
     if (ctx == nullptr)
         return QSFI_STATUS_INVALID_ARGUMENT;
     clear_error(&ctx->last_error);
-    qsfi_status_t status = activate_context(ctx);
+    qsfi_status status = activate_context(ctx);
     if (status != QSFI_STATUS_OK)
         return status;
     status = validate_attention(ctx, attention);
@@ -1853,7 +1925,7 @@ qsfi_status_t qsfi_append_paged_kv_prefill(
     status = validate_kv_cache(ctx, *attention, append->kv_cache, nullptr);
     if (status != QSFI_STATUS_OK)
         return status;
-    qsfi_plan_t shape_plan {};
+    qsfi_plan shape_plan {};
     shape_plan.batch_size = append->page_table.batch_size;
     shape_plan.num_indices = append->page_table.num_indices;
     status = validate_page_table_exec(ctx, &shape_plan, append->page_table);

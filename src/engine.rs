@@ -77,19 +77,27 @@ pub enum Status {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DType {
+    F32,
     F16,
     BF16,
     FP8E4M3,
     FP8E5M2,
     NVFP4E2M1,
+    MXFP4E2M1,
+    MXFP8E4M3,
+    I32,
+    U32,
+    I8,
+    U8,
 }
 
 impl DType {
     pub fn bits(self) -> usize {
         match self {
+            DType::F32 | DType::I32 | DType::U32 => 32,
             DType::F16 | DType::BF16 => 16,
-            DType::FP8E4M3 | DType::FP8E5M2 => 8,
-            DType::NVFP4E2M1 => 4,
+            DType::FP8E4M3 | DType::FP8E5M2 | DType::MXFP8E4M3 | DType::I8 | DType::U8 => 8,
+            DType::NVFP4E2M1 | DType::MXFP4E2M1 => 4,
         }
     }
 
@@ -105,12 +113,38 @@ impl DType {
     fn is_runtime_supported(self) -> bool {
         matches!(self, DType::F16 | DType::BF16)
     }
+
+    pub(crate) fn to_raw(self) -> qsfi::DTypeRaw {
+        match self {
+            DType::F32 => qsfi::DTYPE_F32,
+            DType::F16 => qsfi::DTYPE_F16,
+            DType::BF16 => qsfi::DTYPE_BF16,
+            DType::FP8E4M3 => qsfi::DTYPE_FP8_E4M3,
+            DType::FP8E5M2 => qsfi::DTYPE_FP8_E5M2,
+            DType::NVFP4E2M1 => qsfi::DTYPE_NVFP4_E2M1,
+            DType::MXFP4E2M1 => qsfi::DTYPE_MXFP4_E2M1,
+            DType::MXFP8E4M3 => qsfi::DTYPE_MXFP8_E4M3,
+            DType::I32 => qsfi::DTYPE_I32,
+            DType::U32 => qsfi::DTYPE_U32,
+            DType::I8 => qsfi::DTYPE_I8,
+            DType::U8 => qsfi::DTYPE_U8,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum KvLayout {
     NHD,
     HND,
+}
+
+impl KvLayout {
+    pub(crate) fn to_raw(self) -> qsfi::KvLayoutRaw {
+        match self {
+            KvLayout::NHD => qsfi::KV_LAYOUT_NHD,
+            KvLayout::HND => qsfi::KV_LAYOUT_HND,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -168,10 +202,10 @@ pub struct Commit<'a> {
 #[derive(Clone, Copy, Debug)]
 pub struct EngineLayer {
     pub layer_idx: u32,
-    pub q: qsfi::TensorDesc,
-    pub k: qsfi::TensorDesc,
-    pub v: qsfi::TensorDesc,
-    pub o: qsfi::TensorDesc,
+    pub q: qsfi::Tensor3,
+    pub k: qsfi::Tensor3,
+    pub v: qsfi::Tensor3,
+    pub o: qsfi::Tensor3,
     pub q_rope_offset: qsfi::DevicePtr,
     pub lse: qsfi::DevicePtr,
     pub q_scale: f32,
@@ -909,16 +943,41 @@ mod tests {
 
     #[test]
     fn dtype_bits_and_storage_bytes_are_total() {
+        assert_eq!(DType::F32.bits(), 32);
         assert_eq!(DType::F16.bits(), 16);
         assert_eq!(DType::BF16.bits(), 16);
         assert_eq!(DType::FP8E4M3.bits(), 8);
         assert_eq!(DType::FP8E5M2.bits(), 8);
         assert_eq!(DType::NVFP4E2M1.bits(), 4);
+        assert_eq!(DType::MXFP4E2M1.bits(), 4);
+        assert_eq!(DType::MXFP8E4M3.bits(), 8);
+        assert_eq!(DType::I32.bits(), 32);
+        assert_eq!(DType::U32.bits(), 32);
+        assert_eq!(DType::I8.bits(), 8);
+        assert_eq!(DType::U8.bits(), 8);
         assert_eq!(DType::F16.storage_bytes_for(3), Ok(6));
         assert_eq!(DType::FP8E4M3.storage_bytes_for(3), Ok(3));
         assert_eq!(DType::NVFP4E2M1.storage_bytes_for(1), Ok(1));
         assert_eq!(DType::NVFP4E2M1.storage_bytes_for(2), Ok(1));
         assert_eq!(DType::NVFP4E2M1.storage_bytes_for(3), Ok(2));
+    }
+
+    #[test]
+    fn dtype_and_layout_raw_values_match_qsfi() {
+        assert_eq!(DType::F32.to_raw(), qsfi::DTYPE_F32);
+        assert_eq!(DType::F16.to_raw(), qsfi::DTYPE_F16);
+        assert_eq!(DType::BF16.to_raw(), qsfi::DTYPE_BF16);
+        assert_eq!(DType::FP8E4M3.to_raw(), qsfi::DTYPE_FP8_E4M3);
+        assert_eq!(DType::FP8E5M2.to_raw(), qsfi::DTYPE_FP8_E5M2);
+        assert_eq!(DType::NVFP4E2M1.to_raw(), qsfi::DTYPE_NVFP4_E2M1);
+        assert_eq!(DType::MXFP4E2M1.to_raw(), qsfi::DTYPE_MXFP4_E2M1);
+        assert_eq!(DType::MXFP8E4M3.to_raw(), qsfi::DTYPE_MXFP8_E4M3);
+        assert_eq!(DType::I32.to_raw(), qsfi::DTYPE_I32);
+        assert_eq!(DType::U32.to_raw(), qsfi::DTYPE_U32);
+        assert_eq!(DType::I8.to_raw(), qsfi::DTYPE_I8);
+        assert_eq!(DType::U8.to_raw(), qsfi::DTYPE_U8);
+        assert_eq!(KvLayout::NHD.to_raw(), qsfi::KV_LAYOUT_NHD);
+        assert_eq!(KvLayout::HND.to_raw(), qsfi::KV_LAYOUT_HND);
     }
 
     #[test]

@@ -1,24 +1,17 @@
 use crate::engine::{
-    AppendBatch, BatchKind, DType, DecodeBatch, EngineConfig, EngineCore, EngineLayer, KvLayout,
-    Status, try_clone_slice,
+    AppendBatch, BatchKind, DecodeBatch, EngineConfig, EngineCore, EngineLayer, KvLayout, Status,
+    try_clone_slice,
 };
 use crate::ffi;
-use crate::qsfi;
+use crate::qsfi::{
+    AppendDecode, AppendPrefill, AttentionDesc, BatchDecodeExecuteDesc, BatchPrefillExecuteDesc,
+    Context, DTYPE_F16, MASK_MODE_CAUSAL, MASK_MODE_NONE, MaskModeRaw, POS_ENCODING_ROPE_LLAMA,
+    PagedKvCache, PagedKvPlan, PagedKvTable, Plan, QoPlan, Tensor4,
+};
 
 use std::ffi::c_void;
 use std::mem;
 use std::ptr;
-
-type QsfiTensorDesc = qsfi::TensorDesc;
-type QsfiAttentionDesc = qsfi::AttentionDesc;
-type QsfiPagedKvCache = qsfi::PagedKvCache;
-type QsfiPagedKvPlan = qsfi::PagedKvPlan;
-type QsfiQoPlan = qsfi::QoPlan;
-type QsfiPagedKvTable = qsfi::PagedKvTable;
-type QsfiBatchDecodeExecuteDesc = qsfi::BatchDecodeExecuteDesc;
-type QsfiBatchPrefillExecuteDesc = qsfi::BatchPrefillExecuteDesc;
-type QsfiAppendDecode = qsfi::AppendDecode;
-type QsfiAppendPrefill = qsfi::AppendPrefill;
 
 struct DeviceI32Buffer {
     data: *mut i32,
@@ -105,7 +98,7 @@ struct LayerCache {
 }
 
 struct PlanCache {
-    plan: Option<qsfi::Plan>,
+    plan: Option<Plan>,
     batch_size: u32,
     num_indices: u32,
     total_tokens: u32,
@@ -155,9 +148,9 @@ impl PlanCache {
 pub(crate) struct EngineInner {
     pub(crate) core: EngineCore,
     stream: *mut c_void,
-    ctx: qsfi::Context,
-    append_attention: QsfiAttentionDesc,
-    decode_attention: QsfiAttentionDesc,
+    ctx: Context,
+    append_attention: AttentionDesc,
+    decode_attention: AttentionDesc,
     layer_caches: Vec<LayerCache>,
     d_batch_tokens: DeviceI32Buffer,
     d_batch_qo_indptr: DeviceI32Buffer,
@@ -174,15 +167,15 @@ pub(crate) struct EngineInner {
 impl EngineInner {
     pub(crate) fn new(config: EngineConfig) -> Result<Box<Self>, Status> {
         let core = EngineCore::new(config)?;
-        let mut ctx = qsfi::Context::new(config.device_ordinal, config.stream)?;
-        ctx.reserve_scratch(
+        let mut ctx = Context::new(config.device_ordinal, config.stream)?;
+        ctx.reserve_workspace(
             config.qsfi_float_workspace_bytes,
             config.qsfi_int_workspace_bytes,
             config.qsfi_host_int_workspace_bytes,
         )?;
         let mut session = Box::new(Self {
-            append_attention: make_attention(&config, qsfi::MASK_MODE_CAUSAL),
-            decode_attention: make_attention(&config, qsfi::MASK_MODE_NONE),
+            append_attention: make_attention(&config, MASK_MODE_CAUSAL),
+            decode_attention: make_attention(&config, MASK_MODE_NONE),
             core,
             stream: config.stream,
             ctx,
@@ -286,12 +279,12 @@ impl EngineInner {
         }
 
         self.append_plan.destroy();
-        let qo = QsfiQoPlan {
+        let qo = QoPlan {
             indptr: ptr_or_null(self.core.batch_qo_indptr()),
             batch_size: self.core.batch_size(),
             total_tokens: self.core.batch_token_count(),
         };
-        let page_table = QsfiPagedKvPlan {
+        let page_table = PagedKvPlan {
             indptr: ptr_or_null(self.core.batch_kv_indptr()),
             indices: ptr_or_null(self.core.batch_kv_indices()),
             last_page_len: ptr_or_null(self.core.batch_last_page_len()),
@@ -326,7 +319,7 @@ impl EngineInner {
         }
 
         self.decode_plan.destroy();
-        let page_table = QsfiPagedKvPlan {
+        let page_table = PagedKvPlan {
             indptr: ptr_or_null(self.core.batch_kv_indptr()),
             indices: ptr_or_null(self.core.batch_kv_indices()),
             last_page_len: ptr_or_null(self.core.batch_last_page_len()),
@@ -347,46 +340,49 @@ impl EngineInner {
         Ok(())
     }
 
-    fn make_kv_cache(&self, layer_idx: u32) -> Result<QsfiPagedKvCache, Status> {
+    fn make_kv_cache(&self, layer_idx: u32) -> Result<PagedKvCache, Status> {
         let idx = usize::try_from(layer_idx).map_err(|_| Status::InvalidArgument)?;
         let layer = self.layer_caches.get(idx).ok_or(Status::InvalidArgument)?;
-        Ok(QsfiPagedKvCache {
+        Ok(PagedKvCache {
             k: self.make_cache_tensor(layer.k)?,
             v: self.make_cache_tensor(layer.v)?,
-            k_scale: zero_tensor(),
-            v_scale: zero_tensor(),
+            k_scale: zero_tensor4(),
+            v_scale: zero_tensor4(),
         })
     }
 
-    fn make_cache_tensor(&self, data: *mut c_void) -> Result<QsfiTensorDesc, Status> {
+    fn make_cache_tensor(&self, data: *mut c_void) -> Result<Tensor4, Status> {
         let config = self.core.config();
-        let mut tensor = zero_tensor();
-        tensor.data = data;
-        tensor.dtype = dtype_to_raw(config.kv_dtype);
-        tensor.ndim = 4;
-        tensor.shape[0] = config.max_pages as i64;
-        tensor.shape[3] = config.head_dim as i64;
-        tensor.stride[3] = 1;
+        let mut shape = [0i64; 4];
+        let mut stride = [0i64; 4];
+        shape[0] = config.max_pages as i64;
+        shape[3] = config.head_dim as i64;
+        stride[3] = 1;
         if config.kv_layout == KvLayout::NHD {
-            tensor.shape[1] = config.page_size as i64;
-            tensor.shape[2] = config.num_kv_heads as i64;
-            tensor.stride[0] =
+            shape[1] = config.page_size as i64;
+            shape[2] = config.num_kv_heads as i64;
+            stride[0] =
                 checked_i64_product(&[config.page_size, config.num_kv_heads, config.head_dim])?;
-            tensor.stride[1] = checked_i64_product(&[config.num_kv_heads, config.head_dim])?;
-            tensor.stride[2] = config.head_dim as i64;
+            stride[1] = checked_i64_product(&[config.num_kv_heads, config.head_dim])?;
+            stride[2] = config.head_dim as i64;
         } else {
-            tensor.shape[1] = config.num_kv_heads as i64;
-            tensor.shape[2] = config.page_size as i64;
-            tensor.stride[0] =
+            shape[1] = config.num_kv_heads as i64;
+            shape[2] = config.page_size as i64;
+            stride[0] =
                 checked_i64_product(&[config.num_kv_heads, config.page_size, config.head_dim])?;
-            tensor.stride[1] = checked_i64_product(&[config.page_size, config.head_dim])?;
-            tensor.stride[2] = config.head_dim as i64;
+            stride[1] = checked_i64_product(&[config.page_size, config.head_dim])?;
+            stride[2] = config.head_dim as i64;
         }
-        Ok(tensor)
+        Ok(Tensor4 {
+            data,
+            dtype: config.kv_dtype.to_raw(),
+            shape,
+            stride,
+        })
     }
 
-    fn make_active_page_table(&self) -> QsfiPagedKvTable {
-        QsfiPagedKvTable {
+    fn make_active_page_table(&self) -> PagedKvTable {
+        PagedKvTable {
             indptr: self
                 .d_batch_kv_indptr
                 .device_ptr_if(!self.core.batch_kv_indptr().is_empty()),
@@ -426,7 +422,7 @@ impl EngineInner {
         }
         let kv_cache = self.make_kv_cache(layer.layer_idx)?;
         let page_table = self.make_active_page_table();
-        let append = QsfiAppendPrefill {
+        let append = AppendPrefill {
             k: layer.k,
             v: layer.v,
             batch_indices: self
@@ -443,7 +439,7 @@ impl EngineInner {
             self.ctx
                 .append_paged_kv_prefill(&self.append_attention, &append)?;
         }
-        let execute = QsfiBatchPrefillExecuteDesc {
+        let execute = BatchPrefillExecuteDesc {
             q: layer.q,
             q_rope_offset: layer.q_rope_offset,
             o: layer.o,
@@ -484,7 +480,7 @@ impl EngineInner {
         }
         let kv_cache = self.make_kv_cache(layer.layer_idx)?;
         let page_table = self.make_active_page_table();
-        let append = QsfiAppendDecode {
+        let append = AppendDecode {
             k: layer.k,
             v: layer.v,
             kv_cache,
@@ -494,7 +490,7 @@ impl EngineInner {
             self.ctx
                 .append_paged_kv_decode(&self.decode_attention, &append)?
         }
-        let execute = QsfiBatchDecodeExecuteDesc {
+        let execute = BatchDecodeExecuteDesc {
             q: layer.q,
             q_rope_offset: layer.q_rope_offset,
             o: layer.o,
@@ -560,35 +556,18 @@ fn activate_device(device_ordinal: i32) -> Result<(), Status> {
     result_from_cuda(unsafe { ffi::cudaSetDevice(device_ordinal) })
 }
 
-fn dtype_to_raw(dtype: DType) -> qsfi::DTypeRaw {
-    match dtype {
-        DType::F16 => qsfi::DTYPE_F16,
-        DType::BF16 => qsfi::DTYPE_BF16,
-        DType::FP8E4M3 => qsfi::DTYPE_FP8_E4M3,
-        DType::FP8E5M2 => qsfi::DTYPE_FP8_E5M2,
-        DType::NVFP4E2M1 => qsfi::DTYPE_NVFP4_E2M1,
-    }
-}
-
-fn layout_to_raw(layout: KvLayout) -> qsfi::KvLayoutRaw {
-    match layout {
-        KvLayout::NHD => qsfi::KV_LAYOUT_NHD,
-        KvLayout::HND => qsfi::KV_LAYOUT_HND,
-    }
-}
-
-fn make_attention(config: &EngineConfig, mask_mode: qsfi::MaskModeRaw) -> QsfiAttentionDesc {
-    QsfiAttentionDesc {
+fn make_attention(config: &EngineConfig, mask_mode: MaskModeRaw) -> AttentionDesc {
+    AttentionDesc {
         num_qo_heads: config.num_q_heads,
         num_kv_heads: config.num_kv_heads,
         head_dim_qk: config.head_dim,
         head_dim_vo: config.head_dim,
         page_size: config.page_size,
-        q_dtype: dtype_to_raw(config.activation_dtype),
-        kv_dtype: dtype_to_raw(config.kv_dtype),
-        o_dtype: dtype_to_raw(config.activation_dtype),
-        kv_layout: layout_to_raw(config.kv_layout),
-        pos_encoding: qsfi::POS_ENCODING_ROPE_LLAMA,
+        q_dtype: config.activation_dtype.to_raw(),
+        kv_dtype: config.kv_dtype.to_raw(),
+        o_dtype: config.activation_dtype.to_raw(),
+        kv_layout: config.kv_layout.to_raw(),
+        pos_encoding: POS_ENCODING_ROPE_LLAMA,
         mask_mode,
         window_left: -1,
         fixed_split_size: 0,
@@ -609,13 +588,12 @@ fn make_attention(config: &EngineConfig, mask_mode: qsfi::MaskModeRaw) -> QsfiAt
     }
 }
 
-fn zero_tensor() -> QsfiTensorDesc {
-    QsfiTensorDesc {
+fn zero_tensor4() -> Tensor4 {
+    Tensor4 {
         data: ptr::null_mut(),
-        dtype: qsfi::DTYPE_F16,
-        ndim: 0,
-        shape: [0i64; qsfi::MAX_TENSOR_DIMS],
-        stride: [0i64; qsfi::MAX_TENSOR_DIMS],
+        dtype: DTYPE_F16,
+        shape: [0i64; 4],
+        stride: [0i64; 4],
     }
 }
 

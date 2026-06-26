@@ -10,32 +10,42 @@ use crate::engine::Status;
 
 use std::ptr::{self, NonNull};
 
-pub type StatusRaw = sys::qsfi_status_t;
-pub type CudaStream = sys::qsfi_cuda_stream_t;
-pub type DevicePtr = sys::qsfi_device_ptr_t;
-pub type DTypeRaw = sys::qsfi_dtype_t;
-pub type KvLayoutRaw = sys::qsfi_kv_layout_t;
-pub type MaskModeRaw = sys::qsfi_mask_mode_t;
-pub type PosEncodingRaw = sys::qsfi_pos_encoding_t;
+pub type StatusRaw = sys::qsfi_status;
+pub type CudaStream = sys::qsfi_cuda_stream;
+pub type DevicePtr = sys::qsfi_device_ptr;
+pub type DTypeRaw = sys::qsfi_dtype;
+pub type KvLayoutRaw = sys::qsfi_kv_layout;
+pub type MaskModeRaw = sys::qsfi_mask_mode;
+pub type PosEncodingRaw = sys::qsfi_pos_encoding;
 
-pub type TensorDesc = sys::qsfi_tensor_desc_t;
-pub type AttentionDesc = sys::qsfi_attention_desc_t;
-pub type PagedKvCache = sys::qsfi_paged_kv_cache_t;
-pub type PagedKvPlan = sys::qsfi_paged_kv_plan_t;
-pub type QoPlan = sys::qsfi_qo_plan_t;
-pub type PagedKvTable = sys::qsfi_paged_kv_table_t;
-pub type BatchDecodeExecuteDesc = sys::qsfi_batch_decode_execute_desc_t;
-pub type BatchPrefillExecuteDesc = sys::qsfi_batch_prefill_execute_desc_t;
-pub type AppendDecode = sys::qsfi_append_decode_t;
-pub type AppendPrefill = sys::qsfi_append_prefill_t;
+pub type Tensor1 = sys::qsfi_tensor1;
+pub type Tensor2 = sys::qsfi_tensor2;
+pub type Tensor3 = sys::qsfi_tensor3;
+pub type Tensor4 = sys::qsfi_tensor4;
+pub type Tensor5 = sys::qsfi_tensor5;
+pub type Tensor6 = sys::qsfi_tensor6;
+pub type AttentionDesc = sys::qsfi_attention_desc;
+pub type PagedKvCache = sys::qsfi_paged_kv_cache;
+pub type PagedKvPlan = sys::qsfi_paged_kv_plan;
+pub type QoPlan = sys::qsfi_qo_plan;
+pub type PagedKvTable = sys::qsfi_paged_kv_table;
+pub type BatchDecodeExecuteDesc = sys::qsfi_batch_decode_execute_desc;
+pub type BatchPrefillExecuteDesc = sys::qsfi_batch_prefill_execute_desc;
+pub type AppendDecode = sys::qsfi_append_decode_desc;
+pub type AppendPrefill = sys::qsfi_append_prefill_desc;
 
-pub const MAX_TENSOR_DIMS: usize = sys::QSFI_MAX_TENSOR_DIMS as usize;
-
+pub const DTYPE_F32: DTypeRaw = sys::QSFI_DTYPE_F32;
 pub const DTYPE_F16: DTypeRaw = sys::QSFI_DTYPE_F16;
 pub const DTYPE_BF16: DTypeRaw = sys::QSFI_DTYPE_BF16;
 pub const DTYPE_FP8_E4M3: DTypeRaw = sys::QSFI_DTYPE_FP8_E4M3;
 pub const DTYPE_FP8_E5M2: DTypeRaw = sys::QSFI_DTYPE_FP8_E5M2;
 pub const DTYPE_NVFP4_E2M1: DTypeRaw = sys::QSFI_DTYPE_NVFP4_E2M1;
+pub const DTYPE_MXFP4_E2M1: DTypeRaw = sys::QSFI_DTYPE_MXFP4_E2M1;
+pub const DTYPE_MXFP8_E4M3: DTypeRaw = sys::QSFI_DTYPE_MXFP8_E4M3;
+pub const DTYPE_I32: DTypeRaw = sys::QSFI_DTYPE_I32;
+pub const DTYPE_U32: DTypeRaw = sys::QSFI_DTYPE_U32;
+pub const DTYPE_I8: DTypeRaw = sys::QSFI_DTYPE_I8;
+pub const DTYPE_U8: DTypeRaw = sys::QSFI_DTYPE_U8;
 
 pub const KV_LAYOUT_NHD: KvLayoutRaw = sys::QSFI_KV_LAYOUT_NHD;
 pub const KV_LAYOUT_HND: KvLayoutRaw = sys::QSFI_KV_LAYOUT_HND;
@@ -78,13 +88,60 @@ fn default_one(value: f32) -> f32 {
 fn valid_dtype(dtype: DTypeRaw) -> bool {
     matches!(
         dtype,
-        DTYPE_F16 | DTYPE_BF16 | DTYPE_FP8_E4M3 | DTYPE_FP8_E5M2 | DTYPE_NVFP4_E2M1
+        DTYPE_F32
+            | DTYPE_F16
+            | DTYPE_BF16
+            | DTYPE_FP8_E4M3
+            | DTYPE_FP8_E5M2
+            | DTYPE_NVFP4_E2M1
+            | DTYPE_MXFP4_E2M1
+            | DTYPE_MXFP8_E4M3
+            | DTYPE_I32
+            | DTYPE_U32
+            | DTYPE_I8
+            | DTYPE_U8
     )
 }
 
 fn supported_attention_dtype(dtype: DTypeRaw) -> bool {
     matches!(dtype, DTYPE_F16 | DTYPE_BF16)
 }
+
+trait TensorLike {
+    fn data(&self) -> DevicePtr;
+    fn dtype(&self) -> DTypeRaw;
+    fn shape(&self) -> &[i64];
+    fn stride(&self) -> &[i64];
+}
+
+macro_rules! impl_tensor_like {
+    ($ty:ty) => {
+        impl TensorLike for $ty {
+            fn data(&self) -> DevicePtr {
+                self.data
+            }
+
+            fn dtype(&self) -> DTypeRaw {
+                self.dtype
+            }
+
+            fn shape(&self) -> &[i64] {
+                &self.shape
+            }
+
+            fn stride(&self) -> &[i64] {
+                &self.stride
+            }
+        }
+    };
+}
+
+impl_tensor_like!(Tensor1);
+impl_tensor_like!(Tensor2);
+impl_tensor_like!(Tensor3);
+impl_tensor_like!(Tensor4);
+impl_tensor_like!(Tensor5);
+impl_tensor_like!(Tensor6);
 
 fn validate_attention_desc(attention: &AttentionDesc) -> Result<(), Status> {
     if attention.num_qo_heads == 0
@@ -131,22 +188,15 @@ fn validate_attention_desc(attention: &AttentionDesc) -> Result<(), Status> {
     Ok(())
 }
 
-fn validate_tensor_desc(
-    tensor: &TensorDesc,
-    expected_dtype: DTypeRaw,
-    expected_ndim: u32,
-) -> Result<(), Status> {
-    if tensor.data.is_null() {
+fn validate_tensor<T: TensorLike>(tensor: &T, expected_dtype: DTypeRaw) -> Result<(), Status> {
+    if tensor.data().is_null() {
         return Err(Status::InvalidArgument);
     }
-    if tensor.dtype != expected_dtype {
+    if tensor.dtype() != expected_dtype {
         return Err(Status::InvalidArgument);
     }
-    if tensor.ndim != expected_ndim || expected_ndim as usize > MAX_TENSOR_DIMS {
-        return Err(Status::InvalidArgument);
-    }
-    for i in 0..expected_ndim as usize {
-        if tensor.shape[i] <= 0 || tensor.stride[i] <= 0 {
+    for (&shape, &stride) in tensor.shape().iter().zip(tensor.stride()) {
+        if shape <= 0 || stride <= 0 {
             return Err(Status::InvalidArgument);
         }
     }
@@ -247,8 +297,8 @@ fn validate_kv_cache_desc(
     attention: &AttentionDesc,
     kv_cache: &PagedKvCache,
 ) -> Result<u32, Status> {
-    validate_tensor_desc(&kv_cache.k, attention.kv_dtype, 4)?;
-    validate_tensor_desc(&kv_cache.v, attention.kv_dtype, 4)?;
+    validate_tensor(&kv_cache.k, attention.kv_dtype)?;
+    validate_tensor(&kv_cache.v, attention.kv_dtype)?;
     for i in 0..4 {
         if kv_cache.k.shape[i] != kv_cache.v.shape[i]
             || kv_cache.k.stride[i] != kv_cache.v.stride[i]
@@ -293,8 +343,8 @@ fn validate_decode_execute_desc(
     plan_shape: PlanShape,
     desc: &BatchDecodeExecuteDesc,
 ) -> Result<(), Status> {
-    validate_tensor_desc(&desc.q, attention.q_dtype, 3)?;
-    validate_tensor_desc(&desc.o, attention.o_dtype, 3)?;
+    validate_tensor(&desc.q, attention.q_dtype)?;
+    validate_tensor(&desc.o, attention.o_dtype)?;
     if desc.q.shape[0] != plan_shape.batch_size as i64
         || desc.q.shape[1] != attention.num_qo_heads as i64
         || desc.q.shape[2] != attention.head_dim_qk as i64
@@ -333,8 +383,8 @@ fn validate_prefill_execute_desc(
     if desc.qo_indptr.is_null() {
         return Err(Status::InvalidArgument);
     }
-    validate_tensor_desc(&desc.q, attention.q_dtype, 3)?;
-    validate_tensor_desc(&desc.o, attention.o_dtype, 3)?;
+    validate_tensor(&desc.q, attention.q_dtype)?;
+    validate_tensor(&desc.o, attention.o_dtype)?;
     if desc.q.shape[0] != plan_shape.total_tokens as i64
         || desc.q.shape[1] != attention.num_qo_heads as i64
         || desc.q.shape[2] != attention.head_dim_qk as i64
@@ -366,12 +416,12 @@ fn validate_prefill_plan_execute(
 }
 
 pub struct Context {
-    raw: NonNull<sys::qsfi_context_t>,
+    raw: NonNull<sys::qsfi_context>,
 }
 
 impl Context {
     pub fn new(device_ordinal: i32, stream: CudaStream) -> Result<Self, Status> {
-        let desc = sys::qsfi_context_desc_t {
+        let desc = sys::qsfi_context_desc {
             device_ordinal,
             stream,
         };
@@ -381,14 +431,14 @@ impl Context {
         Ok(Self { raw })
     }
 
-    pub fn reserve_scratch(
+    pub fn reserve_workspace(
         &mut self,
         float_workspace_bytes: usize,
         int_workspace_bytes: usize,
         host_int_workspace_bytes: usize,
     ) -> Result<(), Status> {
         result_from_raw(unsafe {
-            sys::qsfi_context_reserve_scratch(
+            sys::qsfi_context_reserve_workspace(
                 self.raw.as_ptr(),
                 float_workspace_bytes,
                 int_workspace_bytes,
@@ -411,7 +461,7 @@ impl Context {
         result_from_raw(unsafe {
             sys::qsfi_batch_decode_plan_create(self.raw.as_ptr(), attention, page_table, &mut raw)
         })?;
-        Plan::from_raw(raw, PlanKind::Decode, *attention, shape)
+        Plan::from_decode_raw(raw, *attention, shape)
     }
 
     pub unsafe fn execute_decode(
@@ -420,8 +470,11 @@ impl Context {
         desc: &BatchDecodeExecuteDesc,
     ) -> Result<(), Status> {
         validate_decode_plan_execute(plan.kind, &plan.attention, plan.shape, desc)?;
+        let PlanRaw::Decode(raw) = plan.raw else {
+            return Err(Status::InvalidArgument);
+        };
         result_from_raw(unsafe {
-            sys::qsfi_batch_decode_execute(self.raw.as_ptr(), plan.raw.as_ptr(), desc)
+            sys::qsfi_batch_decode_execute(self.raw.as_ptr(), raw.as_ptr(), desc)
         })
     }
 
@@ -454,7 +507,7 @@ impl Context {
                 &mut raw,
             )
         })?;
-        Plan::from_raw(raw, PlanKind::Prefill, *attention, shape)
+        Plan::from_prefill_raw(raw, *attention, shape)
     }
 
     pub unsafe fn execute_prefill(
@@ -463,8 +516,11 @@ impl Context {
         desc: &BatchPrefillExecuteDesc,
     ) -> Result<(), Status> {
         validate_prefill_plan_execute(plan.kind, &plan.attention, plan.shape, desc)?;
+        let PlanRaw::Prefill(raw) = plan.raw else {
+            return Err(Status::InvalidArgument);
+        };
         result_from_raw(unsafe {
-            sys::qsfi_batch_prefill_execute(self.raw.as_ptr(), plan.raw.as_ptr(), desc)
+            sys::qsfi_batch_prefill_execute(self.raw.as_ptr(), raw.as_ptr(), desc)
         })
     }
 
@@ -499,24 +555,43 @@ impl Drop for Context {
     }
 }
 
+#[derive(Clone, Copy)]
+enum PlanRaw {
+    Decode(NonNull<sys::qsfi_batch_decode_plan>),
+    Prefill(NonNull<sys::qsfi_batch_prefill_plan>),
+}
+
 pub struct Plan {
-    raw: NonNull<sys::qsfi_plan_t>,
+    raw: PlanRaw,
     kind: PlanKind,
     attention: AttentionDesc,
     shape: PlanShape,
 }
 
 impl Plan {
-    fn from_raw(
-        raw: *mut sys::qsfi_plan_t,
-        kind: PlanKind,
+    fn from_decode_raw(
+        raw: *mut sys::qsfi_batch_decode_plan,
         attention: AttentionDesc,
         shape: PlanShape,
     ) -> Result<Self, Status> {
         let raw = NonNull::new(raw).ok_or(Status::InternalError)?;
         Ok(Self {
-            raw,
-            kind,
+            raw: PlanRaw::Decode(raw),
+            kind: PlanKind::Decode,
+            attention,
+            shape,
+        })
+    }
+
+    fn from_prefill_raw(
+        raw: *mut sys::qsfi_batch_prefill_plan,
+        attention: AttentionDesc,
+        shape: PlanShape,
+    ) -> Result<Self, Status> {
+        let raw = NonNull::new(raw).ok_or(Status::InternalError)?;
+        Ok(Self {
+            raw: PlanRaw::Prefill(raw),
+            kind: PlanKind::Prefill,
             attention,
             shape,
         })
@@ -526,7 +601,10 @@ impl Plan {
 impl Drop for Plan {
     fn drop(&mut self) {
         unsafe {
-            sys::qsfi_plan_destroy(self.raw.as_ptr());
+            match self.raw {
+                PlanRaw::Decode(raw) => sys::qsfi_batch_decode_plan_destroy(raw.as_ptr()),
+                PlanRaw::Prefill(raw) => sys::qsfi_batch_prefill_plan_destroy(raw.as_ptr()),
+            }
         }
     }
 }
@@ -540,25 +618,31 @@ mod tests {
         (0x1000usize + offset) as *mut c_void
     }
 
-    fn zero_tensor() -> TensorDesc {
-        TensorDesc {
+    fn zero_tensor4() -> Tensor4 {
+        Tensor4 {
             data: ptr::null_mut(),
             dtype: DTYPE_F16,
-            ndim: 0,
-            shape: [0; MAX_TENSOR_DIMS],
-            stride: [0; MAX_TENSOR_DIMS],
+            shape: [0; 4],
+            stride: [0; 4],
         }
     }
 
-    fn tensor(data: DevicePtr, dtype: DTypeRaw, shape: &[i64], stride: &[i64]) -> TensorDesc {
-        assert_eq!(shape.len(), stride.len());
-        let mut out = zero_tensor();
-        out.data = data;
-        out.dtype = dtype;
-        out.ndim = shape.len() as u32;
-        out.shape[..shape.len()].copy_from_slice(shape);
-        out.stride[..stride.len()].copy_from_slice(stride);
-        out
+    fn tensor3(data: DevicePtr, dtype: DTypeRaw, shape: [i64; 3], stride: [i64; 3]) -> Tensor3 {
+        Tensor3 {
+            data,
+            dtype,
+            shape,
+            stride,
+        }
+    }
+
+    fn tensor4(data: DevicePtr, dtype: DTypeRaw, shape: [i64; 4], stride: [i64; 4]) -> Tensor4 {
+        Tensor4 {
+            data,
+            dtype,
+            shape,
+            stride,
+        }
     }
 
     fn attention(layout: KvLayoutRaw) -> AttentionDesc {
@@ -597,10 +681,10 @@ mod tests {
             [512, 256, 64, 1]
         };
         PagedKvCache {
-            k: tensor(device_ptr(1), DTYPE_F16, &shape, &stride),
-            v: tensor(device_ptr(2), DTYPE_F16, &shape, &stride),
-            k_scale: zero_tensor(),
-            v_scale: zero_tensor(),
+            k: tensor4(device_ptr(1), DTYPE_F16, shape, stride),
+            v: tensor4(device_ptr(2), DTYPE_F16, shape, stride),
+            k_scale: zero_tensor4(),
+            v_scale: zero_tensor4(),
         }
     }
 
@@ -616,42 +700,35 @@ mod tests {
     }
 
     #[test]
-    fn tensor_desc_validation_rejects_bad_shape_dtype_and_pointer() {
-        let valid = tensor(device_ptr(1), DTYPE_F16, &[2, 4, 64], &[256, 64, 1]);
-        assert_eq!(validate_tensor_desc(&valid, DTYPE_F16, 3), Ok(()));
+    fn tensor_validation_rejects_bad_shape_dtype_and_pointer() {
+        let valid = tensor3(device_ptr(1), DTYPE_F16, [2, 4, 64], [256, 64, 1]);
+        assert_eq!(validate_tensor(&valid, DTYPE_F16), Ok(()));
 
         let mut null_data = valid;
         null_data.data = ptr::null_mut();
         assert_eq!(
-            validate_tensor_desc(&null_data, DTYPE_F16, 3),
+            validate_tensor(&null_data, DTYPE_F16),
             Err(Status::InvalidArgument)
         );
 
         let mut bad_dtype = valid;
         bad_dtype.dtype = DTYPE_BF16;
         assert_eq!(
-            validate_tensor_desc(&bad_dtype, DTYPE_F16, 3),
-            Err(Status::InvalidArgument)
-        );
-
-        let mut bad_ndim = valid;
-        bad_ndim.ndim = 2;
-        assert_eq!(
-            validate_tensor_desc(&bad_ndim, DTYPE_F16, 3),
+            validate_tensor(&bad_dtype, DTYPE_F16),
             Err(Status::InvalidArgument)
         );
 
         let mut bad_shape = valid;
         bad_shape.shape[1] = 0;
         assert_eq!(
-            validate_tensor_desc(&bad_shape, DTYPE_F16, 3),
+            validate_tensor(&bad_shape, DTYPE_F16),
             Err(Status::InvalidArgument)
         );
 
         let mut bad_stride = valid;
         bad_stride.stride[2] = -1;
         assert_eq!(
-            validate_tensor_desc(&bad_stride, DTYPE_F16, 3),
+            validate_tensor(&bad_stride, DTYPE_F16),
             Err(Status::InvalidArgument)
         );
     }
@@ -893,8 +970,8 @@ mod tests {
             num_indices: 3,
             total_tokens: 5,
         };
-        let decode_q = tensor(device_ptr(10), DTYPE_F16, &[2, 4, 64], &[256, 64, 1]);
-        let prefill_q = tensor(device_ptr(11), DTYPE_F16, &[5, 4, 64], &[256, 64, 1]);
+        let decode_q = tensor3(device_ptr(10), DTYPE_F16, [2, 4, 64], [256, 64, 1]);
+        let prefill_q = tensor3(device_ptr(11), DTYPE_F16, [5, 4, 64], [256, 64, 1]);
         let mut decode = BatchDecodeExecuteDesc {
             q: decode_q,
             q_rope_offset: ptr::null_mut(),
