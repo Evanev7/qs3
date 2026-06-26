@@ -1,0 +1,113 @@
+ninja_required_version = 1.10
+
+patched_trtllm_moe_routing_custom = build/flashinfer_patched/trtllm_fused_moe_routing_custom.cu
+
+includes = -I. $
+  -I3pty/flashinfer/3rdparty/cccl/libcudacxx/include $
+  -I3pty/flashinfer/3rdparty/cccl/cub $
+  -I3pty/flashinfer/3rdparty/cccl/thrust $
+  -I3pty/flashinfer/3rdparty/cccl/cudax/include $
+  -I3pty/flashinfer/3rdparty/cutlass/include $
+  -I3pty/flashinfer/3rdparty/cutlass/tools/util/include $
+  -I3pty/flashinfer/3rdparty/spdlog/include $
+  -I3pty/flashinfer/include $
+  -I3pty/flashinfer/csrc $
+  -I3pty/flashinfer/csrc/nv_internal $
+  -I3pty/flashinfer/csrc/nv_internal/include $
+  -I3pty/trtllm_gen/batched_gemm/include $
+  -Ibuild
+
+nvccflags = -std=c++17 -arch=sm_121 $includes
+trtllm_moe_flags = -DTLLM_GEN_EXPORT_INTERFACE $
+  -DTLLM_ENABLE_CUDA $
+  -DENABLE_BF16 $
+  -DENABLE_FP8 $
+  -DENABLE_FP4 $
+  -DCUTLASS_ENABLE_GDC_FOR_SM100=1 $
+  --expt-relaxed-constexpr
+
+cuda_link_flags = -lcuda
+
+rule mkdir
+  command = mkdir -p build build/flashinfer_patched && touch $out
+  description = MKDIR build
+
+rule check_trtllm_bmm_export
+  command = test -d $trtllm_bmm_export_include || { echo "missing $trtllm_bmm_export_include; set up static TRTLLM batched-GEMM export headers"; exit 1; }; touch $out
+  description = CHECK $trtllm_bmm_export_include
+
+rule macros
+  command = build_tools/generate_macros.c > $out
+  description = GEN $out
+
+rule patch_trtllm_routing_custom
+  command = cp $in $out && patch --batch --forward --silent $out build_tools/flashinfer-trtllm-routing-custom-no-tvm-ffi.patch
+  description = PATCH $out
+
+rule nvcc
+  command = nvcc $nvccflags -c $in -o $out
+  description = NVCC $out
+
+rule trtllm_nvcc
+  command = nvcc $nvccflags $trtllm_moe_flags -c $in -o $out
+  description = NVCC $out
+
+rule archive
+  command = rm -f $out && ar rcs $out $in
+  description = AR $out
+
+rule link_test
+  command = nvcc $nvccflags $in -o $out $cuda_link_flags
+  description = LINK $out
+
+build build/.dir: mkdir
+build build/trtllm_bmm_export.ok: check_trtllm_bmm_export | build/.dir
+build build/qsfi_macros.h: macros build_tools/generate_macros.c | build/.dir
+
+build $patched_trtllm_moe_routing_custom: patch_trtllm_routing_custom 3pty/flashinfer/csrc/fused_moe/trtllm_backend/trtllm_fused_moe_routing_custom.cu | build_tools/flashinfer-trtllm-routing-custom-no-tvm-ffi.patch build/.dir
+
+build build/qsfi_context.o: nvcc qsfi_context.cu | qsfi.h qsfi_internal.h qsfi_build_constants.h build/qsfi_macros.h
+build build/qsfi_attn.o: nvcc qsfi_attn.cu | qsfi.h qsfi_internal.h qsfi_build_constants.h build/qsfi_macros.h
+build build/qsfi_moe.o: trtllm_nvcc qsfi_moe.cu | qsfi.h qsfi_internal.h qsfi_build_constants.h build/qsfi_macros.h qsfi_flashinfer_check_macros.h build/trtllm_bmm_export.ok
+
+build build/fi_env_utils.o: trtllm_nvcc 3pty/flashinfer/csrc/nv_internal/cpp/common/envUtils.cpp | build/trtllm_bmm_export.ok
+build build/fi_logger.o: trtllm_nvcc 3pty/flashinfer/csrc/nv_internal/cpp/common/logger.cpp | build/trtllm_bmm_export.ok
+build build/fi_string_utils.o: trtllm_nvcc 3pty/flashinfer/csrc/nv_internal/cpp/common/stringUtils.cpp | build/trtllm_bmm_export.ok
+build build/fi_tllm_exception.o: trtllm_nvcc 3pty/flashinfer/csrc/nv_internal/cpp/common/tllmException.cpp | build/trtllm_bmm_export.ok
+build build/fi_memory_utils.o: trtllm_nvcc 3pty/flashinfer/csrc/nv_internal/cpp/common/memoryUtils.cu | build/trtllm_bmm_export.ok
+build build/fi_trtllm_batched_gemm_runner.o: trtllm_nvcc 3pty/flashinfer/csrc/trtllm_batched_gemm_runner.cu | build/trtllm_bmm_export.ok
+build build/fi_trtllm_fused_moe_runner.o: trtllm_nvcc 3pty/flashinfer/csrc/trtllm_fused_moe_runner.cu | build/trtllm_bmm_export.ok
+build build/fi_trtllm_fused_moe_routing_deepseek.o: trtllm_nvcc 3pty/flashinfer/csrc/fused_moe/trtllm_backend/trtllm_fused_moe_routing_deepseek.cu | build/trtllm_bmm_export.ok
+build build/fi_trtllm_fused_moe_routing_llama4.o: trtllm_nvcc 3pty/flashinfer/csrc/fused_moe/trtllm_backend/trtllm_fused_moe_routing_llama4.cu | build/trtllm_bmm_export.ok
+build build/fi_trtllm_fused_moe_routing_custom.o: trtllm_nvcc $patched_trtllm_moe_routing_custom | qsfi_flashinfer_check_macros.h build/trtllm_bmm_export.ok
+build build/fi_trtllm_fused_moe_routing_common.o: trtllm_nvcc 3pty/flashinfer/csrc/fused_moe/trtllm_backend/trtllm_fused_moe_routing_common.cu | build/trtllm_bmm_export.ok
+build build/fi_trtllm_fused_moe_dev_kernel.o: trtllm_nvcc 3pty/flashinfer/csrc/fused_moe/trtllm_backend/trtllm_fused_moe_dev_kernel.cu | build/trtllm_bmm_export.ok
+
+build build/flashinfer.a: archive $
+  build/fi_env_utils.o $
+  build/fi_logger.o $
+  build/fi_string_utils.o $
+  build/fi_tllm_exception.o $
+  build/fi_memory_utils.o $
+  build/fi_trtllm_batched_gemm_runner.o $
+  build/fi_trtllm_fused_moe_runner.o $
+  build/fi_trtllm_fused_moe_routing_deepseek.o $
+  build/fi_trtllm_fused_moe_routing_llama4.o $
+  build/fi_trtllm_fused_moe_routing_custom.o $
+  build/fi_trtllm_fused_moe_routing_common.o $
+  build/fi_trtllm_fused_moe_dev_kernel.o
+
+build build/qsfi_test: link_test test.cu $
+  build/qsfi_context.o $
+  build/qsfi_attn.o $
+  build/qsfi_moe.o $
+  build/flashinfer.a
+
+build qsfi: phony $
+  build/qsfi_context.o $
+  build/qsfi_attn.o $
+  build/qsfi_moe.o
+build flashinfer: phony build/flashinfer.a
+build all: phony qsfi flashinfer
+
+default all

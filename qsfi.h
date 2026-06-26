@@ -66,25 +66,19 @@ typedef enum {
     QSFI_KV_LAYOUT_HND = 1
 } qsfi_kv_layout;
 
-typedef enum {
-    QSFI_POS_ENCODING_NONE = 0,
-    QSFI_POS_ENCODING_ROPE_LLAMA = 1
-} qsfi_pos_encoding;
+typedef enum { QSFI_POS_ENCODING_NONE = 0, QSFI_POS_ENCODING_ROPE_LLAMA = 1 } qsfi_pos_encoding;
 
-typedef enum {
-    QSFI_MASK_MODE_NONE = 0,
-    QSFI_MASK_MODE_CAUSAL = 1
-} qsfi_mask_mode;
+typedef enum { QSFI_MASK_MODE_NONE = 0, QSFI_MASK_MODE_CAUSAL = 1 } qsfi_mask_mode;
 
-typedef enum {
-    QSFI_ACTIVATION_NONE = 0,
-    QSFI_ACTIVATION_SWIGLU = 1
-} qsfi_activation;
+typedef enum { QSFI_ACTIVATION_NONE = 0, QSFI_ACTIVATION_SWIGLU = 1 } qsfi_activation;
 
 typedef enum {
     QSFI_ROUTING_METHOD_DEFAULT = 0,
-    QSFI_ROUTING_METHOD_DEEPSEEK_V3 = 1,
-    QSFI_ROUTING_METHOD_LLAMA4 = 2
+    QSFI_ROUTING_METHOD_RENORMALIZE = 1,
+    QSFI_ROUTING_METHOD_DEEPSEEK_V3 = 2,
+    QSFI_ROUTING_METHOD_LLAMA4 = 3,
+    QSFI_ROUTING_METHOD_RENORMALIZE_NAIVE = 4,
+    QSFI_ROUTING_METHOD_TOPK = 5
 } qsfi_routing_method;
 
 typedef struct {
@@ -154,7 +148,7 @@ typedef struct {
     uint32_t assume_fp4;
     uint32_t assume_pdl;
     uint32_t gemm_backend;
-    uint32_t moe_backend;
+    uint32_t build_trtllm_gen_moe;
 } qsfi_build_config;
 
 typedef struct {
@@ -267,8 +261,8 @@ typedef struct {
 typedef struct {
     qsfi_tensor1 token_ids; /* i32/u32 [num_tokens]. */
     qsfi_tensor2 embedding; /* [vocab_size, hidden_size]. */
-    qsfi_tensor2 out;       /* [num_tokens, hidden_size]. */
-    int32_t padding_token_id;      /* < 0 means no padding token. */
+    qsfi_tensor2 out; /* [num_tokens, hidden_size]. */
+    int32_t padding_token_id; /* < 0 means no padding token. */
     uint32_t validate_token_ids;
 } qsfi_embedding_gather_desc;
 
@@ -304,12 +298,12 @@ typedef struct {
 } qsfi_rope_apply_desc;
 
 typedef struct {
-    qsfi_tensor2 x;             /* [rows, in_features]. */
-    qsfi_tensor2 weight;        /* [out_features, in_features]. */
-    qsfi_tensor1 bias;          /* optional [out_features]. */
-    qsfi_tensor1 weight_scale;  /* optional quant scales. */
-    qsfi_tensor1 weight_zero;   /* optional quant zeros. */
-    qsfi_tensor2 out;           /* [rows, out_features]. */
+    qsfi_tensor2 x; /* [rows, in_features]. */
+    qsfi_tensor2 weight; /* [out_features, in_features]. */
+    qsfi_tensor1 bias; /* optional [out_features]. */
+    qsfi_tensor1 weight_scale; /* optional quant scales. */
+    qsfi_tensor1 weight_zero; /* optional quant zeros. */
+    qsfi_tensor2 out; /* [rows, out_features]. */
     uint32_t rows;
     uint32_t in_features;
     uint32_t out_features;
@@ -319,16 +313,16 @@ typedef struct {
 } qsfi_linear_desc;
 
 typedef struct {
-    qsfi_tensor2 x;        /* [num_tokens, hidden_size]. */
+    qsfi_tensor2 x; /* [num_tokens, hidden_size]. */
     qsfi_tensor2 q_weight; /* [num_qo_heads * head_dim, hidden_size]. */
     qsfi_tensor2 k_weight; /* [num_kv_heads * head_dim, hidden_size]. */
     qsfi_tensor2 v_weight; /* [num_kv_heads * head_dim, hidden_size]. */
-    qsfi_tensor1 q_bias;   /* optional [num_qo_heads * head_dim]. */
-    qsfi_tensor1 k_bias;   /* optional [num_kv_heads * head_dim]. */
-    qsfi_tensor1 v_bias;   /* optional [num_kv_heads * head_dim]. */
-    qsfi_tensor3 q_out;    /* [num_tokens, num_qo_heads, head_dim]. */
-    qsfi_tensor3 k_out;    /* [num_tokens, num_kv_heads, head_dim]. */
-    qsfi_tensor3 v_out;    /* [num_tokens, num_kv_heads, head_dim]. */
+    qsfi_tensor1 q_bias; /* optional [num_qo_heads * head_dim]. */
+    qsfi_tensor1 k_bias; /* optional [num_kv_heads * head_dim]. */
+    qsfi_tensor1 v_bias; /* optional [num_kv_heads * head_dim]. */
+    qsfi_tensor3 q_out; /* [num_tokens, num_qo_heads, head_dim]. */
+    qsfi_tensor3 k_out; /* [num_tokens, num_kv_heads, head_dim]. */
+    qsfi_tensor3 v_out; /* [num_tokens, num_kv_heads, head_dim]. */
     uint32_t num_tokens;
     uint32_t hidden_size;
     uint32_t num_qo_heads;
@@ -367,9 +361,9 @@ typedef struct {
 } qsfi_dense_swiglu_mlp_desc;
 
 typedef struct {
-    qsfi_tensor2 x;      /* [rows, hidden_size]. */
+    qsfi_tensor2 x; /* [rows, hidden_size]. */
     qsfi_tensor2 weight; /* [vocab_size, hidden_size]. */
-    qsfi_tensor1 bias;   /* optional [vocab_size]. */
+    qsfi_tensor1 bias; /* optional [vocab_size]. */
     qsfi_tensor2 logits; /* [rows, vocab_size]. */
     uint32_t rows;
     uint32_t hidden_size;
@@ -384,22 +378,22 @@ typedef struct {
  */
 
 typedef struct {
-    qsfi_tensor2 logits;             /* [batch, vocab_size]. */
-    qsfi_tensor1 uniform_samples;    /* optional f32 [batch]. */
-    qsfi_tensor1 next_token_ids;     /* i32/u32 [batch]. */
-    qsfi_tensor1 selected_logprobs;  /* optional f32 [batch]. */
-    qsfi_tensor1 selected_probs;     /* optional f32 [batch]. */
+    qsfi_tensor2 logits; /* [batch, vocab_size]. */
+    qsfi_tensor1 uniform_samples; /* optional f32 [batch]. */
+    qsfi_tensor1 next_token_ids; /* i32/u32 [batch]. */
+    qsfi_tensor1 selected_logprobs; /* optional f32 [batch]. */
+    qsfi_tensor1 selected_probs; /* optional f32 [batch]. */
     uint32_t batch_size;
     uint32_t vocab_size;
     uint32_t top_k; /* 0 means disabled. */
-    float top_p;    /* <= 0 or >= 1 means disabled. */
-    float min_p;    /* <= 0 means disabled. */
+    float top_p; /* <= 0 or >= 1 means disabled. */
+    float min_p; /* <= 0 means disabled. */
     float temperature;
 } qsfi_sampling_desc;
 
 /*
- * Router and MoE. selected_experts is int32 [num_tokens, top_k],
- * selected_weights is f32 [num_tokens, top_k].
+ * MoE. Model loading owns backend preparation. qsfi MoE accepts concrete
+ * FlashInfer-ready tensor layouts through dtype-specific descriptors.
  */
 
 typedef struct {
@@ -414,53 +408,78 @@ typedef struct {
 } qsfi_routing_config;
 
 typedef struct {
-    qsfi_tensor2 routing_logits;   /* [num_tokens, num_experts]. */
-    qsfi_tensor1 routing_bias;     /* optional [num_experts]. */
-    qsfi_tensor2 selected_experts; /* i32 [num_tokens, top_k]. */
-    qsfi_tensor2 selected_weights; /* f32 [num_tokens, top_k]. */
-    qsfi_routing_config routing;
-    uint32_t num_tokens;
-} qsfi_router_topk_desc;
-
-typedef struct {
-    qsfi_tensor3 gate_up_weight; /* [local_experts, 2*intermediate, hidden]. */
-    qsfi_tensor3 down_weight;    /* [local_experts, hidden, intermediate]. */
-    qsfi_tensor3 gate_up_scale;  /* optional quant scales with expert axis. */
-    qsfi_tensor3 down_scale;     /* optional quant scales with expert axis. */
-    qsfi_tensor2 gate_up_bias;   /* optional [local_experts, 2*intermediate]. */
-    qsfi_tensor2 down_bias;      /* optional [local_experts, hidden]. */
+    qsfi_tensor4
+        gate_up_weight; /* BF16 BlockMajorK [local_experts, hidden/64, 2*intermediate, 64]. */
+    qsfi_tensor4 down_weight; /* BF16 BlockMajorK [local_experts, intermediate/64, hidden, 64]. */
     uint32_t hidden_size;
     uint32_t intermediate_size;
     uint32_t local_expert_offset;
     uint32_t local_num_experts;
-} qsfi_moe_weights_desc;
+} qsfi_trtllm_bf16_moe_weights;
 
 typedef struct {
-    qsfi_tensor2 hidden_states;    /* [num_tokens, hidden_size]. */
-    qsfi_tensor2 routing_logits;   /* optional if selected_* are supplied. */
-    qsfi_tensor2 selected_experts; /* optional i32 [num_tokens, top_k]. */
-    qsfi_tensor2 selected_weights; /* optional f32 [num_tokens, top_k]. */
-    qsfi_tensor2 out;              /* [num_tokens, hidden_size]. */
-    qsfi_moe_weights_desc weights;
+    qsfi_tensor3 gate_up_weight; /* NVFP4 packed [local_experts, 2*intermediate, hidden/2]. */
+    qsfi_tensor3 down_weight; /* NVFP4 packed [local_experts, hidden, intermediate/2]. */
+    qsfi_tensor3 gate_up_scale; /* FP8 E4M3 [local_experts, 2*intermediate, hidden/16]. */
+    qsfi_tensor3 down_scale; /* FP8 E4M3 [local_experts, hidden, intermediate/16]. */
+    qsfi_tensor1 output1_scale; /* F32 [local_experts]. */
+    qsfi_tensor1 output1_gate_scale; /* F32 [local_experts]. */
+    qsfi_tensor1 output2_scale; /* F32 [local_experts]. */
+    uint32_t hidden_size;
+    uint32_t intermediate_size;
+    uint32_t local_expert_offset;
+    uint32_t local_num_experts;
+} qsfi_trtllm_nvfp4_moe_weights;
+
+typedef struct {
+    qsfi_tensor2 hidden_states; /* BF16 [num_tokens, hidden]. */
+    qsfi_tensor2 routing_logits; /* BF16 [num_tokens, num_experts]. */
+    qsfi_tensor2 out; /* BF16 [num_tokens, hidden]. */
+    qsfi_trtllm_bf16_moe_weights weights;
     qsfi_routing_config routing;
     qsfi_activation activation;
     qsfi_dtype accum_dtype;
     uint32_t num_tokens;
     float clamp_limit;
-} qsfi_routed_moe_desc;
+} qsfi_trtllm_bf16_moe_desc;
 
 typedef struct {
-    qsfi_tensor2 src; /* [2*intermediate, hidden]. */
-    qsfi_tensor2 dst; /* [2*intermediate, hidden]. */
-    uint32_t intermediate_size;
-    uint32_t hidden_size;
-} qsfi_gated_weight_reorder_desc;
+    qsfi_tensor2 hidden_states; /* BF16 [num_tokens, hidden]. */
+    qsfi_tensor2 packed_topk; /* I32 [num_tokens, top_k], (expert_id << 16) | bf16_weight_bits. */
+    qsfi_tensor2 out; /* BF16 [num_tokens, hidden]. */
+    qsfi_trtllm_bf16_moe_weights weights;
+    qsfi_routing_config routing;
+    qsfi_activation activation;
+    qsfi_dtype accum_dtype;
+    uint32_t num_tokens;
+    float clamp_limit;
+} qsfi_trtllm_bf16_routed_moe_desc;
 
 typedef struct {
-    qsfi_tensor2 src;
-    qsfi_tensor2 dst;
-    uint32_t block_size;
-} qsfi_block_scale_interleave_desc;
+    qsfi_tensor2 hidden_states; /* NVFP4 packed [num_tokens, hidden/2]. */
+    qsfi_tensor2 hidden_states_scale; /* FP8 E4M3 [num_tokens, hidden/16]. */
+    qsfi_tensor2 routing_logits; /* BF16 [num_tokens, num_experts]. */
+    qsfi_tensor2 out; /* BF16 [num_tokens, hidden]. */
+    qsfi_trtllm_nvfp4_moe_weights weights;
+    qsfi_routing_config routing;
+    qsfi_activation activation;
+    qsfi_dtype accum_dtype;
+    uint32_t num_tokens;
+    float clamp_limit;
+} qsfi_trtllm_nvfp4_moe_desc;
+
+typedef struct {
+    qsfi_tensor2 hidden_states; /* NVFP4 packed [num_tokens, hidden/2]. */
+    qsfi_tensor2 hidden_states_scale; /* FP8 E4M3 [num_tokens, hidden/16]. */
+    qsfi_tensor2 packed_topk; /* I32 [num_tokens, top_k], (expert_id << 16) | bf16_weight_bits. */
+    qsfi_tensor2 out; /* BF16 [num_tokens, hidden]. */
+    qsfi_trtllm_nvfp4_moe_weights weights;
+    qsfi_routing_config routing;
+    qsfi_activation activation;
+    qsfi_dtype accum_dtype;
+    uint32_t num_tokens;
+    float clamp_limit;
+} qsfi_trtllm_nvfp4_routed_moe_desc;
 
 const char* qsfi_status_string(qsfi_status status);
 
@@ -536,20 +555,12 @@ qsfi_status qsfi_silu_and_mul(qsfi_context* ctx, const qsfi_silu_and_mul_desc* d
 qsfi_status qsfi_dense_swiglu_mlp(qsfi_context* ctx, const qsfi_dense_swiglu_mlp_desc* desc);
 qsfi_status qsfi_lm_head(qsfi_context* ctx, const qsfi_lm_head_desc* desc);
 qsfi_status qsfi_sample(qsfi_context* ctx, const qsfi_sampling_desc* desc);
-qsfi_status qsfi_router_topk(qsfi_context* ctx, const qsfi_router_topk_desc* desc);
-/*
- * If selected_experts and selected_weights are present, routed_moe uses those
- * precomputed routing decisions. Otherwise routing_logits must be present and
- * the implementation computes routing internally with desc->routing.
- */
-qsfi_status qsfi_routed_moe(qsfi_context* ctx, const qsfi_routed_moe_desc* desc);
-
-qsfi_status qsfi_reorder_gated_act_weight(
-    qsfi_context* ctx, const qsfi_gated_weight_reorder_desc* desc
-);
-qsfi_status qsfi_block_scale_interleave(
-    qsfi_context* ctx, const qsfi_block_scale_interleave_desc* desc
-);
+qsfi_status qsfi_trtllm_bf16_moe(qsfi_context* ctx, const qsfi_trtllm_bf16_moe_desc* desc);
+qsfi_status
+qsfi_trtllm_bf16_routed_moe(qsfi_context* ctx, const qsfi_trtllm_bf16_routed_moe_desc* desc);
+qsfi_status qsfi_trtllm_nvfp4_moe(qsfi_context* ctx, const qsfi_trtllm_nvfp4_moe_desc* desc);
+qsfi_status
+qsfi_trtllm_nvfp4_routed_moe(qsfi_context* ctx, const qsfi_trtllm_nvfp4_routed_moe_desc* desc);
 
 #ifdef __cplusplus
 }

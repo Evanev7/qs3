@@ -1,0 +1,11 @@
+--- trtllm_fused_moe_routing_custom.cu
++++ trtllm_fused_moe_routing_custom.cu
+@@ -31,7 +31,7 @@
+ 
+ #include "flashinfer/trtllm/common/cudaUtils.h"
+ #include "flashinfer/trtllm/fused_moe/RoutingCustomPolicy.cuh"
+-#include "tvm_ffi_utils.h"
++#include "qsfi_flashinfer_check_macros.h"
+ 
+ namespace moe::dev::routing {
+ namespace routingCustom {

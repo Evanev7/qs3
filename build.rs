@@ -5,9 +5,18 @@ use std::{
 
 fn main() {
     println!("cargo:rerun-if-changed=qsfi.h");
-    println!("cargo:rerun-if-changed=qsfi.cu");
+    println!("cargo:rerun-if-changed=qsfi_internal.h");
+    println!("cargo:rerun-if-changed=qsfi_context.cu");
+    println!("cargo:rerun-if-changed=qsfi_attn.cu");
+    println!("cargo:rerun-if-changed=qsfi_moe.cu");
+    println!("cargo:rerun-if-changed=build.ninja");
+    println!("cargo:rerun-if-changed=qsfi_flashinfer_check_macros.h");
+    println!("cargo:rerun-if-changed=build_tools/flashinfer-trtllm-routing-custom-no-tvm-ffi.patch");
     println!("cargo:rerun-if-changed=qsfi_build_constants.h");
-    println!("cargo:rerun-if-changed=build/qsfi.o");
+    println!("cargo:rerun-if-changed=build/qsfi_context.o");
+    println!("cargo:rerun-if-changed=build/qsfi_attn.o");
+    println!("cargo:rerun-if-changed=build/qsfi_moe.o");
+    println!("cargo:rerun-if-changed=build/flashinfer.a");
 
     link_qsfi_for_tests();
 
@@ -29,19 +38,38 @@ fn main() {
 }
 
 fn link_qsfi_for_tests() {
-    let qsfi_object = Path::new("build/qsfi.o");
-    if !qsfi_object.exists() {
+    let qsfi_objects = [
+        Path::new("build/qsfi_context.o"),
+        Path::new("build/qsfi_attn.o"),
+        Path::new("build/qsfi_moe.o"),
+    ];
+    let flashinfer_archive = Path::new("build/flashinfer.a");
+    if qsfi_objects
+        .iter()
+        .copied()
+        .any(|object| !object.exists())
+        || !flashinfer_archive.exists()
+    {
         println!(
-            "cargo:warning=build/qsfi.o not found; run `just build` before CUDA-backed Rust tests"
+            "cargo:warning=qsfi CUDA objects/archive not found; run `just build` before CUDA-backed Rust tests"
         );
         return;
     }
 
+    for object in qsfi_objects {
+        println!(
+            "cargo:rustc-link-arg-tests={}",
+            object
+                .canonicalize()
+                .expect("failed to canonicalize qsfi CUDA object")
+                .display()
+        );
+    }
     println!(
         "cargo:rustc-link-arg-tests={}",
-        qsfi_object
+        flashinfer_archive
             .canonicalize()
-            .expect("failed to canonicalize build/qsfi.o")
+            .expect("failed to canonicalize FlashInfer archive")
             .display()
     );
 
@@ -50,6 +78,7 @@ fn link_qsfi_for_tests() {
         "-lcudart_static",
         "-lcudadevrt",
         "-Wl,-Bdynamic",
+        "-lcuda",
         "-lstdc++",
         "-ldl",
         "-lrt",

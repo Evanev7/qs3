@@ -8,8 +8,7 @@ ground rules:
 - do not worry about backward compatibility, abi stability or versioning.
 - no cmake; we'll figure out a build system later.
 - keep the runtime qwen3.6-specific. validate early, fail loudly, avoid generic
-  runtime compatibility work. take the time to remove old functions once they
-  become simple wrappers of others.
+  runtime compatibility work. take the time to cleanup and tidy after refactors.
 
 current state:
 - `EngineCore` already owns request ids, sequence lengths, a page allocator,
@@ -36,7 +35,8 @@ DS4 lessons worth preserving:
   token match an uninterrupted session.
 
 fastest path to actually running the model:
-- target one qwen3.6 shape first, fp16/bf16 first, no generic checkpoint matrix.
+- target one qwen3.6 shape first, BF16 correctness first, then NVFP4 for the
+  first optimized path
 - add model loading for config + safetensors, map fixed Qwen tensor names, upload
   weights to CUDA.
 - add the missing non-attention kernels/wrappers: embedding gather, RMSNorm,
