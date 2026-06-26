@@ -8,15 +8,10 @@ fn main() {
     println!("cargo:rerun-if-changed=qsfi_internal.h");
     println!("cargo:rerun-if-changed=qsfi_context.cu");
     println!("cargo:rerun-if-changed=qsfi_attn.cu");
-    println!("cargo:rerun-if-changed=qsfi_moe.cu");
-    println!("cargo:rerun-if-changed=build.ninja");
-    println!("cargo:rerun-if-changed=qsfi_flashinfer_check_macros.h");
-    println!("cargo:rerun-if-changed=build_tools/flashinfer-trtllm-routing-custom-no-tvm-ffi.patch");
-    println!("cargo:rerun-if-changed=qsfi_build_constants.h");
+    println!("cargo:rerun-if-changed=builld_tools/build.ninja");
+    println!("cargo:rerun-if-changed=build_tools/generate_macros.c");
     println!("cargo:rerun-if-changed=build/qsfi_context.o");
     println!("cargo:rerun-if-changed=build/qsfi_attn.o");
-    println!("cargo:rerun-if-changed=build/qsfi_moe.o");
-    println!("cargo:rerun-if-changed=build/flashinfer.a");
 
     link_qsfi_for_tests();
 
@@ -41,17 +36,10 @@ fn link_qsfi_for_tests() {
     let qsfi_objects = [
         Path::new("build/qsfi_context.o"),
         Path::new("build/qsfi_attn.o"),
-        Path::new("build/qsfi_moe.o"),
     ];
-    let flashinfer_archive = Path::new("build/flashinfer.a");
-    if qsfi_objects
-        .iter()
-        .copied()
-        .any(|object| !object.exists())
-        || !flashinfer_archive.exists()
-    {
+    if qsfi_objects.iter().copied().any(|object| !object.exists()) {
         println!(
-            "cargo:warning=qsfi CUDA objects/archive not found; run `just build` before CUDA-backed Rust tests"
+            "cargo:warning=qsfi CUDA objects not found; run `just build` before CUDA-backed Rust tests"
         );
         return;
     }
@@ -62,16 +50,9 @@ fn link_qsfi_for_tests() {
             object
                 .canonicalize()
                 .expect("failed to canonicalize qsfi CUDA object")
-                .display()
+            .display()
         );
     }
-    println!(
-        "cargo:rustc-link-arg-tests={}",
-        flashinfer_archive
-            .canonicalize()
-            .expect("failed to canonicalize FlashInfer archive")
-            .display()
-    );
 
     for arg in [
         "-Wl,-Bstatic",

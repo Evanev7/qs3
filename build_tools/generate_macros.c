@@ -14,6 +14,26 @@ typedef struct qsfi_dispatch_spec {
     int value_count;
 } qsfi_dispatch_spec;
 
+static void emit_build_constants(void)
+{
+    printf("#ifndef QSFI_MACROS_H\n");
+    printf("#define QSFI_MACROS_H\n\n");
+
+    printf("#define QSFI_TARGET_SM 121u\n");
+    printf("#define QSFI_TARGET_COMPUTE_CAPABILITY_MAJOR 12u\n");
+    printf("#define QSFI_TARGET_COMPUTE_CAPABILITY_MINOR 1u\n\n");
+
+    printf("#define QSFI_ENABLE_FP8 1u\n");
+    printf("#define QSFI_ENABLE_FP4 1u\n");
+    printf("#define QSFI_ENABLE_PDL 1u\n\n");
+
+    printf("#define QSFI_GEMM_BACKEND_CUBLASLT 1u\n");
+    printf("#define QSFI_GEMM_BACKEND_FLASHINFER 2u\n");
+    printf("#define QSFI_GEMM_BACKEND_CUTLASS 3u\n\n");
+
+    printf("#define QSFI_GEMM_BACKEND QSFI_GEMM_BACKEND_CUBLASLT\n\n");
+}
+
 static void emit_dispatch_case(const qsfi_dispatch_spec* spec, int value)
 {
     printf("    case %d: { \\\n", value);
@@ -52,6 +72,8 @@ static void emit_dispatch_macro(const qsfi_dispatch_spec* spec)
 
 int main(void)
 {
+    emit_build_constants();
+
     // static const int cta_tile_q_values[] = { 16, 32, 64, 128 };
     // static const int gqa_group_size_values[] = { 1, 2, 3, 4, 8 };
     // static const int head_dim_values[] = { 64, 128, 256, 512 };
@@ -93,5 +115,6 @@ int main(void)
         emit_dispatch_macro(&specs[i]);
     }
 
+    printf("#endif\n");
     return 0;
 }

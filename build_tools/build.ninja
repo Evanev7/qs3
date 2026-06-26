@@ -1,0 +1,45 @@
+ninja_required_version = 1.10
+
+flashinfer = ../3pty/flashinfer
+src = ..
+
+includes = $
+  -I$flashinfer/3rdparty/cccl/libcudacxx/include $
+  -I$flashinfer/3rdparty/cccl/cub $
+  -I$flashinfer/3rdparty/cccl/thrust $
+  -I$flashinfer/3rdparty/cccl/cudax/include $
+  -I$flashinfer/3rdparty/cutlass/include $
+  -I$flashinfer/3rdparty/cutlass/tools/util/include $
+  -I$flashinfer/3rdparty/spdlog/include $
+  -I$flashinfer/include $
+  -I$flashinfer/csrc $
+  -I$flashinfer/csrc/nv_internal $
+  -I$flashinfer/csrc/nv_internal/include $
+  -I.
+
+nvccflags = -std=c++17 -arch=sm_121 $includes
+
+rule run
+  command = $in > $out
+  description = GEN $out
+
+rule nvcc
+  command = nvcc $nvccflags -c $in -o $out
+  description = NVCC $out
+
+rule link_test
+  command = nvcc $nvccflags $in -o $out -lcuda
+  description = LINK $out
+
+build qsfi_macros.h: run $src/build_tools/generate_macros.c
+
+build qsfi_context.o: nvcc $src/qsfi_context.cu | $src/qsfi.h $src/qsfi_internal.h qsfi_macros.h
+build qsfi_attn.o: nvcc $src/qsfi_attn.cu | $src/qsfi.h $src/qsfi_internal.h qsfi_macros.h
+
+build qsfi_test: link_test $src/test.cu $
+  qsfi_context.o $
+  qsfi_attn.o | $src/qsfi.h
+
+build all: phony qsfi_context.o qsfi_attn.o
+
+default all

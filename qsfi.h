@@ -1,8 +1,6 @@
 #ifndef QS_FLASHINFER_H
 #define QS_FLASHINFER_H
 
-#include "qsfi_build_constants.h"
-
 #include <stddef.h>
 #include <stdint.h>
 
@@ -69,17 +67,6 @@ typedef enum {
 typedef enum { QSFI_POS_ENCODING_NONE = 0, QSFI_POS_ENCODING_ROPE_LLAMA = 1 } qsfi_pos_encoding;
 
 typedef enum { QSFI_MASK_MODE_NONE = 0, QSFI_MASK_MODE_CAUSAL = 1 } qsfi_mask_mode;
-
-typedef enum { QSFI_ACTIVATION_NONE = 0, QSFI_ACTIVATION_SWIGLU = 1 } qsfi_activation;
-
-typedef enum {
-    QSFI_ROUTING_METHOD_DEFAULT = 0,
-    QSFI_ROUTING_METHOD_RENORMALIZE = 1,
-    QSFI_ROUTING_METHOD_DEEPSEEK_V3 = 2,
-    QSFI_ROUTING_METHOD_LLAMA4 = 3,
-    QSFI_ROUTING_METHOD_RENORMALIZE_NAIVE = 4,
-    QSFI_ROUTING_METHOD_TOPK = 5
-} qsfi_routing_method;
 
 typedef struct {
     int32_t device_ordinal;
@@ -148,7 +135,6 @@ typedef struct {
     uint32_t assume_fp4;
     uint32_t assume_pdl;
     uint32_t gemm_backend;
-    uint32_t build_trtllm_gen_moe;
 } qsfi_build_config;
 
 typedef struct {
@@ -391,96 +377,6 @@ typedef struct {
     float temperature;
 } qsfi_sampling_desc;
 
-/*
- * MoE. Model loading owns backend preparation. qsfi MoE accepts concrete
- * FlashInfer-ready tensor layouts through dtype-specific descriptors.
- */
-
-typedef struct {
-    qsfi_routing_method method;
-    uint32_t num_experts;
-    uint32_t top_k;
-    uint32_t n_group;
-    uint32_t topk_group;
-    float routed_scaling_factor;
-    uint32_t renormalize;
-    uint32_t apply_router_weight_on_input;
-} qsfi_routing_config;
-
-typedef struct {
-    qsfi_tensor4
-        gate_up_weight; /* BF16 BlockMajorK [local_experts, hidden/64, 2*intermediate, 64]. */
-    qsfi_tensor4 down_weight; /* BF16 BlockMajorK [local_experts, intermediate/64, hidden, 64]. */
-    uint32_t hidden_size;
-    uint32_t intermediate_size;
-    uint32_t local_expert_offset;
-    uint32_t local_num_experts;
-} qsfi_trtllm_bf16_moe_weights;
-
-typedef struct {
-    qsfi_tensor3 gate_up_weight; /* NVFP4 packed [local_experts, 2*intermediate, hidden/2]. */
-    qsfi_tensor3 down_weight; /* NVFP4 packed [local_experts, hidden, intermediate/2]. */
-    qsfi_tensor3 gate_up_scale; /* FP8 E4M3 [local_experts, 2*intermediate, hidden/16]. */
-    qsfi_tensor3 down_scale; /* FP8 E4M3 [local_experts, hidden, intermediate/16]. */
-    qsfi_tensor1 output1_scale; /* F32 [local_experts]. */
-    qsfi_tensor1 output1_gate_scale; /* F32 [local_experts]. */
-    qsfi_tensor1 output2_scale; /* F32 [local_experts]. */
-    uint32_t hidden_size;
-    uint32_t intermediate_size;
-    uint32_t local_expert_offset;
-    uint32_t local_num_experts;
-} qsfi_trtllm_nvfp4_moe_weights;
-
-typedef struct {
-    qsfi_tensor2 hidden_states; /* BF16 [num_tokens, hidden]. */
-    qsfi_tensor2 routing_logits; /* BF16 [num_tokens, num_experts]. */
-    qsfi_tensor2 out; /* BF16 [num_tokens, hidden]. */
-    qsfi_trtllm_bf16_moe_weights weights;
-    qsfi_routing_config routing;
-    qsfi_activation activation;
-    qsfi_dtype accum_dtype;
-    uint32_t num_tokens;
-    float clamp_limit;
-} qsfi_trtllm_bf16_moe_desc;
-
-typedef struct {
-    qsfi_tensor2 hidden_states; /* BF16 [num_tokens, hidden]. */
-    qsfi_tensor2 packed_topk; /* I32 [num_tokens, top_k], (expert_id << 16) | bf16_weight_bits. */
-    qsfi_tensor2 out; /* BF16 [num_tokens, hidden]. */
-    qsfi_trtllm_bf16_moe_weights weights;
-    qsfi_routing_config routing;
-    qsfi_activation activation;
-    qsfi_dtype accum_dtype;
-    uint32_t num_tokens;
-    float clamp_limit;
-} qsfi_trtllm_bf16_routed_moe_desc;
-
-typedef struct {
-    qsfi_tensor2 hidden_states; /* NVFP4 packed [num_tokens, hidden/2]. */
-    qsfi_tensor2 hidden_states_scale; /* FP8 E4M3 [num_tokens, hidden/16]. */
-    qsfi_tensor2 routing_logits; /* BF16 [num_tokens, num_experts]. */
-    qsfi_tensor2 out; /* BF16 [num_tokens, hidden]. */
-    qsfi_trtllm_nvfp4_moe_weights weights;
-    qsfi_routing_config routing;
-    qsfi_activation activation;
-    qsfi_dtype accum_dtype;
-    uint32_t num_tokens;
-    float clamp_limit;
-} qsfi_trtllm_nvfp4_moe_desc;
-
-typedef struct {
-    qsfi_tensor2 hidden_states; /* NVFP4 packed [num_tokens, hidden/2]. */
-    qsfi_tensor2 hidden_states_scale; /* FP8 E4M3 [num_tokens, hidden/16]. */
-    qsfi_tensor2 packed_topk; /* I32 [num_tokens, top_k], (expert_id << 16) | bf16_weight_bits. */
-    qsfi_tensor2 out; /* BF16 [num_tokens, hidden]. */
-    qsfi_trtllm_nvfp4_moe_weights weights;
-    qsfi_routing_config routing;
-    qsfi_activation activation;
-    qsfi_dtype accum_dtype;
-    uint32_t num_tokens;
-    float clamp_limit;
-} qsfi_trtllm_nvfp4_routed_moe_desc;
-
 const char* qsfi_status_string(qsfi_status status);
 
 qsfi_status qsfi_context_create(const qsfi_context_desc* desc, qsfi_context** out);
@@ -508,8 +404,8 @@ void qsfi_context_clear_last_error(qsfi_context* ctx);
 /*
  * Only FlashInfer interfaces with an explicit plan/run split get qsfi plan
  * handles. Paged attention plans snapshot host-side schedule inputs. Segment
- * GEMM and routed MoE are direct run surfaces for now; if a backend later needs
- * persistent tactic/schedule state, add a module-specific plan type then.
+ * GEMM is a direct run surface for now; if a backend later needs persistent
+ * tactic/schedule state, add a module-specific plan type then.
  */
 qsfi_status qsfi_batch_decode_plan_create(
     qsfi_context* ctx,
@@ -555,12 +451,6 @@ qsfi_status qsfi_silu_and_mul(qsfi_context* ctx, const qsfi_silu_and_mul_desc* d
 qsfi_status qsfi_dense_swiglu_mlp(qsfi_context* ctx, const qsfi_dense_swiglu_mlp_desc* desc);
 qsfi_status qsfi_lm_head(qsfi_context* ctx, const qsfi_lm_head_desc* desc);
 qsfi_status qsfi_sample(qsfi_context* ctx, const qsfi_sampling_desc* desc);
-qsfi_status qsfi_trtllm_bf16_moe(qsfi_context* ctx, const qsfi_trtllm_bf16_moe_desc* desc);
-qsfi_status
-qsfi_trtllm_bf16_routed_moe(qsfi_context* ctx, const qsfi_trtllm_bf16_routed_moe_desc* desc);
-qsfi_status qsfi_trtllm_nvfp4_moe(qsfi_context* ctx, const qsfi_trtllm_nvfp4_moe_desc* desc);
-qsfi_status
-qsfi_trtllm_nvfp4_routed_moe(qsfi_context* ctx, const qsfi_trtllm_nvfp4_routed_moe_desc* desc);
 
 #ifdef __cplusplus
 }

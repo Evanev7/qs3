@@ -1,5 +1,5 @@
-#include "qsfi_build_constants.h"
 #include "qsfi_internal.h"
+#include "qsfi_macros.h"
 
 #include <cuda_runtime.h>
 
@@ -179,11 +179,6 @@ qsfi_status qsfi_get_build_config(qsfi_build_config* out)
     out->assume_fp4 = QSFI_ENABLE_FP4;
     out->assume_pdl = QSFI_ENABLE_PDL;
     out->gemm_backend = QSFI_GEMM_BACKEND;
-#ifdef QSFI_BUILD_TRTLLM_GEN_MOE
-    out->build_trtllm_gen_moe = 1u;
-#else
-    out->build_trtllm_gen_moe = 0u;
-#endif
     return QSFI_STATUS_OK;
 }
 
