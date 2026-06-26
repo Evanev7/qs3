@@ -4,6 +4,8 @@ dwarfstar4.
 rarely record durable facts here unless they took significant information
 gathering.
 
+run tests with the gitignored test script
+
 ground rules:
 - do not worry about backward compatibility, abi stability or versioning.
 - no cmake; we'll figure out a build system later.
