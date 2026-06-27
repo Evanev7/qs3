@@ -4,3 +4,6 @@
 [submodule "3pty/ds4"]
 	path = 3pty/ds4
 	url = https://github.com/antirez/ds4
+[submodule "3pty/vllm"]
+	path = 3pty/vllm
+	url = https://github.com/vllm-project/vllm
