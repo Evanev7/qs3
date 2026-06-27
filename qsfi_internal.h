@@ -27,6 +27,9 @@ qsfi_status set_error(
     const char* fmt,
     ...
 );
+qsfi_status set_invalid_arg(qsfi_context* ctx, const char* fmt, ...);
+qsfi_status set_unsupported(qsfi_context* ctx, const char* fmt, ...);
+qsfi_status set_out_of_memory(qsfi_context* ctx, const char* fmt, ...);
 qsfi_status set_cuda_error(qsfi_context* ctx, cudaError_t err, const char* op);
 qsfi_status set_flashinfer_error(qsfi_context* ctx, const char* op, const std::exception& ex);
 qsfi_status activate_context(qsfi_context* ctx);
@@ -43,46 +46,18 @@ qsfi_status validate_tensor(
 )
 {
     if (tensor.data == nullptr) {
-        return set_error(
-            ctx,
-            QSFI_STATUS_INVALID_ARGUMENT,
-            QSFI_ERROR_SOURCE_QSFI,
-            0,
-            "%s.data must not be null",
-            name
-        );
+        return set_invalid_arg(ctx, "%s.data must not be null", name);
     }
     if (tensor.dtype != dtype) {
-        return set_error(
-            ctx,
-            QSFI_STATUS_INVALID_ARGUMENT,
-            QSFI_ERROR_SOURCE_QSFI,
-            0,
-            "%s dtype does not match expected dtype",
-            name
-        );
+        return set_invalid_arg(ctx, "%s dtype does not match expected dtype", name);
     }
     constexpr uint32_t rank = sizeof(tensor.shape) / sizeof(tensor.shape[0]);
     if (rank != expected_rank) {
-        return set_error(
-            ctx,
-            QSFI_STATUS_INVALID_ARGUMENT,
-            QSFI_ERROR_SOURCE_QSFI,
-            0,
-            "%s rank mismatch",
-            name
-        );
+        return set_invalid_arg(ctx, "%s rank mismatch", name);
     }
     for (uint32_t i = 0; i < rank; ++i) {
         if (tensor.shape[i] <= 0 || tensor.stride[i] <= 0) {
-            return set_error(
-                ctx,
-                QSFI_STATUS_INVALID_ARGUMENT,
-                QSFI_ERROR_SOURCE_QSFI,
-                0,
-                "%s shape/stride entries must be positive",
-                name
-            );
+            return set_invalid_arg(ctx, "%s shape/stride entries must be positive", name);
         }
     }
     return QSFI_STATUS_OK;

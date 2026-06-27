@@ -72,24 +72,12 @@ qsfi_status compute_workspace_layout(
 )
 {
     if (num_tokens > desc.max_num_tokens) {
-        return set_error(
-            ctx,
-            QSFI_STATUS_INVALID_ARGUMENT,
-            QSFI_ERROR_SOURCE_QSFI,
-            0,
-            "num_tokens exceeds qsfi_moe_plan_desc.max_num_tokens"
-        );
+        return set_invalid_arg(ctx, "num_tokens exceeds qsfi_moe_plan_desc.max_num_tokens");
     }
 
     size_t max_routes = 0;
     if (mul_overflows_size(num_tokens, desc.top_k, &max_routes)) {
-        return set_error(
-            ctx,
-            QSFI_STATUS_INVALID_ARGUMENT,
-            QSFI_ERROR_SOURCE_QSFI,
-            0,
-            "MoE expanded route count overflows size_t"
-        );
+        return set_invalid_arg(ctx, "MoE expanded route count overflows size_t");
     }
 
     size_t hidden_elems = 0;
@@ -100,13 +88,7 @@ qsfi_status compute_workspace_layout(
         || mul_overflows_size(max_routes, 2u * desc.intermediate_size, &gate_up_elems)
         || mul_overflows_size(max_routes, desc.intermediate_size, &act_elems)
         || mul_overflows_size(max_routes, desc.hidden_size, &down_elems)) {
-        return set_error(
-            ctx,
-            QSFI_STATUS_INVALID_ARGUMENT,
-            QSFI_ERROR_SOURCE_QSFI,
-            0,
-            "MoE workspace element count overflows size_t"
-        );
+        return set_invalid_arg(ctx, "MoE workspace element count overflows size_t");
     }
 
     char* bytes = static_cast<char*>(base);
@@ -153,81 +135,41 @@ bool tensor1_is_contiguous(const qsfi_tensor1& tensor)
 
 qsfi_status validate_contiguous(qsfi_context* ctx, const char* name)
 {
-    return set_error(
-        ctx,
-        QSFI_STATUS_INVALID_ARGUMENT,
-        QSFI_ERROR_SOURCE_QSFI,
-        0,
-        "%s must be contiguous in qsfi MoE staged BF16 backend",
-        name
-    );
+    return set_invalid_arg(ctx, "%s must be contiguous in qsfi MoE staged BF16 backend", name);
 }
 
 qsfi_status validate_plan_desc(qsfi_context* ctx, const qsfi_moe_plan_desc* desc)
 {
     if (desc == nullptr) {
-        return set_error(
-            ctx,
-            QSFI_STATUS_INVALID_ARGUMENT,
-            QSFI_ERROR_SOURCE_QSFI,
-            0,
-            "desc is null"
-        );
+        return set_invalid_arg(ctx, "desc is null");
     }
     if (desc->max_num_tokens == 0 || desc->hidden_size == 0 || desc->intermediate_size == 0
         || desc->num_experts == 0 || desc->top_k == 0 || desc->local_num_experts == 0) {
-        return set_error(
-            ctx,
-            QSFI_STATUS_INVALID_ARGUMENT,
-            QSFI_ERROR_SOURCE_QSFI,
-            0,
-            "MoE plan dimensions must be non-zero"
-        );
+        return set_invalid_arg(ctx, "MoE plan dimensions must be non-zero");
     }
     if (desc->local_expert_offset + desc->local_num_experts > desc->num_experts) {
-        return set_error(
-            ctx,
-            QSFI_STATUS_INVALID_ARGUMENT,
-            QSFI_ERROR_SOURCE_QSFI,
-            0,
-            "MoE local expert range exceeds num_experts"
-        );
+        return set_invalid_arg(ctx, "MoE local expert range exceeds num_experts");
     }
     if (desc->route_mode != QSFI_MOE_ROUTE_PRECOMPUTED_TOPK) {
-        return set_error(
-            ctx,
-            QSFI_STATUS_UNSUPPORTED,
-            QSFI_ERROR_SOURCE_QSFI,
-            0,
-            "MoE router-logits mode is not implemented yet"
-        );
+        return set_unsupported(ctx, "MoE router-logits mode is not implemented yet");
     }
     if (desc->backend == QSFI_MOE_BACKEND_FLASHINFER_STAGED_BF16) {
         if (desc->local_expert_offset != 0 || desc->local_num_experts != desc->num_experts) {
-            return set_error(
+            return set_unsupported(
                 ctx,
-                QSFI_STATUS_UNSUPPORTED,
-                QSFI_ERROR_SOURCE_QSFI,
-                0,
                 "staged BF16 MoE currently requires all experts to be local"
             );
         }
         if (desc->activation_dtype != QSFI_DTYPE_BF16 || desc->weight_dtype != QSFI_DTYPE_BF16
             || desc->output_dtype != QSFI_DTYPE_BF16) {
-            return set_error(
+            return set_invalid_arg(
                 ctx,
-                QSFI_STATUS_INVALID_ARGUMENT,
-                QSFI_ERROR_SOURCE_QSFI,
-                0,
                 "staged BF16 MoE requires bf16 activation, weight, and output dtypes"
             );
         }
         if (desc->hidden_size % 8 != 0 || desc->intermediate_size % 8 != 0) {
-            return set_error(
+            return set_invalid_arg(
                 ctx,
-                QSFI_STATUS_INVALID_ARGUMENT,
-                QSFI_ERROR_SOURCE_QSFI,
-                0,
                 "staged BF16 MoE requires hidden_size and intermediate_size divisible by 8"
             );
         }
@@ -237,32 +179,20 @@ qsfi_status validate_plan_desc(qsfi_context* ctx, const qsfi_moe_plan_desc* desc
         if (desc->activation_dtype != QSFI_DTYPE_NVFP4_E2M1
             || desc->weight_dtype != QSFI_DTYPE_NVFP4_E2M1
             || desc->output_dtype != QSFI_DTYPE_BF16) {
-            return set_error(
+            return set_invalid_arg(
                 ctx,
-                QSFI_STATUS_INVALID_ARGUMENT,
-                QSFI_ERROR_SOURCE_QSFI,
-                0,
                 "NVFP4 MoE plan requires nvfp4 activation/weight and bf16 output dtypes"
             );
         }
         if (desc->hidden_size % 16 != 0 || desc->intermediate_size % 16 != 0) {
-            return set_error(
+            return set_invalid_arg(
                 ctx,
-                QSFI_STATUS_INVALID_ARGUMENT,
-                QSFI_ERROR_SOURCE_QSFI,
-                0,
                 "NVFP4 MoE requires hidden_size and intermediate_size divisible by 16"
             );
         }
         return QSFI_STATUS_OK;
     }
-    return set_error(
-        ctx,
-        QSFI_STATUS_UNSUPPORTED,
-        QSFI_ERROR_SOURCE_QSFI,
-        0,
-        "unsupported MoE backend"
-    );
+    return set_unsupported(ctx, "unsupported MoE backend");
 }
 
 qsfi_status validate_bf16_execute(
@@ -273,32 +203,14 @@ qsfi_status validate_bf16_execute(
 )
 {
     if (plan == nullptr || desc == nullptr) {
-        return set_error(
-            ctx,
-            QSFI_STATUS_INVALID_ARGUMENT,
-            QSFI_ERROR_SOURCE_QSFI,
-            0,
-            "plan/desc is null"
-        );
+        return set_invalid_arg(ctx, "plan/desc is null");
     }
     const qsfi_moe_plan_desc& p = plan->desc;
     if (p.backend != QSFI_MOE_BACKEND_FLASHINFER_STAGED_BF16) {
-        return set_error(
-            ctx,
-            QSFI_STATUS_INVALID_ARGUMENT,
-            QSFI_ERROR_SOURCE_QSFI,
-            0,
-            "qsfi_moe_execute_bf16 requires a staged BF16 MoE plan"
-        );
+        return set_invalid_arg(ctx, "qsfi_moe_execute_bf16 requires a staged BF16 MoE plan");
     }
     if (desc->num_tokens == 0 || desc->num_tokens > p.max_num_tokens) {
-        return set_error(
-            ctx,
-            QSFI_STATUS_INVALID_ARGUMENT,
-            QSFI_ERROR_SOURCE_QSFI,
-            0,
-            "invalid MoE num_tokens"
-        );
+        return set_invalid_arg(ctx, "invalid MoE num_tokens");
     }
     qsfi_status status = validate_tensor(ctx, desc->hidden, "hidden", QSFI_DTYPE_BF16, 2);
     if (status != QSFI_STATUS_OK)
@@ -322,13 +234,7 @@ qsfi_status validate_bf16_execute(
     if (status != QSFI_STATUS_OK)
         return status;
     if (desc->workspace.dtype != QSFI_DTYPE_U8 && desc->workspace.dtype != QSFI_DTYPE_I8)
-        return set_error(
-            ctx,
-            QSFI_STATUS_INVALID_ARGUMENT,
-            QSFI_ERROR_SOURCE_QSFI,
-            0,
-            "MoE workspace dtype must be u8 or i8"
-        );
+        return set_invalid_arg(ctx, "MoE workspace dtype must be u8 or i8");
     if (!tensor2_is_contiguous(desc->hidden))
         return validate_contiguous(ctx, "hidden");
     if (!tensor2_is_contiguous(desc->topk_ids))
@@ -348,13 +254,7 @@ qsfi_status validate_bf16_execute(
         || desc->topk_ids.shape[0] != desc->num_tokens || desc->topk_ids.shape[1] != p.top_k
         || desc->topk_weights.shape[0] != desc->num_tokens || desc->topk_weights.shape[1] != p.top_k
         || desc->out.shape[0] != desc->num_tokens || desc->out.shape[1] != p.hidden_size) {
-        return set_error(
-            ctx,
-            QSFI_STATUS_INVALID_ARGUMENT,
-            QSFI_ERROR_SOURCE_QSFI,
-            0,
-            "MoE token/top-k tensor shape mismatch"
-        );
+        return set_invalid_arg(ctx, "MoE token/top-k tensor shape mismatch");
     }
     if (desc->gate_up_weight.shape[0] != p.local_num_experts
         || desc->gate_up_weight.shape[1] != 2ll * p.intermediate_size
@@ -362,26 +262,14 @@ qsfi_status validate_bf16_execute(
         || desc->down_weight.shape[0] != p.local_num_experts
         || desc->down_weight.shape[1] != p.hidden_size
         || desc->down_weight.shape[2] != p.intermediate_size) {
-        return set_error(
-            ctx,
-            QSFI_STATUS_INVALID_ARGUMENT,
-            QSFI_ERROR_SOURCE_QSFI,
-            0,
-            "MoE expert weight shape mismatch"
-        );
+        return set_invalid_arg(ctx, "MoE expert weight shape mismatch");
     }
 
     status = compute_workspace_layout(ctx, p, desc->num_tokens, desc->workspace.data, layout);
     if (status != QSFI_STATUS_OK)
         return status;
     if (static_cast<size_t>(desc->workspace.shape[0]) < layout->bytes) {
-        return set_error(
-            ctx,
-            QSFI_STATUS_INVALID_ARGUMENT,
-            QSFI_ERROR_SOURCE_QSFI,
-            0,
-            "MoE workspace is too small"
-        );
+        return set_invalid_arg(ctx, "MoE workspace is too small");
     }
     return QSFI_STATUS_OK;
 }
@@ -758,13 +646,7 @@ qsfi_moe_plan_create(qsfi_context* ctx, const qsfi_moe_plan_desc* desc, qsfi_moe
         return status;
     qsfi_moe_plan* plan = new (std::nothrow) qsfi_moe_plan;
     if (plan == nullptr)
-        return set_error(
-            ctx,
-            QSFI_STATUS_OUT_OF_MEMORY,
-            QSFI_ERROR_SOURCE_QSFI,
-            0,
-            "allocating MoE plan"
-        );
+        return set_out_of_memory(ctx, "allocating MoE plan");
     plan->desc = *desc;
     *out = plan;
     return QSFI_STATUS_OK;
@@ -786,13 +668,7 @@ qsfi_status qsfi_moe_workspace_size(
         return QSFI_STATUS_INVALID_ARGUMENT;
     clear_error(&ctx->last_error);
     if (plan->desc.backend != QSFI_MOE_BACKEND_FLASHINFER_STAGED_BF16) {
-        return set_error(
-            ctx,
-            QSFI_STATUS_UNSUPPORTED,
-            QSFI_ERROR_SOURCE_QSFI,
-            0,
-            "MoE workspace query is only implemented for staged BF16"
-        );
+        return set_unsupported(ctx, "MoE workspace query is only implemented for staged BF16");
     }
     moe_workspace layout {};
     qsfi_status status = compute_workspace_layout(ctx, plan->desc, num_tokens, nullptr, &layout);
@@ -833,30 +709,12 @@ qsfi_status qsfi_moe_execute_nvfp4(
         return QSFI_STATUS_INVALID_ARGUMENT;
     clear_error(&ctx->last_error);
     if (plan == nullptr || desc == nullptr) {
-        return set_error(
-            ctx,
-            QSFI_STATUS_INVALID_ARGUMENT,
-            QSFI_ERROR_SOURCE_QSFI,
-            0,
-            "plan/desc is null"
-        );
+        return set_invalid_arg(ctx, "plan/desc is null");
     }
     if (plan->desc.backend != QSFI_MOE_BACKEND_FLASHINFER_NVFP4) {
-        return set_error(
-            ctx,
-            QSFI_STATUS_INVALID_ARGUMENT,
-            QSFI_ERROR_SOURCE_QSFI,
-            0,
-            "qsfi_moe_execute_nvfp4 requires an NVFP4 MoE plan"
-        );
+        return set_invalid_arg(ctx, "qsfi_moe_execute_nvfp4 requires an NVFP4 MoE plan");
     }
-    return set_error(
-        ctx,
-        QSFI_STATUS_UNSUPPORTED,
-        QSFI_ERROR_SOURCE_QSFI,
-        0,
-        "NVFP4 MoE execution is declared but not implemented yet"
-    );
+    return set_unsupported(ctx, "NVFP4 MoE execution is declared but not implemented yet");
 }
 
 } // extern "C"

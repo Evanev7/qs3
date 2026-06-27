@@ -353,11 +353,8 @@ qsfi_status require_exact_shape(qsfi_context* ctx, const gdn_shape& shape)
     if (shape.num_q_heads != kDefaultNumQHeads || shape.num_k_heads != kDefaultNumKHeads
         || shape.num_v_heads != kDefaultNumVHeads || shape.key_dim != kDefaultKeyDim
         || shape.value_dim != kDefaultValueDim) {
-        return set_error(
+        return set_unsupported(
             ctx,
-            QSFI_STATUS_UNSUPPORTED,
-            QSFI_ERROR_SOURCE_QSFI,
-            0,
             "only qwen3.6 GDN shape q=%u k=%u v=%u key_dim=%u value_dim=%u is wired",
             kDefaultNumQHeads,
             kDefaultNumKHeads,
@@ -385,14 +382,7 @@ template <typename Desc> qsfi_status require_explicit_gdn_desc(qsfi_context* ctx
 
     for (const auto& field : fields) {
         if (!field.is_set) {
-            return set_error(
-                ctx,
-                QSFI_STATUS_INVALID_ARGUMENT,
-                QSFI_ERROR_SOURCE_QSFI,
-                0,
-                "%s must not be zero",
-                field.name
-            );
+            return set_invalid_arg(ctx, "%s must not be zero", field.name);
         }
     }
     return QSFI_STATUS_OK;
@@ -406,14 +396,7 @@ qsfi_status validate_index_tensor(
     if (status != QSFI_STATUS_OK)
         return status;
     if (tensor.shape[0] != static_cast<int64_t>(expected)) {
-        return set_error(
-            ctx,
-            QSFI_STATUS_INVALID_ARGUMENT,
-            QSFI_ERROR_SOURCE_QSFI,
-            0,
-            "%s shape mismatch",
-            name
-        );
+        return set_invalid_arg(ctx, "%s shape mismatch", name);
     }
     return QSFI_STATUS_OK;
 }
@@ -464,13 +447,7 @@ qsfi_status validate_gdn_tensors(
     if (status != QSFI_STATUS_OK)
         return status;
     if (state.dtype != QSFI_DTYPE_BF16 && state.dtype != QSFI_DTYPE_F32) {
-        return set_error(
-            ctx,
-            QSFI_STATUS_UNSUPPORTED,
-            QSFI_ERROR_SOURCE_QSFI,
-            0,
-            "gdn.state must be bf16 or f32"
-        );
+        return set_unsupported(ctx, "gdn.state must be bf16 or f32");
     }
     status = validate_tensor(ctx, state, "gdn.state", state.dtype, 4);
     if (status != QSFI_STATUS_OK)
@@ -500,13 +477,7 @@ qsfi_status validate_gdn_tensors(
         || out.shape[0] != static_cast<int64_t>(total_tokens)
         || out.shape[1] != static_cast<int64_t>(shape.num_v_heads)
         || out.shape[2] != static_cast<int64_t>(shape.value_dim)) {
-        return set_error(
-            ctx,
-            QSFI_STATUS_INVALID_ARGUMENT,
-            QSFI_ERROR_SOURCE_QSFI,
-            0,
-            "gdn tensor shape mismatch"
-        );
+        return set_invalid_arg(ctx, "gdn tensor shape mismatch");
     }
     return QSFI_STATUS_OK;
 }
@@ -549,13 +520,7 @@ uint64_t work_items(uint32_t outer_count, const gdn_shape& shape)
 qsfi_status check_work_items(qsfi_context* ctx, uint64_t items)
 {
     if (items > std::numeric_limits<uint32_t>::max()) {
-        return set_error(
-            ctx,
-            QSFI_STATUS_UNSUPPORTED,
-            QSFI_ERROR_SOURCE_QSFI,
-            0,
-            "gdn launch grid is too large"
-        );
+        return set_unsupported(ctx, "gdn launch grid is too large");
     }
     return QSFI_STATUS_OK;
 }
@@ -600,22 +565,10 @@ qsfi_status qsfi_gdn_decode(qsfi_context* ctx, const qsfi_gdn_decode_desc* desc)
     if (status != QSFI_STATUS_OK)
         return status;
     if (desc->num_tokens == 0) {
-        return set_error(
-            ctx,
-            QSFI_STATUS_INVALID_ARGUMENT,
-            QSFI_ERROR_SOURCE_QSFI,
-            0,
-            "gdn decode num_tokens must be non-zero"
-        );
+        return set_invalid_arg(ctx, "gdn decode num_tokens must be non-zero");
     }
     if (desc->state_layout != QSFI_GDN_STATE_LAYOUT_VK) {
-        return set_error(
-            ctx,
-            QSFI_STATUS_UNSUPPORTED,
-            QSFI_ERROR_SOURCE_QSFI,
-            0,
-            "only VK GDN state layout is wired"
-        );
+        return set_unsupported(ctx, "only VK GDN state layout is wired");
     }
 
     status = require_explicit_gdn_desc(ctx, desc);
@@ -675,22 +628,13 @@ qsfi_status qsfi_gdn_prefill(qsfi_context* ctx, const qsfi_gdn_prefill_desc* des
     if (status != QSFI_STATUS_OK)
         return status;
     if (desc->batch_size == 0 || desc->total_tokens == 0 || desc->seq_indptr == nullptr) {
-        return set_error(
+        return set_invalid_arg(
             ctx,
-            QSFI_STATUS_INVALID_ARGUMENT,
-            QSFI_ERROR_SOURCE_QSFI,
-            0,
             "gdn prefill batch_size, total_tokens, and seq_indptr must be set"
         );
     }
     if (desc->state_layout != QSFI_GDN_STATE_LAYOUT_VK) {
-        return set_error(
-            ctx,
-            QSFI_STATUS_UNSUPPORTED,
-            QSFI_ERROR_SOURCE_QSFI,
-            0,
-            "only VK GDN state layout is wired"
-        );
+        return set_unsupported(ctx, "only VK GDN state layout is wired");
     }
 
     status = require_explicit_gdn_desc(ctx, desc);

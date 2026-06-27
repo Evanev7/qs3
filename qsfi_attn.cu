@@ -81,13 +81,7 @@ qsfi_status require_scratch(qsfi_context* ctx)
         return QSFI_STATUS_INVALID_ARGUMENT;
     if (ctx->float_workspace == nullptr || ctx->int_workspace_bytes == 0
         || ctx->host_int_workspace_bytes == 0) {
-        return set_error(
-            ctx,
-            QSFI_STATUS_INVALID_ARGUMENT,
-            QSFI_ERROR_SOURCE_QSFI,
-            0,
-            "scratch workspace sizes are not reserved"
-        );
+        return set_invalid_arg(ctx, "scratch workspace sizes are not reserved");
     }
     return QSFI_STATUS_OK;
 }
@@ -146,13 +140,7 @@ qsfi_status allocate_plan_workspaces(qsfi_context* ctx, qsfi_plan* plan)
 qsfi_status require_plan_stream(qsfi_context* ctx, const qsfi_plan* plan)
 {
     if (plan->stream != ctx->stream) {
-        return set_error(
-            ctx,
-            QSFI_STATUS_INVALID_ARGUMENT,
-            QSFI_ERROR_SOURCE_QSFI,
-            0,
-            "plan must execute on the stream used for plan creation"
-        );
+        return set_invalid_arg(ctx, "plan must execute on the stream used for plan creation");
     }
     return QSFI_STATUS_OK;
 }
@@ -178,21 +166,11 @@ bool pointer_is_host_readable(const void* ptr)
 qsfi_status require_host_readable_i32(qsfi_context* ctx, const int32_t* ptr, const char* name)
 {
     if (ptr == nullptr) {
-        return set_error(
-            ctx,
-            QSFI_STATUS_INVALID_ARGUMENT,
-            QSFI_ERROR_SOURCE_QSFI,
-            0,
-            "%s must not be null",
-            name
-        );
+        return set_invalid_arg(ctx, "%s must not be null", name);
     }
     if (!pointer_is_host_readable(ptr)) {
-        return set_error(
+        return set_invalid_arg(
             ctx,
-            QSFI_STATUS_INVALID_ARGUMENT,
-            QSFI_ERROR_SOURCE_QSFI,
-            0,
             "%s must be host-readable at plan time; use host or managed memory",
             name
         );
@@ -203,97 +181,37 @@ qsfi_status require_host_readable_i32(qsfi_context* ctx, const int32_t* ptr, con
 qsfi_status validate_attention(qsfi_context* ctx, const qsfi_attention_desc* attention)
 {
     if (attention == nullptr) {
-        return set_error(
-            ctx,
-            QSFI_STATUS_INVALID_ARGUMENT,
-            QSFI_ERROR_SOURCE_QSFI,
-            0,
-            "attention must not be null"
-        );
+        return set_invalid_arg(ctx, "attention must not be null");
     }
     if (attention->num_qo_heads == 0 || attention->num_kv_heads == 0 || attention->head_dim_qk == 0
         || attention->head_dim_vo == 0 || attention->page_size == 0) {
-        return set_error(
-            ctx,
-            QSFI_STATUS_INVALID_ARGUMENT,
-            QSFI_ERROR_SOURCE_QSFI,
-            0,
-            "attention dimensions must be non-zero"
-        );
+        return set_invalid_arg(ctx, "attention dimensions must be non-zero");
     }
     if (attention->num_qo_heads % attention->num_kv_heads != 0) {
-        return set_error(
-            ctx,
-            QSFI_STATUS_INVALID_ARGUMENT,
-            QSFI_ERROR_SOURCE_QSFI,
-            0,
-            "num_qo_heads must be divisible by num_kv_heads"
-        );
+        return set_invalid_arg(ctx, "num_qo_heads must be divisible by num_kv_heads");
     }
     if (attention->head_dim_qk != attention->head_dim_vo) {
-        return set_error(
-            ctx,
-            QSFI_STATUS_UNSUPPORTED,
-            QSFI_ERROR_SOURCE_QSFI,
-            0,
-            "different qk/vo head dimensions are not wired yet"
-        );
+        return set_unsupported(ctx, "different qk/vo head dimensions are not wired yet");
     }
     if (attention->kv_layout != QSFI_KV_LAYOUT_NHD && attention->kv_layout != QSFI_KV_LAYOUT_HND) {
-        return set_error(
-            ctx,
-            QSFI_STATUS_INVALID_ARGUMENT,
-            QSFI_ERROR_SOURCE_QSFI,
-            0,
-            "invalid kv_layout"
-        );
+        return set_invalid_arg(ctx, "invalid kv_layout");
     }
     if (attention->pos_encoding != QSFI_POS_ENCODING_NONE
         && attention->pos_encoding != QSFI_POS_ENCODING_ROPE_LLAMA) {
-        return set_error(
-            ctx,
-            QSFI_STATUS_UNSUPPORTED,
-            QSFI_ERROR_SOURCE_QSFI,
-            0,
-            "unsupported positional encoding"
-        );
+        return set_unsupported(ctx, "unsupported positional encoding");
     }
     if (!valid_dtype(attention->q_dtype) || !valid_dtype(attention->kv_dtype)
         || !valid_dtype(attention->o_dtype)) {
-        return set_error(
-            ctx,
-            QSFI_STATUS_INVALID_ARGUMENT,
-            QSFI_ERROR_SOURCE_QSFI,
-            0,
-            "invalid attention dtype"
-        );
+        return set_invalid_arg(ctx, "invalid attention dtype");
     }
     if (attention->q_dtype != attention->kv_dtype || attention->q_dtype != attention->o_dtype) {
-        return set_error(
-            ctx,
-            QSFI_STATUS_UNSUPPORTED,
-            QSFI_ERROR_SOURCE_QSFI,
-            0,
-            "mixed q/kv/o dtypes are not wired yet"
-        );
+        return set_unsupported(ctx, "mixed q/kv/o dtypes are not wired yet");
     }
     if (!supported_attention_dtype(attention->q_dtype)) {
-        return set_error(
-            ctx,
-            QSFI_STATUS_UNSUPPORTED,
-            QSFI_ERROR_SOURCE_QSFI,
-            0,
-            "only f16 and bf16 attention are wired initially"
-        );
+        return set_unsupported(ctx, "only f16 and bf16 attention are wired initially");
     }
     if (attention->use_fp16_qk_reduction != 0) {
-        return set_error(
-            ctx,
-            QSFI_STATUS_UNSUPPORTED,
-            QSFI_ERROR_SOURCE_QSFI,
-            0,
-            "fp16 qk reduction is not wired yet"
-        );
+        return set_unsupported(ctx, "fp16 qk reduction is not wired yet");
     }
     return QSFI_STATUS_OK;
 }
@@ -303,22 +221,10 @@ qsfi_status validate_paged_kv_plan(
 )
 {
     if (page_table == nullptr) {
-        return set_error(
-            ctx,
-            QSFI_STATUS_INVALID_ARGUMENT,
-            QSFI_ERROR_SOURCE_QSFI,
-            0,
-            "page_table plan must not be null"
-        );
+        return set_invalid_arg(ctx, "page_table plan must not be null");
     }
     if (page_table->batch_size == 0) {
-        return set_error(
-            ctx,
-            QSFI_STATUS_INVALID_ARGUMENT,
-            QSFI_ERROR_SOURCE_QSFI,
-            0,
-            "page_table batch_size must be non-zero"
-        );
+        return set_invalid_arg(ctx, "page_table batch_size must be non-zero");
     }
     qsfi_status status = require_host_readable_i32(ctx, page_table->indptr, "page_table.indptr");
     if (status != QSFI_STATUS_OK)
@@ -332,13 +238,7 @@ qsfi_status validate_paged_kv_plan(
             return status;
     }
     if (page_table->indptr[0] != 0) {
-        return set_error(
-            ctx,
-            QSFI_STATUS_INVALID_ARGUMENT,
-            QSFI_ERROR_SOURCE_QSFI,
-            0,
-            "page_table.indptr[0] must be 0"
-        );
+        return set_invalid_arg(ctx, "page_table.indptr[0] must be 0");
     }
     // TODO(qsfi): validate physical page ids when the cache capacity is available. Planning
     // only sees CSR shape, so bad indices can still become device-side OOB later.
@@ -348,43 +248,22 @@ qsfi_status validate_paged_kv_plan(
         const int32_t pages = end - begin;
         const int32_t last_len = page_table->last_page_len[i];
         if (begin < 0 || end < begin) {
-            return set_error(
-                ctx,
-                QSFI_STATUS_INVALID_ARGUMENT,
-                QSFI_ERROR_SOURCE_QSFI,
-                0,
-                "page_table.indptr must be monotonic"
-            );
+            return set_invalid_arg(ctx, "page_table.indptr must be monotonic");
         }
         if (pages == 0) {
             if (last_len != 0) {
-                return set_error(
-                    ctx,
-                    QSFI_STATUS_INVALID_ARGUMENT,
-                    QSFI_ERROR_SOURCE_QSFI,
-                    0,
-                    "empty requests must have last_page_len 0"
-                );
+                return set_invalid_arg(ctx, "empty requests must have last_page_len 0");
             }
         } else if (last_len <= 0 || last_len > static_cast<int32_t>(attention->page_size)) {
-            return set_error(
+            return set_invalid_arg(
                 ctx,
-                QSFI_STATUS_INVALID_ARGUMENT,
-                QSFI_ERROR_SOURCE_QSFI,
-                0,
                 "last_page_len entries must be in [1, page_size] for non-empty requests"
             );
         }
     }
     if (page_table->indptr[page_table->batch_size]
         != static_cast<int32_t>(page_table->num_indices)) {
-        return set_error(
-            ctx,
-            QSFI_STATUS_INVALID_ARGUMENT,
-            QSFI_ERROR_SOURCE_QSFI,
-            0,
-            "page_table.num_indices must match indptr[batch_size]"
-        );
+        return set_invalid_arg(ctx, "page_table.num_indices must match indptr[batch_size]");
     }
     return QSFI_STATUS_OK;
 }
@@ -392,54 +271,24 @@ qsfi_status validate_paged_kv_plan(
 qsfi_status validate_qo_plan(qsfi_context* ctx, const qsfi_qo_plan* qo)
 {
     if (qo == nullptr) {
-        return set_error(
-            ctx,
-            QSFI_STATUS_INVALID_ARGUMENT,
-            QSFI_ERROR_SOURCE_QSFI,
-            0,
-            "qo plan must not be null"
-        );
+        return set_invalid_arg(ctx, "qo plan must not be null");
     }
     if (qo->batch_size == 0) {
-        return set_error(
-            ctx,
-            QSFI_STATUS_INVALID_ARGUMENT,
-            QSFI_ERROR_SOURCE_QSFI,
-            0,
-            "qo batch_size must be non-zero"
-        );
+        return set_invalid_arg(ctx, "qo batch_size must be non-zero");
     }
     qsfi_status status = require_host_readable_i32(ctx, qo->indptr, "qo.indptr");
     if (status != QSFI_STATUS_OK)
         return status;
     if (qo->indptr[0] != 0) {
-        return set_error(
-            ctx,
-            QSFI_STATUS_INVALID_ARGUMENT,
-            QSFI_ERROR_SOURCE_QSFI,
-            0,
-            "qo.indptr[0] must be 0"
-        );
+        return set_invalid_arg(ctx, "qo.indptr[0] must be 0");
     }
     for (uint32_t i = 0; i < qo->batch_size; ++i) {
         if (qo->indptr[i] < 0 || qo->indptr[i + 1] < qo->indptr[i]) {
-            return set_error(
-                ctx,
-                QSFI_STATUS_INVALID_ARGUMENT,
-                QSFI_ERROR_SOURCE_QSFI,
-                0,
-                "qo.indptr must be monotonic"
-            );
+            return set_invalid_arg(ctx, "qo.indptr must be monotonic");
         }
     }
     if (qo->indptr[qo->batch_size] != static_cast<int32_t>(qo->total_tokens)) {
-        return set_error(
-            ctx,
-            QSFI_STATUS_INVALID_ARGUMENT,
-            QSFI_ERROR_SOURCE_QSFI,
-            0,
-            "qo.total_tokens must match qo.indptr[batch_size]"
-        );
+        return set_invalid_arg(ctx, "qo.total_tokens must match qo.indptr[batch_size]");
     }
     return QSFI_STATUS_OK;
 }
@@ -460,21 +309,12 @@ qsfi_status validate_kv_cache(
     for (uint32_t i = 0; i < 4; ++i) {
         if (kv_cache.k.shape[i] != kv_cache.v.shape[i]
             || kv_cache.k.stride[i] != kv_cache.v.stride[i]) {
-            return set_error(
-                ctx,
-                QSFI_STATUS_INVALID_ARGUMENT,
-                QSFI_ERROR_SOURCE_QSFI,
-                0,
-                "kv_cache k/v shapes and strides must match"
-            );
+            return set_invalid_arg(ctx, "kv_cache k/v shapes and strides must match");
         }
     }
     if (kv_cache.k_scale.data != nullptr || kv_cache.v_scale.data != nullptr) {
-        return set_error(
+        return set_unsupported(
             ctx,
-            QSFI_STATUS_UNSUPPORTED,
-            QSFI_ERROR_SOURCE_QSFI,
-            0,
             "kv scale tensors are only for quantized kv paths, not wired yet"
         );
     }
@@ -483,11 +323,8 @@ qsfi_status validate_kv_cache(
         if (kv_cache.k.shape[1] != static_cast<int64_t>(attention.page_size)
             || kv_cache.k.shape[2] != static_cast<int64_t>(attention.num_kv_heads)
             || kv_cache.k.shape[3] != static_cast<int64_t>(attention.head_dim_qk)) {
-            return set_error(
+            return set_invalid_arg(
                 ctx,
-                QSFI_STATUS_INVALID_ARGUMENT,
-                QSFI_ERROR_SOURCE_QSFI,
-                0,
                 "NHD kv_cache shape must be [pages, page_size, kv_heads, head_dim]"
             );
         }
@@ -495,11 +332,8 @@ qsfi_status validate_kv_cache(
         if (kv_cache.k.shape[1] != static_cast<int64_t>(attention.num_kv_heads)
             || kv_cache.k.shape[2] != static_cast<int64_t>(attention.page_size)
             || kv_cache.k.shape[3] != static_cast<int64_t>(attention.head_dim_qk)) {
-            return set_error(
+            return set_invalid_arg(
                 ctx,
-                QSFI_STATUS_INVALID_ARGUMENT,
-                QSFI_ERROR_SOURCE_QSFI,
-                0,
                 "HND kv_cache shape must be [pages, kv_heads, page_size, head_dim]"
             );
         }
@@ -515,22 +349,10 @@ qsfi_status
 validate_page_table_exec(qsfi_context* ctx, const qsfi_plan* plan, const qsfi_paged_kv_table& table)
 {
     if (table.indptr == nullptr || table.indices == nullptr || table.last_page_len == nullptr) {
-        return set_error(
-            ctx,
-            QSFI_STATUS_INVALID_ARGUMENT,
-            QSFI_ERROR_SOURCE_QSFI,
-            0,
-            "execution page table device pointers must not be null"
-        );
+        return set_invalid_arg(ctx, "execution page table device pointers must not be null");
     }
     if (table.batch_size != plan->batch_size || table.num_indices != plan->num_indices) {
-        return set_error(
-            ctx,
-            QSFI_STATUS_INVALID_ARGUMENT,
-            QSFI_ERROR_SOURCE_QSFI,
-            0,
-            "execution page table shape does not match plan"
-        );
+        return set_invalid_arg(ctx, "execution page table shape does not match plan");
     }
     // TODO(qsfi): decide whether execution must use the same table contents captured at
     // plan time, or explicitly document which page-table mutations preserve plan validity.
@@ -1068,13 +890,7 @@ qsfi_status validate_decode_execute(
 )
 {
     if (desc == nullptr) {
-        return set_error(
-            ctx,
-            QSFI_STATUS_INVALID_ARGUMENT,
-            QSFI_ERROR_SOURCE_QSFI,
-            0,
-            "decode execute desc must not be null"
-        );
+        return set_invalid_arg(ctx, "decode execute desc must not be null");
     }
     const qsfi_attention_desc& attention = plan->attention;
     qsfi_status status = validate_tensor(ctx, desc->q, "q", attention.q_dtype, 3);
@@ -1086,33 +902,15 @@ qsfi_status validate_decode_execute(
     if (desc->q.shape[0] != static_cast<int64_t>(plan->batch_size)
         || desc->q.shape[1] != static_cast<int64_t>(attention.num_qo_heads)
         || desc->q.shape[2] != static_cast<int64_t>(attention.head_dim_qk)) {
-        return set_error(
-            ctx,
-            QSFI_STATUS_INVALID_ARGUMENT,
-            QSFI_ERROR_SOURCE_QSFI,
-            0,
-            "decode q shape must be [batch, qo_heads, head_dim]"
-        );
+        return set_invalid_arg(ctx, "decode q shape must be [batch, qo_heads, head_dim]");
     }
     for (uint32_t i = 0; i < 3; ++i) {
         if (desc->o.shape[i] != desc->q.shape[i]) {
-            return set_error(
-                ctx,
-                QSFI_STATUS_INVALID_ARGUMENT,
-                QSFI_ERROR_SOURCE_QSFI,
-                0,
-                "decode o shape must match q shape"
-            );
+            return set_invalid_arg(ctx, "decode o shape must match q shape");
         }
     }
     if (default_one(desc->v_scale) != 1.0f) {
-        return set_error(
-            ctx,
-            QSFI_STATUS_UNSUPPORTED,
-            QSFI_ERROR_SOURCE_QSFI,
-            0,
-            "v_scale other than 1 is not wired yet"
-        );
+        return set_unsupported(ctx, "v_scale other than 1 is not wired yet");
     }
     status = validate_kv_cache(ctx, attention, desc->kv_cache, nullptr);
     if (status != QSFI_STATUS_OK)
@@ -1125,22 +923,10 @@ qsfi_status validate_prefill_execute(
 )
 {
     if (desc == nullptr) {
-        return set_error(
-            ctx,
-            QSFI_STATUS_INVALID_ARGUMENT,
-            QSFI_ERROR_SOURCE_QSFI,
-            0,
-            "prefill execute desc must not be null"
-        );
+        return set_invalid_arg(ctx, "prefill execute desc must not be null");
     }
     if (desc->qo_indptr == nullptr) {
-        return set_error(
-            ctx,
-            QSFI_STATUS_INVALID_ARGUMENT,
-            QSFI_ERROR_SOURCE_QSFI,
-            0,
-            "prefill qo_indptr device pointer must not be null"
-        );
+        return set_invalid_arg(ctx, "prefill qo_indptr device pointer must not be null");
     }
     const qsfi_attention_desc& attention = plan->attention;
     qsfi_status status = validate_tensor(ctx, desc->q, "q", attention.q_dtype, 3);
@@ -1152,33 +938,15 @@ qsfi_status validate_prefill_execute(
     if (desc->q.shape[0] != static_cast<int64_t>(plan->total_tokens)
         || desc->q.shape[1] != static_cast<int64_t>(attention.num_qo_heads)
         || desc->q.shape[2] != static_cast<int64_t>(attention.head_dim_qk)) {
-        return set_error(
-            ctx,
-            QSFI_STATUS_INVALID_ARGUMENT,
-            QSFI_ERROR_SOURCE_QSFI,
-            0,
-            "prefill q shape must be [total_tokens, qo_heads, head_dim]"
-        );
+        return set_invalid_arg(ctx, "prefill q shape must be [total_tokens, qo_heads, head_dim]");
     }
     for (uint32_t i = 0; i < 3; ++i) {
         if (desc->o.shape[i] != desc->q.shape[i]) {
-            return set_error(
-                ctx,
-                QSFI_STATUS_INVALID_ARGUMENT,
-                QSFI_ERROR_SOURCE_QSFI,
-                0,
-                "prefill o shape must match q shape"
-            );
+            return set_invalid_arg(ctx, "prefill o shape must match q shape");
         }
     }
     if (default_one(desc->v_scale) != 1.0f) {
-        return set_error(
-            ctx,
-            QSFI_STATUS_UNSUPPORTED,
-            QSFI_ERROR_SOURCE_QSFI,
-            0,
-            "v_scale other than 1 is not wired yet"
-        );
+        return set_unsupported(ctx, "v_scale other than 1 is not wired yet");
     }
     status = validate_kv_cache(ctx, attention, desc->kv_cache, nullptr);
     if (status != QSFI_STATUS_OK)
@@ -1211,26 +979,14 @@ qsfi_status qsfi_batch_decode_plan_create(
     if (status != QSFI_STATUS_OK)
         return status;
     if (attention->mask_mode != QSFI_MASK_MODE_NONE) {
-        return set_error(
-            ctx,
-            QSFI_STATUS_UNSUPPORTED,
-            QSFI_ERROR_SOURCE_QSFI,
-            0,
-            "decode mask modes are not wired; use QSFI_MASK_MODE_NONE"
-        );
+        return set_unsupported(ctx, "decode mask modes are not wired; use QSFI_MASK_MODE_NONE");
     }
     status = validate_paged_kv_plan(ctx, attention, page_table);
     if (status != QSFI_STATUS_OK)
         return status;
     qsfi_batch_decode_plan* handle = new (std::nothrow) qsfi_batch_decode_plan {};
     if (handle == nullptr) {
-        return set_error(
-            ctx,
-            QSFI_STATUS_OUT_OF_MEMORY,
-            QSFI_ERROR_SOURCE_QSFI,
-            0,
-            "failed to allocate decode plan"
-        );
+        return set_out_of_memory(ctx, "failed to allocate decode plan");
     }
     qsfi_plan* plan = &handle->impl;
     plan->kind = QSFI_PLAN_BATCH_DECODE;
@@ -1274,25 +1030,13 @@ qsfi_status qsfi_batch_decode_execute(
         return status;
     const qsfi_plan* plan = &handle->impl;
     if (plan->kind != QSFI_PLAN_BATCH_DECODE) {
-        return set_error(
-            ctx,
-            QSFI_STATUS_INVALID_ARGUMENT,
-            QSFI_ERROR_SOURCE_QSFI,
-            0,
-            "plan is not a decode plan"
-        );
+        return set_invalid_arg(ctx, "plan is not a decode plan");
     }
     status = require_plan_stream(ctx, plan);
     if (status != QSFI_STATUS_OK)
         return status;
     if (plan->scratch_generation != ctx->scratch_generation) {
-        return set_error(
-            ctx,
-            QSFI_STATUS_INVALID_ARGUMENT,
-            QSFI_ERROR_SOURCE_QSFI,
-            0,
-            "scratch was reallocated after plan creation"
-        );
+        return set_invalid_arg(ctx, "scratch was reallocated after plan creation");
     }
     status = validate_decode_execute(ctx, plan, desc);
     if (status != QSFI_STATUS_OK)
@@ -1330,13 +1074,7 @@ qsfi_status qsfi_batch_prefill_plan_create(
         return status;
     if (attention->mask_mode != QSFI_MASK_MODE_NONE
         && attention->mask_mode != QSFI_MASK_MODE_CAUSAL) {
-        return set_error(
-            ctx,
-            QSFI_STATUS_UNSUPPORTED,
-            QSFI_ERROR_SOURCE_QSFI,
-            0,
-            "prefill supports only none/causal mask modes initially"
-        );
+        return set_unsupported(ctx, "prefill supports only none/causal mask modes initially");
     }
     status = validate_qo_plan(ctx, qo);
     if (status != QSFI_STATUS_OK)
@@ -1345,23 +1083,11 @@ qsfi_status qsfi_batch_prefill_plan_create(
     if (status != QSFI_STATUS_OK)
         return status;
     if (qo->batch_size != page_table->batch_size) {
-        return set_error(
-            ctx,
-            QSFI_STATUS_INVALID_ARGUMENT,
-            QSFI_ERROR_SOURCE_QSFI,
-            0,
-            "qo and page_table batch sizes must match"
-        );
+        return set_invalid_arg(ctx, "qo and page_table batch sizes must match");
     }
     qsfi_batch_prefill_plan* handle = new (std::nothrow) qsfi_batch_prefill_plan {};
     if (handle == nullptr) {
-        return set_error(
-            ctx,
-            QSFI_STATUS_OUT_OF_MEMORY,
-            QSFI_ERROR_SOURCE_QSFI,
-            0,
-            "failed to allocate prefill plan"
-        );
+        return set_out_of_memory(ctx, "failed to allocate prefill plan");
     }
     qsfi_plan* plan = &handle->impl;
     plan->kind = QSFI_PLAN_BATCH_PREFILL;
@@ -1406,25 +1132,13 @@ qsfi_status qsfi_batch_prefill_execute(
         return status;
     const qsfi_plan* plan = &handle->impl;
     if (plan->kind != QSFI_PLAN_BATCH_PREFILL) {
-        return set_error(
-            ctx,
-            QSFI_STATUS_INVALID_ARGUMENT,
-            QSFI_ERROR_SOURCE_QSFI,
-            0,
-            "plan is not a prefill plan"
-        );
+        return set_invalid_arg(ctx, "plan is not a prefill plan");
     }
     status = require_plan_stream(ctx, plan);
     if (status != QSFI_STATUS_OK)
         return status;
     if (plan->scratch_generation != ctx->scratch_generation) {
-        return set_error(
-            ctx,
-            QSFI_STATUS_INVALID_ARGUMENT,
-            QSFI_ERROR_SOURCE_QSFI,
-            0,
-            "scratch was reallocated after plan creation"
-        );
+        return set_invalid_arg(ctx, "scratch was reallocated after plan creation");
     }
     status = validate_prefill_execute(ctx, plan, desc);
     if (status != QSFI_STATUS_OK)
@@ -1463,13 +1177,7 @@ qsfi_status qsfi_append_paged_kv_decode(
     if (status != QSFI_STATUS_OK)
         return status;
     if (append == nullptr) {
-        return set_error(
-            ctx,
-            QSFI_STATUS_INVALID_ARGUMENT,
-            QSFI_ERROR_SOURCE_QSFI,
-            0,
-            "append decode desc must not be null"
-        );
+        return set_invalid_arg(ctx, "append decode desc must not be null");
     }
     status = validate_tensor(ctx, append->k, "append.k", attention->kv_dtype, 3);
     if (status != QSFI_STATUS_OK)
@@ -1480,35 +1188,20 @@ qsfi_status qsfi_append_paged_kv_decode(
     if (append->k.shape[0] != static_cast<int64_t>(append->page_table.batch_size)
         || append->k.shape[1] != static_cast<int64_t>(attention->num_kv_heads)
         || append->k.shape[2] != static_cast<int64_t>(attention->head_dim_qk)) {
-        return set_error(
-            ctx,
-            QSFI_STATUS_INVALID_ARGUMENT,
-            QSFI_ERROR_SOURCE_QSFI,
-            0,
-            "decode append k shape must be [batch, kv_heads, head_dim]"
-        );
+        return set_invalid_arg(ctx, "decode append k shape must be [batch, kv_heads, head_dim]");
     }
     for (uint32_t i = 0; i < 3; ++i) {
         if (append->v.shape[i] != append->k.shape[i]
             || append->v.stride[i] != append->k.stride[i]) {
-            return set_error(
-                ctx,
-                QSFI_STATUS_INVALID_ARGUMENT,
-                QSFI_ERROR_SOURCE_QSFI,
-                0,
-                "decode append k/v shapes and strides must match"
-            );
+            return set_invalid_arg(ctx, "decode append k/v shapes and strides must match");
         }
     }
     if (append->k.stride[2] != 1
         || append->k.stride[1] != static_cast<int64_t>(attention->head_dim_qk)
         || append->k.stride[0]
             != static_cast<int64_t>(attention->num_kv_heads * attention->head_dim_qk)) {
-        return set_error(
+        return set_unsupported(
             ctx,
-            QSFI_STATUS_UNSUPPORTED,
-            QSFI_ERROR_SOURCE_QSFI,
-            0,
             "decode append input must be contiguous [batch, kv_heads, head_dim]"
         );
     }
@@ -1545,24 +1238,12 @@ qsfi_status qsfi_append_paged_kv_prefill(
     if (status != QSFI_STATUS_OK)
         return status;
     if (append == nullptr) {
-        return set_error(
-            ctx,
-            QSFI_STATUS_INVALID_ARGUMENT,
-            QSFI_ERROR_SOURCE_QSFI,
-            0,
-            "append prefill desc must not be null"
-        );
+        return set_invalid_arg(ctx, "append prefill desc must not be null");
     }
     if (append->num_tokens == 0)
         return QSFI_STATUS_OK;
     if (append->batch_indices == nullptr || append->positions == nullptr) {
-        return set_error(
-            ctx,
-            QSFI_STATUS_INVALID_ARGUMENT,
-            QSFI_ERROR_SOURCE_QSFI,
-            0,
-            "append prefill batch_indices and positions must not be null"
-        );
+        return set_invalid_arg(ctx, "append prefill batch_indices and positions must not be null");
     }
     status = validate_tensor(ctx, append->k, "append.k", attention->kv_dtype, 3);
     if (status != QSFI_STATUS_OK)
@@ -1573,23 +1254,14 @@ qsfi_status qsfi_append_paged_kv_prefill(
     if (append->k.shape[0] != static_cast<int64_t>(append->num_tokens)
         || append->k.shape[1] != static_cast<int64_t>(attention->num_kv_heads)
         || append->k.shape[2] != static_cast<int64_t>(attention->head_dim_qk)) {
-        return set_error(
+        return set_invalid_arg(
             ctx,
-            QSFI_STATUS_INVALID_ARGUMENT,
-            QSFI_ERROR_SOURCE_QSFI,
-            0,
             "prefill append k shape must be [num_tokens, kv_heads, head_dim]"
         );
     }
     for (uint32_t i = 0; i < 3; ++i) {
         if (append->v.shape[i] != append->k.shape[i]) {
-            return set_error(
-                ctx,
-                QSFI_STATUS_INVALID_ARGUMENT,
-                QSFI_ERROR_SOURCE_QSFI,
-                0,
-                "prefill append v shape must match k shape"
-            );
+            return set_invalid_arg(ctx, "prefill append v shape must match k shape");
         }
     }
     status = validate_kv_cache(ctx, *attention, append->kv_cache, nullptr);

@@ -18,6 +18,25 @@ void clear_error(qsfi_error_info* err)
     err->message[0] = '\0';
 }
 
+static qsfi_status set_errorv(
+    qsfi_context* ctx,
+    qsfi_status status,
+    qsfi_error_source source,
+    int32_t native_code,
+    const char* fmt,
+    va_list args
+)
+{
+    if (ctx == nullptr)
+        return status;
+    ctx->last_error.status = status;
+    ctx->last_error.source = source;
+    ctx->last_error.native_code = native_code;
+    std::vsnprintf(ctx->last_error.message, QSFI_ERROR_MESSAGE_BYTES, fmt, args);
+    ctx->last_error.message[QSFI_ERROR_MESSAGE_BYTES - 1] = '\0';
+    return status;
+}
+
 qsfi_status set_error(
     qsfi_context* ctx,
     qsfi_status status,
@@ -27,18 +46,28 @@ qsfi_status set_error(
     ...
 )
 {
-    if (ctx == nullptr)
-        return status;
-    ctx->last_error.status = status;
-    ctx->last_error.source = source;
-    ctx->last_error.native_code = native_code;
     va_list args;
     va_start(args, fmt);
-    std::vsnprintf(ctx->last_error.message, QSFI_ERROR_MESSAGE_BYTES, fmt, args);
+    status = set_errorv(ctx, status, source, native_code, fmt, args);
     va_end(args);
-    ctx->last_error.message[QSFI_ERROR_MESSAGE_BYTES - 1] = '\0';
     return status;
 }
+
+#define DEFINE_QSFI_ERROR_SETTER(name, code)                                                       \
+    qsfi_status name(qsfi_context* ctx, const char* fmt, ...)                                      \
+    {                                                                                              \
+        va_list args;                                                                              \
+        va_start(args, fmt);                                                                       \
+        qsfi_status status = set_errorv(ctx, code, QSFI_ERROR_SOURCE_QSFI, 0, fmt, args);          \
+        va_end(args);                                                                              \
+        return status;                                                                             \
+    }
+
+DEFINE_QSFI_ERROR_SETTER(set_invalid_arg, QSFI_STATUS_INVALID_ARGUMENT)
+DEFINE_QSFI_ERROR_SETTER(set_unsupported, QSFI_STATUS_UNSUPPORTED)
+DEFINE_QSFI_ERROR_SETTER(set_out_of_memory, QSFI_STATUS_OUT_OF_MEMORY)
+
+#undef DEFINE_QSFI_ERROR_SETTER
 
 qsfi_status set_cuda_error(qsfi_context* ctx, cudaError_t err, const char* op)
 {
@@ -213,11 +242,8 @@ qsfi_status qsfi_context_validate_target(qsfi_context* ctx)
         return status;
     if (info.runtime_compute_capability_major != QSFI_TARGET_COMPUTE_CAPABILITY_MAJOR
         || info.runtime_compute_capability_minor != QSFI_TARGET_COMPUTE_CAPABILITY_MINOR) {
-        return set_error(
+        return set_unsupported(
             ctx,
-            QSFI_STATUS_UNSUPPORTED,
-            QSFI_ERROR_SOURCE_QSFI,
-            0,
             "runtime compute capability %u.%u does not match qsfi build target %u.%u",
             info.runtime_compute_capability_major,
             info.runtime_compute_capability_minor,
