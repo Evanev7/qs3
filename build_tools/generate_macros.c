@@ -16,9 +16,6 @@ typedef struct qsfi_dispatch_spec {
 
 static void emit_build_constants(void)
 {
-    printf("#ifndef QSFI_MACROS_H\n");
-    printf("#define QSFI_MACROS_H\n\n");
-
     printf("#define QSFI_TARGET_SM 121u\n");
     printf("#define QSFI_TARGET_COMPUTE_CAPABILITY_MAJOR 12u\n");
     printf("#define QSFI_TARGET_COMPUTE_CAPABILITY_MINOR 1u\n\n");
@@ -32,6 +29,15 @@ static void emit_build_constants(void)
     printf("#define QSFI_GEMM_BACKEND_CUTLASS 3u\n\n");
 
     printf("#define QSFI_GEMM_BACKEND QSFI_GEMM_BACKEND_CUBLASLT\n\n");
+
+    printf("#define QSFI_QWEN36_GDN_NUM_Q_HEADS 16u\n");
+    printf("#define QSFI_QWEN36_GDN_NUM_K_HEADS 16u\n");
+    printf("#define QSFI_QWEN36_GDN_NUM_V_HEADS 32u\n");
+    printf("#define QSFI_QWEN36_GDN_KEY_DIM 128u\n");
+    printf("#define QSFI_QWEN36_GDN_VALUE_DIM 128u\n");
+    printf("#define QSFI_QWEN36_GDN_THREADS 128u\n");
+    printf("#define QSFI_QWEN36_GDN_SOFTPLUS_BETA 1.0f\n");
+    printf("#define QSFI_QWEN36_GDN_SOFTPLUS_THRESHOLD 20.0f\n\n");
 }
 
 static void emit_dispatch_case(const qsfi_dispatch_spec* spec, int value)
@@ -72,8 +78,6 @@ static void emit_dispatch_macro(const qsfi_dispatch_spec* spec)
 
 int main(void)
 {
-    emit_build_constants();
-
     // static const int cta_tile_q_values[] = { 16, 32, 64, 128 };
     // static const int gqa_group_size_values[] = { 1, 2, 3, 4, 8 };
     // static const int head_dim_values[] = { 64, 128, 256, 512 };
@@ -111,8 +115,15 @@ int main(void)
         },
     };
 
-    for (int i = 0; i < (int)(sizeof(specs) / sizeof(specs[0])); ++i) {
-        emit_dispatch_macro(&specs[i]);
+    printf("#ifndef QSFI_MACROS_H\n");
+    printf("#define QSFI_MACROS_H\n\n");
+
+    {
+        emit_build_constants();
+
+        for (int i = 0; i < (int)(sizeof(specs) / sizeof(specs[0])); ++i) {
+            emit_dispatch_macro(&specs[i]);
+        }
     }
 
     printf("#endif\n");

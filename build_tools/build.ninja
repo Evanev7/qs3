@@ -35,11 +35,13 @@ build qsfi_macros.h: run $src/build_tools/generate_macros.c
 
 build qsfi_context.o: nvcc $src/qsfi_context.cu | $src/qsfi.h $src/qsfi_internal.h qsfi_macros.h
 build qsfi_attn.o: nvcc $src/qsfi_attn.cu | $src/qsfi.h $src/qsfi_internal.h qsfi_macros.h
+build qsfi_gdn.o: nvcc $src/qsfi_gdn.cu | $src/qsfi.h $src/qsfi_internal.h qsfi_macros.h
 
 build qsfi_test: link_test $src/test.cu $
   qsfi_context.o $
-  qsfi_attn.o | $src/qsfi.h
+  qsfi_attn.o $
+  qsfi_gdn.o | $src/qsfi.h
 
-build all: phony qsfi_context.o qsfi_attn.o
+build all: phony qsfi_context.o qsfi_attn.o qsfi_gdn.o
 
 default all

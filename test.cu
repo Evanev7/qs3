@@ -2,6 +2,8 @@
 
 #include <cuda_runtime.h>
 
+#include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -16,6 +18,21 @@ constexpr int kKvHeads = 2;
 constexpr int kHeadDim = 64;
 constexpr int kNumIndices = 3;
 constexpr uint16_t kSentinel = 0xA5A5u;
+
+constexpr int kGdnQHeads = 16;
+constexpr int kGdnKHeads = 16;
+constexpr int kGdnVHeads = 32;
+constexpr int kGdnKeyDim = 128;
+constexpr int kGdnValueDim = 128;
+constexpr int kGdnStateSlots = 1;
+constexpr int kGdnActiveVHead = 3;
+constexpr int kGdnActiveQKHead = kGdnActiveVHead / 2;
+constexpr int kGdnActiveKeyDim = 7;
+constexpr int kGdnActiveValueDim = 5;
+constexpr uint16_t kBf16Zero = 0x0000u;
+constexpr uint16_t kBf16One = 0x3F80u;
+constexpr uint16_t kBf16OnePoint25 = 0x3FA0u;
+constexpr uint16_t kBf16Two = 0x4000u;
 
 int failures = 0;
 
@@ -70,6 +87,31 @@ size_t append_offset(int item, int head, int dim)
     return (static_cast<size_t>(item) * kKvHeads + head) * kHeadDim + dim;
 }
 
+size_t gdn_qk_offset(int token, int head, int dim)
+{
+    return (static_cast<size_t>(token) * kGdnQHeads + head) * kGdnKeyDim + dim;
+}
+
+size_t gdn_v_offset(int token, int head, int dim)
+{
+    return (static_cast<size_t>(token) * kGdnVHeads + head) * kGdnValueDim + dim;
+}
+
+size_t gdn_state_offset(int slot, int head, int value_dim, int key_dim)
+{
+    return (((static_cast<size_t>(slot) * kGdnVHeads + head) * kGdnValueDim + value_dim)
+            * kGdnKeyDim)
+        + key_dim;
+}
+
+float bf16_to_f32(uint16_t bits)
+{
+    const uint32_t f32_bits = static_cast<uint32_t>(bits) << 16;
+    float value = 0.0f;
+    std::memcpy(&value, &f32_bits, sizeof(value));
+    return value;
+}
+
 qsfi_tensor3 tensor3(void* data, int64_t n)
 {
     qsfi_tensor3 tensor {};
@@ -81,6 +123,68 @@ qsfi_tensor3 tensor3(void* data, int64_t n)
     tensor.stride[0] = kKvHeads * kHeadDim;
     tensor.stride[1] = kHeadDim;
     tensor.stride[2] = 1;
+    return tensor;
+}
+
+qsfi_tensor1 gdn_tensor1_i32(void* data, int64_t n)
+{
+    qsfi_tensor1 tensor {};
+    tensor.data = data;
+    tensor.dtype = QSFI_DTYPE_I32;
+    tensor.shape[0] = n;
+    tensor.stride[0] = 1;
+    return tensor;
+}
+
+qsfi_tensor1 gdn_tensor1_f32(void* data, int64_t n)
+{
+    qsfi_tensor1 tensor {};
+    tensor.data = data;
+    tensor.dtype = QSFI_DTYPE_F32;
+    tensor.shape[0] = n;
+    tensor.stride[0] = 1;
+    return tensor;
+}
+
+qsfi_tensor2 gdn_tensor2_bf16(void* data, int64_t n, int64_t heads)
+{
+    qsfi_tensor2 tensor {};
+    tensor.data = data;
+    tensor.dtype = QSFI_DTYPE_BF16;
+    tensor.shape[0] = n;
+    tensor.shape[1] = heads;
+    tensor.stride[0] = heads;
+    tensor.stride[1] = 1;
+    return tensor;
+}
+
+qsfi_tensor3 gdn_tensor3_bf16(void* data, int64_t n, int64_t heads, int64_t dim)
+{
+    qsfi_tensor3 tensor {};
+    tensor.data = data;
+    tensor.dtype = QSFI_DTYPE_BF16;
+    tensor.shape[0] = n;
+    tensor.shape[1] = heads;
+    tensor.shape[2] = dim;
+    tensor.stride[0] = heads * dim;
+    tensor.stride[1] = dim;
+    tensor.stride[2] = 1;
+    return tensor;
+}
+
+qsfi_tensor4 gdn_state_tensor_bf16(void* data)
+{
+    qsfi_tensor4 tensor {};
+    tensor.data = data;
+    tensor.dtype = QSFI_DTYPE_BF16;
+    tensor.shape[0] = kGdnStateSlots;
+    tensor.shape[1] = kGdnVHeads;
+    tensor.shape[2] = kGdnValueDim;
+    tensor.shape[3] = kGdnKeyDim;
+    tensor.stride[0] = kGdnVHeads * kGdnValueDim * kGdnKeyDim;
+    tensor.stride[1] = kGdnValueDim * kGdnKeyDim;
+    tensor.stride[2] = kGdnKeyDim;
+    tensor.stride[3] = 1;
     return tensor;
 }
 
@@ -162,6 +266,85 @@ bool make_page_table(int32_t** d_indptr, int32_t** d_indices, int32_t** d_last_p
     return copy_to_device(d_indptr, indptr, 3, "copy page indptr")
         && copy_to_device(d_indices, indices, 3, "copy page indices")
         && copy_to_device(d_last_page_len, last_page_len, 2, "copy last page lengths");
+}
+
+void fill_gdn_inputs(
+    std::vector<uint16_t>& q,
+    std::vector<uint16_t>& k,
+    std::vector<uint16_t>& v,
+    std::vector<uint16_t>& a,
+    std::vector<uint16_t>& b,
+    int tokens
+)
+{
+    std::fill(q.begin(), q.end(), kBf16Zero);
+    std::fill(k.begin(), k.end(), kBf16Zero);
+    std::fill(v.begin(), v.end(), kBf16Zero);
+    std::fill(a.begin(), a.end(), kBf16Zero);
+    std::fill(b.begin(), b.end(), kBf16Zero);
+    for (int token = 0; token < tokens; ++token) {
+        q[gdn_qk_offset(token, kGdnActiveQKHead, kGdnActiveKeyDim)] = kBf16One;
+        k[gdn_qk_offset(token, kGdnActiveQKHead, kGdnActiveKeyDim)] = kBf16One;
+        v[gdn_v_offset(token, kGdnActiveVHead, kGdnActiveValueDim)] = kBf16Two;
+    }
+}
+
+bool approx_equal(float got, float want, float abs_tol)
+{
+    return std::fabs(got - want) <= abs_tol;
+}
+
+void check_bf16_single_nonzero(
+    const std::vector<uint16_t>& values,
+    size_t nonzero_offset,
+    float nonzero_value,
+    float abs_tol,
+    const char* what
+)
+{
+    for (size_t i = 0; i < values.size(); ++i) {
+        const float want = i == nonzero_offset ? nonzero_value : 0.0f;
+        const float got = bf16_to_f32(values[i]);
+        if (!approx_equal(got, want, abs_tol)) {
+            std::fprintf(
+                stderr,
+                "FAIL: %s[%zu]: got %.8f, want %.8f +/- %.8f\n",
+                what,
+                i,
+                got,
+                want,
+                abs_tol
+            );
+            failures += 1;
+            return;
+        }
+    }
+}
+
+void check_gdn_prefill_output(const std::vector<uint16_t>& out, float abs_tol)
+{
+    const size_t token0 = gdn_v_offset(0, kGdnActiveVHead, kGdnActiveValueDim);
+    const size_t token1 = gdn_v_offset(1, kGdnActiveVHead, kGdnActiveValueDim);
+    for (size_t i = 0; i < out.size(); ++i) {
+        float want = 0.0f;
+        if (i == token0)
+            want = 1.0f;
+        else if (i == token1)
+            want = 1.25f;
+        const float got = bf16_to_f32(out[i]);
+        if (!approx_equal(got, want, abs_tol)) {
+            std::fprintf(
+                stderr,
+                "FAIL: gdn prefill out[%zu]: got %.8f, want %.8f +/- %.8f\n",
+                i,
+                got,
+                want,
+                abs_tol
+            );
+            failures += 1;
+            return;
+        }
+    }
 }
 
 void fill_append(std::vector<uint16_t>& k, std::vector<uint16_t>& v)
@@ -415,6 +598,244 @@ void test_prefill_append_maps_positions_through_page_table()
     qsfi_context_destroy(ctx);
 }
 
+void test_gdn_decode_one_hot_recurrence()
+{
+    qsfi_context* ctx = nullptr;
+    if (!make_context(&ctx))
+        return;
+
+    constexpr int tokens = 1;
+    constexpr size_t qk_elems = static_cast<size_t>(tokens) * kGdnQHeads * kGdnKeyDim;
+    constexpr size_t v_elems = static_cast<size_t>(tokens) * kGdnVHeads * kGdnValueDim;
+    constexpr size_t gate_elems = static_cast<size_t>(tokens) * kGdnVHeads;
+    constexpr size_t state_elems
+        = static_cast<size_t>(kGdnStateSlots) * kGdnVHeads * kGdnValueDim * kGdnKeyDim;
+
+    std::vector<uint16_t> h_q(qk_elems);
+    std::vector<uint16_t> h_k(qk_elems);
+    std::vector<uint16_t> h_v(v_elems);
+    std::vector<uint16_t> h_a(gate_elems);
+    std::vector<uint16_t> h_b(gate_elems);
+    std::vector<float> h_a_log(kGdnVHeads, 0.0f);
+    std::vector<float> h_dt_bias(kGdnVHeads, 0.0f);
+    std::vector<uint16_t> h_state(state_elems, kBf16Zero);
+    std::vector<uint16_t> h_out(v_elems, kSentinel);
+    const int32_t state_indices[] = { 0 };
+    fill_gdn_inputs(h_q, h_k, h_v, h_a, h_b, tokens);
+
+    uint16_t* d_q = nullptr;
+    uint16_t* d_k = nullptr;
+    uint16_t* d_v = nullptr;
+    uint16_t* d_a = nullptr;
+    uint16_t* d_b = nullptr;
+    float* d_a_log = nullptr;
+    float* d_dt_bias = nullptr;
+    uint16_t* d_state = nullptr;
+    int32_t* d_state_indices = nullptr;
+    uint16_t* d_out = nullptr;
+
+    if (!copy_to_device(&d_q, h_q.data(), h_q.size(), "copy gdn decode q")
+        || !copy_to_device(&d_k, h_k.data(), h_k.size(), "copy gdn decode k")
+        || !copy_to_device(&d_v, h_v.data(), h_v.size(), "copy gdn decode v")
+        || !copy_to_device(&d_a, h_a.data(), h_a.size(), "copy gdn decode a")
+        || !copy_to_device(&d_b, h_b.data(), h_b.size(), "copy gdn decode b")
+        || !copy_to_device(&d_a_log, h_a_log.data(), h_a_log.size(), "copy gdn decode A_log")
+        || !copy_to_device(
+            &d_dt_bias,
+            h_dt_bias.data(),
+            h_dt_bias.size(),
+            "copy gdn decode dt_bias"
+        )
+        || !copy_to_device(&d_state, h_state.data(), h_state.size(), "copy gdn decode state")
+        || !copy_to_device(&d_state_indices, state_indices, 1, "copy gdn decode state indices")
+        || !copy_to_device(&d_out, h_out.data(), h_out.size(), "copy gdn decode out")) {
+        qsfi_context_destroy(ctx);
+        return;
+    }
+
+    qsfi_gdn_decode_desc desc {};
+    desc.q = gdn_tensor3_bf16(d_q, tokens, kGdnQHeads, kGdnKeyDim);
+    desc.k = gdn_tensor3_bf16(d_k, tokens, kGdnKHeads, kGdnKeyDim);
+    desc.v = gdn_tensor3_bf16(d_v, tokens, kGdnVHeads, kGdnValueDim);
+    desc.a = gdn_tensor2_bf16(d_a, tokens, kGdnVHeads);
+    desc.b = gdn_tensor2_bf16(d_b, tokens, kGdnVHeads);
+    desc.a_log = gdn_tensor1_f32(d_a_log, kGdnVHeads);
+    desc.dt_bias = gdn_tensor1_f32(d_dt_bias, kGdnVHeads);
+    desc.state = gdn_state_tensor_bf16(d_state);
+    desc.state_indices = gdn_tensor1_i32(d_state_indices, tokens);
+    desc.out = gdn_tensor3_bf16(d_out, tokens, kGdnVHeads, kGdnValueDim);
+    desc.num_tokens = tokens;
+    desc.num_q_heads = kGdnQHeads;
+    desc.num_k_heads = kGdnKHeads;
+    desc.num_v_heads = kGdnVHeads;
+    desc.key_dim = kGdnKeyDim;
+    desc.value_dim = kGdnValueDim;
+    desc.state_layout = QSFI_GDN_STATE_LAYOUT_VK;
+    desc.scale = 1.0f;
+
+    check_status(qsfi_gdn_decode(ctx, &desc), QSFI_STATUS_OK, "gdn decode");
+    check_cuda(cudaDeviceSynchronize(), "sync gdn decode");
+    check_cuda(
+        cudaMemcpy(h_out.data(), d_out, h_out.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost),
+        "copy gdn decode out back"
+    );
+    check_cuda(
+        cudaMemcpy(
+            h_state.data(),
+            d_state,
+            h_state.size() * sizeof(uint16_t),
+            cudaMemcpyDeviceToHost
+        ),
+        "copy gdn decode state back"
+    );
+
+    check_bf16_single_nonzero(
+        h_out,
+        gdn_v_offset(0, kGdnActiveVHead, kGdnActiveValueDim),
+        1.0f,
+        0.0f,
+        "gdn decode out"
+    );
+    check_bf16_single_nonzero(
+        h_state,
+        gdn_state_offset(0, kGdnActiveVHead, kGdnActiveValueDim, kGdnActiveKeyDim),
+        1.0f,
+        0.0f,
+        "gdn decode state"
+    );
+
+    cudaFree(d_q);
+    cudaFree(d_k);
+    cudaFree(d_v);
+    cudaFree(d_a);
+    cudaFree(d_b);
+    cudaFree(d_a_log);
+    cudaFree(d_dt_bias);
+    cudaFree(d_state);
+    cudaFree(d_state_indices);
+    cudaFree(d_out);
+    qsfi_context_destroy(ctx);
+}
+
+void test_gdn_prefill_two_token_recurrence()
+{
+    qsfi_context* ctx = nullptr;
+    if (!make_context(&ctx))
+        return;
+
+    constexpr int tokens = 2;
+    constexpr size_t qk_elems = static_cast<size_t>(tokens) * kGdnQHeads * kGdnKeyDim;
+    constexpr size_t v_elems = static_cast<size_t>(tokens) * kGdnVHeads * kGdnValueDim;
+    constexpr size_t gate_elems = static_cast<size_t>(tokens) * kGdnVHeads;
+    constexpr size_t state_elems
+        = static_cast<size_t>(kGdnStateSlots) * kGdnVHeads * kGdnValueDim * kGdnKeyDim;
+
+    std::vector<uint16_t> h_q(qk_elems);
+    std::vector<uint16_t> h_k(qk_elems);
+    std::vector<uint16_t> h_v(v_elems);
+    std::vector<uint16_t> h_a(gate_elems);
+    std::vector<uint16_t> h_b(gate_elems);
+    std::vector<float> h_a_log(kGdnVHeads, 0.0f);
+    std::vector<float> h_dt_bias(kGdnVHeads, 0.0f);
+    std::vector<uint16_t> h_state(state_elems, kBf16Zero);
+    std::vector<uint16_t> h_out(v_elems, kSentinel);
+    const int32_t seq_indptr[] = { 0, tokens };
+    const int32_t state_indices[] = { 0 };
+    fill_gdn_inputs(h_q, h_k, h_v, h_a, h_b, tokens);
+
+    uint16_t* d_q = nullptr;
+    uint16_t* d_k = nullptr;
+    uint16_t* d_v = nullptr;
+    uint16_t* d_a = nullptr;
+    uint16_t* d_b = nullptr;
+    float* d_a_log = nullptr;
+    float* d_dt_bias = nullptr;
+    uint16_t* d_state = nullptr;
+    int32_t* d_seq_indptr = nullptr;
+    int32_t* d_state_indices = nullptr;
+    uint16_t* d_out = nullptr;
+
+    if (!copy_to_device(&d_q, h_q.data(), h_q.size(), "copy gdn prefill q")
+        || !copy_to_device(&d_k, h_k.data(), h_k.size(), "copy gdn prefill k")
+        || !copy_to_device(&d_v, h_v.data(), h_v.size(), "copy gdn prefill v")
+        || !copy_to_device(&d_a, h_a.data(), h_a.size(), "copy gdn prefill a")
+        || !copy_to_device(&d_b, h_b.data(), h_b.size(), "copy gdn prefill b")
+        || !copy_to_device(&d_a_log, h_a_log.data(), h_a_log.size(), "copy gdn prefill A_log")
+        || !copy_to_device(
+            &d_dt_bias,
+            h_dt_bias.data(),
+            h_dt_bias.size(),
+            "copy gdn prefill dt_bias"
+        )
+        || !copy_to_device(&d_state, h_state.data(), h_state.size(), "copy gdn prefill state")
+        || !copy_to_device(&d_seq_indptr, seq_indptr, 2, "copy gdn prefill seq indptr")
+        || !copy_to_device(&d_state_indices, state_indices, 1, "copy gdn prefill state indices")
+        || !copy_to_device(&d_out, h_out.data(), h_out.size(), "copy gdn prefill out")) {
+        qsfi_context_destroy(ctx);
+        return;
+    }
+
+    qsfi_gdn_prefill_desc desc {};
+    desc.q = gdn_tensor3_bf16(d_q, tokens, kGdnQHeads, kGdnKeyDim);
+    desc.k = gdn_tensor3_bf16(d_k, tokens, kGdnKHeads, kGdnKeyDim);
+    desc.v = gdn_tensor3_bf16(d_v, tokens, kGdnVHeads, kGdnValueDim);
+    desc.a = gdn_tensor2_bf16(d_a, tokens, kGdnVHeads);
+    desc.b = gdn_tensor2_bf16(d_b, tokens, kGdnVHeads);
+    desc.a_log = gdn_tensor1_f32(d_a_log, kGdnVHeads);
+    desc.dt_bias = gdn_tensor1_f32(d_dt_bias, kGdnVHeads);
+    desc.state = gdn_state_tensor_bf16(d_state);
+    desc.seq_indptr = d_seq_indptr;
+    desc.state_indices = gdn_tensor1_i32(d_state_indices, 1);
+    desc.out = gdn_tensor3_bf16(d_out, tokens, kGdnVHeads, kGdnValueDim);
+    desc.batch_size = 1;
+    desc.total_tokens = tokens;
+    desc.num_q_heads = kGdnQHeads;
+    desc.num_k_heads = kGdnKHeads;
+    desc.num_v_heads = kGdnVHeads;
+    desc.key_dim = kGdnKeyDim;
+    desc.value_dim = kGdnValueDim;
+    desc.state_layout = QSFI_GDN_STATE_LAYOUT_VK;
+    desc.scale = 1.0f;
+
+    check_status(qsfi_gdn_prefill(ctx, &desc), QSFI_STATUS_OK, "gdn prefill");
+    check_cuda(cudaDeviceSynchronize(), "sync gdn prefill");
+    check_cuda(
+        cudaMemcpy(h_out.data(), d_out, h_out.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost),
+        "copy gdn prefill out back"
+    );
+    check_cuda(
+        cudaMemcpy(
+            h_state.data(),
+            d_state,
+            h_state.size() * sizeof(uint16_t),
+            cudaMemcpyDeviceToHost
+        ),
+        "copy gdn prefill state back"
+    );
+
+    check_gdn_prefill_output(h_out, 0.0f);
+    check_bf16_single_nonzero(
+        h_state,
+        gdn_state_offset(0, kGdnActiveVHead, kGdnActiveValueDim, kGdnActiveKeyDim),
+        bf16_to_f32(kBf16OnePoint25),
+        0.0f,
+        "gdn prefill state"
+    );
+
+    cudaFree(d_q);
+    cudaFree(d_k);
+    cudaFree(d_v);
+    cudaFree(d_a);
+    cudaFree(d_b);
+    cudaFree(d_a_log);
+    cudaFree(d_dt_bias);
+    cudaFree(d_state);
+    cudaFree(d_seq_indptr);
+    cudaFree(d_state_indices);
+    cudaFree(d_out);
+    qsfi_context_destroy(ctx);
+}
+
 } // namespace
 
 int main()
@@ -430,11 +851,13 @@ int main()
 
     test_decode_append_uses_post_append_last_page_len();
     test_prefill_append_maps_positions_through_page_table();
+    test_gdn_decode_one_hot_recurrence();
+    test_gdn_prefill_two_token_recurrence();
 
     if (failures != 0) {
         std::fprintf(stderr, "%d failure(s)\n", failures);
         return 1;
     }
-    std::puts("flashinfer append tests passed");
+    std::puts("qsfi CUDA tests passed");
     return 0;
 }

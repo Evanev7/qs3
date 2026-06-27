@@ -8,10 +8,12 @@ fn main() {
     println!("cargo:rerun-if-changed=qsfi_internal.h");
     println!("cargo:rerun-if-changed=qsfi_context.cu");
     println!("cargo:rerun-if-changed=qsfi_attn.cu");
-    println!("cargo:rerun-if-changed=builld_tools/build.ninja");
+    println!("cargo:rerun-if-changed=qsfi_gdn.cu");
+    println!("cargo:rerun-if-changed=build_tools/build.ninja");
     println!("cargo:rerun-if-changed=build_tools/generate_macros.c");
     println!("cargo:rerun-if-changed=build/qsfi_context.o");
     println!("cargo:rerun-if-changed=build/qsfi_attn.o");
+    println!("cargo:rerun-if-changed=build/qsfi_gdn.o");
 
     link_qsfi_for_tests();
 
@@ -36,6 +38,7 @@ fn link_qsfi_for_tests() {
     let qsfi_objects = [
         Path::new("build/qsfi_context.o"),
         Path::new("build/qsfi_attn.o"),
+        Path::new("build/qsfi_gdn.o"),
     ];
     if qsfi_objects.iter().copied().any(|object| !object.exists()) {
         println!(

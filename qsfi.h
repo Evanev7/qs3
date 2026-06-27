@@ -359,6 +359,70 @@ typedef struct {
 } qsfi_lm_head_desc;
 
 /*
+ * Qwen3.6 Gated Delta Net recurrence.
+ *
+ * These surfaces operate after the caller has loaded weights, run the input
+ * projections, and applied the causal conv over the packed q/k/v stream. State
+ * is v-major / K-last: [state_pool, num_v_heads, value_dim, key_dim].
+ *
+ * state_out_indices is optional. When omitted, state_indices is used for both
+ * read and write. A negative state index skips that sequence/token and writes a
+ * zero output row.
+ */
+
+typedef enum { QSFI_GDN_STATE_LAYOUT_VK = 0 } qsfi_gdn_state_layout;
+
+typedef struct {
+    qsfi_tensor3 q; /* bf16 [num_tokens, num_q_heads, key_dim]. */
+    qsfi_tensor3 k; /* bf16 [num_tokens, num_k_heads, key_dim]. */
+    qsfi_tensor3 v; /* bf16 [num_tokens, num_v_heads, value_dim]. */
+    qsfi_tensor2 a; /* bf16 [num_tokens, num_v_heads]. */
+    qsfi_tensor2 b; /* bf16 [num_tokens, num_v_heads]. */
+    qsfi_tensor1 a_log; /* f32 [num_v_heads]. */
+    qsfi_tensor1 dt_bias; /* f32 [num_v_heads]. */
+    qsfi_tensor4 state; /* bf16/f32 [state_pool, num_v_heads, value_dim, key_dim]. */
+    qsfi_tensor1 state_indices; /* i32 [num_tokens]. */
+    qsfi_tensor1 state_out_indices; /* optional i32 [num_tokens]. */
+    qsfi_tensor3 out; /* bf16 [num_tokens, num_v_heads, value_dim]. */
+    uint32_t num_tokens;
+    uint32_t num_q_heads;
+    uint32_t num_k_heads;
+    uint32_t num_v_heads;
+    uint32_t key_dim;
+    uint32_t value_dim;
+    qsfi_gdn_state_layout state_layout;
+    float scale;
+    uint32_t use_qk_l2norm;
+    uint32_t disable_state_update;
+} qsfi_gdn_decode_desc;
+
+typedef struct {
+    qsfi_tensor3 q; /* bf16 [total_tokens, num_q_heads, key_dim]. */
+    qsfi_tensor3 k; /* bf16 [total_tokens, num_k_heads, key_dim]. */
+    qsfi_tensor3 v; /* bf16 [total_tokens, num_v_heads, value_dim]. */
+    qsfi_tensor2 a; /* bf16 [total_tokens, num_v_heads]. */
+    qsfi_tensor2 b; /* bf16 [total_tokens, num_v_heads]. */
+    qsfi_tensor1 a_log; /* f32 [num_v_heads]. */
+    qsfi_tensor1 dt_bias; /* f32 [num_v_heads]. */
+    qsfi_tensor4 state; /* bf16/f32 [state_pool, num_v_heads, value_dim, key_dim]. */
+    qsfi_device_ptr seq_indptr; /* i32 [batch_size + 1], device pointer. */
+    qsfi_tensor1 state_indices; /* i32 [batch_size]. */
+    qsfi_tensor1 state_out_indices; /* optional i32 [batch_size]. */
+    qsfi_tensor3 out; /* bf16 [total_tokens, num_v_heads, value_dim]. */
+    uint32_t batch_size;
+    uint32_t total_tokens;
+    uint32_t num_q_heads;
+    uint32_t num_k_heads;
+    uint32_t num_v_heads;
+    uint32_t key_dim;
+    uint32_t value_dim;
+    qsfi_gdn_state_layout state_layout;
+    float scale;
+    uint32_t use_qk_l2norm;
+    uint32_t disable_state_update;
+} qsfi_gdn_prefill_desc;
+
+/*
  * Sampling. For deterministic GPU sampling, pass uniform_samples [batch] f32.
  * temperature <= 0 means greedy argmax.
  */
@@ -450,6 +514,8 @@ qsfi_status qsfi_qkv_projection(qsfi_context* ctx, const qsfi_qkv_projection_des
 qsfi_status qsfi_silu_and_mul(qsfi_context* ctx, const qsfi_silu_and_mul_desc* desc);
 qsfi_status qsfi_dense_swiglu_mlp(qsfi_context* ctx, const qsfi_dense_swiglu_mlp_desc* desc);
 qsfi_status qsfi_lm_head(qsfi_context* ctx, const qsfi_lm_head_desc* desc);
+qsfi_status qsfi_gdn_decode(qsfi_context* ctx, const qsfi_gdn_decode_desc* desc);
+qsfi_status qsfi_gdn_prefill(qsfi_context* ctx, const qsfi_gdn_prefill_desc* desc);
 qsfi_status qsfi_sample(qsfi_context* ctx, const qsfi_sampling_desc* desc);
 
 #ifdef __cplusplus

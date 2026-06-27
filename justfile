@@ -1,5 +1,5 @@
 cuda_root := env_var_or_default("CUDA_HOME", "/usr/local/cuda")
-cuda_lib_path := cuda_root + "/lib64:" + cuda_root + "/lib:"
+cuda_lib_path := cuda_root + "/lib64:" + cuda_root + "/lib:" + cuda_root + "/lib/stubs:"
 
 fmt:
         rg --files -g '!{3pty}' -tcuda -tc -tcpp | xargs clang-format -style=file -Werror -i
