@@ -9,11 +9,13 @@ fn main() {
     println!("cargo:rerun-if-changed=qsfi_context.cu");
     println!("cargo:rerun-if-changed=qsfi_attn.cu");
     println!("cargo:rerun-if-changed=qsfi_gdn.cu");
+    println!("cargo:rerun-if-changed=qsfi_moe.cu");
     println!("cargo:rerun-if-changed=build_tools/build.ninja");
     println!("cargo:rerun-if-changed=build_tools/generate_macros.c");
     println!("cargo:rerun-if-changed=build/qsfi_context.o");
     println!("cargo:rerun-if-changed=build/qsfi_attn.o");
     println!("cargo:rerun-if-changed=build/qsfi_gdn.o");
+    println!("cargo:rerun-if-changed=build/qsfi_moe.o");
 
     link_qsfi_for_tests();
 
@@ -39,6 +41,7 @@ fn link_qsfi_for_tests() {
         Path::new("build/qsfi_context.o"),
         Path::new("build/qsfi_attn.o"),
         Path::new("build/qsfi_gdn.o"),
+        Path::new("build/qsfi_moe.o"),
     ];
     if qsfi_objects.iter().copied().any(|object| !object.exists()) {
         println!(
@@ -53,7 +56,7 @@ fn link_qsfi_for_tests() {
             object
                 .canonicalize()
                 .expect("failed to canonicalize qsfi CUDA object")
-            .display()
+                .display()
         );
     }
 

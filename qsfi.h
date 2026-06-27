@@ -19,6 +19,7 @@ extern "C" {
 typedef struct qsfi_context qsfi_context;
 typedef struct qsfi_batch_decode_plan qsfi_batch_decode_plan;
 typedef struct qsfi_batch_prefill_plan qsfi_batch_prefill_plan;
+typedef struct qsfi_moe_plan qsfi_moe_plan;
 
 typedef void* qsfi_cuda_stream;
 typedef void* qsfi_device_ptr;
@@ -346,6 +347,81 @@ typedef struct {
     float clamp_limit;
 } qsfi_dense_swiglu_mlp_desc;
 
+/*
+ * Qwen3.6 routed SwiGLU MoE.
+ *
+ * qsfi does not load, own, or repack model weights. The caller supplies tensors
+ * in the layout below and keeps them alive until execution on ctx->stream has
+ * completed.
+ *
+ * The initial BF16 backend is a staged path using FlashInfer grouped GEMM for
+ * expert projections. Routing is precomputed by the caller: topk_ids contains
+ * global expert ids and topk_weights contains the final per-route scale after
+ * any softmax/top-k renormalization. Expert parallel fields are part of the
+ * ABI, but the initial staged backend only accepts a full local expert set.
+ *
+ * NVFP4 surfaces are declared now so the weight/activation layout is fixed for
+ * the future static fused path. Packed FP4 tensors use physical byte shapes,
+ * never sub-byte tensor strides.
+ */
+
+typedef enum {
+    QSFI_MOE_BACKEND_FLASHINFER_STAGED_BF16 = 1,
+    QSFI_MOE_BACKEND_FLASHINFER_FUSED_BF16 = 2,
+    QSFI_MOE_BACKEND_FLASHINFER_NVFP4 = 3
+} qsfi_moe_backend;
+
+typedef enum {
+    QSFI_MOE_ROUTE_PRECOMPUTED_TOPK = 0,
+    QSFI_MOE_ROUTE_ROUTER_LOGITS = 1
+} qsfi_moe_route_mode;
+
+typedef struct {
+    qsfi_moe_backend backend;
+    qsfi_moe_route_mode route_mode;
+    uint32_t max_num_tokens;
+    uint32_t hidden_size;
+    uint32_t intermediate_size;
+    uint32_t num_experts;
+    uint32_t top_k;
+    uint32_t local_expert_offset;
+    uint32_t local_num_experts;
+    qsfi_dtype activation_dtype;
+    qsfi_dtype weight_dtype;
+    qsfi_dtype output_dtype;
+    uint32_t reserved0;
+} qsfi_moe_plan_desc;
+
+typedef struct {
+    qsfi_tensor2 hidden; /* bf16 [num_tokens, hidden_size]. */
+    qsfi_tensor2 topk_ids; /* i32 [num_tokens, top_k], global expert ids. */
+    qsfi_tensor2 topk_weights; /* f32 [num_tokens, top_k]. */
+    qsfi_tensor3 gate_up_weight; /* bf16 [local_num_experts, 2*intermediate_size, hidden_size]. */
+    qsfi_tensor3 down_weight; /* bf16 [local_num_experts, hidden_size, intermediate_size]. */
+    qsfi_tensor2 out; /* bf16 [num_tokens, hidden_size]. */
+    qsfi_tensor1 workspace; /* u8/i8 [qsfi_moe_workspace_size(...)] device scratch. */
+    uint32_t num_tokens;
+} qsfi_moe_bf16_execute_desc;
+
+typedef struct {
+    qsfi_tensor2 hidden_packed; /* u8 [num_tokens, hidden_size / 2]. */
+    qsfi_tensor2 hidden_scale; /* fp8_e4m3 [num_tokens, hidden_size / 16]. */
+    qsfi_tensor2 topk_ids; /* i32 [num_tokens, top_k], global expert ids. */
+    qsfi_tensor2 topk_weights; /* f32 [num_tokens, top_k]. */
+    qsfi_tensor3
+        gate_up_weight_packed; /* u8 [local_num_experts, 2*intermediate_size, hidden_size / 2]. */
+    qsfi_tensor3 gate_up_weight_scale; /* fp8_e4m3 [local_num_experts, 2*intermediate_size,
+                                          hidden_size / 16]. */
+    qsfi_tensor3
+        down_weight_packed; /* u8 [local_num_experts, hidden_size, intermediate_size / 2]. */
+    qsfi_tensor3
+        down_weight_scale; /* fp8_e4m3 [local_num_experts, hidden_size, intermediate_size / 16]. */
+    qsfi_tensor1 expert_output_scale; /* optional f32 [local_num_experts]. */
+    qsfi_tensor2 out; /* bf16 [num_tokens, hidden_size]. */
+    qsfi_tensor1 workspace; /* u8/i8 [qsfi_moe_workspace_size(...)] device scratch. */
+    uint32_t num_tokens;
+} qsfi_moe_nvfp4_execute_desc;
+
 typedef struct {
     qsfi_tensor2 x; /* [rows, hidden_size]. */
     qsfi_tensor2 weight; /* [vocab_size, hidden_size]. */
@@ -513,6 +589,18 @@ qsfi_status qsfi_linear(qsfi_context* ctx, const qsfi_linear_desc* desc);
 qsfi_status qsfi_qkv_projection(qsfi_context* ctx, const qsfi_qkv_projection_desc* desc);
 qsfi_status qsfi_silu_and_mul(qsfi_context* ctx, const qsfi_silu_and_mul_desc* desc);
 qsfi_status qsfi_dense_swiglu_mlp(qsfi_context* ctx, const qsfi_dense_swiglu_mlp_desc* desc);
+qsfi_status
+qsfi_moe_plan_create(qsfi_context* ctx, const qsfi_moe_plan_desc* desc, qsfi_moe_plan** out);
+void qsfi_moe_plan_destroy(qsfi_moe_plan* plan);
+qsfi_status qsfi_moe_workspace_size(
+    qsfi_context* ctx, const qsfi_moe_plan* plan, uint32_t num_tokens, size_t* device_bytes
+);
+qsfi_status qsfi_moe_execute_bf16(
+    qsfi_context* ctx, const qsfi_moe_plan* plan, const qsfi_moe_bf16_execute_desc* desc
+);
+qsfi_status qsfi_moe_execute_nvfp4(
+    qsfi_context* ctx, const qsfi_moe_plan* plan, const qsfi_moe_nvfp4_execute_desc* desc
+);
 qsfi_status qsfi_lm_head(qsfi_context* ctx, const qsfi_lm_head_desc* desc);
 qsfi_status qsfi_gdn_decode(qsfi_context* ctx, const qsfi_gdn_decode_desc* desc);
 qsfi_status qsfi_gdn_prefill(qsfi_context* ctx, const qsfi_gdn_prefill_desc* desc);

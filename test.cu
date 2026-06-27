@@ -32,7 +32,9 @@ constexpr int kGdnActiveValueDim = 5;
 constexpr uint16_t kBf16Zero = 0x0000u;
 constexpr uint16_t kBf16One = 0x3F80u;
 constexpr uint16_t kBf16OnePoint25 = 0x3FA0u;
+constexpr uint16_t kBf16OnePoint5 = 0x3FC0u;
 constexpr uint16_t kBf16Two = 0x4000u;
+constexpr uint16_t kBf16Three = 0x4040u;
 
 int failures = 0;
 
@@ -112,6 +114,16 @@ float bf16_to_f32(uint16_t bits)
     return value;
 }
 
+qsfi_tensor1 tensor1_u8(void* data, int64_t n)
+{
+    qsfi_tensor1 tensor {};
+    tensor.data = data;
+    tensor.dtype = QSFI_DTYPE_U8;
+    tensor.shape[0] = n;
+    tensor.stride[0] = 1;
+    return tensor;
+}
+
 qsfi_tensor3 tensor3(void* data, int64_t n)
 {
     qsfi_tensor3 tensor {};
@@ -123,6 +135,42 @@ qsfi_tensor3 tensor3(void* data, int64_t n)
     tensor.stride[0] = kKvHeads * kHeadDim;
     tensor.stride[1] = kHeadDim;
     tensor.stride[2] = 1;
+    return tensor;
+}
+
+qsfi_tensor2 tensor2_i32(void* data, int64_t rows, int64_t cols)
+{
+    qsfi_tensor2 tensor {};
+    tensor.data = data;
+    tensor.dtype = QSFI_DTYPE_I32;
+    tensor.shape[0] = rows;
+    tensor.shape[1] = cols;
+    tensor.stride[0] = cols;
+    tensor.stride[1] = 1;
+    return tensor;
+}
+
+qsfi_tensor2 tensor2_f32(void* data, int64_t rows, int64_t cols)
+{
+    qsfi_tensor2 tensor {};
+    tensor.data = data;
+    tensor.dtype = QSFI_DTYPE_F32;
+    tensor.shape[0] = rows;
+    tensor.shape[1] = cols;
+    tensor.stride[0] = cols;
+    tensor.stride[1] = 1;
+    return tensor;
+}
+
+qsfi_tensor2 tensor2_bf16(void* data, int64_t rows, int64_t cols)
+{
+    qsfi_tensor2 tensor {};
+    tensor.data = data;
+    tensor.dtype = QSFI_DTYPE_BF16;
+    tensor.shape[0] = rows;
+    tensor.shape[1] = cols;
+    tensor.stride[0] = cols;
+    tensor.stride[1] = 1;
     return tensor;
 }
 
@@ -158,18 +206,23 @@ qsfi_tensor2 gdn_tensor2_bf16(void* data, int64_t n, int64_t heads)
     return tensor;
 }
 
-qsfi_tensor3 gdn_tensor3_bf16(void* data, int64_t n, int64_t heads, int64_t dim)
+qsfi_tensor3 tensor3_bf16(void* data, int64_t d0, int64_t d1, int64_t d2)
 {
     qsfi_tensor3 tensor {};
     tensor.data = data;
     tensor.dtype = QSFI_DTYPE_BF16;
-    tensor.shape[0] = n;
-    tensor.shape[1] = heads;
-    tensor.shape[2] = dim;
-    tensor.stride[0] = heads * dim;
-    tensor.stride[1] = dim;
+    tensor.shape[0] = d0;
+    tensor.shape[1] = d1;
+    tensor.shape[2] = d2;
+    tensor.stride[0] = d1 * d2;
+    tensor.stride[1] = d2;
     tensor.stride[2] = 1;
     return tensor;
+}
+
+qsfi_tensor3 gdn_tensor3_bf16(void* data, int64_t n, int64_t heads, int64_t dim)
+{
+    return tensor3_bf16(data, n, heads, dim);
 }
 
 qsfi_tensor4 gdn_state_tensor_bf16(void* data)
@@ -292,6 +345,44 @@ void fill_gdn_inputs(
 bool approx_equal(float got, float want, float abs_tol)
 {
     return std::fabs(got - want) <= abs_tol;
+}
+
+void check_moe_two_outputs(
+    const std::vector<uint16_t>& out,
+    int token0,
+    int hidden0,
+    float want0,
+    int token1,
+    int hidden1,
+    float want1,
+    float abs_tol,
+    const char* what
+)
+{
+    constexpr int kMoeHidden = 8;
+    for (size_t i = 0; i < out.size(); ++i) {
+        const int row = static_cast<int>(i / kMoeHidden);
+        const int col = static_cast<int>(i % kMoeHidden);
+        float expected = 0.0f;
+        if (row == token0 && col == hidden0)
+            expected = want0;
+        else if (row == token1 && col == hidden1)
+            expected = want1;
+        const float got = bf16_to_f32(out[i]);
+        if (!approx_equal(got, expected, abs_tol)) {
+            std::fprintf(
+                stderr,
+                "FAIL: %s[%zu]: got %.8f, want %.8f +/- %.8f\n",
+                what,
+                i,
+                got,
+                expected,
+                abs_tol
+            );
+            failures += 1;
+            return;
+        }
+    }
 }
 
 void check_bf16_single_nonzero(
@@ -836,6 +927,123 @@ void test_gdn_prefill_two_token_recurrence()
     qsfi_context_destroy(ctx);
 }
 
+void test_moe_bf16_staged_grouped_gemm()
+{
+    qsfi_context* ctx = nullptr;
+    if (!make_context(&ctx))
+        return;
+
+    constexpr int tokens = 2;
+    constexpr int hidden = 8;
+    constexpr int intermediate = 8;
+    constexpr int experts = 2;
+    constexpr int top_k = 1;
+    constexpr size_t hidden_elems = static_cast<size_t>(tokens) * hidden;
+    constexpr size_t gate_up_elems = static_cast<size_t>(experts) * 2 * intermediate * hidden;
+    constexpr size_t down_elems = static_cast<size_t>(experts) * hidden * intermediate;
+
+    std::vector<uint16_t> h_hidden(hidden_elems, kBf16Zero);
+    std::vector<int32_t> h_topk_ids = { 0, 1 };
+    std::vector<float> h_topk_weights = { 1.0f, 1.0f };
+    std::vector<uint16_t> h_gate_up(gate_up_elems, kBf16Zero);
+    std::vector<uint16_t> h_down(down_elems, kBf16Zero);
+    std::vector<uint16_t> h_out(hidden_elems, kSentinel);
+
+    h_hidden[0 * hidden + 0] = kBf16One;
+    h_hidden[1 * hidden + 1] = kBf16One;
+
+    h_gate_up[(0 * 2 * intermediate + 0) * hidden + 0] = kBf16One;
+    h_gate_up[(0 * 2 * intermediate + intermediate + 0) * hidden + 0] = kBf16Two;
+    h_down[(0 * hidden + 0) * intermediate + 0] = kBf16Three;
+
+    h_gate_up[(1 * 2 * intermediate + 0) * hidden + 1] = kBf16Two;
+    h_gate_up[(1 * 2 * intermediate + intermediate + 0) * hidden + 1] = kBf16OnePoint5;
+    h_down[(1 * hidden + 1) * intermediate + 0] = kBf16OnePoint25;
+
+    uint16_t* d_hidden = nullptr;
+    int32_t* d_topk_ids = nullptr;
+    float* d_topk_weights = nullptr;
+    uint16_t* d_gate_up = nullptr;
+    uint16_t* d_down = nullptr;
+    uint16_t* d_out = nullptr;
+    uint8_t* d_workspace = nullptr;
+    qsfi_moe_plan* plan = nullptr;
+
+    if (!copy_to_device(&d_hidden, h_hidden.data(), h_hidden.size(), "copy moe hidden")
+        || !copy_to_device(&d_topk_ids, h_topk_ids.data(), h_topk_ids.size(), "copy moe topk ids")
+        || !copy_to_device(
+            &d_topk_weights,
+            h_topk_weights.data(),
+            h_topk_weights.size(),
+            "copy moe topk weights"
+        )
+        || !copy_to_device(&d_gate_up, h_gate_up.data(), h_gate_up.size(), "copy moe gate up")
+        || !copy_to_device(&d_down, h_down.data(), h_down.size(), "copy moe down")
+        || !copy_to_device(&d_out, h_out.data(), h_out.size(), "copy moe out")) {
+        qsfi_context_destroy(ctx);
+        return;
+    }
+
+    qsfi_moe_plan_desc plan_desc {};
+    plan_desc.backend = QSFI_MOE_BACKEND_FLASHINFER_STAGED_BF16;
+    plan_desc.route_mode = QSFI_MOE_ROUTE_PRECOMPUTED_TOPK;
+    plan_desc.max_num_tokens = tokens;
+    plan_desc.hidden_size = hidden;
+    plan_desc.intermediate_size = intermediate;
+    plan_desc.num_experts = experts;
+    plan_desc.top_k = top_k;
+    plan_desc.local_num_experts = experts;
+    plan_desc.activation_dtype = QSFI_DTYPE_BF16;
+    plan_desc.weight_dtype = QSFI_DTYPE_BF16;
+    plan_desc.output_dtype = QSFI_DTYPE_BF16;
+
+    if (!check_status(qsfi_moe_plan_create(ctx, &plan_desc, &plan), QSFI_STATUS_OK, "moe plan"))
+        return;
+
+    size_t workspace_bytes = 0;
+    if (!check_status(
+            qsfi_moe_workspace_size(ctx, plan, tokens, &workspace_bytes),
+            QSFI_STATUS_OK,
+            "moe workspace size"
+        )
+        || !alloc_device(&d_workspace, workspace_bytes, "alloc moe workspace")) {
+        qsfi_moe_plan_destroy(plan);
+        qsfi_context_destroy(ctx);
+        return;
+    }
+
+    qsfi_moe_bf16_execute_desc desc {};
+    desc.hidden = tensor2_bf16(d_hidden, tokens, hidden);
+    desc.topk_ids = tensor2_i32(d_topk_ids, tokens, top_k);
+    desc.topk_weights = tensor2_f32(d_topk_weights, tokens, top_k);
+    desc.gate_up_weight = tensor3_bf16(d_gate_up, experts, 2 * intermediate, hidden);
+    desc.down_weight = tensor3_bf16(d_down, experts, hidden, intermediate);
+    desc.out = tensor2_bf16(d_out, tokens, hidden);
+    desc.workspace = tensor1_u8(d_workspace, static_cast<int64_t>(workspace_bytes));
+    desc.num_tokens = tokens;
+
+    check_status(qsfi_moe_execute_bf16(ctx, plan, &desc), QSFI_STATUS_OK, "moe bf16 execute");
+    check_cuda(cudaDeviceSynchronize(), "sync moe bf16");
+    check_cuda(
+        cudaMemcpy(h_out.data(), d_out, h_out.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost),
+        "copy moe out back"
+    );
+
+    const float expected0 = (1.0f / (1.0f + std::exp(-1.0f))) * 2.0f * 3.0f;
+    const float expected1 = (2.0f / (1.0f + std::exp(-2.0f))) * 1.5f * 1.25f;
+    check_moe_two_outputs(h_out, 0, 0, expected0, 1, 1, expected1, 0.08f, "moe out");
+
+    cudaFree(d_hidden);
+    cudaFree(d_topk_ids);
+    cudaFree(d_topk_weights);
+    cudaFree(d_gate_up);
+    cudaFree(d_down);
+    cudaFree(d_out);
+    cudaFree(d_workspace);
+    qsfi_moe_plan_destroy(plan);
+    qsfi_context_destroy(ctx);
+}
+
 } // namespace
 
 int main()
@@ -853,6 +1061,7 @@ int main()
     test_prefill_append_maps_positions_through_page_table();
     test_gdn_decode_one_hot_recurrence();
     test_gdn_prefill_two_token_recurrence();
+    test_moe_bf16_staged_grouped_gemm();
 
     if (failures != 0) {
         std::fprintf(stderr, "%d failure(s)\n", failures);

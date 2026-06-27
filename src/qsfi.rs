@@ -33,6 +33,11 @@ pub type BatchDecodeExecuteDesc = sys::qsfi_batch_decode_execute_desc;
 pub type BatchPrefillExecuteDesc = sys::qsfi_batch_prefill_execute_desc;
 pub type AppendDecode = sys::qsfi_append_decode_desc;
 pub type AppendPrefill = sys::qsfi_append_prefill_desc;
+pub type MoePlanDesc = sys::qsfi_moe_plan_desc;
+pub type MoeBf16ExecuteDesc = sys::qsfi_moe_bf16_execute_desc;
+pub type MoeNvfp4ExecuteDesc = sys::qsfi_moe_nvfp4_execute_desc;
+pub type MoeBackendRaw = sys::qsfi_moe_backend;
+pub type MoeRouteModeRaw = sys::qsfi_moe_route_mode;
 
 pub const DTYPE_F32: DTypeRaw = sys::QSFI_DTYPE_F32;
 pub const DTYPE_F16: DTypeRaw = sys::QSFI_DTYPE_F16;
@@ -54,6 +59,14 @@ pub const POS_ENCODING_ROPE_LLAMA: PosEncodingRaw = sys::QSFI_POS_ENCODING_ROPE_
 pub const POS_ENCODING_NONE: PosEncodingRaw = sys::QSFI_POS_ENCODING_NONE;
 pub const MASK_MODE_NONE: MaskModeRaw = sys::QSFI_MASK_MODE_NONE;
 pub const MASK_MODE_CAUSAL: MaskModeRaw = sys::QSFI_MASK_MODE_CAUSAL;
+
+pub const MOE_BACKEND_FLASHINFER_STAGED_BF16: MoeBackendRaw =
+    sys::QSFI_MOE_BACKEND_FLASHINFER_STAGED_BF16;
+pub const MOE_BACKEND_FLASHINFER_FUSED_BF16: MoeBackendRaw =
+    sys::QSFI_MOE_BACKEND_FLASHINFER_FUSED_BF16;
+pub const MOE_BACKEND_FLASHINFER_NVFP4: MoeBackendRaw = sys::QSFI_MOE_BACKEND_FLASHINFER_NVFP4;
+pub const MOE_ROUTE_PRECOMPUTED_TOPK: MoeRouteModeRaw = sys::QSFI_MOE_ROUTE_PRECOMPUTED_TOPK;
+pub const MOE_ROUTE_ROUTER_LOGITS: MoeRouteModeRaw = sys::QSFI_MOE_ROUTE_ROUTER_LOGITS;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum PlanKind {

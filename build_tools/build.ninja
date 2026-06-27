@@ -17,7 +17,7 @@ includes = $
   -I$flashinfer/csrc/nv_internal/include $
   -I.
 
-nvccflags = -std=c++17 -arch=sm_121 $includes
+nvccflags = -std=c++17 -arch=sm_121 --expt-relaxed-constexpr -diag-suppress 20012 $includes
 
 rule run
   command = $in > $out
@@ -36,12 +36,14 @@ build qsfi_macros.h: run $src/build_tools/generate_macros.c
 build qsfi_context.o: nvcc $src/qsfi_context.cu | $src/qsfi.h $src/qsfi_internal.h qsfi_macros.h
 build qsfi_attn.o: nvcc $src/qsfi_attn.cu | $src/qsfi.h $src/qsfi_internal.h qsfi_macros.h
 build qsfi_gdn.o: nvcc $src/qsfi_gdn.cu | $src/qsfi.h $src/qsfi_internal.h qsfi_macros.h
+build qsfi_moe.o: nvcc $src/qsfi_moe.cu | $src/qsfi.h $src/qsfi_internal.h qsfi_macros.h
 
 build qsfi_test: link_test $src/test.cu $
   qsfi_context.o $
   qsfi_attn.o $
-  qsfi_gdn.o | $src/qsfi.h
+  qsfi_gdn.o $
+  qsfi_moe.o | $src/qsfi.h
 
-build all: phony qsfi_context.o qsfi_attn.o qsfi_gdn.o
+build all: phony qsfi_context.o qsfi_attn.o qsfi_gdn.o qsfi_moe.o
 
 default all
