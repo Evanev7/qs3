@@ -28,22 +28,37 @@ rule nvcc
   description = NVCC $out
 
 rule link_test
-  command = nvcc $nvccflags $in -o $out -lcuda
+  command = nvcc $nvccflags $in -o $out -lcuda $libs
   description = LINK $out
 
 build qsfi_macros.h: run $src/build_tools/generate_macros.c
 
-build qsfi_context.o: nvcc $src/qsfi_context.cu | $src/qsfi.h $src/qsfi_internal.h qsfi_macros.h
-build qsfi_attn.o: nvcc $src/qsfi_attn.cu | $src/qsfi.h $src/qsfi_internal.h qsfi_macros.h
-build qsfi_gdn.o: nvcc $src/qsfi_gdn.cu | $src/qsfi.h $src/qsfi_internal.h qsfi_macros.h
-build qsfi_moe.o: nvcc $src/qsfi_moe.cu | $src/qsfi.h $src/qsfi_internal.h qsfi_macros.h
+build qsfi_context.o: nvcc $src/qsfi_context.cu | $src/qs_info.h $src/qs_tensor.h $src/qsfi.h $src/qsfi_internal.h qsfi_macros.h
+build qsfi_attn.o: nvcc $src/qsfi_attn.cu | $src/qs_info.h $src/qs_tensor.h $src/qsfi.h $src/qsfi_internal.h qsfi_macros.h
+build qsfi_gdn.o: nvcc $src/qsfi_gdn.cu | $src/qs_info.h $src/qs_tensor.h $src/qsfi.h $src/qsfi_internal.h qsfi_macros.h
+build qsfi_moe.o: nvcc $src/qsfi_moe.cu | $src/qs_info.h $src/qs_tensor.h $src/qsfi.h $src/qsfi_internal.h qsfi_macros.h
+build qsfi_norm_rope.o: nvcc $src/qsfi_norm_rope.cu | $src/qs_info.h $src/qs_tensor.h $src/qsfi.h $src/qsfi_internal.h
+build qscu.o: nvcc $src/qscu.cu | $src/qs_info.h $src/qs_tensor.h $src/qscu.h qsfi_macros.h
+build qscb.o: nvcc $src/qscb.cu | $src/qs_info.h $src/qs_tensor.h $src/qscb.h
 
 build qsfi_test: link_test $src/test.cu $
   qsfi_context.o $
   qsfi_attn.o $
   qsfi_gdn.o $
-  qsfi_moe.o | $src/qsfi.h
+  qsfi_moe.o $
+  qsfi_norm_rope.o $
+  qscu.o $
+  qscb.o | $src/qs_tensor.h $
+  $src/qs_info.h $
+  $src/qsfi.h $
+  $src/qscu.h $
+  $src/qscb.h $
+  $src/tests_cuda_flashinfer_norm_rope.inc $
+  $src/tests_cuda_qscb_gemm.inc $
+  $src/tests_cuda_qscu_utils.inc $
+  $src/tests_cuda_qscu_gdn_router.inc
+  libs = -lcublas -lcublasLt
 
-build all: phony qsfi_context.o qsfi_attn.o qsfi_gdn.o qsfi_moe.o
+build all: phony qsfi_context.o qsfi_attn.o qsfi_gdn.o qsfi_moe.o qsfi_norm_rope.o qscu.o qscb.o
 
 default all

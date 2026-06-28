@@ -1,6 +1,9 @@
 #ifndef QS_FLASHINFER_H
 #define QS_FLASHINFER_H
 
+#include "qs_info.h"
+#include "qs_tensor.h"
+
 #include <stddef.h>
 #include <stdint.h>
 
@@ -14,49 +17,10 @@ extern "C" {
  * All execution functions run on the stream owned by ctx.
  */
 
-#define QSFI_ERROR_MESSAGE_BYTES 512u
-
 typedef struct qsfi_context qsfi_context;
 typedef struct qsfi_batch_decode_plan qsfi_batch_decode_plan;
 typedef struct qsfi_batch_prefill_plan qsfi_batch_prefill_plan;
 typedef struct qsfi_moe_plan qsfi_moe_plan;
-
-typedef void* qsfi_cuda_stream;
-typedef void* qsfi_device_ptr;
-
-typedef enum {
-    QSFI_STATUS_OK = 0,
-    QSFI_STATUS_INVALID_ARGUMENT = 1,
-    QSFI_STATUS_UNSUPPORTED = 2,
-    QSFI_STATUS_OUT_OF_MEMORY = 3,
-    QSFI_STATUS_CUDA_ERROR = 4,
-    QSFI_STATUS_BACKEND_ERROR = 5,
-    QSFI_STATUS_INTERNAL_ERROR = 6
-} qsfi_status;
-
-typedef enum {
-    QSFI_ERROR_SOURCE_NONE = 0,
-    QSFI_ERROR_SOURCE_QSFI = 1,
-    QSFI_ERROR_SOURCE_CUDA = 2,
-    QSFI_ERROR_SOURCE_FLASHINFER = 3,
-    QSFI_ERROR_SOURCE_CUBLASLT = 4
-} qsfi_error_source;
-
-typedef enum {
-    QSFI_DTYPE_INVALID = 0,
-    QSFI_DTYPE_F32 = 1,
-    QSFI_DTYPE_F16 = 2,
-    QSFI_DTYPE_BF16 = 3,
-    QSFI_DTYPE_FP8_E4M3 = 4,
-    QSFI_DTYPE_FP8_E5M2 = 5,
-    QSFI_DTYPE_NVFP4_E2M1 = 6,
-    QSFI_DTYPE_MXFP4_E2M1 = 7,
-    QSFI_DTYPE_MXFP8_E4M3 = 8,
-    QSFI_DTYPE_I32 = 9,
-    QSFI_DTYPE_U32 = 10,
-    QSFI_DTYPE_I8 = 11,
-    QSFI_DTYPE_U8 = 12
-} qsfi_dtype;
 
 typedef enum {
     /* K/V shape: [num_pages, page_size, num_kv_heads, head_dim]. */
@@ -73,60 +37,6 @@ typedef struct {
     int32_t device_ordinal;
     qsfi_cuda_stream stream;
 } qsfi_context_desc;
-
-typedef struct {
-    qsfi_status status;
-    qsfi_error_source source;
-    int32_t native_code;
-    char message[QSFI_ERROR_MESSAGE_BYTES];
-} qsfi_error_info;
-
-/*
- * Tensor strides are element strides, not byte strides. Rank is part of the
- * type name so public calls stay narrow and validation can focus on the qwen3.6
- * shape contract for that operation.
- */
-typedef struct {
-    qsfi_device_ptr data;
-    qsfi_dtype dtype;
-    int64_t shape[1];
-    int64_t stride[1];
-} qsfi_tensor1;
-
-typedef struct {
-    qsfi_device_ptr data;
-    qsfi_dtype dtype;
-    int64_t shape[2];
-    int64_t stride[2];
-} qsfi_tensor2;
-
-typedef struct {
-    qsfi_device_ptr data;
-    qsfi_dtype dtype;
-    int64_t shape[3];
-    int64_t stride[3];
-} qsfi_tensor3;
-
-typedef struct {
-    qsfi_device_ptr data;
-    qsfi_dtype dtype;
-    int64_t shape[4];
-    int64_t stride[4];
-} qsfi_tensor4;
-
-typedef struct {
-    qsfi_device_ptr data;
-    qsfi_dtype dtype;
-    int64_t shape[5];
-    int64_t stride[5];
-} qsfi_tensor5;
-
-typedef struct {
-    qsfi_device_ptr data;
-    qsfi_dtype dtype;
-    int64_t shape[6];
-    int64_t stride[6];
-} qsfi_tensor6;
 
 typedef struct {
     uint32_t target_sm;
@@ -254,34 +164,34 @@ typedef struct {
 } qsfi_embedding_gather_desc;
 
 typedef struct {
-    qsfi_tensor2 x;
-    qsfi_tensor1 weight;
-    qsfi_tensor2 out;
+    qsfi_tensor2 x; /* bf16/f32 [rows, hidden_size]. */
+    qsfi_tensor1 weight; /* same dtype [hidden_size]. */
+    qsfi_tensor2 out; /* same dtype [rows, hidden_size]. */
     uint32_t hidden_size;
     float eps;
 } qsfi_rmsnorm_desc;
 
 typedef struct {
-    qsfi_tensor2 x;
-    qsfi_tensor2 residual_inout;
-    qsfi_tensor1 weight;
-    qsfi_tensor2 out;
+    qsfi_tensor2 x; /* bf16/f32 [rows, hidden_size], overwritten with normalized output. */
+    qsfi_tensor2 residual_inout; /* same dtype [rows, hidden_size], updated to residual + x. */
+    qsfi_tensor1 weight; /* same dtype [hidden_size]. */
+    qsfi_tensor2 out; /* must alias x; documents the normalized output tensor. */
     uint32_t hidden_size;
     float eps;
 } qsfi_fused_add_rmsnorm_desc;
 
 typedef struct {
-    qsfi_tensor3 q;
-    qsfi_tensor3 k;
-    qsfi_tensor3 q_out;
-    qsfi_tensor3 k_out;
+    qsfi_tensor3 q; /* bf16/f32 [num_tokens, num_qo_heads, head_dim]. */
+    qsfi_tensor3 k; /* bf16/f32 [num_tokens, num_kv_heads, head_dim]. */
+    qsfi_tensor3 q_out; /* same dtype/shape as q; may alias q. */
+    qsfi_tensor3 k_out; /* same dtype/shape as k; may alias k. */
     qsfi_tensor1 positions; /* i32/u32 [num_tokens]. */
     uint32_t num_qo_heads;
     uint32_t num_kv_heads;
-    uint32_t head_dim;
-    float rope_scale;
-    float rope_theta;
-    uint32_t interleave;
+    uint32_t head_dim; /* full-head rotary dim for qwen3.6. */
+    float rope_scale; /* 0 means 1. */
+    float rope_theta; /* 0 means 10000. */
+    uint32_t interleave; /* must be 0: NeoX/Llama non-interleaved layout. */
 } qsfi_rope_apply_desc;
 
 typedef struct {
@@ -516,8 +426,6 @@ typedef struct {
     float min_p; /* <= 0 means disabled. */
     float temperature;
 } qsfi_sampling_desc;
-
-const char* qsfi_status_string(qsfi_status status);
 
 qsfi_status qsfi_context_create(const qsfi_context_desc* desc, qsfi_context** out);
 void qsfi_context_destroy(qsfi_context* ctx);

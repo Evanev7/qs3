@@ -1,3 +1,5 @@
+#include "qscb.h"
+#include "qscu.h"
 #include "qsfi.h"
 
 #include <cuda_runtime.h>
@@ -1044,6 +1046,11 @@ void test_moe_bf16_staged_grouped_gemm()
     qsfi_context_destroy(ctx);
 }
 
+#include "tests_cuda_flashinfer_norm_rope.inc"
+#include "tests_cuda_qscb_gemm.inc"
+#include "tests_cuda_qscu_gdn_router.inc"
+#include "tests_cuda_qscu_utils.inc"
+
 } // namespace
 
 int main()
@@ -1062,6 +1069,19 @@ int main()
     test_gdn_decode_one_hot_recurrence();
     test_gdn_prefill_two_token_recurrence();
     test_moe_bf16_staged_grouped_gemm();
+    test_qsfi_rmsnorm_bf16_matches_cpu();
+    test_qsfi_fused_add_rmsnorm_bf16_inplace_updates_residual();
+    test_qsfi_fused_add_rmsnorm_rejects_non_alias_out();
+    test_qsfi_rope_apply_bf16_neox_full_head_matches_cpu();
+    test_qscb_context_lifecycle();
+    test_qscb_gemm_bf16_hidden_output_strided();
+    test_qscb_gemm_bf16_logits_f32_output_beta();
+    test_qscu_utils_silu_and_mul_bf16();
+    test_qscu_utils_embedding_gather_bf16();
+    test_qscu_utils_logits_soft_cap_f32();
+    test_qscu_utils_greedy_argmax_f32();
+    test_qscu_utils_negative_validation();
+    test_qscu_gdn_router_helpers();
 
     if (failures != 0) {
         std::fprintf(stderr, "%d failure(s)\n", failures);
