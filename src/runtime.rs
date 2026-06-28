@@ -1,7 +1,10 @@
+pub(crate) mod kernels;
+
 use crate::engine::{
-    AppendBatch, BatchKind, DecodeBatch, EngineConfig, EngineCore, EngineLayer, KvLayout, Status,
+    AppendBatch, DecodeBatch, EngineConfig, EngineCore, EngineLayer, KvLayout, Status,
     try_clone_slice,
 };
+use crate::ffi::qscb;
 use crate::ffi::qsfi::{Context, Plan};
 use crate::ffi::{
     AppendDecode, AppendPrefill, AttentionDesc, BatchDecodeExecuteDesc, BatchPrefillExecuteDesc,
@@ -149,6 +152,8 @@ pub(crate) struct EngineInner {
     pub(crate) core: EngineCore,
     stream: *mut c_void,
     ctx: Context,
+    #[allow(dead_code)]
+    qscb_ctx: qscb::Context,
     append_attention: AttentionDesc,
     decode_attention: AttentionDesc,
     layer_caches: Vec<LayerCache>,
@@ -173,12 +178,14 @@ impl EngineInner {
             config.qsfi_int_workspace_bytes,
             config.qsfi_host_int_workspace_bytes,
         )?;
+        let qscb_ctx = qscb::Context::new(config.device_ordinal, config.stream)?;
         let mut session = Box::new(Self {
             append_attention: make_attention(&config, MASK_MODE_CAUSAL),
             decode_attention: make_attention(&config, MASK_MODE_NONE),
             core,
             stream: config.stream,
             ctx,
+            qscb_ctx,
             layer_caches: Vec::new(),
             d_batch_tokens: DeviceI32Buffer::new(),
             d_batch_qo_indptr: DeviceI32Buffer::new(),
@@ -193,6 +200,11 @@ impl EngineInner {
         });
         session.allocate_layer_caches()?;
         Ok(session)
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn kernel_ops(&mut self) -> kernels::KernelOps<'_> {
+        kernels::KernelOps::new(self.stream, &mut self.ctx, &mut self.qscb_ctx)
     }
 
     fn allocate_layer_caches(&mut self) -> Result<(), Status> {
@@ -417,10 +429,11 @@ impl EngineInner {
         &mut self,
         layer: &EngineLayer,
     ) -> Result<(), Status> {
-        if self.core.batch_kind() != BatchKind::Append || self.append_plan.plan.is_none() {
+        let pending_layer = self.core.pending_append_layer(layer.layer_idx)?;
+        let Some(plan) = self.append_plan.plan.as_ref() else {
             return Err(Status::InvalidArgument);
-        }
-        let kv_cache = self.make_kv_cache(layer.layer_idx)?;
+        };
+        let kv_cache = self.make_kv_cache(pending_layer.layer_idx())?;
         let page_table = self.make_active_page_table();
         let append = AppendPrefill {
             k: layer.k,
@@ -453,10 +466,8 @@ impl EngineInner {
             k_scale: layer.k_scale,
             v_scale: layer.v_scale,
         };
-        unsafe {
-            self.ctx
-                .execute_prefill(self.append_plan.plan.as_ref().unwrap(), &execute)
-        }
+        unsafe { self.ctx.execute_prefill(plan, &execute) }?;
+        self.core.complete_append_layer(pending_layer)
     }
 
     pub(crate) fn prepare_decode(&mut self, batch: DecodeBatch<'_>) -> Result<(), Status> {
@@ -475,10 +486,11 @@ impl EngineInner {
         &mut self,
         layer: &EngineLayer,
     ) -> Result<(), Status> {
-        if self.core.batch_kind() != BatchKind::Decode || self.decode_plan.plan.is_none() {
+        let pending_layer = self.core.pending_decode_layer(layer.layer_idx)?;
+        let Some(plan) = self.decode_plan.plan.as_ref() else {
             return Err(Status::InvalidArgument);
-        }
-        let kv_cache = self.make_kv_cache(layer.layer_idx)?;
+        };
+        let kv_cache = self.make_kv_cache(pending_layer.layer_idx())?;
         let page_table = self.make_active_page_table();
         let append = AppendDecode {
             k: layer.k,
@@ -501,10 +513,8 @@ impl EngineInner {
             k_scale: layer.k_scale,
             v_scale: layer.v_scale,
         };
-        unsafe {
-            self.ctx
-                .execute_decode(self.decode_plan.plan.as_ref().unwrap(), &execute)
-        }
+        unsafe { self.ctx.execute_decode(plan, &execute) }?;
+        self.core.complete_decode_layer(pending_layer)
     }
 }
 

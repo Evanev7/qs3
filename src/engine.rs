@@ -149,7 +149,6 @@ impl KvLayout {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BatchKind {
-    None,
     Append,
     Decode,
 }
@@ -217,6 +216,7 @@ pub struct EngineLayer {
 struct Request {
     id: RequestId,
     seq_len: u32,
+    tokens: Vec<i32>,
     pages: Vec<i32>,
 }
 
@@ -227,7 +227,120 @@ struct StagedRow {
     old_seq_len: u32,
     old_page_count: usize,
     token_count: u32,
+    tokens: Vec<i32>,
     pages: Vec<i32>,
+}
+
+#[derive(Clone, Debug)]
+struct BatchState {
+    size: u32,
+    token_count: u32,
+    rows: Vec<StagedRow>,
+    layers: LayerProgress,
+}
+
+impl BatchState {
+    fn new(size: u32, token_count: u32, rows: Vec<StagedRow>, layer_count: u32) -> Self {
+        Self {
+            size,
+            token_count,
+            rows,
+            layers: LayerProgress::new(layer_count),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+enum ActiveBatch {
+    Append(BatchState),
+    Decode(BatchState),
+}
+
+impl ActiveBatch {
+    fn append(size: u32, token_count: u32, rows: Vec<StagedRow>, layer_count: u32) -> Self {
+        Self::Append(BatchState::new(size, token_count, rows, layer_count))
+    }
+
+    fn decode(size: u32, token_count: u32, rows: Vec<StagedRow>, layer_count: u32) -> Self {
+        Self::Decode(BatchState::new(size, token_count, rows, layer_count))
+    }
+
+    fn kind(&self) -> BatchKind {
+        match self {
+            Self::Append(_) => BatchKind::Append,
+            Self::Decode(_) => BatchKind::Decode,
+        }
+    }
+
+    fn state(&self) -> &BatchState {
+        match self {
+            Self::Append(state) | Self::Decode(state) => state,
+        }
+    }
+
+    fn is_decode(&self) -> bool {
+        matches!(self, Self::Decode(_))
+    }
+}
+
+#[derive(Clone, Debug)]
+struct LayerProgress {
+    next_layer: u32,
+    layer_count: u32,
+}
+
+impl LayerProgress {
+    fn new(layer_count: u32) -> Self {
+        Self {
+            next_layer: 0,
+            layer_count,
+        }
+    }
+
+    fn pending(&self, layer_idx: u32) -> Result<PendingLayer, Status> {
+        if self.next_layer >= self.layer_count || layer_idx != self.next_layer {
+            return Err(Status::InvalidArgument);
+        }
+        Ok(PendingLayer { layer_idx })
+    }
+
+    fn complete(&mut self, pending: PendingLayer) -> Result<(), Status> {
+        if pending.layer_idx != self.next_layer {
+            return Err(Status::InternalError);
+        }
+        self.next_layer = self
+            .next_layer
+            .checked_add(1)
+            .ok_or(Status::InternalError)?;
+        Ok(())
+    }
+
+    fn is_complete(&self) -> bool {
+        self.next_layer == self.layer_count
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct PendingLayer {
+    layer_idx: u32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct PendingAppendLayer(PendingLayer);
+
+impl PendingAppendLayer {
+    pub(crate) fn layer_idx(self) -> u32 {
+        self.0.layer_idx
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct PendingDecodeLayer(PendingLayer);
+
+impl PendingDecodeLayer {
+    pub(crate) fn layer_idx(self) -> u32 {
+        self.0.layer_idx
+    }
 }
 
 #[derive(Debug)]
@@ -238,14 +351,13 @@ pub(crate) struct EngineCore {
 
     live_request_ids: Vec<RequestId>,
     live_seq_lens: Vec<i32>,
+    live_token_indptr: Vec<i32>,
+    live_tokens: Vec<i32>,
     live_kv_indptr: Vec<i32>,
     live_kv_indices: Vec<i32>,
     live_last_page_len: Vec<i32>,
 
-    batch_kind: BatchKind,
-    batch_size: u32,
-    batch_token_count: u32,
-    staged_rows: Vec<StagedRow>,
+    active_batch: Option<ActiveBatch>,
 
     batch_request_ids: Vec<RequestId>,
     batch_tokens: Vec<i32>,
@@ -260,7 +372,7 @@ pub(crate) struct EngineCore {
 
 #[derive(Clone, Copy)]
 pub struct CoreState<'a> {
-    pub batch_kind: BatchKind,
+    pub batch_kind: Option<BatchKind>,
     pub live_request_count: u32,
     pub batch_size: u32,
     pub batch_token_count: u32,
@@ -271,6 +383,8 @@ pub struct CoreState<'a> {
     pub page_size: u32,
     pub live_request_ids: &'a [RequestId],
     pub live_seq_lens: &'a [i32],
+    pub live_token_indptr: &'a [i32],
+    pub live_tokens: &'a [i32],
     pub live_kv_indptr: &'a [i32],
     pub live_kv_indices: &'a [i32],
     pub live_last_page_len: &'a [i32],
@@ -398,13 +512,12 @@ impl EngineCore {
             free_pages,
             live_request_ids: Vec::new(),
             live_seq_lens: Vec::new(),
+            live_token_indptr: Vec::new(),
+            live_tokens: Vec::new(),
             live_kv_indptr: Vec::new(),
             live_kv_indices: Vec::new(),
             live_last_page_len: Vec::new(),
-            batch_kind: BatchKind::None,
-            batch_size: 0,
-            batch_token_count: 0,
-            staged_rows: Vec::new(),
+            active_batch: None,
             batch_request_ids: Vec::new(),
             batch_tokens: Vec::new(),
             batch_qo_indptr: Vec::new(),
@@ -424,11 +537,13 @@ impl EngineCore {
     }
 
     pub fn state(&self) -> Result<CoreState<'_>, Status> {
+        let active_batch = self.active_batch.as_ref();
+        let active_state = active_batch.map(ActiveBatch::state);
         Ok(CoreState {
-            batch_kind: self.batch_kind,
+            batch_kind: active_batch.map(ActiveBatch::kind),
             live_request_count: usize_to_u32(self.requests.len())?,
-            batch_size: self.batch_size,
-            batch_token_count: self.batch_token_count,
+            batch_size: active_state.map_or(0, |state| state.size),
+            batch_token_count: active_state.map_or(0, |state| state.token_count),
             live_num_indices: usize_to_u32(self.live_kv_indices.len())?,
             allocated_pages: self
                 .config
@@ -440,6 +555,8 @@ impl EngineCore {
             page_size: self.config.page_size,
             live_request_ids: &self.live_request_ids,
             live_seq_lens: &self.live_seq_lens,
+            live_token_indptr: &self.live_token_indptr,
+            live_tokens: &self.live_tokens,
             live_kv_indptr: &self.live_kv_indptr,
             live_kv_indices: &self.live_kv_indices,
             live_last_page_len: &self.live_last_page_len,
@@ -468,7 +585,7 @@ impl EngineCore {
     }
 
     pub fn release_requests(&mut self, request_ids: &[RequestId]) -> Result<(), Status> {
-        if self.batch_kind != BatchKind::None {
+        if self.active_batch.is_some() {
             return Err(Status::InvalidArgument);
         }
         for id in request_ids {
@@ -487,7 +604,7 @@ impl EngineCore {
         token_indptr: &[i32],
         tokens: &[i32],
     ) -> Result<(), Status> {
-        if self.batch_kind != BatchKind::None {
+        if self.active_batch.is_some() {
             return Err(Status::InvalidArgument);
         }
         let batch_size = usize_to_u32(request_ids.len())?;
@@ -526,6 +643,10 @@ impl EngineCore {
                 u32::try_from(token_indptr[i]).map_err(|_| Status::InvalidArgument)?;
             let token_end =
                 u32::try_from(token_indptr[i + 1]).map_err(|_| Status::InvalidArgument)?;
+            let token_begin_usize =
+                usize::try_from(token_begin).map_err(|_| Status::InvalidArgument)?;
+            let token_end_usize =
+                usize::try_from(token_end).map_err(|_| Status::InvalidArgument)?;
             let row_token_count = token_end
                 .checked_sub(token_begin)
                 .ok_or(Status::InvalidArgument)?;
@@ -561,6 +682,7 @@ impl EngineCore {
                 old_seq_len,
                 old_page_count,
                 token_count: row_token_count,
+                tokens: try_clone_slice(&tokens[token_begin_usize..token_end_usize])?,
                 pages: try_clone_slice(old_pages)?,
             });
         }
@@ -573,10 +695,6 @@ impl EngineCore {
         }
 
         self.clear_batch_views();
-        self.staged_rows = staged_rows;
-        self.batch_kind = BatchKind::Append;
-        self.batch_size = batch_size;
-        self.batch_token_count = token_count;
         self.batch_request_ids = try_clone_slice(request_ids)?;
         self.batch_tokens = try_clone_slice(tokens)?;
         self.batch_qo_indptr = try_clone_slice(token_indptr)?;
@@ -588,28 +706,28 @@ impl EngineCore {
         try_reserve(&mut self.batch_append_positions, tokens.len())?;
         self.batch_kv_indptr.push(0);
 
-        for row_idx in 0..self.staged_rows.len() {
-            let new_seq_len = self.staged_rows[row_idx]
+        for (idx, row) in staged_rows.iter_mut().enumerate() {
+            let new_seq_len = row
                 .old_seq_len
-                .checked_add(self.staged_rows[row_idx].token_count)
+                .checked_add(row.token_count)
                 .ok_or(Status::InvalidArgument)?;
             let needed_pages = page_count_for_len(new_seq_len, self.config.page_size)? as usize;
-            while self.staged_rows[row_idx].pages.len() < needed_pages {
+            while row.pages.len() < needed_pages {
                 let page = self.free_pages.pop().ok_or(Status::OutOfMemory)?;
-                self.staged_rows[row_idx].pages.push(page);
+                row.pages.push(page);
             }
 
             self.batch_kv_indices
-                .extend_from_slice(&self.staged_rows[row_idx].pages);
+                .extend_from_slice(&row.pages);
             self.batch_kv_indptr
                 .push(usize_to_i32(self.batch_kv_indices.len())?);
             self.batch_last_page_len
                 .push(last_page_len_for_seq(new_seq_len, self.config.page_size));
             self.batch_rope_pos_offset.push(0);
 
-            for j in 0..self.staged_rows[row_idx].token_count {
-                self.batch_append_batch_indices.push(usize_to_i32(row_idx)?);
-                let pos = self.staged_rows[row_idx]
+            for j in 0..row.token_count {
+                self.batch_append_batch_indices.push(usize_to_i32(idx)?);
+                let pos = row
                     .old_seq_len
                     .checked_add(j)
                     .ok_or(Status::InvalidArgument)?;
@@ -617,6 +735,12 @@ impl EngineCore {
             }
         }
 
+        self.active_batch = Some(ActiveBatch::append(
+            batch_size,
+            token_count,
+            staged_rows,
+            self.config.num_layers,
+        ));
         Ok(())
     }
 
@@ -625,7 +749,7 @@ impl EngineCore {
         request_ids: &[RequestId],
         tokens: &[i32],
     ) -> Result<(), Status> {
-        if self.batch_kind != BatchKind::None {
+        if self.active_batch.is_some() {
             return Err(Status::InvalidArgument);
         }
         if request_ids.is_empty()
@@ -647,7 +771,7 @@ impl EngineCore {
         let mut staged_rows = try_vec_with_capacity(request_ids.len())?;
         let mut extra_pages = 0usize;
 
-        for id in request_ids {
+        for (row_idx, id) in request_ids.iter().enumerate() {
             let request_index = self
                 .find_request_index(*id)
                 .ok_or(Status::InvalidArgument)?;
@@ -670,6 +794,11 @@ impl EngineCore {
                 old_seq_len: req.seq_len,
                 old_page_count: req.pages.len(),
                 token_count: 1,
+                tokens: {
+                    let mut row_tokens = try_vec_with_capacity(1)?;
+                    row_tokens.push(tokens[row_idx]);
+                    row_tokens
+                },
                 pages: try_clone_slice(&req.pages)?,
             });
         }
@@ -679,10 +808,6 @@ impl EngineCore {
         }
 
         self.clear_batch_views();
-        self.staged_rows = staged_rows;
-        self.batch_kind = BatchKind::Decode;
-        self.batch_size = usize_to_u32(request_ids.len())?;
-        self.batch_token_count = usize_to_u32(request_ids.len())?;
         self.batch_request_ids = try_clone_slice(request_ids)?;
         self.batch_tokens = try_clone_slice(tokens)?;
 
@@ -691,18 +816,18 @@ impl EngineCore {
         try_reserve(&mut self.batch_rope_pos_offset, request_ids.len())?;
         self.batch_kv_indptr.push(0);
 
-        for row_idx in 0..self.staged_rows.len() {
-            let new_seq_len = self.staged_rows[row_idx]
+        for row in staged_rows.iter_mut() {
+            let new_seq_len = row
                 .old_seq_len
                 .checked_add(1)
                 .ok_or(Status::InvalidArgument)?;
             let needed_pages = page_count_for_len(new_seq_len, self.config.page_size)? as usize;
-            while self.staged_rows[row_idx].pages.len() < needed_pages {
+            while row.pages.len() < needed_pages {
                 let page = self.free_pages.pop().ok_or(Status::OutOfMemory)?;
-                self.staged_rows[row_idx].pages.push(page);
+                row.pages.push(page);
             }
             self.batch_kv_indices
-                .extend_from_slice(&self.staged_rows[row_idx].pages);
+                .extend_from_slice(&row.pages);
             self.batch_kv_indptr
                 .push(usize_to_i32(self.batch_kv_indices.len())?);
             self.batch_last_page_len
@@ -710,26 +835,34 @@ impl EngineCore {
             self.batch_rope_pos_offset.push(0);
         }
 
+        self.active_batch = Some(ActiveBatch::decode(
+            usize_to_u32(request_ids.len())?,
+            usize_to_u32(request_ids.len())?,
+            staged_rows,
+            self.config.num_layers,
+        ));
         Ok(())
     }
 
     pub fn commit_batch(&mut self, accepted_token_counts: Option<&[u32]>) -> Result<(), Status> {
-        if self.batch_kind == BatchKind::None {
+        let active_batch = self.active_batch.as_ref().ok_or(Status::InvalidArgument)?;
+        let active_state = active_batch.state();
+        if !active_state.layers.is_complete() {
             return Err(Status::InvalidArgument);
         }
         if let Some(counts) = accepted_token_counts
-            && counts.len() != self.staged_rows.len()
+            && counts.len() != active_state.rows.len()
         {
             return Err(Status::InvalidArgument);
         }
 
-        let mut accepted = try_vec_with_capacity(self.staged_rows.len())?;
-        for (i, row) in self.staged_rows.iter().enumerate() {
+        let mut accepted = try_vec_with_capacity(active_state.rows.len())?;
+        for (i, row) in active_state.rows.iter().enumerate() {
             let count = accepted_token_counts.map_or(row.token_count, |counts| counts[i]);
             if count > row.token_count {
                 return Err(Status::InvalidArgument);
             }
-            if self.batch_kind == BatchKind::Decode && count > 1 {
+            if active_batch.is_decode() && count > 1 {
                 return Err(Status::InvalidArgument);
             }
             accepted.push(count);
@@ -738,13 +871,17 @@ impl EngineCore {
         let mut next_requests = self.clone_requests()?;
         let mut next_free_pages = try_clone_slice(&self.free_pages)?;
 
-        for (i, row) in self.staged_rows.iter().enumerate() {
+        for (i, row) in active_state.rows.iter().enumerate() {
             let new_seq_len = row
                 .old_seq_len
                 .checked_add(accepted[i])
                 .ok_or(Status::InvalidArgument)?;
+            let accepted_len = usize::try_from(accepted[i]).map_err(|_| Status::InvalidArgument)?;
             let needed_pages = page_count_for_len(new_seq_len, self.config.page_size)? as usize;
             if needed_pages > row.pages.len() {
+                return Err(Status::InternalError);
+            }
+            if accepted_len > row.tokens.len() {
                 return Err(Status::InternalError);
             }
 
@@ -754,6 +891,13 @@ impl EngineCore {
                         .get_mut(request_index)
                         .ok_or(Status::InternalError)?;
                     req.seq_len = new_seq_len;
+                    let old_token_len =
+                        usize::try_from(row.old_seq_len).map_err(|_| Status::InvalidArgument)?;
+                    if req.tokens.len() != old_token_len {
+                        return Err(Status::InternalError);
+                    }
+                    try_reserve(&mut req.tokens, accepted_len)?;
+                    req.tokens.extend_from_slice(&row.tokens[..accepted_len]);
                     req.pages = try_clone_slice(&row.pages[..needed_pages])?;
                 }
                 None => {
@@ -761,6 +905,7 @@ impl EngineCore {
                         next_requests.push(Request {
                             id: row.id,
                             seq_len: new_seq_len,
+                            tokens: try_clone_slice(&row.tokens[..accepted_len])?,
                             pages: try_clone_slice(&row.pages[..needed_pages])?,
                         });
                     }
@@ -777,7 +922,7 @@ impl EngineCore {
     }
 
     pub fn abort_batch(&mut self) -> Result<(), Status> {
-        if self.batch_kind == BatchKind::None {
+        if self.active_batch.is_none() {
             return Ok(());
         }
         self.rollback_staged_pages()?;
@@ -785,16 +930,16 @@ impl EngineCore {
         self.rebuild_live_views()
     }
 
-    pub fn batch_kind(&self) -> BatchKind {
-        self.batch_kind
-    }
-
     pub fn batch_size(&self) -> u32 {
-        self.batch_size
+        self.active_batch
+            .as_ref()
+            .map_or(0, |batch| batch.state().size)
     }
 
     pub fn batch_token_count(&self) -> u32 {
-        self.batch_token_count
+        self.active_batch
+            .as_ref()
+            .map_or(0, |batch| batch.state().token_count)
     }
 
     pub fn batch_tokens(&self) -> &[i32] {
@@ -829,12 +974,57 @@ impl EngineCore {
         &self.batch_append_positions
     }
 
+    pub(crate) fn pending_append_layer(
+        &self,
+        layer_idx: u32,
+    ) -> Result<PendingAppendLayer, Status> {
+        match self.active_batch.as_ref() {
+            Some(ActiveBatch::Append(batch)) => {
+                batch.layers.pending(layer_idx).map(PendingAppendLayer)
+            }
+            _ => Err(Status::InvalidArgument),
+        }
+    }
+
+    pub(crate) fn complete_append_layer(
+        &mut self,
+        pending: PendingAppendLayer,
+    ) -> Result<(), Status> {
+        match self.active_batch.as_mut() {
+            Some(ActiveBatch::Append(batch)) => batch.layers.complete(pending.0),
+            _ => Err(Status::InternalError),
+        }
+    }
+
+    pub(crate) fn pending_decode_layer(
+        &self,
+        layer_idx: u32,
+    ) -> Result<PendingDecodeLayer, Status> {
+        match self.active_batch.as_ref() {
+            Some(ActiveBatch::Decode(batch)) => {
+                batch.layers.pending(layer_idx).map(PendingDecodeLayer)
+            }
+            _ => Err(Status::InvalidArgument),
+        }
+    }
+
+    pub(crate) fn complete_decode_layer(
+        &mut self,
+        pending: PendingDecodeLayer,
+    ) -> Result<(), Status> {
+        match self.active_batch.as_mut() {
+            Some(ActiveBatch::Decode(batch)) => batch.layers.complete(pending.0),
+            _ => Err(Status::InternalError),
+        }
+    }
+
     fn clone_requests(&self) -> Result<Vec<Request>, Status> {
         let mut out = try_vec_with_capacity(self.requests.len())?;
         for req in &self.requests {
             out.push(Request {
                 id: req.id,
                 seq_len: req.seq_len,
+                tokens: try_clone_slice(&req.tokens)?,
                 pages: try_clone_slice(&req.pages)?,
             });
         }
@@ -846,13 +1036,16 @@ impl EngineCore {
     }
 
     fn rollback_staged_pages(&mut self) -> Result<(), Status> {
-        let return_count = self
-            .staged_rows
+        let Some(active_batch) = self.active_batch.as_ref() else {
+            return Ok(());
+        };
+        let rows = &active_batch.state().rows;
+        let return_count = rows
             .iter()
             .map(|row| row.pages.len().saturating_sub(row.old_page_count))
             .sum();
         try_reserve(&mut self.free_pages, return_count)?;
-        for row in &self.staged_rows {
+        for row in rows {
             self.free_pages
                 .extend_from_slice(&row.pages[row.old_page_count..]);
         }
@@ -872,10 +1065,7 @@ impl EngineCore {
     }
 
     fn clear_active_batch(&mut self) {
-        self.batch_kind = BatchKind::None;
-        self.batch_size = 0;
-        self.batch_token_count = 0;
-        self.staged_rows.clear();
+        self.active_batch = None;
         self.clear_batch_views();
     }
 
@@ -885,16 +1075,30 @@ impl EngineCore {
             .iter()
             .try_fold(0usize, |acc, req| acc.checked_add(req.pages.len()))
             .ok_or(Status::InvalidArgument)?;
+        let total_tokens = self
+            .requests
+            .iter()
+            .try_fold(0usize, |acc, req| acc.checked_add(req.tokens.len()))
+            .ok_or(Status::InvalidArgument)?;
         let mut live_request_ids = try_vec_with_capacity(self.requests.len())?;
         let mut live_seq_lens = try_vec_with_capacity(self.requests.len())?;
+        let mut live_token_indptr = try_vec_with_capacity(self.requests.len() + 1)?;
+        let mut live_tokens = try_vec_with_capacity(total_tokens)?;
         let mut live_kv_indptr = try_vec_with_capacity(self.requests.len() + 1)?;
         let mut live_kv_indices = try_vec_with_capacity(total_pages)?;
         let mut live_last_page_len = try_vec_with_capacity(self.requests.len())?;
 
+        live_token_indptr.push(0);
         live_kv_indptr.push(0);
         for req in &self.requests {
+            let seq_len = usize::try_from(req.seq_len).map_err(|_| Status::InvalidArgument)?;
+            if req.tokens.len() != seq_len {
+                return Err(Status::InternalError);
+            }
             live_request_ids.push(req.id);
             live_seq_lens.push(u32_to_i32(req.seq_len)?);
+            live_tokens.extend_from_slice(&req.tokens);
+            live_token_indptr.push(usize_to_i32(live_tokens.len())?);
             live_kv_indices.extend_from_slice(&req.pages);
             live_kv_indptr.push(usize_to_i32(live_kv_indices.len())?);
             live_last_page_len.push(last_page_len_for_seq(req.seq_len, self.config.page_size));
@@ -902,6 +1106,8 @@ impl EngineCore {
 
         self.live_request_ids = live_request_ids;
         self.live_seq_lens = live_seq_lens;
+        self.live_token_indptr = live_token_indptr;
+        self.live_tokens = live_tokens;
         self.live_kv_indptr = live_kv_indptr;
         self.live_kv_indices = live_kv_indices;
         self.live_last_page_len = live_last_page_len;
@@ -939,6 +1145,36 @@ mod tests {
             qsfi_int_workspace_bytes: 64 << 20,
             qsfi_host_int_workspace_bytes: 64 << 20,
         }
+    }
+
+    fn complete_all_layers(session: &mut EngineCore, batch_kind: BatchKind) {
+        let num_layers = session.config().num_layers;
+        for layer_idx in 0..num_layers {
+            complete_layer(session, batch_kind, layer_idx).unwrap();
+        }
+    }
+
+    fn complete_layer(
+        session: &mut EngineCore,
+        batch_kind: BatchKind,
+        layer_idx: u32,
+    ) -> Result<(), Status> {
+        match batch_kind {
+            BatchKind::Append => {
+                let pending = session.pending_append_layer(layer_idx)?;
+                session.complete_append_layer(pending)
+            }
+            BatchKind::Decode => {
+                let pending = session.pending_decode_layer(layer_idx)?;
+                session.complete_decode_layer(pending)
+            }
+        }
+    }
+
+    fn tiny_config_with_layers(num_layers: u32) -> EngineConfig {
+        let mut config = tiny_config();
+        config.num_layers = num_layers;
+        config
     }
 
     #[test]
@@ -987,7 +1223,7 @@ mod tests {
             .begin_append(&[10, 11], &[0, 5, 6], &[100, 101, 102, 103, 104, 200])
             .unwrap();
         let state = session.state().unwrap();
-        assert_eq!(state.batch_kind, BatchKind::Append);
+        assert_eq!(state.batch_kind, Some(BatchKind::Append));
         assert_eq!(state.batch_size, 2);
         assert_eq!(state.batch_token_count, 6);
         assert_eq!(state.batch_qo_indptr, &[0, 5, 6]);
@@ -1000,33 +1236,44 @@ mod tests {
         assert_eq!(state.batch_append_positions[5], 0);
         assert_eq!(state.free_page_count, 5);
 
+        complete_all_layers(&mut session, BatchKind::Append);
         session.commit_batch(None).unwrap();
         let state = session.state().unwrap();
-        assert_eq!(state.batch_kind, BatchKind::None);
+        assert_eq!(state.batch_kind, None);
         assert_eq!(state.live_request_ids, &[10, 11]);
         assert_eq!(state.live_seq_lens, &[5, 1]);
+        assert_eq!(state.live_token_indptr, &[0, 5, 6]);
+        assert_eq!(state.live_tokens, &[100, 101, 102, 103, 104, 200]);
         assert_eq!(state.live_kv_indptr, &[0, 2, 3]);
         assert_eq!(state.free_page_count, 5);
 
         session
             .begin_append(&[10, 12], &[0, 2, 6], &[105, 106, 300, 301, 302, 303])
             .unwrap();
+        complete_all_layers(&mut session, BatchKind::Append);
         session.commit_batch(Some(&[1, 0])).unwrap();
         let state = session.state().unwrap();
         assert_eq!(state.live_request_ids, &[10, 11]);
         assert_eq!(state.live_seq_lens, &[6, 1]);
+        assert_eq!(state.live_token_indptr, &[0, 6, 7]);
+        assert_eq!(state.live_tokens, &[100, 101, 102, 103, 104, 105, 200]);
         assert_eq!(state.free_page_count, 5);
 
         session.begin_decode(&[10, 11], &[107, 201]).unwrap();
+        complete_all_layers(&mut session, BatchKind::Decode);
         session.commit_batch(Some(&[0, 1])).unwrap();
         let state = session.state().unwrap();
         assert_eq!(state.live_seq_lens, &[6, 2]);
+        assert_eq!(state.live_token_indptr, &[0, 6, 8]);
+        assert_eq!(state.live_tokens, &[100, 101, 102, 103, 104, 105, 200, 201]);
         assert_eq!(state.free_page_count, 5);
 
         session.release_requests(&[10]).unwrap();
         let state = session.state().unwrap();
         assert_eq!(state.live_request_ids, &[11]);
         assert_eq!(state.live_seq_lens, &[2]);
+        assert_eq!(state.live_token_indptr, &[0, 2]);
+        assert_eq!(state.live_tokens, &[200, 201]);
         assert_eq!(state.free_page_count, 7);
     }
 
@@ -1050,7 +1297,7 @@ mod tests {
             Err(Status::InvalidArgument)
         );
         let state = session.state().unwrap();
-        assert_eq!(state.batch_kind, BatchKind::None);
+        assert_eq!(state.batch_kind, None);
         assert_eq!(state.live_request_count, 0);
         assert_eq!(state.free_page_count, 8);
     }
@@ -1059,6 +1306,7 @@ mod tests {
     fn abort_and_reset_restore_pages() {
         let mut session = EngineCore::new(tiny_config()).unwrap();
         session.begin_append(&[31], &[0, 4], &[1, 2, 3, 4]).unwrap();
+        complete_layer(&mut session, BatchKind::Append, 0).unwrap();
         assert_eq!(
             session.release_requests(&[31]),
             Err(Status::InvalidArgument)
@@ -1069,14 +1317,15 @@ mod tests {
         );
         session.abort_batch().unwrap();
         let state = session.state().unwrap();
-        assert_eq!(state.batch_kind, BatchKind::None);
+        assert_eq!(state.batch_kind, None);
         assert_eq!(state.live_request_count, 0);
         assert_eq!(state.free_page_count, 8);
 
         session.begin_append(&[31], &[0, 4], &[1, 2, 3, 4]).unwrap();
+        complete_layer(&mut session, BatchKind::Append, 0).unwrap();
         session.reset().unwrap();
         let state = session.state().unwrap();
-        assert_eq!(state.batch_kind, BatchKind::None);
+        assert_eq!(state.batch_kind, None);
         assert_eq!(state.live_request_count, 0);
         assert_eq!(state.free_page_count, 8);
     }
@@ -1085,6 +1334,7 @@ mod tests {
     fn decode_validation_and_invalid_commit_keep_batch_active() {
         let mut session = EngineCore::new(tiny_config()).unwrap();
         session.begin_append(&[51], &[0, 1], &[1]).unwrap();
+        complete_all_layers(&mut session, BatchKind::Append);
         session.commit_batch(None).unwrap();
 
         assert_eq!(
@@ -1097,14 +1347,74 @@ mod tests {
         );
 
         session.begin_decode(&[51], &[4]).unwrap();
+        complete_all_layers(&mut session, BatchKind::Decode);
         assert_eq!(
             session.commit_batch(Some(&[2])),
             Err(Status::InvalidArgument)
         );
         let state = session.state().unwrap();
-        assert_eq!(state.batch_kind, BatchKind::Decode);
+        assert_eq!(state.batch_kind, Some(BatchKind::Decode));
         assert_eq!(state.live_seq_lens, &[1]);
         session.abort_batch().unwrap();
+        assert_eq!(session.state().unwrap().live_seq_lens, &[1]);
+    }
+
+    #[test]
+    fn commit_rejects_batch_without_layer_execution() {
+        let mut session = EngineCore::new(tiny_config()).unwrap();
+        session.begin_append(&[61], &[0, 2], &[1, 2]).unwrap();
+
+        assert_eq!(session.commit_batch(None), Err(Status::InvalidArgument));
+        let state = session.state().unwrap();
+        assert_eq!(state.batch_kind, Some(BatchKind::Append));
+        assert_eq!(state.live_request_count, 0);
+
+        complete_layer(&mut session, BatchKind::Append, 0).unwrap();
+        session.commit_batch(None).unwrap();
+        assert_eq!(session.state().unwrap().live_seq_lens, &[2]);
+    }
+
+    #[test]
+    fn layer_completion_rejects_wrong_duplicate_and_extra_layers() {
+        let mut session = EngineCore::new(tiny_config_with_layers(2)).unwrap();
+        session.begin_append(&[62], &[0, 1], &[1]).unwrap();
+
+        assert_eq!(
+            complete_layer(&mut session, BatchKind::Append, 1),
+            Err(Status::InvalidArgument)
+        );
+        assert_eq!(
+            complete_layer(&mut session, BatchKind::Append, 2),
+            Err(Status::InvalidArgument)
+        );
+        complete_layer(&mut session, BatchKind::Append, 0).unwrap();
+        assert_eq!(
+            complete_layer(&mut session, BatchKind::Append, 0),
+            Err(Status::InvalidArgument)
+        );
+        complete_layer(&mut session, BatchKind::Append, 1).unwrap();
+        assert_eq!(
+            complete_layer(&mut session, BatchKind::Append, 1),
+            Err(Status::InvalidArgument)
+        );
+
+        session.commit_batch(None).unwrap();
+        assert_eq!(session.state().unwrap().live_seq_lens, &[1]);
+    }
+
+    #[test]
+    fn commit_rejects_missing_layer_on_multi_layer_batch() {
+        let mut session = EngineCore::new(tiny_config_with_layers(2)).unwrap();
+        session.begin_append(&[63], &[0, 1], &[1]).unwrap();
+        complete_layer(&mut session, BatchKind::Append, 0).unwrap();
+
+        assert_eq!(session.commit_batch(None), Err(Status::InvalidArgument));
+        let state = session.state().unwrap();
+        assert_eq!(state.batch_kind, Some(BatchKind::Append));
+        assert_eq!(state.live_request_count, 0);
+
+        complete_layer(&mut session, BatchKind::Append, 1).unwrap();
+        session.commit_batch(None).unwrap();
         assert_eq!(session.state().unwrap().live_seq_lens, &[1]);
     }
 

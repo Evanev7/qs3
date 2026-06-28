@@ -15,4 +15,5 @@ cargo-test: build
         LIBRARY_PATH="{{cuda_lib_path}}:${LIBRARY_PATH:-}" cargo test
 
 copy-ninja:
+        mkdir -p build
         cp build_tools/build.ninja build/build.ninja
