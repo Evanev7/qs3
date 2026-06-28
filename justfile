@@ -7,8 +7,8 @@ build: copy-ninja
         ninja -C build
         cargo build --lib
 
-test: append-test cargo-test
-append-test: copy-ninja
+test: build cargo-test cuda-test
+cuda-test: copy-ninja
         ninja -C build qsfi_test
         build/qsfi_test
 cargo-test: build

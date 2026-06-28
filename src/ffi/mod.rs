@@ -29,6 +29,9 @@ pub type Tensor4 = sys::qsfi_tensor4;
 pub type Tensor5 = sys::qsfi_tensor5;
 pub type Tensor6 = sys::qsfi_tensor6;
 pub type AttentionDesc = sys::qsfi_attention_desc;
+pub type RmsnormDesc = sys::qsfi_rmsnorm_desc;
+pub type FusedAddRmsnormDesc = sys::qsfi_fused_add_rmsnorm_desc;
+pub type RopeApplyDesc = sys::qsfi_rope_apply_desc;
 pub type PagedKvCache = sys::qsfi_paged_kv_cache;
 pub type PagedKvPlan = sys::qsfi_paged_kv_plan;
 pub type QoPlan = sys::qsfi_qo_plan;
@@ -46,6 +49,8 @@ pub type MoeRouteModeRaw = sys::qsfi_moe_route_mode;
 pub(crate) type ContextRaw = sys::qsfi_context;
 pub(crate) type BatchDecodePlanRaw = sys::qsfi_batch_decode_plan;
 pub(crate) type BatchPrefillPlanRaw = sys::qsfi_batch_prefill_plan;
+#[allow(dead_code)]
+pub(crate) type MoePlanRaw = sys::qsfi_moe_plan;
 
 pub const DTYPE_F32: DTypeRaw = sys::QSFI_DTYPE_F32;
 pub const DTYPE_F16: DTypeRaw = sys::QSFI_DTYPE_F16;
@@ -184,4 +189,64 @@ pub(crate) unsafe fn append_paged_kv_prefill(
     append: *const AppendPrefill,
 ) -> StatusRaw {
     unsafe { sys::qsfi_append_paged_kv_prefill(ctx, attention, append) }
+}
+
+#[allow(dead_code)]
+pub(crate) unsafe fn rmsnorm(ctx: *mut ContextRaw, desc: *const RmsnormDesc) -> StatusRaw {
+    unsafe { sys::qsfi_rmsnorm(ctx, desc) }
+}
+
+#[allow(dead_code)]
+pub(crate) unsafe fn fused_add_rmsnorm(
+    ctx: *mut ContextRaw,
+    desc: *const FusedAddRmsnormDesc,
+) -> StatusRaw {
+    unsafe { sys::qsfi_fused_add_rmsnorm(ctx, desc) }
+}
+
+#[allow(dead_code)]
+pub(crate) unsafe fn rope_apply(ctx: *mut ContextRaw, desc: *const RopeApplyDesc) -> StatusRaw {
+    unsafe { sys::qsfi_rope_apply(ctx, desc) }
+}
+
+#[allow(dead_code)]
+pub(crate) unsafe fn moe_plan_create(
+    ctx: *mut ContextRaw,
+    desc: *const MoePlanDesc,
+    out: *mut *mut MoePlanRaw,
+) -> StatusRaw {
+    unsafe { sys::qsfi_moe_plan_create(ctx, desc, out) }
+}
+
+#[allow(dead_code)]
+pub(crate) unsafe fn moe_plan_destroy(plan: *mut MoePlanRaw) {
+    unsafe { sys::qsfi_moe_plan_destroy(plan) };
+}
+
+#[allow(dead_code)]
+pub(crate) unsafe fn moe_workspace_size(
+    ctx: *mut ContextRaw,
+    plan: *mut MoePlanRaw,
+    num_tokens: u32,
+    device_bytes: *mut usize,
+) -> StatusRaw {
+    unsafe { sys::qsfi_moe_workspace_size(ctx, plan, num_tokens, device_bytes) }
+}
+
+#[allow(dead_code)]
+pub(crate) unsafe fn moe_execute_bf16(
+    ctx: *mut ContextRaw,
+    plan: *mut MoePlanRaw,
+    desc: *const MoeBf16ExecuteDesc,
+) -> StatusRaw {
+    unsafe { sys::qsfi_moe_execute_bf16(ctx, plan, desc) }
+}
+
+#[allow(dead_code)]
+pub(crate) unsafe fn moe_execute_nvfp4(
+    ctx: *mut ContextRaw,
+    plan: *mut MoePlanRaw,
+    desc: *const MoeNvfp4ExecuteDesc,
+) -> StatusRaw {
+    unsafe { sys::qsfi_moe_execute_nvfp4(ctx, plan, desc) }
 }
