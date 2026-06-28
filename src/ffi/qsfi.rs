@@ -1,72 +1,15 @@
-pub mod sys {
-    #![allow(non_camel_case_types)]
-    #![allow(non_snake_case)]
-    #![allow(non_upper_case_globals)]
-    #![allow(dead_code)]
-    include!(concat!(env!("OUT_DIR"), "/qsfi_bindings.rs"));
-}
-
-use crate::engine::Status;
+use crate::{engine::Status, ffi};
 
 use std::ptr::{self, NonNull};
 
-pub type StatusRaw = sys::qsfi_status;
-pub type CudaStream = sys::qsfi_cuda_stream;
-pub type DevicePtr = sys::qsfi_device_ptr;
-pub type DTypeRaw = sys::qsfi_dtype;
-pub type KvLayoutRaw = sys::qsfi_kv_layout;
-pub type MaskModeRaw = sys::qsfi_mask_mode;
-pub type PosEncodingRaw = sys::qsfi_pos_encoding;
-
-pub type Tensor1 = sys::qsfi_tensor1;
-pub type Tensor2 = sys::qsfi_tensor2;
-pub type Tensor3 = sys::qsfi_tensor3;
-pub type Tensor4 = sys::qsfi_tensor4;
-pub type Tensor5 = sys::qsfi_tensor5;
-pub type Tensor6 = sys::qsfi_tensor6;
-pub type AttentionDesc = sys::qsfi_attention_desc;
-pub type PagedKvCache = sys::qsfi_paged_kv_cache;
-pub type PagedKvPlan = sys::qsfi_paged_kv_plan;
-pub type QoPlan = sys::qsfi_qo_plan;
-pub type PagedKvTable = sys::qsfi_paged_kv_table;
-pub type BatchDecodeExecuteDesc = sys::qsfi_batch_decode_execute_desc;
-pub type BatchPrefillExecuteDesc = sys::qsfi_batch_prefill_execute_desc;
-pub type AppendDecode = sys::qsfi_append_decode_desc;
-pub type AppendPrefill = sys::qsfi_append_prefill_desc;
-pub type MoePlanDesc = sys::qsfi_moe_plan_desc;
-pub type MoeBf16ExecuteDesc = sys::qsfi_moe_bf16_execute_desc;
-pub type MoeNvfp4ExecuteDesc = sys::qsfi_moe_nvfp4_execute_desc;
-pub type MoeBackendRaw = sys::qsfi_moe_backend;
-pub type MoeRouteModeRaw = sys::qsfi_moe_route_mode;
-
-pub const DTYPE_F32: DTypeRaw = sys::QSFI_DTYPE_F32;
-pub const DTYPE_F16: DTypeRaw = sys::QSFI_DTYPE_F16;
-pub const DTYPE_BF16: DTypeRaw = sys::QSFI_DTYPE_BF16;
-pub const DTYPE_FP8_E4M3: DTypeRaw = sys::QSFI_DTYPE_FP8_E4M3;
-pub const DTYPE_FP8_E5M2: DTypeRaw = sys::QSFI_DTYPE_FP8_E5M2;
-pub const DTYPE_NVFP4_E2M1: DTypeRaw = sys::QSFI_DTYPE_NVFP4_E2M1;
-pub const DTYPE_MXFP4_E2M1: DTypeRaw = sys::QSFI_DTYPE_MXFP4_E2M1;
-pub const DTYPE_MXFP8_E4M3: DTypeRaw = sys::QSFI_DTYPE_MXFP8_E4M3;
-pub const DTYPE_I32: DTypeRaw = sys::QSFI_DTYPE_I32;
-pub const DTYPE_U32: DTypeRaw = sys::QSFI_DTYPE_U32;
-pub const DTYPE_I8: DTypeRaw = sys::QSFI_DTYPE_I8;
-pub const DTYPE_U8: DTypeRaw = sys::QSFI_DTYPE_U8;
-
-pub const KV_LAYOUT_NHD: KvLayoutRaw = sys::QSFI_KV_LAYOUT_NHD;
-pub const KV_LAYOUT_HND: KvLayoutRaw = sys::QSFI_KV_LAYOUT_HND;
-
-pub const POS_ENCODING_ROPE_LLAMA: PosEncodingRaw = sys::QSFI_POS_ENCODING_ROPE_LLAMA;
-pub const POS_ENCODING_NONE: PosEncodingRaw = sys::QSFI_POS_ENCODING_NONE;
-pub const MASK_MODE_NONE: MaskModeRaw = sys::QSFI_MASK_MODE_NONE;
-pub const MASK_MODE_CAUSAL: MaskModeRaw = sys::QSFI_MASK_MODE_CAUSAL;
-
-pub const MOE_BACKEND_FLASHINFER_STAGED_BF16: MoeBackendRaw =
-    sys::QSFI_MOE_BACKEND_FLASHINFER_STAGED_BF16;
-pub const MOE_BACKEND_FLASHINFER_FUSED_BF16: MoeBackendRaw =
-    sys::QSFI_MOE_BACKEND_FLASHINFER_FUSED_BF16;
-pub const MOE_BACKEND_FLASHINFER_NVFP4: MoeBackendRaw = sys::QSFI_MOE_BACKEND_FLASHINFER_NVFP4;
-pub const MOE_ROUTE_PRECOMPUTED_TOPK: MoeRouteModeRaw = sys::QSFI_MOE_ROUTE_PRECOMPUTED_TOPK;
-pub const MOE_ROUTE_ROUTER_LOGITS: MoeRouteModeRaw = sys::QSFI_MOE_ROUTE_ROUTER_LOGITS;
+use crate::ffi::{
+    AppendDecode, AppendPrefill, AttentionDesc, BatchDecodeExecuteDesc, BatchPrefillExecuteDesc,
+    CudaStream, DTYPE_BF16, DTYPE_F16, DTYPE_F32, DTYPE_FP8_E4M3, DTYPE_FP8_E5M2, DTYPE_I8,
+    DTYPE_I32, DTYPE_MXFP4_E2M1, DTYPE_MXFP8_E4M3, DTYPE_NVFP4_E2M1, DTYPE_U8, DTYPE_U32, DTypeRaw,
+    DevicePtr, KV_LAYOUT_HND, KV_LAYOUT_NHD, MASK_MODE_CAUSAL, MASK_MODE_NONE, POS_ENCODING_NONE,
+    POS_ENCODING_ROPE_LLAMA, PagedKvCache, PagedKvPlan, PagedKvTable, QoPlan, StatusRaw, Tensor1,
+    Tensor2, Tensor3, Tensor4, Tensor5, Tensor6,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum PlanKind {
@@ -82,16 +25,7 @@ struct PlanShape {
 }
 
 fn result_from_raw(status: StatusRaw) -> Result<(), Status> {
-    match status {
-        sys::QSFI_STATUS_OK => Ok(()),
-        sys::QSFI_STATUS_INVALID_ARGUMENT => Err(Status::InvalidArgument),
-        sys::QSFI_STATUS_UNSUPPORTED => Err(Status::Unsupported),
-        sys::QSFI_STATUS_OUT_OF_MEMORY => Err(Status::OutOfMemory),
-        sys::QSFI_STATUS_CUDA_ERROR => Err(Status::CudaError),
-        sys::QSFI_STATUS_BACKEND_ERROR => Err(Status::BackendError),
-        sys::QSFI_STATUS_INTERNAL_ERROR => Err(Status::InternalError),
-        _ => unreachable!(),
-    }
+    ffi::result_from_raw(status)
 }
 
 fn default_one(value: f32) -> f32 {
@@ -428,30 +362,26 @@ fn validate_prefill_plan_execute(
     validate_prefill_execute_desc(attention, plan_shape, desc)
 }
 
-pub struct Context {
-    raw: NonNull<sys::qsfi_context>,
+pub(crate) struct Context {
+    raw: NonNull<ffi::ContextRaw>,
 }
 
 impl Context {
-    pub fn new(device_ordinal: i32, stream: CudaStream) -> Result<Self, Status> {
-        let desc = sys::qsfi_context_desc {
-            device_ordinal,
-            stream,
-        };
+    pub(crate) fn new(device_ordinal: i32, stream: CudaStream) -> Result<Self, Status> {
         let mut raw = ptr::null_mut();
-        result_from_raw(unsafe { sys::qsfi_context_create(&desc, &mut raw) })?;
+        result_from_raw(unsafe { ffi::context_create(device_ordinal, stream, &mut raw) })?;
         let raw = NonNull::new(raw).ok_or(Status::InternalError)?;
         Ok(Self { raw })
     }
 
-    pub fn reserve_workspace(
+    pub(crate) fn reserve_workspace(
         &mut self,
         float_workspace_bytes: usize,
         int_workspace_bytes: usize,
         host_int_workspace_bytes: usize,
     ) -> Result<(), Status> {
         result_from_raw(unsafe {
-            sys::qsfi_context_reserve_workspace(
+            ffi::context_reserve_workspace(
                 self.raw.as_ptr(),
                 float_workspace_bytes,
                 int_workspace_bytes,
@@ -460,7 +390,7 @@ impl Context {
         })
     }
 
-    pub unsafe fn create_decode_plan(
+    pub(crate) unsafe fn create_decode_plan(
         &mut self,
         attention: &AttentionDesc,
         page_table: &PagedKvPlan,
@@ -472,12 +402,12 @@ impl Context {
         let shape = validate_paged_kv_plan_desc(page_table)?;
         let mut raw = ptr::null_mut();
         result_from_raw(unsafe {
-            sys::qsfi_batch_decode_plan_create(self.raw.as_ptr(), attention, page_table, &mut raw)
+            ffi::batch_decode_plan_create(self.raw.as_ptr(), attention, page_table, &mut raw)
         })?;
         Plan::from_decode_raw(raw, *attention, shape)
     }
 
-    pub unsafe fn execute_decode(
+    pub(crate) unsafe fn execute_decode(
         &mut self,
         plan: &Plan,
         desc: &BatchDecodeExecuteDesc,
@@ -486,12 +416,10 @@ impl Context {
         let PlanRaw::Decode(raw) = plan.raw else {
             return Err(Status::InvalidArgument);
         };
-        result_from_raw(unsafe {
-            sys::qsfi_batch_decode_execute(self.raw.as_ptr(), raw.as_ptr(), desc)
-        })
+        result_from_raw(unsafe { ffi::batch_decode_execute(self.raw.as_ptr(), raw.as_ptr(), desc) })
     }
 
-    pub unsafe fn create_prefill_plan(
+    pub(crate) unsafe fn create_prefill_plan(
         &mut self,
         attention: &AttentionDesc,
         qo: &QoPlan,
@@ -512,18 +440,12 @@ impl Context {
         };
         let mut raw = ptr::null_mut();
         result_from_raw(unsafe {
-            sys::qsfi_batch_prefill_plan_create(
-                self.raw.as_ptr(),
-                attention,
-                qo,
-                page_table,
-                &mut raw,
-            )
+            ffi::batch_prefill_plan_create(self.raw.as_ptr(), attention, qo, page_table, &mut raw)
         })?;
         Plan::from_prefill_raw(raw, *attention, shape)
     }
 
-    pub unsafe fn execute_prefill(
+    pub(crate) unsafe fn execute_prefill(
         &mut self,
         plan: &Plan,
         desc: &BatchPrefillExecuteDesc,
@@ -533,29 +455,29 @@ impl Context {
             return Err(Status::InvalidArgument);
         };
         result_from_raw(unsafe {
-            sys::qsfi_batch_prefill_execute(self.raw.as_ptr(), raw.as_ptr(), desc)
+            ffi::batch_prefill_execute(self.raw.as_ptr(), raw.as_ptr(), desc)
         })
     }
 
-    pub unsafe fn append_paged_kv_decode(
+    pub(crate) unsafe fn append_paged_kv_decode(
         &mut self,
         attention: &AttentionDesc,
         append: &AppendDecode,
     ) -> Result<(), Status> {
         validate_attention_desc(attention)?;
         result_from_raw(unsafe {
-            sys::qsfi_append_paged_kv_decode(self.raw.as_ptr(), attention, append)
+            ffi::append_paged_kv_decode(self.raw.as_ptr(), attention, append)
         })
     }
 
-    pub unsafe fn append_paged_kv_prefill(
+    pub(crate) unsafe fn append_paged_kv_prefill(
         &mut self,
         attention: &AttentionDesc,
         append: &AppendPrefill,
     ) -> Result<(), Status> {
         validate_attention_desc(attention)?;
         result_from_raw(unsafe {
-            sys::qsfi_append_paged_kv_prefill(self.raw.as_ptr(), attention, append)
+            ffi::append_paged_kv_prefill(self.raw.as_ptr(), attention, append)
         })
     }
 }
@@ -563,18 +485,18 @@ impl Context {
 impl Drop for Context {
     fn drop(&mut self) {
         unsafe {
-            sys::qsfi_context_destroy(self.raw.as_ptr());
+            ffi::context_destroy(self.raw.as_ptr());
         }
     }
 }
 
 #[derive(Clone, Copy)]
 enum PlanRaw {
-    Decode(NonNull<sys::qsfi_batch_decode_plan>),
-    Prefill(NonNull<sys::qsfi_batch_prefill_plan>),
+    Decode(NonNull<ffi::BatchDecodePlanRaw>),
+    Prefill(NonNull<ffi::BatchPrefillPlanRaw>),
 }
 
-pub struct Plan {
+pub(crate) struct Plan {
     raw: PlanRaw,
     kind: PlanKind,
     attention: AttentionDesc,
@@ -583,7 +505,7 @@ pub struct Plan {
 
 impl Plan {
     fn from_decode_raw(
-        raw: *mut sys::qsfi_batch_decode_plan,
+        raw: *mut ffi::BatchDecodePlanRaw,
         attention: AttentionDesc,
         shape: PlanShape,
     ) -> Result<Self, Status> {
@@ -597,7 +519,7 @@ impl Plan {
     }
 
     fn from_prefill_raw(
-        raw: *mut sys::qsfi_batch_prefill_plan,
+        raw: *mut ffi::BatchPrefillPlanRaw,
         attention: AttentionDesc,
         shape: PlanShape,
     ) -> Result<Self, Status> {
@@ -615,8 +537,8 @@ impl Drop for Plan {
     fn drop(&mut self) {
         unsafe {
             match self.raw {
-                PlanRaw::Decode(raw) => sys::qsfi_batch_decode_plan_destroy(raw.as_ptr()),
-                PlanRaw::Prefill(raw) => sys::qsfi_batch_prefill_plan_destroy(raw.as_ptr()),
+                PlanRaw::Decode(raw) => ffi::batch_decode_plan_destroy(raw.as_ptr()),
+                PlanRaw::Prefill(raw) => ffi::batch_prefill_plan_destroy(raw.as_ptr()),
             }
         }
     }
@@ -624,6 +546,8 @@ impl Drop for Plan {
 
 #[cfg(test)]
 mod tests {
+    use crate::ffi::KvLayoutRaw;
+
     use super::*;
     use std::ffi::c_void;
 

@@ -1,5 +1,5 @@
-#ifndef QS_BINDINGS_H
-#define QS_BINDINGS_H
+#ifndef QS_FFI_H
+#define QS_FFI_H
 
 #include "qs_info.h"
 #include "qs_tensor.h"

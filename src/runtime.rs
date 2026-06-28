@@ -2,11 +2,11 @@ use crate::engine::{
     AppendBatch, BatchKind, DecodeBatch, EngineConfig, EngineCore, EngineLayer, KvLayout, Status,
     try_clone_slice,
 };
-use crate::ffi;
-use crate::qsfi::{
+use crate::ffi::qsfi::{Context, Plan};
+use crate::ffi::{
     AppendDecode, AppendPrefill, AttentionDesc, BatchDecodeExecuteDesc, BatchPrefillExecuteDesc,
-    Context, DTYPE_F16, MASK_MODE_CAUSAL, MASK_MODE_NONE, MaskModeRaw, POS_ENCODING_ROPE_LLAMA,
-    PagedKvCache, PagedKvPlan, PagedKvTable, Plan, QoPlan, Tensor4,
+    DTYPE_F16, MASK_MODE_CAUSAL, MASK_MODE_NONE, MaskModeRaw, POS_ENCODING_ROPE_LLAMA,
+    PagedKvCache, PagedKvPlan, PagedKvTable, QoPlan, Tensor4, cuda,
 };
 
 use std::ffi::c_void;
@@ -35,11 +35,11 @@ impl DeviceI32Buffer {
             .ok_or(Status::InvalidArgument)?;
         activate_device(device_ordinal)?;
         let mut next = ptr::null_mut();
-        let err = unsafe { ffi::cudaMalloc(&mut next, bytes) };
+        let err = unsafe { cuda::cudaMalloc(&mut next, bytes) };
         result_from_cuda(err)?;
         if !self.data.is_null() {
             unsafe {
-                ffi::cudaFree(self.data.cast());
+                cuda::cudaFree(self.data.cast());
             }
         }
         self.data = next.cast();
@@ -62,11 +62,11 @@ impl DeviceI32Buffer {
             .checked_mul(mem::size_of::<i32>())
             .ok_or(Status::InvalidArgument)?;
         let err = unsafe {
-            ffi::cudaMemcpyAsync(
+            cuda::cudaMemcpyAsync(
                 self.data.cast(),
                 values.as_ptr().cast(),
                 bytes,
-                ffi::CUDA_MEMCPY_HOST_TO_DEVICE,
+                cuda::CUDA_MEMCPY_HOST_TO_DEVICE,
                 stream,
             )
         };
@@ -76,7 +76,7 @@ impl DeviceI32Buffer {
     fn free(&mut self) {
         if !self.data.is_null() {
             unsafe {
-                ffi::cudaFree(self.data.cast());
+                cuda::cudaFree(self.data.cast());
             }
         }
         self.data = ptr::null_mut();
@@ -210,12 +210,12 @@ impl EngineInner {
         for _ in 0..config.num_layers {
             let mut k = ptr::null_mut();
             let mut v = ptr::null_mut();
-            let err = unsafe { ffi::cudaMalloc(&mut k, bytes) };
+            let err = unsafe { cuda::cudaMalloc(&mut k, bytes) };
             result_from_cuda(err)?;
-            let err = unsafe { ffi::cudaMalloc(&mut v, bytes) };
-            if err != ffi::CUDA_SUCCESS {
+            let err = unsafe { cuda::cudaMalloc(&mut v, bytes) };
+            if err != cuda::CUDA_SUCCESS {
                 unsafe {
-                    ffi::cudaFree(k);
+                    cuda::cudaFree(k);
                 }
                 return result_from_cuda(err);
             }
@@ -517,13 +517,13 @@ impl Drop for EngineInner {
         for layer in &mut self.layer_caches {
             if !layer.k.is_null() {
                 unsafe {
-                    ffi::cudaFree(layer.k);
+                    cuda::cudaFree(layer.k);
                 }
                 layer.k = ptr::null_mut();
             }
             if !layer.v.is_null() {
                 unsafe {
-                    ffi::cudaFree(layer.v);
+                    cuda::cudaFree(layer.v);
                 }
                 layer.v = ptr::null_mut();
             }
@@ -540,9 +540,9 @@ impl Drop for EngineInner {
 }
 
 fn result_from_cuda(err: i32) -> Result<(), Status> {
-    if err == ffi::CUDA_SUCCESS {
+    if err == cuda::CUDA_SUCCESS {
         Ok(())
-    } else if err == ffi::CUDA_ERROR_MEMORY_ALLOCATION {
+    } else if err == cuda::CUDA_ERROR_MEMORY_ALLOCATION {
         Err(Status::OutOfMemory)
     } else {
         Err(Status::CudaError)
@@ -553,7 +553,7 @@ fn activate_device(device_ordinal: i32) -> Result<(), Status> {
     if device_ordinal < 0 {
         return Ok(());
     }
-    result_from_cuda(unsafe { ffi::cudaSetDevice(device_ordinal) })
+    result_from_cuda(unsafe { cuda::cudaSetDevice(device_ordinal) })
 }
 
 fn make_attention(config: &EngineConfig, mask_mode: MaskModeRaw) -> AttentionDesc {

@@ -4,7 +4,7 @@ use std::{
 };
 
 fn main() {
-    println!("cargo:rerun-if-changed=qs_bindings.h");
+    println!("cargo:rerun-if-changed=qs_ffi.h");
     println!("cargo:rerun-if-changed=qs_info.h");
     println!("cargo:rerun-if-changed=qs_tensor.h");
     println!("cargo:rerun-if-changed=qsfi.h");
@@ -31,7 +31,7 @@ fn main() {
     link_qsfi_for_tests();
 
     let bindings = bindgen::Builder::default()
-        .header("qs_bindings.h")
+        .header("qs_ffi.h")
         .allowlist_function("(qsfi|qscu|qscb)_.*")
         .allowlist_type("(qsfi|qscu|qscb)_.*")
         .allowlist_var("(QSFI|QSCU|QSCB)_.*")
@@ -39,12 +39,12 @@ fn main() {
         .prepend_enum_name(false)
         .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
         .generate()
-        .expect("failed to generate qs_bindings.h bindings");
+        .expect("failed to generate FFI bindings");
 
     let out_path = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR is not set"));
     bindings
-        .write_to_file(out_path.join("qsfi_bindings.rs"))
-        .expect("failed to write qs_bindings.h bindings");
+        .write_to_file(out_path.join("ffi_bindings.rs"))
+        .expect("failed to write FFI bindings");
 }
 
 fn link_qsfi_for_tests() {

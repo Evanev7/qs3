@@ -1,8 +1,7 @@
 #![allow(clippy::missing_safety_doc)]
 
 pub mod engine;
-mod ffi;
-pub mod qsfi;
+pub mod ffi;
 mod runtime;
 
 pub use engine::{

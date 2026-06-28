@@ -1,6 +1,6 @@
 use qs3::{
     AppendBatch, Commit, DType, DecodeBatch, Engine, EngineConfig, EngineLayer, EngineTrait,
-    KvLayout, qsfi,
+    KvLayout, ffi,
 };
 use std::ffi::{CStr, c_char, c_void};
 use std::{mem, ptr};
@@ -51,7 +51,7 @@ impl<T> DeviceBuffer<T> {
         buffer
     }
 
-    fn as_device_ptr(&self) -> qsfi::DevicePtr {
+    fn as_device_ptr(&self) -> ffi::DevicePtr {
         self.ptr.cast()
     }
 
@@ -177,15 +177,15 @@ fn cuda_device_available() -> bool {
 }
 
 fn tensor3(
-    data: qsfi::DevicePtr,
-    dtype: qsfi::DTypeRaw,
+    data: ffi::DevicePtr,
+    dtype: ffi::DTypeRaw,
     n: usize,
     heads: u32,
     head_dim: u32,
-) -> qsfi::Tensor3 {
+) -> ffi::Tensor3 {
     let heads = i64::from(heads);
     let head_dim = i64::from(head_dim);
-    qsfi::Tensor3 {
+    ffi::Tensor3 {
         data,
         dtype,
         shape: [n as i64, heads, head_dim],
@@ -267,28 +267,28 @@ fn append_and_decode_layer_execute() {
         layer_idx: 0,
         q: tensor3(
             append_q.as_device_ptr(),
-            qsfi::DTYPE_F16,
+            ffi::DTYPE_F16,
             3,
             config.num_q_heads,
             config.head_dim,
         ),
         k: tensor3(
             append_k.as_device_ptr(),
-            qsfi::DTYPE_F16,
+            ffi::DTYPE_F16,
             3,
             config.num_kv_heads,
             config.head_dim,
         ),
         v: tensor3(
             append_v.as_device_ptr(),
-            qsfi::DTYPE_F16,
+            ffi::DTYPE_F16,
             3,
             config.num_kv_heads,
             config.head_dim,
         ),
         o: tensor3(
             append_o.as_device_ptr(),
-            qsfi::DTYPE_F16,
+            ffi::DTYPE_F16,
             3,
             config.num_q_heads,
             config.head_dim,
@@ -323,28 +323,28 @@ fn append_and_decode_layer_execute() {
         layer_idx: 0,
         q: tensor3(
             decode_q.as_device_ptr(),
-            qsfi::DTYPE_F16,
+            ffi::DTYPE_F16,
             1,
             config.num_q_heads,
             config.head_dim,
         ),
         k: tensor3(
             decode_k.as_device_ptr(),
-            qsfi::DTYPE_F16,
+            ffi::DTYPE_F16,
             1,
             config.num_kv_heads,
             config.head_dim,
         ),
         v: tensor3(
             decode_v.as_device_ptr(),
-            qsfi::DTYPE_F16,
+            ffi::DTYPE_F16,
             1,
             config.num_kv_heads,
             config.head_dim,
         ),
         o: tensor3(
             decode_o.as_device_ptr(),
-            qsfi::DTYPE_F16,
+            ffi::DTYPE_F16,
             1,
             config.num_q_heads,
             config.head_dim,
