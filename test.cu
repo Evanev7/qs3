@@ -746,7 +746,7 @@ void test_gdn_decode_one_hot_recurrence()
         return;
     }
 
-    qsfi_gdn_decode_desc desc {};
+    qscu_gdn_decode_desc desc {};
     desc.q = gdn_tensor3_bf16(d_q, tokens, kGdnQHeads, kGdnKeyDim);
     desc.k = gdn_tensor3_bf16(d_k, tokens, kGdnKHeads, kGdnKeyDim);
     desc.v = gdn_tensor3_bf16(d_v, tokens, kGdnVHeads, kGdnValueDim);
@@ -763,10 +763,10 @@ void test_gdn_decode_one_hot_recurrence()
     desc.num_v_heads = kGdnVHeads;
     desc.key_dim = kGdnKeyDim;
     desc.value_dim = kGdnValueDim;
-    desc.state_layout = QSFI_GDN_STATE_LAYOUT_VK;
+    desc.state_layout = QSCU_GDN_STATE_LAYOUT_VK;
     desc.scale = 1.0f;
 
-    check_status(qsfi_gdn_decode(ctx, &desc), QSFI_STATUS_OK, "gdn decode");
+    check_status(qscu_gdn_decode(ctx, &desc), QSFI_STATUS_OK, "gdn decode");
     check_cuda(cudaDeviceSynchronize(), "sync gdn decode");
     check_cuda(
         cudaMemcpy(h_out.data(), d_out, h_out.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost),
@@ -868,7 +868,7 @@ void test_gdn_prefill_two_token_recurrence()
         return;
     }
 
-    qsfi_gdn_prefill_desc desc {};
+    qscu_gdn_prefill_desc desc {};
     desc.q = gdn_tensor3_bf16(d_q, tokens, kGdnQHeads, kGdnKeyDim);
     desc.k = gdn_tensor3_bf16(d_k, tokens, kGdnKHeads, kGdnKeyDim);
     desc.v = gdn_tensor3_bf16(d_v, tokens, kGdnVHeads, kGdnValueDim);
@@ -887,10 +887,10 @@ void test_gdn_prefill_two_token_recurrence()
     desc.num_v_heads = kGdnVHeads;
     desc.key_dim = kGdnKeyDim;
     desc.value_dim = kGdnValueDim;
-    desc.state_layout = QSFI_GDN_STATE_LAYOUT_VK;
+    desc.state_layout = QSCU_GDN_STATE_LAYOUT_VK;
     desc.scale = 1.0f;
 
-    check_status(qsfi_gdn_prefill(ctx, &desc), QSFI_STATUS_OK, "gdn prefill");
+    check_status(qscu_gdn_prefill(ctx, &desc), QSFI_STATUS_OK, "gdn prefill");
     check_cuda(cudaDeviceSynchronize(), "sync gdn prefill");
     check_cuda(
         cudaMemcpy(h_out.data(), d_out, h_out.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost),

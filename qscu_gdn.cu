@@ -1,3 +1,4 @@
+#include "qscu.h"
 #include "qsfi_internal.h"
 #include "qsfi_macros.h"
 
@@ -527,7 +528,7 @@ qsfi_status check_work_items(qsfi_context* ctx, uint64_t items)
 
 template <typename StateT>
 cudaError_t
-launch_gdn_decode(qsfi_context* ctx, const qsfi_gdn_decode_desc* desc, const gdn_shape& shape)
+launch_gdn_decode(qsfi_context* ctx, const qscu_gdn_decode_desc* desc, const gdn_shape& shape)
 {
     const uint64_t items = work_items(desc->num_tokens, shape);
     gdn_kernel_params params = make_params(desc, shape, desc->num_tokens, nullptr);
@@ -540,7 +541,7 @@ launch_gdn_decode(qsfi_context* ctx, const qsfi_gdn_decode_desc* desc, const gdn
 
 template <typename StateT>
 cudaError_t
-launch_gdn_prefill(qsfi_context* ctx, const qsfi_gdn_prefill_desc* desc, const gdn_shape& shape)
+launch_gdn_prefill(qsfi_context* ctx, const qscu_gdn_prefill_desc* desc, const gdn_shape& shape)
 {
     const uint64_t items = work_items(desc->batch_size, shape);
     gdn_kernel_params params
@@ -556,7 +557,7 @@ launch_gdn_prefill(qsfi_context* ctx, const qsfi_gdn_prefill_desc* desc, const g
 
 extern "C" {
 
-qsfi_status qsfi_gdn_decode(qsfi_context* ctx, const qsfi_gdn_decode_desc* desc)
+qsfi_status qscu_gdn_decode(qsfi_context* ctx, const qscu_gdn_decode_desc* desc)
 {
     if (ctx == nullptr || desc == nullptr)
         return QSFI_STATUS_INVALID_ARGUMENT;
@@ -567,7 +568,7 @@ qsfi_status qsfi_gdn_decode(qsfi_context* ctx, const qsfi_gdn_decode_desc* desc)
     if (desc->num_tokens == 0) {
         return set_invalid_arg(ctx, "gdn decode num_tokens must be non-zero");
     }
-    if (desc->state_layout != QSFI_GDN_STATE_LAYOUT_VK) {
+    if (desc->state_layout != QSCU_GDN_STATE_LAYOUT_VK) {
         return set_unsupported(ctx, "only VK GDN state layout is wired");
     }
 
@@ -616,10 +617,10 @@ qsfi_status qsfi_gdn_decode(qsfi_context* ctx, const qsfi_gdn_decode_desc* desc)
     } else {
         err = launch_gdn_decode<float>(ctx, desc, shape);
     }
-    return set_cuda_error(ctx, err, "qsfi_gdn_decode");
+    return set_cuda_error(ctx, err, "qscu_gdn_decode");
 }
 
-qsfi_status qsfi_gdn_prefill(qsfi_context* ctx, const qsfi_gdn_prefill_desc* desc)
+qsfi_status qscu_gdn_prefill(qsfi_context* ctx, const qscu_gdn_prefill_desc* desc)
 {
     if (ctx == nullptr || desc == nullptr)
         return QSFI_STATUS_INVALID_ARGUMENT;
@@ -633,7 +634,7 @@ qsfi_status qsfi_gdn_prefill(qsfi_context* ctx, const qsfi_gdn_prefill_desc* des
             "gdn prefill batch_size, total_tokens, and seq_indptr must be set"
         );
     }
-    if (desc->state_layout != QSFI_GDN_STATE_LAYOUT_VK) {
+    if (desc->state_layout != QSCU_GDN_STATE_LAYOUT_VK) {
         return set_unsupported(ctx, "only VK GDN state layout is wired");
     }
 
@@ -682,7 +683,7 @@ qsfi_status qsfi_gdn_prefill(qsfi_context* ctx, const qsfi_gdn_prefill_desc* des
     } else {
         err = launch_gdn_prefill<float>(ctx, desc, shape);
     }
-    return set_cuda_error(ctx, err, "qsfi_gdn_prefill");
+    return set_cuda_error(ctx, err, "qscu_gdn_prefill");
 }
 
 } // extern "C"

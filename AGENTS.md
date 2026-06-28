@@ -20,6 +20,21 @@ current state:
 - the current repo can run FlashInfer attention over externally supplied Q/K/V
   tensors. it is not yet a runnable model runtime.
 
+GDN direction:
+- keep qwen3.6-specific GDN prep glue local for now: causal conv, post-conv
+  Q/K/V split, decay/beta materialization, gated RMSNorm, and a local recurrence
+  fallback.
+- FlashInfer GDN looks like the first replacement path to investigate, not
+  Triton/vLLM: BF16 decode matches the `[pool, HV, V, K]` state shape, and SM12
+  chunked prefill matches the long-prompt path if prep emits linear alpha
+  `exp(g)` plus f32 beta.
+- if FlashInfer GDN is wired, keep it in one FlashInfer-owned TU. do not spread
+  FlashInfer GDN headers/JIT plumbing through local `qscu` files.
+- main mismatches to resolve before replacing the local recurrence: FlashInfer
+  BF16 decode treats `-1` state indices as a sacrificial slot with undefined
+  output, and FlashInfer prefill wants f32 final state while qs3 may want bf16
+  live decode state.
+
 DS4 lessons worth preserving:
 - keep the public boundary narrow: a loaded model/runtime object plus mutable
   inference timelines. higher layers should not know tensor internals.

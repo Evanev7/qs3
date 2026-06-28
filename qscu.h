@@ -10,6 +10,8 @@
 extern "C" {
 #endif
 
+typedef struct qsfi_context qsfi_context;
+
 /*
  * qscu is a small local CUDA helper layer for qwen3.6 kernels that do not map
  * cleanly onto a packed FlashInfer API. Helpers launch on the supplied stream;
@@ -91,6 +93,71 @@ typedef enum {
     QSCU_GDN_FORGET_LINEAR_ALPHA = 1
 } qscu_gdn_forget_gate_output;
 
+/*
+ * Qwen3.6 Gated Delta Net recurrence.
+ *
+ * This is the local CUDA recurrence fallback used after the caller has loaded
+ * weights, run the input projections, applied the causal conv over the packed
+ * q/k/v stream, and prepared q/k/v/a/b. State is v-major / K-last:
+ * [state_pool, num_v_heads, value_dim, key_dim].
+ *
+ * state_out_indices is optional. When omitted, state_indices is used for both
+ * read and write. A negative state index skips that sequence/token and writes a
+ * zero output row.
+ */
+
+typedef enum { QSCU_GDN_STATE_LAYOUT_VK = 0 } qscu_gdn_state_layout;
+
+typedef struct {
+    qsfi_tensor3 q; /* bf16 [num_tokens, num_q_heads, key_dim]. */
+    qsfi_tensor3 k; /* bf16 [num_tokens, num_k_heads, key_dim]. */
+    qsfi_tensor3 v; /* bf16 [num_tokens, num_v_heads, value_dim]. */
+    qsfi_tensor2 a; /* bf16 [num_tokens, num_v_heads]. */
+    qsfi_tensor2 b; /* bf16 [num_tokens, num_v_heads]. */
+    qsfi_tensor1 a_log; /* f32 [num_v_heads]. */
+    qsfi_tensor1 dt_bias; /* f32 [num_v_heads]. */
+    qsfi_tensor4 state; /* bf16/f32 [state_pool, num_v_heads, value_dim, key_dim]. */
+    qsfi_tensor1 state_indices; /* i32 [num_tokens]. */
+    qsfi_tensor1 state_out_indices; /* optional i32 [num_tokens]. */
+    qsfi_tensor3 out; /* bf16 [num_tokens, num_v_heads, value_dim]. */
+    uint32_t num_tokens;
+    uint32_t num_q_heads;
+    uint32_t num_k_heads;
+    uint32_t num_v_heads;
+    uint32_t key_dim;
+    uint32_t value_dim;
+    qscu_gdn_state_layout state_layout;
+    float scale;
+    uint32_t use_qk_l2norm;
+    uint32_t disable_state_update;
+} qscu_gdn_decode_desc;
+
+typedef struct {
+    qsfi_tensor3 q; /* bf16 [total_tokens, num_q_heads, key_dim]. */
+    qsfi_tensor3 k; /* bf16 [total_tokens, num_k_heads, key_dim]. */
+    qsfi_tensor3 v; /* bf16 [total_tokens, num_v_heads, value_dim]. */
+    qsfi_tensor2 a; /* bf16 [total_tokens, num_v_heads]. */
+    qsfi_tensor2 b; /* bf16 [total_tokens, num_v_heads]. */
+    qsfi_tensor1 a_log; /* f32 [num_v_heads]. */
+    qsfi_tensor1 dt_bias; /* f32 [num_v_heads]. */
+    qsfi_tensor4 state; /* bf16/f32 [state_pool, num_v_heads, value_dim, key_dim]. */
+    qsfi_device_ptr seq_indptr; /* i32 [batch_size + 1], device pointer. */
+    qsfi_tensor1 state_indices; /* i32 [batch_size]. */
+    qsfi_tensor1 state_out_indices; /* optional i32 [batch_size]. */
+    qsfi_tensor3 out; /* bf16 [total_tokens, num_v_heads, value_dim]. */
+    uint32_t batch_size;
+    uint32_t total_tokens;
+    uint32_t num_q_heads;
+    uint32_t num_k_heads;
+    uint32_t num_v_heads;
+    uint32_t key_dim;
+    uint32_t value_dim;
+    qscu_gdn_state_layout state_layout;
+    float scale;
+    uint32_t use_qk_l2norm;
+    uint32_t disable_state_update;
+} qscu_gdn_prefill_desc;
+
 typedef enum { QSCU_ROUTER_SCORE_SOFTMAX = 0, QSCU_ROUTER_SCORE_SIGMOID = 1 } qscu_router_score;
 
 typedef struct {
@@ -158,6 +225,9 @@ qsfi_status qscu_qwen36_gdn_post_conv_prepare_bf16(
 qsfi_status qscu_qwen36_gdn_rmsnorm_gated_bf16(
     const qscu_qwen36_gdn_rmsnorm_gated_desc* desc, qsfi_cuda_stream stream
 );
+
+qsfi_status qscu_gdn_decode(qsfi_context* ctx, const qscu_gdn_decode_desc* desc);
+qsfi_status qscu_gdn_prefill(qsfi_context* ctx, const qscu_gdn_prefill_desc* desc);
 
 qsfi_status qscu_router_topk(const qscu_router_topk_desc* desc, qsfi_cuda_stream stream);
 

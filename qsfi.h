@@ -152,16 +152,8 @@ typedef struct {
 } qsfi_append_prefill_desc;
 
 /*
- * Non-attention transformer kernels.
+ * FlashInfer-backed non-attention transformer helpers.
  */
-
-typedef struct {
-    qsfi_tensor1 token_ids; /* i32/u32 [num_tokens]. */
-    qsfi_tensor2 embedding; /* [vocab_size, hidden_size]. */
-    qsfi_tensor2 out; /* [num_tokens, hidden_size]. */
-    int32_t padding_token_id; /* < 0 means no padding token. */
-    uint32_t validate_token_ids;
-} qsfi_embedding_gather_desc;
 
 typedef struct {
     qsfi_tensor2 x; /* bf16/f32 [rows, hidden_size]. */
@@ -194,71 +186,8 @@ typedef struct {
     uint32_t interleave; /* must be 0: NeoX/Llama non-interleaved layout. */
 } qsfi_rope_apply_desc;
 
-typedef struct {
-    qsfi_tensor2 x; /* [rows, in_features]. */
-    qsfi_tensor2 weight; /* [out_features, in_features]. */
-    qsfi_tensor1 bias; /* optional [out_features]. */
-    qsfi_tensor1 weight_scale; /* optional quant scales. */
-    qsfi_tensor1 weight_zero; /* optional quant zeros. */
-    qsfi_tensor2 out; /* [rows, out_features]. */
-    uint32_t rows;
-    uint32_t in_features;
-    uint32_t out_features;
-    qsfi_dtype accum_dtype;
-    float alpha;
-    float beta;
-} qsfi_linear_desc;
-
-typedef struct {
-    qsfi_tensor2 x; /* [num_tokens, hidden_size]. */
-    qsfi_tensor2 q_weight; /* [num_qo_heads * head_dim, hidden_size]. */
-    qsfi_tensor2 k_weight; /* [num_kv_heads * head_dim, hidden_size]. */
-    qsfi_tensor2 v_weight; /* [num_kv_heads * head_dim, hidden_size]. */
-    qsfi_tensor1 q_bias; /* optional [num_qo_heads * head_dim]. */
-    qsfi_tensor1 k_bias; /* optional [num_kv_heads * head_dim]. */
-    qsfi_tensor1 v_bias; /* optional [num_kv_heads * head_dim]. */
-    qsfi_tensor3 q_out; /* [num_tokens, num_qo_heads, head_dim]. */
-    qsfi_tensor3 k_out; /* [num_tokens, num_kv_heads, head_dim]. */
-    qsfi_tensor3 v_out; /* [num_tokens, num_kv_heads, head_dim]. */
-    uint32_t num_tokens;
-    uint32_t hidden_size;
-    uint32_t num_qo_heads;
-    uint32_t num_kv_heads;
-    uint32_t head_dim;
-    qsfi_dtype accum_dtype;
-} qsfi_qkv_projection_desc;
-
-typedef struct {
-    qsfi_tensor2 gate;
-    qsfi_tensor2 up;
-    qsfi_tensor2 out;
-    uint32_t num_tokens;
-    uint32_t intermediate_size;
-    float clamp_limit; /* <= 0 means unclamped. */
-} qsfi_silu_and_mul_desc;
-
-typedef struct {
-    qsfi_tensor2 x;
-    qsfi_tensor2 gate_weight;
-    qsfi_tensor2 up_weight;
-    qsfi_tensor2 gate_up_weight; /* optional packed [2*intermediate, hidden]. */
-    qsfi_tensor2 down_weight;
-    qsfi_tensor1 gate_bias;
-    qsfi_tensor1 up_bias;
-    qsfi_tensor1 down_bias;
-    qsfi_tensor2 tmp_gate;
-    qsfi_tensor2 tmp_up;
-    qsfi_tensor2 tmp_act;
-    qsfi_tensor2 out;
-    uint32_t num_tokens;
-    uint32_t hidden_size;
-    uint32_t intermediate_size;
-    qsfi_dtype accum_dtype;
-    float clamp_limit;
-} qsfi_dense_swiglu_mlp_desc;
-
 /*
- * Qwen3.6 routed SwiGLU MoE.
+ * FlashInfer-backed Qwen3.6 routed SwiGLU MoE.
  *
  * qsfi does not load, own, or repack model weights. The caller supplies tensors
  * in the layout below and keeps them alive until execution on ctx->stream has
@@ -332,101 +261,6 @@ typedef struct {
     uint32_t num_tokens;
 } qsfi_moe_nvfp4_execute_desc;
 
-typedef struct {
-    qsfi_tensor2 x; /* [rows, hidden_size]. */
-    qsfi_tensor2 weight; /* [vocab_size, hidden_size]. */
-    qsfi_tensor1 bias; /* optional [vocab_size]. */
-    qsfi_tensor2 logits; /* [rows, vocab_size]. */
-    uint32_t rows;
-    uint32_t hidden_size;
-    uint32_t vocab_size;
-    qsfi_dtype accum_dtype;
-    float logits_soft_cap; /* <= 0 means no cap. */
-} qsfi_lm_head_desc;
-
-/*
- * Qwen3.6 Gated Delta Net recurrence.
- *
- * These surfaces operate after the caller has loaded weights, run the input
- * projections, and applied the causal conv over the packed q/k/v stream. State
- * is v-major / K-last: [state_pool, num_v_heads, value_dim, key_dim].
- *
- * state_out_indices is optional. When omitted, state_indices is used for both
- * read and write. A negative state index skips that sequence/token and writes a
- * zero output row.
- */
-
-typedef enum { QSFI_GDN_STATE_LAYOUT_VK = 0 } qsfi_gdn_state_layout;
-
-typedef struct {
-    qsfi_tensor3 q; /* bf16 [num_tokens, num_q_heads, key_dim]. */
-    qsfi_tensor3 k; /* bf16 [num_tokens, num_k_heads, key_dim]. */
-    qsfi_tensor3 v; /* bf16 [num_tokens, num_v_heads, value_dim]. */
-    qsfi_tensor2 a; /* bf16 [num_tokens, num_v_heads]. */
-    qsfi_tensor2 b; /* bf16 [num_tokens, num_v_heads]. */
-    qsfi_tensor1 a_log; /* f32 [num_v_heads]. */
-    qsfi_tensor1 dt_bias; /* f32 [num_v_heads]. */
-    qsfi_tensor4 state; /* bf16/f32 [state_pool, num_v_heads, value_dim, key_dim]. */
-    qsfi_tensor1 state_indices; /* i32 [num_tokens]. */
-    qsfi_tensor1 state_out_indices; /* optional i32 [num_tokens]. */
-    qsfi_tensor3 out; /* bf16 [num_tokens, num_v_heads, value_dim]. */
-    uint32_t num_tokens;
-    uint32_t num_q_heads;
-    uint32_t num_k_heads;
-    uint32_t num_v_heads;
-    uint32_t key_dim;
-    uint32_t value_dim;
-    qsfi_gdn_state_layout state_layout;
-    float scale;
-    uint32_t use_qk_l2norm;
-    uint32_t disable_state_update;
-} qsfi_gdn_decode_desc;
-
-typedef struct {
-    qsfi_tensor3 q; /* bf16 [total_tokens, num_q_heads, key_dim]. */
-    qsfi_tensor3 k; /* bf16 [total_tokens, num_k_heads, key_dim]. */
-    qsfi_tensor3 v; /* bf16 [total_tokens, num_v_heads, value_dim]. */
-    qsfi_tensor2 a; /* bf16 [total_tokens, num_v_heads]. */
-    qsfi_tensor2 b; /* bf16 [total_tokens, num_v_heads]. */
-    qsfi_tensor1 a_log; /* f32 [num_v_heads]. */
-    qsfi_tensor1 dt_bias; /* f32 [num_v_heads]. */
-    qsfi_tensor4 state; /* bf16/f32 [state_pool, num_v_heads, value_dim, key_dim]. */
-    qsfi_device_ptr seq_indptr; /* i32 [batch_size + 1], device pointer. */
-    qsfi_tensor1 state_indices; /* i32 [batch_size]. */
-    qsfi_tensor1 state_out_indices; /* optional i32 [batch_size]. */
-    qsfi_tensor3 out; /* bf16 [total_tokens, num_v_heads, value_dim]. */
-    uint32_t batch_size;
-    uint32_t total_tokens;
-    uint32_t num_q_heads;
-    uint32_t num_k_heads;
-    uint32_t num_v_heads;
-    uint32_t key_dim;
-    uint32_t value_dim;
-    qsfi_gdn_state_layout state_layout;
-    float scale;
-    uint32_t use_qk_l2norm;
-    uint32_t disable_state_update;
-} qsfi_gdn_prefill_desc;
-
-/*
- * Sampling. For deterministic GPU sampling, pass uniform_samples [batch] f32.
- * temperature <= 0 means greedy argmax.
- */
-
-typedef struct {
-    qsfi_tensor2 logits; /* [batch, vocab_size]. */
-    qsfi_tensor1 uniform_samples; /* optional f32 [batch]. */
-    qsfi_tensor1 next_token_ids; /* i32/u32 [batch]. */
-    qsfi_tensor1 selected_logprobs; /* optional f32 [batch]. */
-    qsfi_tensor1 selected_probs; /* optional f32 [batch]. */
-    uint32_t batch_size;
-    uint32_t vocab_size;
-    uint32_t top_k; /* 0 means disabled. */
-    float top_p; /* <= 0 or >= 1 means disabled. */
-    float min_p; /* <= 0 means disabled. */
-    float temperature;
-} qsfi_sampling_desc;
-
 qsfi_status qsfi_context_create(const qsfi_context_desc* desc, qsfi_context** out);
 void qsfi_context_destroy(qsfi_context* ctx);
 
@@ -489,14 +323,9 @@ qsfi_status qsfi_append_paged_kv_prefill(
     qsfi_context* ctx, const qsfi_attention_desc* attention, const qsfi_append_prefill_desc* desc
 );
 
-qsfi_status qsfi_embedding_gather(qsfi_context* ctx, const qsfi_embedding_gather_desc* desc);
 qsfi_status qsfi_rmsnorm(qsfi_context* ctx, const qsfi_rmsnorm_desc* desc);
 qsfi_status qsfi_fused_add_rmsnorm(qsfi_context* ctx, const qsfi_fused_add_rmsnorm_desc* desc);
 qsfi_status qsfi_rope_apply(qsfi_context* ctx, const qsfi_rope_apply_desc* desc);
-qsfi_status qsfi_linear(qsfi_context* ctx, const qsfi_linear_desc* desc);
-qsfi_status qsfi_qkv_projection(qsfi_context* ctx, const qsfi_qkv_projection_desc* desc);
-qsfi_status qsfi_silu_and_mul(qsfi_context* ctx, const qsfi_silu_and_mul_desc* desc);
-qsfi_status qsfi_dense_swiglu_mlp(qsfi_context* ctx, const qsfi_dense_swiglu_mlp_desc* desc);
 qsfi_status
 qsfi_moe_plan_create(qsfi_context* ctx, const qsfi_moe_plan_desc* desc, qsfi_moe_plan** out);
 void qsfi_moe_plan_destroy(qsfi_moe_plan* plan);
@@ -509,10 +338,6 @@ qsfi_status qsfi_moe_execute_bf16(
 qsfi_status qsfi_moe_execute_nvfp4(
     qsfi_context* ctx, const qsfi_moe_plan* plan, const qsfi_moe_nvfp4_execute_desc* desc
 );
-qsfi_status qsfi_lm_head(qsfi_context* ctx, const qsfi_lm_head_desc* desc);
-qsfi_status qsfi_gdn_decode(qsfi_context* ctx, const qsfi_gdn_decode_desc* desc);
-qsfi_status qsfi_gdn_prefill(qsfi_context* ctx, const qsfi_gdn_prefill_desc* desc);
-qsfi_status qsfi_sample(qsfi_context* ctx, const qsfi_sampling_desc* desc);
 
 #ifdef __cplusplus
 }

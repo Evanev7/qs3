@@ -11,20 +11,18 @@ fn main() {
     println!("cargo:rerun-if-changed=qsfi_internal.h");
     println!("cargo:rerun-if-changed=qscu.h");
     println!("cargo:rerun-if-changed=qscb.h");
+    println!("cargo:rerun-if-changed=qsfi.cu");
     println!("cargo:rerun-if-changed=qsfi_context.cu");
     println!("cargo:rerun-if-changed=qsfi_attn.cu");
-    println!("cargo:rerun-if-changed=qsfi_gdn.cu");
+    println!("cargo:rerun-if-changed=qscu_gdn.cu");
     println!("cargo:rerun-if-changed=qsfi_moe.cu");
     println!("cargo:rerun-if-changed=qsfi_norm_rope.cu");
     println!("cargo:rerun-if-changed=qscu.cu");
     println!("cargo:rerun-if-changed=qscb.cu");
     println!("cargo:rerun-if-changed=build_tools/build.ninja");
     println!("cargo:rerun-if-changed=build_tools/generate_macros.c");
-    println!("cargo:rerun-if-changed=build/qsfi_context.o");
-    println!("cargo:rerun-if-changed=build/qsfi_attn.o");
-    println!("cargo:rerun-if-changed=build/qsfi_gdn.o");
-    println!("cargo:rerun-if-changed=build/qsfi_moe.o");
-    println!("cargo:rerun-if-changed=build/qsfi_norm_rope.o");
+    println!("cargo:rerun-if-changed=build/qsfi.o");
+    println!("cargo:rerun-if-changed=build/qscu_gdn.o");
     println!("cargo:rerun-if-changed=build/qscu.o");
     println!("cargo:rerun-if-changed=build/qscb.o");
 
@@ -49,11 +47,8 @@ fn main() {
 
 fn link_qsfi_for_tests() {
     let qsfi_objects = [
-        Path::new("build/qsfi_context.o"),
-        Path::new("build/qsfi_attn.o"),
-        Path::new("build/qsfi_gdn.o"),
-        Path::new("build/qsfi_moe.o"),
-        Path::new("build/qsfi_norm_rope.o"),
+        Path::new("build/qsfi.o"),
+        Path::new("build/qscu_gdn.o"),
         Path::new("build/qscu.o"),
         Path::new("build/qscb.o"),
     ];

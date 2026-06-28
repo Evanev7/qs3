@@ -390,6 +390,10 @@ impl Context {
         })
     }
 
+    pub(crate) fn as_raw(&mut self) -> *mut ffi::ContextRaw {
+        self.raw.as_ptr()
+    }
+
     pub(crate) unsafe fn create_decode_plan(
         &mut self,
         attention: &AttentionDesc,

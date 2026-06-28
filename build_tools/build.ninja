@@ -3,7 +3,7 @@ ninja_required_version = 1.10
 flashinfer = ../3pty/flashinfer
 src = ..
 
-includes = $
+fi_includes = $
   -I$flashinfer/3rdparty/cccl/libcudacxx/include $
   -I$flashinfer/3rdparty/cccl/cub $
   -I$flashinfer/3rdparty/cccl/thrust $
@@ -14,17 +14,16 @@ includes = $
   -I$flashinfer/include $
   -I$flashinfer/csrc $
   -I$flashinfer/csrc/nv_internal $
-  -I$flashinfer/csrc/nv_internal/include $
-  -I.
+  -I$flashinfer/csrc/nv_internal/include
 
-nvccflags = -std=c++17 -arch=sm_121 --expt-relaxed-constexpr -diag-suppress 20012 $includes
+nvccflags = -std=c++17 -arch=sm_121 --expt-relaxed-constexpr -diag-suppress 20012 -I.
 
 rule run
   command = $in > $out
   description = GEN $out
 
 rule nvcc
-  command = nvcc $nvccflags -c $in -o $out
+  command = nvcc $nvccflags $extraflags -c $in -o $out
   description = NVCC $out
 
 rule link_test
@@ -33,32 +32,36 @@ rule link_test
 
 build qsfi_macros.h: run $src/build_tools/generate_macros.c
 
-build qsfi_context.o: nvcc $src/qsfi_context.cu | $src/qs_info.h $src/qs_tensor.h $src/qsfi.h $src/qsfi_internal.h qsfi_macros.h
-build qsfi_attn.o: nvcc $src/qsfi_attn.cu | $src/qs_info.h $src/qs_tensor.h $src/qsfi.h $src/qsfi_internal.h qsfi_macros.h
-build qsfi_gdn.o: nvcc $src/qsfi_gdn.cu | $src/qs_info.h $src/qs_tensor.h $src/qsfi.h $src/qsfi_internal.h qsfi_macros.h
-build qsfi_moe.o: nvcc $src/qsfi_moe.cu | $src/qs_info.h $src/qs_tensor.h $src/qsfi.h $src/qsfi_internal.h qsfi_macros.h
-build qsfi_norm_rope.o: nvcc $src/qsfi_norm_rope.cu | $src/qs_info.h $src/qs_tensor.h $src/qsfi.h $src/qsfi_internal.h
-build qscu.o: nvcc $src/qscu.cu | $src/qs_info.h $src/qs_tensor.h $src/qscu.h qsfi_macros.h
-build qscb.o: nvcc $src/qscb.cu | $src/qs_info.h $src/qs_tensor.h $src/qscb.h
+build qscu_gdn.o: nvcc $src/qscu_gdn.cu | $
+    $src/qs_info.h $src/qs_tensor.h $src/qsfi.h $src/qscu.h $src/qsfi_internal.h qsfi_macros.h
+build qscu.o: nvcc $src/qscu.cu | $
+    $src/qs_info.h $src/qs_tensor.h $src/qscu.h qsfi_macros.h
+build qscb.o: nvcc $src/qscb.cu | $
+    $src/qs_info.h $src/qs_tensor.h $src/qscb.h
+build qsfi.o: nvcc $src/qsfi.cu | $
+    $src/qs_info.h $
+    $src/qs_tensor.h $
+    $src/qsfi.h $
+    $src/qsfi_internal.h $
+    qsfi_macros.h $
+    $src/qsfi_context.cu $
+    $src/qsfi_attn.cu $
+    $src/qsfi_norm_rope.cu $
+    $src/qsfi_moe.cu
+  extraflags = $fi_includes
 
-build qsfi_test: link_test $src/test.cu $
-  qsfi_context.o $
-  qsfi_attn.o $
-  qsfi_gdn.o $
-  qsfi_moe.o $
-  qsfi_norm_rope.o $
-  qscu.o $
-  qscb.o | $src/qs_tensor.h $
-  $src/qs_info.h $
-  $src/qsfi.h $
-  $src/qscu.h $
-  $src/qscb.h $
-  $src/tests_cuda_flashinfer_norm_rope.inc $
-  $src/tests_cuda_qscb_gemm.inc $
-  $src/tests_cuda_qscu_utils.inc $
-  $src/tests_cuda_qscu_gdn_router.inc
+build qsfi_test: link_test $src/test.cu qsfi.o qscu_gdn.o qscu.o qscb.o | $
+    $src/qs_tensor.h $
+    $src/qs_info.h $
+    $src/qsfi.h $
+    $src/qscu.h $
+    $src/qscb.h $
+    $src/tests_cuda_flashinfer_norm_rope.inc $
+    $src/tests_cuda_qscb_gemm.inc $
+    $src/tests_cuda_qscu_utils.inc $
+    $src/tests_cuda_qscu_gdn_router.inc
   libs = -lcublas -lcublasLt
 
-build all: phony qsfi_context.o qsfi_attn.o qsfi_gdn.o qsfi_moe.o qsfi_norm_rope.o qscu.o qscb.o
+build all: phony qsfi.o qscu_gdn.o qscu.o qscb.o
 
 default all

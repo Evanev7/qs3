@@ -7,6 +7,8 @@ use super::{self as ffi, sys};
 pub(crate) type SiluAndMulDesc = sys::qscu_silu_and_mul_desc;
 pub(crate) type EmbeddingGatherDesc = sys::qscu_embedding_gather_desc;
 pub(crate) type SamplingDesc = sys::qscu_sampling_desc;
+pub(crate) type GdnDecodeDesc = sys::qscu_gdn_decode_desc;
+pub(crate) type GdnPrefillDesc = sys::qscu_gdn_prefill_desc;
 pub(crate) type GdnCausalConv1dDesc = sys::qscu_qwen36_gdn_causal_conv1d_desc;
 pub(crate) type GdnPostConvPrepareDesc = sys::qscu_qwen36_gdn_post_conv_prepare_desc;
 pub(crate) type GdnRmsnormGatedDesc = sys::qscu_qwen36_gdn_rmsnorm_gated_desc;
@@ -14,6 +16,7 @@ pub(crate) type RouterTopkDesc = sys::qscu_router_topk_desc;
 
 pub(crate) type ActivationRaw = sys::qscu_activation;
 pub(crate) type GdnForgetGateOutputRaw = sys::qscu_gdn_forget_gate_output;
+pub(crate) type GdnStateLayoutRaw = sys::qscu_gdn_state_layout;
 pub(crate) type RouterScoreRaw = sys::qscu_router_score;
 
 pub(crate) const ACTIVATION_NONE: ActivationRaw = sys::QSCU_ACTIVATION_NONE;
@@ -23,6 +26,7 @@ pub(crate) const ACTIVATION_SIGMOID: ActivationRaw = sys::QSCU_ACTIVATION_SIGMOI
 pub(crate) const GDN_FORGET_LOG_DECAY: GdnForgetGateOutputRaw = sys::QSCU_GDN_FORGET_LOG_DECAY;
 pub(crate) const GDN_FORGET_LINEAR_ALPHA: GdnForgetGateOutputRaw =
     sys::QSCU_GDN_FORGET_LINEAR_ALPHA;
+pub(crate) const GDN_STATE_LAYOUT_VK: GdnStateLayoutRaw = sys::QSCU_GDN_STATE_LAYOUT_VK;
 
 pub(crate) const ROUTER_SCORE_SOFTMAX: RouterScoreRaw = sys::QSCU_ROUTER_SCORE_SOFTMAX;
 pub(crate) const ROUTER_SCORE_SIGMOID: RouterScoreRaw = sys::QSCU_ROUTER_SCORE_SIGMOID;
@@ -79,6 +83,20 @@ pub(crate) unsafe fn qwen36_gdn_rmsnorm_gated_bf16(
     stream: ffi::CudaStream,
 ) -> Result<(), Status> {
     ffi::result_from_raw(unsafe { sys::qscu_qwen36_gdn_rmsnorm_gated_bf16(desc, stream) })
+}
+
+pub(crate) unsafe fn gdn_decode(
+    ctx: &mut ffi::qsfi::Context,
+    desc: &GdnDecodeDesc,
+) -> Result<(), Status> {
+    ffi::result_from_raw(unsafe { sys::qscu_gdn_decode(ctx.as_raw(), desc) })
+}
+
+pub(crate) unsafe fn gdn_prefill(
+    ctx: &mut ffi::qsfi::Context,
+    desc: &GdnPrefillDesc,
+) -> Result<(), Status> {
+    ffi::result_from_raw(unsafe { sys::qscu_gdn_prefill(ctx.as_raw(), desc) })
 }
 
 pub(crate) unsafe fn router_topk(
