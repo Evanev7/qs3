@@ -2,7 +2,10 @@
 
 use crate::{engine::Status, ffi};
 
+use super::sys;
+
 use std::{
+    mem::MaybeUninit,
     mem::{align_of, size_of},
     ptr::{self, NonNull},
 };
@@ -149,11 +152,22 @@ fn validate_tensor<T: TensorLike>(tensor: &T, expected_dtype: DTypeRaw) -> Resul
     if tensor.dtype() != expected_dtype {
         return Err(Status::InvalidArgument);
     }
+    let mut extent = 1i64;
     for (&shape, &stride) in tensor.shape().iter().zip(tensor.stride()) {
         if shape <= 0 || stride <= 0 {
             return Err(Status::InvalidArgument);
         }
+        let dim_extent = shape
+            .checked_sub(1)
+            .and_then(|shape| shape.checked_mul(stride))
+            .ok_or(Status::InvalidArgument)?;
+        extent = extent
+            .checked_add(dim_extent)
+            .ok_or(Status::InvalidArgument)?;
     }
+    // TODO: pair tensor descriptors with allocation extents once device buffers
+    // carry them. For now, reject impossible logical extents cheaply.
+    usize::try_from(extent).map_err(|_| Status::InvalidArgument)?;
     Ok(())
 }
 
@@ -627,7 +641,6 @@ fn validate_moe_nvfp4_execute_desc(
     validate_moe_workspace_tensor(&desc.workspace, None)
 }
 
-#[cfg(test)]
 fn validate_paged_kv_plan_slices(
     attention: &AttentionDesc,
     indptr: &[i32],
@@ -667,7 +680,6 @@ fn validate_paged_kv_plan_slices(
     })
 }
 
-#[cfg(test)]
 fn validate_qo_plan_slices(indptr: &[i32], total_tokens: u32) -> Result<PlanShape, Status> {
     let total_tokens_i32 = i32::try_from(total_tokens).map_err(|_| Status::InvalidArgument)?;
     if indptr.len() < 2 || indptr[0] != 0 {
@@ -687,6 +699,79 @@ fn validate_qo_plan_slices(indptr: &[i32], total_tokens: u32) -> Result<PlanShap
         num_indices: 0,
         total_tokens,
     })
+}
+
+pub(crate) struct PagedKvPlanHost<'a> {
+    raw: PagedKvPlan,
+    shape: PlanShape,
+    _indptr: &'a [i32],
+    _indices: &'a [i32],
+    _last_page_len: &'a [i32],
+}
+
+impl<'a> PagedKvPlanHost<'a> {
+    pub(crate) fn new(
+        attention: &AttentionDesc,
+        indptr: &'a [i32],
+        indices: &'a [i32],
+        last_page_len: &'a [i32],
+    ) -> Result<Self, Status> {
+        let shape = validate_paged_kv_plan_slices(attention, indptr, indices, last_page_len)?;
+        Ok(Self {
+            raw: PagedKvPlan {
+                indptr: indptr.as_ptr(),
+                indices: if indices.is_empty() {
+                    ptr::null()
+                } else {
+                    indices.as_ptr()
+                },
+                last_page_len: last_page_len.as_ptr(),
+                batch_size: shape.batch_size,
+                num_indices: shape.num_indices,
+            },
+            shape,
+            _indptr: indptr,
+            _indices: indices,
+            _last_page_len: last_page_len,
+        })
+    }
+
+    pub(crate) fn as_raw(&self) -> &PagedKvPlan {
+        &self.raw
+    }
+
+    fn shape(&self) -> PlanShape {
+        self.shape
+    }
+}
+
+pub(crate) struct QoPlanHost<'a> {
+    raw: QoPlan,
+    shape: PlanShape,
+    _indptr: &'a [i32],
+}
+
+impl<'a> QoPlanHost<'a> {
+    pub(crate) fn new(indptr: &'a [i32], total_tokens: u32) -> Result<Self, Status> {
+        let shape = validate_qo_plan_slices(indptr, total_tokens)?;
+        Ok(Self {
+            raw: QoPlan {
+                indptr: indptr.as_ptr(),
+                batch_size: shape.batch_size,
+                total_tokens: shape.total_tokens,
+            },
+            shape,
+            _indptr: indptr,
+        })
+    }
+
+    pub(crate) fn as_raw(&self) -> &QoPlan {
+        &self.raw
+    }
+
+    fn shape(&self) -> PlanShape {
+        self.shape
+    }
 }
 
 fn validate_paged_kv_plan_desc(page_table: &PagedKvPlan) -> Result<PlanShape, Status> {
@@ -760,6 +845,71 @@ fn validate_page_table_exec_desc(
         return Err(Status::InvalidArgument);
     }
     Ok(())
+}
+
+fn validate_append_decode_desc(
+    attention: &AttentionDesc,
+    append: &AppendDecode,
+) -> Result<(), Status> {
+    validate_tensor(&append.k, attention.kv_dtype)?;
+    validate_tensor(&append.v, attention.kv_dtype)?;
+    let batch_size = u32::try_from(append.k.shape[0]).map_err(|_| Status::InvalidArgument)?;
+    if append.k.shape[1] != i64::from(attention.num_kv_heads)
+        || append.k.shape[2] != i64::from(attention.head_dim_qk)
+    {
+        return Err(Status::InvalidArgument);
+    }
+    if !same_shape_and_stride3(&append.k, &append.v) {
+        return Err(Status::InvalidArgument);
+    }
+    if !tensor3_is_contiguous(&append.k) {
+        return Err(Status::Unsupported);
+    }
+    validate_kv_cache_desc(attention, &append.kv_cache)?;
+    validate_page_table_exec_desc(
+        &append.page_table,
+        PlanShape {
+            batch_size,
+            num_indices: append.page_table.num_indices,
+            total_tokens: batch_size,
+        },
+    )
+}
+
+fn validate_append_prefill_desc(
+    attention: &AttentionDesc,
+    append: &AppendPrefill,
+) -> Result<(), Status> {
+    if append.num_tokens == 0 {
+        return Ok(());
+    }
+    if append.batch_indices.is_null() || append.positions.is_null() {
+        return Err(Status::InvalidArgument);
+    }
+    validate_tensor(&append.k, attention.kv_dtype)?;
+    validate_tensor(&append.v, attention.kv_dtype)?;
+    if append.k.shape[0] != i64::from(append.num_tokens)
+        || append.k.shape[1] != i64::from(attention.num_kv_heads)
+        || append.k.shape[2] != i64::from(attention.head_dim_qk)
+        || !same_shape3(&append.k, &append.v)
+    {
+        return Err(Status::InvalidArgument);
+    }
+    if !tensor3_has_row_major_inner(&append.k) || !tensor3_has_row_major_inner(&append.v) {
+        return Err(Status::InvalidArgument);
+    }
+    validate_kv_cache_desc(attention, &append.kv_cache)?;
+    if append.page_table.batch_size == 0 {
+        return Err(Status::InvalidArgument);
+    }
+    validate_page_table_exec_desc(
+        &append.page_table,
+        PlanShape {
+            batch_size: append.page_table.batch_size,
+            num_indices: append.page_table.num_indices,
+            total_tokens: append.num_tokens,
+        },
+    )
 }
 
 fn validate_decode_execute_desc(
@@ -845,8 +995,12 @@ pub(crate) struct Context {
 
 impl Context {
     pub(crate) fn new(device_ordinal: i32, stream: CudaStream) -> Result<Self, Status> {
+        let desc = sys::qsfi_context_desc {
+            device_ordinal,
+            stream,
+        };
         let mut raw = ptr::null_mut();
-        result_from_raw(unsafe { ffi::context_create(device_ordinal, stream, &mut raw) })?;
+        result_from_raw(unsafe { sys::qsfi_context_create(&desc, &mut raw) })?;
         let raw = NonNull::new(raw).ok_or(Status::InternalError)?;
         Ok(Self { raw })
     }
@@ -858,7 +1012,7 @@ impl Context {
         host_int_workspace_bytes: usize,
     ) -> Result<(), Status> {
         result_from_raw(unsafe {
-            ffi::context_reserve_workspace(
+            sys::qsfi_context_reserve_workspace(
                 self.raw.as_ptr(),
                 float_workspace_bytes,
                 int_workspace_bytes,
@@ -869,6 +1023,24 @@ impl Context {
 
     pub(crate) fn as_raw(&mut self) -> *mut ffi::ContextRaw {
         self.raw.as_ptr()
+    }
+
+    pub(crate) fn last_error(&self) -> Result<ffi::ErrorInfo, Status> {
+        let mut out = MaybeUninit::uninit();
+        result_from_raw(unsafe {
+            sys::qsfi_context_get_last_error(self.raw.as_ptr(), out.as_mut_ptr())
+        })?;
+        Ok(unsafe { out.assume_init() })
+    }
+
+    pub(crate) fn clear_last_error(&mut self) {
+        unsafe {
+            sys::qsfi_context_clear_last_error(self.raw.as_ptr());
+        }
+    }
+
+    fn result_with_last_error(&self, status: ffi::StatusRaw) -> Result<(), Status> {
+        result_from_raw(status).inspect_err(|_| _ = self.last_error())
     }
 
     pub(crate) unsafe fn create_decode_plan(
@@ -882,8 +1054,8 @@ impl Context {
         }
         let shape = validate_paged_kv_plan_desc(page_table)?;
         let mut raw = ptr::null_mut();
-        result_from_raw(unsafe {
-            ffi::batch_decode_plan_create(self.raw.as_ptr(), attention, page_table, &mut raw)
+        self.result_with_last_error(unsafe {
+            sys::qsfi_batch_decode_plan_create(self.raw.as_ptr(), attention, page_table, &mut raw)
         })?;
         Plan::from_decode_raw(raw, *attention, shape)
     }
@@ -897,7 +1069,9 @@ impl Context {
         let PlanRaw::Decode(raw) = plan.raw else {
             return Err(Status::InvalidArgument);
         };
-        result_from_raw(unsafe { ffi::batch_decode_execute(self.raw.as_ptr(), raw.as_ptr(), desc) })
+        self.result_with_last_error(unsafe {
+            sys::qsfi_batch_decode_execute(self.raw.as_ptr(), raw.as_ptr(), desc)
+        })
     }
 
     pub(crate) unsafe fn create_prefill_plan(
@@ -920,8 +1094,14 @@ impl Context {
             ..page_shape
         };
         let mut raw = ptr::null_mut();
-        result_from_raw(unsafe {
-            ffi::batch_prefill_plan_create(self.raw.as_ptr(), attention, qo, page_table, &mut raw)
+        self.result_with_last_error(unsafe {
+            sys::qsfi_batch_prefill_plan_create(
+                self.raw.as_ptr(),
+                attention,
+                qo,
+                page_table,
+                &mut raw,
+            )
         })?;
         Plan::from_prefill_raw(raw, *attention, shape)
     }
@@ -935,8 +1115,8 @@ impl Context {
         let PlanRaw::Prefill(raw) = plan.raw else {
             return Err(Status::InvalidArgument);
         };
-        result_from_raw(unsafe {
-            ffi::batch_prefill_execute(self.raw.as_ptr(), raw.as_ptr(), desc)
+        self.result_with_last_error(unsafe {
+            sys::qsfi_batch_prefill_execute(self.raw.as_ptr(), raw.as_ptr(), desc)
         })
     }
 
@@ -946,8 +1126,9 @@ impl Context {
         append: &AppendDecode,
     ) -> Result<(), Status> {
         validate_attention_desc(attention)?;
-        result_from_raw(unsafe {
-            ffi::append_paged_kv_decode(self.raw.as_ptr(), attention, append)
+        validate_append_decode_desc(attention, append)?;
+        self.result_with_last_error(unsafe {
+            sys::qsfi_append_paged_kv_decode(self.raw.as_ptr(), attention, append)
         })
     }
 
@@ -957,14 +1138,15 @@ impl Context {
         append: &AppendPrefill,
     ) -> Result<(), Status> {
         validate_attention_desc(attention)?;
-        result_from_raw(unsafe {
-            ffi::append_paged_kv_prefill(self.raw.as_ptr(), attention, append)
+        validate_append_prefill_desc(attention, append)?;
+        self.result_with_last_error(unsafe {
+            sys::qsfi_append_paged_kv_prefill(self.raw.as_ptr(), attention, append)
         })
     }
 
     pub(crate) unsafe fn rmsnorm(&mut self, desc: &RmsnormDesc) -> Result<(), Status> {
         validate_rmsnorm_desc(desc)?;
-        result_from_raw(unsafe { ffi::rmsnorm(self.raw.as_ptr(), desc) })
+        self.result_with_last_error(unsafe { sys::qsfi_rmsnorm(self.raw.as_ptr(), desc) })
     }
 
     pub(crate) unsafe fn fused_add_rmsnorm(
@@ -972,18 +1154,20 @@ impl Context {
         desc: &FusedAddRmsnormDesc,
     ) -> Result<(), Status> {
         validate_fused_add_rmsnorm_desc(desc)?;
-        result_from_raw(unsafe { ffi::fused_add_rmsnorm(self.raw.as_ptr(), desc) })
+        self.result_with_last_error(unsafe { sys::qsfi_fused_add_rmsnorm(self.raw.as_ptr(), desc) })
     }
 
     pub(crate) unsafe fn rope_apply(&mut self, desc: &RopeApplyDesc) -> Result<(), Status> {
         validate_rope_apply_desc(desc)?;
-        result_from_raw(unsafe { ffi::rope_apply(self.raw.as_ptr(), desc) })
+        self.result_with_last_error(unsafe { sys::qsfi_rope_apply(self.raw.as_ptr(), desc) })
     }
 
     pub(crate) unsafe fn create_moe_plan(&mut self, desc: &MoePlanDesc) -> Result<MoePlan, Status> {
         validate_moe_plan_desc(desc)?;
         let mut raw = ptr::null_mut();
-        result_from_raw(unsafe { ffi::moe_plan_create(self.raw.as_ptr(), desc, &mut raw) })?;
+        self.result_with_last_error(unsafe {
+            sys::qsfi_moe_plan_create(self.raw.as_ptr(), desc, &mut raw)
+        })?;
         MoePlan::from_raw(raw, *desc)
     }
 
@@ -994,8 +1178,8 @@ impl Context {
     ) -> Result<usize, Status> {
         moe_workspace_bytes(&plan.desc, num_tokens)?;
         let mut device_bytes = 0usize;
-        result_from_raw(unsafe {
-            ffi::moe_workspace_size(
+        self.result_with_last_error(unsafe {
+            sys::qsfi_moe_workspace_size(
                 self.raw.as_ptr(),
                 plan.raw.as_ptr(),
                 num_tokens,
@@ -1011,8 +1195,8 @@ impl Context {
         desc: &MoeBf16ExecuteDesc,
     ) -> Result<(), Status> {
         validate_moe_bf16_execute_desc(&plan.desc, desc)?;
-        result_from_raw(unsafe {
-            ffi::moe_execute_bf16(self.raw.as_ptr(), plan.raw.as_ptr(), desc)
+        self.result_with_last_error(unsafe {
+            sys::qsfi_moe_execute_bf16(self.raw.as_ptr(), plan.raw.as_ptr(), desc)
         })
     }
 
@@ -1022,8 +1206,8 @@ impl Context {
         desc: &MoeNvfp4ExecuteDesc,
     ) -> Result<(), Status> {
         validate_moe_nvfp4_execute_desc(&plan.desc, desc)?;
-        result_from_raw(unsafe {
-            ffi::moe_execute_nvfp4(self.raw.as_ptr(), plan.raw.as_ptr(), desc)
+        self.result_with_last_error(unsafe {
+            sys::qsfi_moe_execute_nvfp4(self.raw.as_ptr(), plan.raw.as_ptr(), desc)
         })
     }
 }
@@ -1031,7 +1215,7 @@ impl Context {
 impl Drop for Context {
     fn drop(&mut self) {
         unsafe {
-            ffi::context_destroy(self.raw.as_ptr());
+            sys::qsfi_context_destroy(self.raw.as_ptr());
         }
     }
 }
@@ -1083,8 +1267,8 @@ impl Drop for Plan {
     fn drop(&mut self) {
         unsafe {
             match self.raw {
-                PlanRaw::Decode(raw) => ffi::batch_decode_plan_destroy(raw.as_ptr()),
-                PlanRaw::Prefill(raw) => ffi::batch_prefill_plan_destroy(raw.as_ptr()),
+                PlanRaw::Decode(raw) => sys::qsfi_batch_decode_plan_destroy(raw.as_ptr()),
+                PlanRaw::Prefill(raw) => sys::qsfi_batch_prefill_plan_destroy(raw.as_ptr()),
             }
         }
     }
@@ -1105,7 +1289,7 @@ impl MoePlan {
 impl Drop for MoePlan {
     fn drop(&mut self) {
         unsafe {
-            ffi::moe_plan_destroy(self.raw.as_ptr());
+            sys::qsfi_moe_plan_destroy(self.raw.as_ptr());
         }
     }
 }
@@ -1252,6 +1436,17 @@ mod tests {
             validate_tensor(&bad_stride, DTYPE_F16),
             Err(Status::InvalidArgument)
         );
+
+        let huge_extent = tensor3(device_ptr(1), DTYPE_F16, [i64::MAX, 2, 2], [2, 1, 1]);
+        assert_eq!(
+            validate_tensor(&huge_extent, DTYPE_F16),
+            Err(Status::InvalidArgument)
+        );
+    }
+
+    #[test]
+    fn unknown_raw_status_maps_to_internal_error() {
+        assert_eq!(result_from_raw(StatusRaw::MAX), Err(Status::InternalError));
     }
 
     #[test]
@@ -1321,6 +1516,10 @@ mod tests {
                 total_tokens: 2
             }
         );
+        let host_plan = PagedKvPlanHost::new(&attention, &[0, 0, 2], &[3, 4], &[0, 4]).unwrap();
+        assert_eq!(host_plan.shape(), shape);
+        assert_eq!(host_plan.as_raw().batch_size, 2);
+        assert_eq!(host_plan.as_raw().num_indices, 2);
 
         assert_eq!(
             validate_paged_kv_plan_slices(&attention, &[1, 2], &[3], &[4]),
@@ -1427,6 +1626,10 @@ mod tests {
                 total_tokens: 4
             }
         );
+        let qo_host = QoPlanHost::new(&[0, 3, 4], 4).unwrap();
+        assert_eq!(qo_host.shape(), shape);
+        assert_eq!(qo_host.as_raw().batch_size, 2);
+        assert_eq!(qo_host.as_raw().total_tokens, 4);
         assert_eq!(
             validate_qo_plan_slices(&[], 0),
             Err(Status::InvalidArgument)
@@ -1566,6 +1769,76 @@ mod tests {
         assert_eq!(
             validate_prefill_execute_desc(&attention, shape, &prefill),
             Err(Status::Unsupported)
+        );
+    }
+
+    #[test]
+    fn append_desc_validation_checks_kv_and_index_presence() {
+        let attention = attention(KV_LAYOUT_NHD);
+        let shape = PlanShape {
+            batch_size: 2,
+            num_indices: 3,
+            total_tokens: 5,
+        };
+        let decode_kv = tensor3(device_ptr(70), DTYPE_F16, [2, 2, 64], [128, 64, 1]);
+        let prefill_kv = tensor3(device_ptr(71), DTYPE_F16, [5, 2, 64], [128, 64, 1]);
+        let decode = AppendDecode {
+            k: decode_kv,
+            v: decode_kv,
+            kv_cache: kv_cache(KV_LAYOUT_NHD),
+            page_table: exec_table(shape),
+        };
+        assert_eq!(validate_append_decode_desc(&attention, &decode), Ok(()));
+
+        let mut bad_decode_shape = decode;
+        bad_decode_shape.k.shape[0] = 1;
+        assert_eq!(
+            validate_append_decode_desc(&attention, &bad_decode_shape),
+            Err(Status::InvalidArgument)
+        );
+
+        let mut bad_decode_stride = decode;
+        bad_decode_stride.k.stride[0] = 256;
+        bad_decode_stride.v.stride[0] = 256;
+        assert_eq!(
+            validate_append_decode_desc(&attention, &bad_decode_stride),
+            Err(Status::Unsupported)
+        );
+
+        let prefill = AppendPrefill {
+            k: prefill_kv,
+            v: prefill_kv,
+            batch_indices: device_ptr(72),
+            positions: device_ptr(73),
+            kv_cache: kv_cache(KV_LAYOUT_NHD),
+            page_table: exec_table(shape),
+            num_tokens: 5,
+        };
+        assert_eq!(validate_append_prefill_desc(&attention, &prefill), Ok(()));
+
+        let mut missing_positions = prefill;
+        missing_positions.positions = ptr::null_mut();
+        assert_eq!(
+            validate_append_prefill_desc(&attention, &missing_positions),
+            Err(Status::InvalidArgument)
+        );
+
+        let zero_tokens = AppendPrefill {
+            num_tokens: 0,
+            batch_indices: ptr::null_mut(),
+            positions: ptr::null_mut(),
+            ..prefill
+        };
+        assert_eq!(
+            validate_append_prefill_desc(&attention, &zero_tokens),
+            Ok(())
+        );
+
+        let mut bad_prefill_tokens = prefill;
+        bad_prefill_tokens.num_tokens = 4;
+        assert_eq!(
+            validate_append_prefill_desc(&attention, &bad_prefill_tokens),
+            Err(Status::InvalidArgument)
         );
     }
 

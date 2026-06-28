@@ -1,4 +1,5 @@
 #include "qscb.h"
+#include "qsfi_native_common.h"
 
 #include <cublasLt.h>
 #include <cuda_bf16.h>
@@ -77,16 +78,6 @@ const char* cublas_status_name(cublasStatus_t status)
     }
 }
 
-void clear_qscb_error(qsfi_error_info* err)
-{
-    if (err == nullptr)
-        return;
-    err->status = QSFI_STATUS_OK;
-    err->source = QSFI_ERROR_SOURCE_NONE;
-    err->native_code = 0;
-    err->message[0] = '\0';
-}
-
 qsfi_status set_qscb_errorv(
     qscb_context* ctx,
     qsfi_status status,
@@ -162,11 +153,6 @@ qsfi_status set_qscb_cublaslt_error(qscb_context* ctx, cublasStatus_t status, co
     );
 }
 
-float qscb_default_one(float value)
-{
-    return value == 0.0f ? 1.0f : value;
-}
-
 cudaDataType_t output_data_type(qsfi_dtype dtype)
 {
     return dtype == QSFI_DTYPE_F32 ? CUDA_R_32F : CUDA_R_16BF;
@@ -182,6 +168,15 @@ bool tensor2_is_row_major(const qsfi_tensor2& tensor)
     return tensor.stride[1] == 1 && tensor.stride[0] >= tensor.shape[1];
 }
 
+struct qscb_error_reporter {
+    qscb_context* ctx;
+
+    template <typename... Args> qsfi_status invalid_arg(const char* fmt, Args... args) const
+    {
+        return set_qscb_invalid_arg(ctx, fmt, args...);
+    }
+};
+
 template <typename Tensor>
 qsfi_status qscb_validate_tensor(
     qscb_context* ctx,
@@ -191,22 +186,13 @@ qsfi_status qscb_validate_tensor(
     uint32_t expected_rank
 )
 {
-    if (tensor.data == nullptr) {
-        return set_qscb_invalid_arg(ctx, "%s.data must not be null", name);
-    }
-    if (tensor.dtype != dtype) {
-        return set_qscb_invalid_arg(ctx, "%s dtype does not match expected dtype", name);
-    }
-    constexpr uint32_t rank = sizeof(tensor.shape) / sizeof(tensor.shape[0]);
-    if (rank != expected_rank) {
-        return set_qscb_invalid_arg(ctx, "%s rank mismatch", name);
-    }
-    for (uint32_t i = 0; i < rank; ++i) {
-        if (tensor.shape[i] <= 0 || tensor.stride[i] <= 0) {
-            return set_qscb_invalid_arg(ctx, "%s shape/stride entries must be positive", name);
-        }
-    }
-    return QSFI_STATUS_OK;
+    return qsfi_validate_native_tensor(
+        qscb_error_reporter { ctx },
+        tensor,
+        name,
+        dtype,
+        expected_rank
+    );
 }
 
 qsfi_status validate_shape(
@@ -373,7 +359,7 @@ qsfi_status run_gemm(qscb_context* ctx, const qscb_bf16_gemm_desc* desc)
         );
     }
 
-    const float alpha = qscb_default_one(desc->alpha);
+    const float alpha = qsfi_default_one(desc->alpha);
     const float beta = desc->beta;
     const void* c = beta == 0.0f ? nullptr : desc->out.data;
     status = cublasLtMatmul(
@@ -415,7 +401,7 @@ qsfi_status qscb_context_create(const qscb_context_desc* desc, qscb_context** ou
     ctx->lt = nullptr;
     ctx->device_ordinal = desc->device_ordinal;
     ctx->stream = static_cast<cudaStream_t>(desc->stream);
-    clear_qscb_error(&ctx->last_error);
+    qsfi_clear_error_info(&ctx->last_error);
 
     cudaError_t err = cudaSuccess;
     if (ctx->device_ordinal >= 0) {
@@ -465,14 +451,14 @@ qsfi_status qscb_context_get_last_error(const qscb_context* ctx, qsfi_error_info
 void qscb_context_clear_last_error(qscb_context* ctx)
 {
     if (ctx != nullptr)
-        clear_qscb_error(&ctx->last_error);
+        qsfi_clear_error_info(&ctx->last_error);
 }
 
 qsfi_status qscb_gemm_bf16(qscb_context* ctx, const qscb_bf16_gemm_desc* desc)
 {
     if (ctx == nullptr)
         return QSFI_STATUS_INVALID_ARGUMENT;
-    clear_qscb_error(&ctx->last_error);
+    qsfi_clear_error_info(&ctx->last_error);
 
     qsfi_status status = activate_qscb_context(ctx);
     if (status != QSFI_STATUS_OK)

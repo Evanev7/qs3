@@ -1,0 +1,360 @@
+use qs3::{ModelRunner, QwenConfig, QwenRequest, QwenResult, QwenWeights, Status};
+
+use std::ffi::{CStr, c_char};
+
+const CUDA_SUCCESS: i32 = 0;
+const RANDOM_MODEL_SEED: u64 = 0x5153_3300_d15e_a5e5;
+
+unsafe extern "C" {
+    fn cudaGetDeviceCount(count: *mut i32) -> i32;
+    fn cudaGetErrorString(error: i32) -> *const c_char;
+    fn cudaSetDevice(device: i32) -> i32;
+    fn cudaDeviceSynchronize() -> i32;
+}
+
+fn cuda_error_string(err: i32) -> String {
+    if err == CUDA_SUCCESS {
+        return "cudaSuccess".to_owned();
+    }
+    let ptr = unsafe { cudaGetErrorString(err) };
+    if ptr.is_null() {
+        return format!("CUDA error {err}");
+    }
+    unsafe { CStr::from_ptr(ptr) }
+        .to_string_lossy()
+        .into_owned()
+}
+
+fn assert_cuda(err: i32, what: &str) {
+    assert_eq!(
+        err,
+        CUDA_SUCCESS,
+        "{what}: {} ({err})",
+        cuda_error_string(err)
+    );
+}
+
+fn cuda_device_available() -> bool {
+    let mut device_count = 0;
+    let err = unsafe { cudaGetDeviceCount(&mut device_count) };
+    if err != CUDA_SUCCESS || device_count == 0 {
+        eprintln!(
+            "SKIP: no CUDA device available: {} ({err})",
+            cuda_error_string(err)
+        );
+        return false;
+    }
+    assert_cuda(unsafe { cudaSetDevice(0) }, "set CUDA test device");
+    true
+}
+
+fn run_random_model(
+    config: QwenConfig,
+    request_id: u64,
+    tokens: &[i32],
+    max_new_tokens: u32,
+) -> QwenResult {
+    let mut runner = ModelRunner::random_bf16(config, RANDOM_MODEL_SEED).unwrap();
+    runner
+        .run(QwenRequest {
+            request_id,
+            tokens,
+            max_new_tokens,
+        })
+        .unwrap()
+}
+
+#[test]
+fn randomized_dense_model_runs_prefill_and_two_decodes() {
+    if !cuda_device_available() {
+        return;
+    }
+
+    let config = QwenConfig::tiny_random_test(0);
+    let mut runner = ModelRunner::random_bf16(config, RANDOM_MODEL_SEED).unwrap();
+
+    assert_eq!(
+        runner
+            .run(QwenRequest {
+                request_id: 11,
+                tokens: &[-1],
+                max_new_tokens: 0,
+            })
+            .unwrap_err(),
+        Status::InvalidArgument
+    );
+    assert_eq!(
+        runner
+            .run(QwenRequest {
+                request_id: 11,
+                tokens: &[config.vocab_size as i32],
+                max_new_tokens: 0,
+            })
+            .unwrap_err(),
+        Status::InvalidArgument
+    );
+
+    let result = runner
+        .run(QwenRequest {
+            request_id: 11,
+            tokens: &[1, 7, 13],
+            max_new_tokens: 2,
+        })
+        .unwrap();
+    assert_eq!(result.generated_tokens.len(), 2);
+    assert_eq!(result.live_tokens.len(), 5);
+    assert_eq!(&result.live_tokens[..3], &[1, 7, 13]);
+    assert_eq!(result.logits_rows, 1);
+    assert_eq!(result.logits_vocab_size, config.vocab_size);
+    for token in &result.generated_tokens {
+        assert!(*token >= 0 && *token < config.vocab_size as i32);
+    }
+
+    let live = result.live_tokens.clone();
+    let continued = runner
+        .run(QwenRequest {
+            request_id: 11,
+            tokens: &live,
+            max_new_tokens: 1,
+        })
+        .unwrap();
+    assert_eq!(continued.generated_tokens.len(), 1);
+    assert_eq!(continued.live_tokens.len(), 6);
+    assert_eq!(&continued.live_tokens[..live.len()], live.as_slice());
+
+    assert_cuda(
+        unsafe { cudaDeviceSynchronize() },
+        "sync randomized model test",
+    );
+}
+
+#[test]
+fn randomized_dense_model_is_repeatable_for_same_seed_and_request() {
+    if !cuda_device_available() {
+        return;
+    }
+
+    let config = QwenConfig::tiny_random_test(0);
+    let first = run_random_model(config, 21, &[3, 5, 8, 13], 3);
+    let second = run_random_model(config, 21, &[3, 5, 8, 13], 3);
+
+    assert_eq!(first, second);
+    assert_eq!(first.generated_tokens.len(), 3);
+    assert_eq!(first.live_tokens.len(), 7);
+    assert_eq!(&first.live_tokens[..4], &[3, 5, 8, 13]);
+    assert_eq!(first.logits_rows, 1);
+    assert_eq!(first.logits_vocab_size, config.vocab_size);
+
+    assert_cuda(
+        unsafe { cudaDeviceSynchronize() },
+        "sync repeatable randomized model test",
+    );
+}
+
+#[test]
+fn prompt_rewrite_behind_live_tail_rebuilds_like_fresh_runner() {
+    if !cuda_device_available() {
+        return;
+    }
+
+    let config = QwenConfig::tiny_random_test(0);
+    let mut runner = ModelRunner::random_bf16(config, RANDOM_MODEL_SEED).unwrap();
+    let original = runner
+        .run(QwenRequest {
+            request_id: 31,
+            tokens: &[2, 4, 6, 8],
+            max_new_tokens: 2,
+        })
+        .unwrap();
+    assert_eq!(original.live_tokens.len(), 6);
+
+    let rewritten_prompt = [2, 4, 9, 8];
+    let rebuilt = runner
+        .run(QwenRequest {
+            request_id: 31,
+            tokens: &rewritten_prompt,
+            max_new_tokens: 2,
+        })
+        .unwrap();
+    let fresh = run_random_model(config, 31, &rewritten_prompt, 2);
+
+    assert_eq!(rebuilt.generated_tokens, fresh.generated_tokens);
+    assert_eq!(rebuilt.live_tokens, fresh.live_tokens);
+    assert_eq!(rebuilt.logits_rows, fresh.logits_rows);
+    assert_eq!(rebuilt.logits_vocab_size, fresh.logits_vocab_size);
+    assert_eq!(
+        &rebuilt.live_tokens[..rewritten_prompt.len()],
+        &rewritten_prompt
+    );
+
+    assert_cuda(
+        unsafe { cudaDeviceSynchronize() },
+        "sync prompt rewrite rebuild randomized model test",
+    );
+}
+
+#[test]
+fn failed_prompt_rewrite_keeps_previous_live_state() {
+    if !cuda_device_available() {
+        return;
+    }
+
+    let config = QwenConfig::tiny_random_test(0);
+    let mut runner = ModelRunner::random_bf16(config, RANDOM_MODEL_SEED).unwrap();
+    let original = runner
+        .run(QwenRequest {
+            request_id: 37,
+            tokens: &[1, 2, 3],
+            max_new_tokens: 1,
+        })
+        .unwrap();
+    let original_live = original.live_tokens;
+
+    assert_eq!(
+        runner
+            .run(QwenRequest {
+                request_id: 37,
+                tokens: &[1, config.vocab_size as i32, 3],
+                max_new_tokens: 1,
+            })
+            .unwrap_err(),
+        Status::InvalidArgument
+    );
+    assert_eq!(runner.live_tokens(), original_live.as_slice());
+
+    let continued = runner
+        .run(QwenRequest {
+            request_id: 37,
+            tokens: &original_live,
+            max_new_tokens: 1,
+        })
+        .unwrap();
+    assert_eq!(
+        &continued.live_tokens[..original_live.len()],
+        original_live.as_slice()
+    );
+    assert_eq!(continued.generated_tokens.len(), 1);
+
+    assert_cuda(
+        unsafe { cudaDeviceSynchronize() },
+        "sync failed prompt rewrite transactionality test",
+    );
+}
+
+#[test]
+fn oversized_run_request_is_rejected_without_mutating_live_state() {
+    if !cuda_device_available() {
+        return;
+    }
+
+    let config = QwenConfig::tiny_random_test(0);
+    let mut runner = ModelRunner::random_bf16(config, RANDOM_MODEL_SEED).unwrap();
+    let original = runner
+        .run(QwenRequest {
+            request_id: 41,
+            tokens: &[1, 2, 3],
+            max_new_tokens: 1,
+        })
+        .unwrap();
+    let original_live = original.live_tokens;
+
+    assert_eq!(
+        runner
+            .run(QwenRequest {
+                request_id: 42,
+                tokens: &[4],
+                max_new_tokens: u32::MAX,
+            })
+            .unwrap_err(),
+        Status::InvalidArgument
+    );
+    assert_eq!(runner.live_tokens(), original_live.as_slice());
+
+    let too_long_prompt = [5; 15];
+    assert_eq!(
+        runner
+            .run(QwenRequest {
+                request_id: 43,
+                tokens: &too_long_prompt,
+                max_new_tokens: 2,
+            })
+            .unwrap_err(),
+        Status::InvalidArgument
+    );
+    assert_eq!(runner.live_tokens(), original_live.as_slice());
+
+    assert_cuda(
+        unsafe { cudaDeviceSynchronize() },
+        "sync oversized run rejection randomized model test",
+    );
+}
+
+#[test]
+fn qwen_config_rejects_unsupported_dense_runner_shapes() {
+    let mut config = QwenConfig::tiny_random_test(-1);
+    config.hidden_size = 96;
+    assert_eq!(config.validate(), Err(Status::InvalidArgument));
+
+    let mut config = QwenConfig::tiny_random_test(-1);
+    config.max_batch_size = 2;
+    assert_eq!(config.validate(), Err(Status::Unsupported));
+
+    let mut config = QwenConfig::tiny_random_test(-1);
+    config.head_dim = 80;
+    config.hidden_size = config.num_q_heads * config.head_dim;
+    assert_eq!(config.validate(), Err(Status::Unsupported));
+
+    for head_dim in [128, 256, 512] {
+        let mut config = QwenConfig::tiny_random_test(-1);
+        config.head_dim = head_dim;
+        config.hidden_size = config.num_q_heads * config.head_dim;
+        assert_eq!(config.validate(), Err(Status::Unsupported));
+    }
+
+    let mut config = QwenConfig::tiny_random_test(-1);
+    config.num_q_heads = 4;
+    config.num_kv_heads = 2;
+    config.hidden_size = config.num_q_heads * config.head_dim;
+    assert_eq!(config.validate(), Err(Status::Unsupported));
+
+    let mut config = QwenConfig::tiny_random_test(-1);
+    config.rope_theta = 0.0;
+    assert_eq!(config.validate(), Err(Status::InvalidArgument));
+
+    let mut config = QwenConfig::tiny_random_test(-1);
+    config.rope_scale = 0.0;
+    assert_eq!(config.validate(), Err(Status::InvalidArgument));
+
+    let mut config = QwenConfig::tiny_random_test(-1);
+    config.logits_soft_cap = -1.0;
+    assert_eq!(config.validate(), Err(Status::InvalidArgument));
+
+    let mut config = QwenConfig::tiny_random_test(-1);
+    config.logits_soft_cap = f32::INFINITY;
+    assert_eq!(config.validate(), Err(Status::InvalidArgument));
+}
+
+#[test]
+fn qwen_weights_are_bound_to_device_and_stream_config() {
+    if !cuda_device_available() {
+        return;
+    }
+
+    let config = QwenConfig::tiny_random_test(0);
+    let weights = QwenWeights::random_bf16(&config, RANDOM_MODEL_SEED).unwrap();
+
+    let mut mismatched_device = config;
+    mismatched_device.device_ordinal = 1;
+    assert_eq!(
+        ModelRunner::new(mismatched_device, weights).err(),
+        Some(Status::InvalidArgument)
+    );
+
+    let weights = QwenWeights::random_bf16(&config, RANDOM_MODEL_SEED).unwrap();
+    let mut mismatched_stream = config;
+    mismatched_stream.stream = 1_usize as *mut _;
+    assert_eq!(
+        ModelRunner::new(mismatched_stream, weights).err(),
+        Some(Status::InvalidArgument)
+    );
+}

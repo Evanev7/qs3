@@ -18,6 +18,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <new>
 
 enum qsfi_plan_kind {
@@ -100,15 +101,8 @@ void destroy_plan(qsfi_plan* plan)
     plan->host_int_workspace = nullptr;
 }
 
-void destroy_decode_plan(qsfi_batch_decode_plan* plan)
-{
-    if (plan == nullptr)
-        return;
-    destroy_plan(&plan->impl);
-    delete plan;
-}
-
-void destroy_prefill_plan(qsfi_batch_prefill_plan* plan)
+template <typename Plan>
+void destroy_batch_plan(Plan* plan)
 {
     if (plan == nullptr)
         return;
@@ -187,8 +181,18 @@ qsfi_status validate_attention(qsfi_context* ctx, const qsfi_attention_desc* att
         || attention->head_dim_vo == 0 || attention->page_size == 0) {
         return set_invalid_arg(ctx, "attention dimensions must be non-zero");
     }
+    if (attention->page_size > static_cast<uint32_t>(std::numeric_limits<int32_t>::max())) {
+        return set_unsupported(ctx, "attention page_size exceeds int32 range");
+    }
     if (attention->num_qo_heads % attention->num_kv_heads != 0) {
         return set_invalid_arg(ctx, "num_qo_heads must be divisible by num_kv_heads");
+    }
+    const uint32_t group_size = attention->num_qo_heads / attention->num_kv_heads;
+    if (attention->head_dim_qk != 64 || group_size != 1) {
+        return set_unsupported(
+            ctx,
+            "compiled attention dispatch supports only head_dim=64 and qo/kv group size=1"
+        );
     }
     if (attention->head_dim_qk != attention->head_dim_vo) {
         return set_unsupported(ctx, "different qk/vo head dimensions are not wired yet");
@@ -225,6 +229,9 @@ qsfi_status validate_paged_kv_plan(
     }
     if (page_table->batch_size == 0) {
         return set_invalid_arg(ctx, "page_table batch_size must be non-zero");
+    }
+    if (page_table->num_indices > static_cast<uint32_t>(std::numeric_limits<int32_t>::max())) {
+        return set_unsupported(ctx, "page_table num_indices exceeds int32 range");
     }
     qsfi_status status = require_host_readable_i32(ctx, page_table->indptr, "page_table.indptr");
     if (status != QSFI_STATUS_OK)
@@ -319,6 +326,9 @@ qsfi_status validate_kv_cache(
         );
     }
     const int64_t num_pages = kv_cache.k.shape[0];
+    if (num_pages > static_cast<int64_t>(std::numeric_limits<int32_t>::max())) {
+        return set_unsupported(ctx, "kv_cache page count exceeds int32 page-id range");
+    }
     if (attention.kv_layout == QSFI_KV_LAYOUT_NHD) {
         if (kv_cache.k.shape[1] != static_cast<int64_t>(attention.page_size)
             || kv_cache.k.shape[2] != static_cast<int64_t>(attention.num_kv_heads)
@@ -338,25 +348,182 @@ qsfi_status validate_kv_cache(
             );
         }
     }
-    // TODO(qsfi): require num_pages to fit FlashInfer's uint32 page arithmetic and check
-    // execution page indices against it on paths that have both table and cache descriptors.
     if (out_num_pages != nullptr)
         *out_num_pages = static_cast<uint32_t>(num_pages);
     return QSFI_STATUS_OK;
 }
 
-qsfi_status
-validate_page_table_exec(qsfi_context* ctx, const qsfi_plan* plan, const qsfi_paged_kv_table& table)
+#if QSFI_ENABLE_CHECKED_VALIDATION
+__global__ void validate_page_table_exec_kernel(
+    const int32_t* indptr,
+    const int32_t* indices,
+    const int32_t* last_page_len,
+    uint32_t batch_size,
+    uint32_t num_indices,
+    uint32_t page_size,
+    uint32_t num_pages,
+    int* error
+)
+{
+    const uint32_t linear = blockIdx.x * blockDim.x + threadIdx.x;
+    if (linear == 0) {
+        if (indptr[0] != 0 || indptr[batch_size] != static_cast<int32_t>(num_indices)) {
+            atomicExch(error, 1);
+        }
+    }
+    if (linear < batch_size) {
+        const int32_t begin = indptr[linear];
+        const int32_t end = indptr[linear + 1];
+        const int32_t pages = end - begin;
+        const int32_t last_len = last_page_len[linear];
+        if (begin < 0 || end < begin || end > static_cast<int32_t>(num_indices)) {
+            atomicExch(error, 1);
+        } else if (pages == 0) {
+            if (last_len != 0)
+                atomicExch(error, 1);
+        } else if (last_len <= 0 || last_len > static_cast<int32_t>(page_size)) {
+            atomicExch(error, 1);
+        }
+    }
+    if (linear < num_indices) {
+        const int32_t page = indices[linear];
+        if (page < 0 || page >= static_cast<int32_t>(num_pages)) {
+            atomicExch(error, 1);
+        }
+    }
+}
+
+__global__ void validate_append_prefill_positions_kernel(
+    const int32_t* batch_indices,
+    const int32_t* positions,
+    const int32_t* indptr,
+    const int32_t* last_page_len,
+    uint32_t batch_size,
+    uint32_t num_tokens,
+    uint32_t page_size,
+    int* error
+)
+{
+    const uint32_t token = blockIdx.x * blockDim.x + threadIdx.x;
+    if (token >= num_tokens)
+        return;
+    const int32_t batch = batch_indices[token];
+    const int32_t position = positions[token];
+    if (batch < 0 || batch >= static_cast<int32_t>(batch_size) || position < 0) {
+        atomicExch(error, 1);
+        return;
+    }
+    const int32_t begin = indptr[batch];
+    const int32_t end = indptr[batch + 1];
+    const int32_t pages = end - begin;
+    const int32_t last_len = last_page_len[batch];
+    const int32_t seq_len
+        = pages == 0 ? 0 : (pages - 1) * static_cast<int32_t>(page_size) + last_len;
+    if (position >= seq_len) {
+        atomicExch(error, 1);
+    }
+}
+
+#endif
+
+qsfi_status validate_page_table_exec(
+    qsfi_context* ctx, const qsfi_plan* plan, const qsfi_paged_kv_table& table, uint32_t num_pages
+)
 {
     if (table.indptr == nullptr || table.indices == nullptr || table.last_page_len == nullptr) {
         return set_invalid_arg(ctx, "execution page table device pointers must not be null");
     }
+    if (table.batch_size == 0) {
+        return set_invalid_arg(ctx, "execution page table batch_size must be non-zero");
+    }
+    if (table.num_indices > static_cast<uint32_t>(std::numeric_limits<int32_t>::max())
+        || plan->attention.page_size > static_cast<uint32_t>(std::numeric_limits<int32_t>::max())) {
+        return set_unsupported(ctx, "execution page table dimensions exceed int32 range");
+    }
     if (table.batch_size != plan->batch_size || table.num_indices != plan->num_indices) {
         return set_invalid_arg(ctx, "execution page table shape does not match plan");
     }
-    // TODO(qsfi): decide whether execution must use the same table contents captured at
-    // plan time, or explicitly document which page-table mutations preserve plan validity.
+#if !QSFI_ENABLE_CHECKED_VALIDATION
+    (void)ctx;
+    (void)num_pages;
     return QSFI_STATUS_OK;
+#else
+    qsfi_context_error_reporter errors { ctx };
+    qsfi_checked_validation_flag validation(ctx->stream);
+    qsfi_status status = validation.reset(
+        errors,
+        "cudaMalloc page-table validation flag",
+        "cudaMemsetAsync page-table validation flag"
+    );
+    if (status != QSFI_STATUS_OK)
+        return status;
+    constexpr uint32_t threads = 256;
+    const uint32_t work
+        = table.batch_size + 1 > table.num_indices ? table.batch_size + 1 : table.num_indices;
+    const uint32_t blocks = (work + threads - 1) / threads;
+    validate_page_table_exec_kernel<<<blocks, threads, 0, ctx->stream>>>(
+        static_cast<const int32_t*>(table.indptr),
+        static_cast<const int32_t*>(table.indices),
+        static_cast<const int32_t*>(table.last_page_len),
+        table.batch_size,
+        table.num_indices,
+        plan->attention.page_size,
+        num_pages,
+        validation.device_ptr()
+    );
+    status = validation.check_launch(errors, "launch page-table validation");
+    if (status != QSFI_STATUS_OK)
+        return status;
+    return validation.finish(
+        errors,
+        "copy page-table validation flag",
+        "cudaFree page-table validation flag",
+        "page table indptr/last_page_len/indices are out of range"
+    );
+#endif
+}
+
+qsfi_status validate_append_prefill_positions(
+    qsfi_context* ctx, const qsfi_attention_desc& attention, const qsfi_append_prefill_desc* append
+)
+{
+#if !QSFI_ENABLE_CHECKED_VALIDATION
+    (void)ctx;
+    (void)attention;
+    (void)append;
+    return QSFI_STATUS_OK;
+#else
+    qsfi_context_error_reporter errors { ctx };
+    qsfi_checked_validation_flag validation(ctx->stream);
+    qsfi_status status = validation.reset(
+        errors,
+        "cudaMalloc append-position validation flag",
+        "cudaMemsetAsync append-position validation flag"
+    );
+    if (status != QSFI_STATUS_OK)
+        return status;
+    constexpr uint32_t threads = 256;
+    const uint32_t blocks = (append->num_tokens + threads - 1) / threads;
+    validate_append_prefill_positions_kernel<<<blocks, threads, 0, ctx->stream>>>(
+        static_cast<const int32_t*>(append->batch_indices),
+        static_cast<const int32_t*>(append->positions),
+        static_cast<const int32_t*>(append->page_table.indptr),
+        static_cast<const int32_t*>(append->page_table.last_page_len),
+        append->page_table.batch_size,
+        append->num_tokens,
+        attention.page_size,
+        validation.device_ptr()
+    );
+    status = validation.check_launch(errors, "launch append-position validation");
+    if (status != QSFI_STATUS_OK)
+        return status;
+    return validation.finish(
+        errors,
+        "copy append-position validation flag",
+        "cudaFree append-position validation flag",
+        "append batch_indices/positions are out of range"
+    );
+#endif
 }
 
 template <typename T, flashinfer::PosEncodingMode Pos, bool Sliding, bool Logits>
@@ -512,9 +679,9 @@ cudaError_t decode_execute_impl(
     params.q_stride_h = static_cast<int32_t>(desc->q.stride[1]);
     params.window_left = attention.window_left;
     params.logits_soft_cap = attention.logits_soft_cap;
-    params.sm_scale
-        = default_sm_scale(attention) * default_one(desc->q_scale) * default_one(desc->k_scale);
-    params.rope_rcp_scale = 1.0f / default_one(attention.rope_scale);
+    params.sm_scale = default_sm_scale(attention) * qsfi_default_one(desc->q_scale)
+        * qsfi_default_one(desc->k_scale);
+    params.rope_rcp_scale = 1.0f / qsfi_default_one(attention.rope_scale);
     params.rope_rcp_theta = 1.0f / (attention.rope_theta == 0.0f ? 10000.0f : attention.rope_theta);
     params.request_indices = flashinfer::GetPtrFromBaseOffset<int32_t>(
         plan->int_workspace,
@@ -678,9 +845,9 @@ cudaError_t prefill_execute_impl(
     params.q_stride_h = static_cast<int32_t>(desc->q.stride[1]);
     params.window_left = attention.window_left;
     params.logits_soft_cap = attention.logits_soft_cap;
-    params.sm_scale
-        = default_sm_scale(attention) * default_one(desc->q_scale) * default_one(desc->k_scale);
-    params.rope_rcp_scale = 1.0f / default_one(attention.rope_scale);
+    params.sm_scale = default_sm_scale(attention) * qsfi_default_one(desc->q_scale)
+        * qsfi_default_one(desc->k_scale);
+    params.rope_rcp_scale = 1.0f / qsfi_default_one(attention.rope_scale);
     params.rope_rcp_theta = 1.0f / (attention.rope_theta == 0.0f ? 10000.0f : attention.rope_theta);
     params.request_indices = flashinfer::GetPtrFromBaseOffset<int32_t>(
         plan->int_workspace,
@@ -909,13 +1076,14 @@ qsfi_status validate_decode_execute(
             return set_invalid_arg(ctx, "decode o shape must match q shape");
         }
     }
-    if (default_one(desc->v_scale) != 1.0f) {
+    if (qsfi_default_one(desc->v_scale) != 1.0f) {
         return set_unsupported(ctx, "v_scale other than 1 is not wired yet");
     }
-    status = validate_kv_cache(ctx, attention, desc->kv_cache, nullptr);
+    uint32_t num_pages = 0;
+    status = validate_kv_cache(ctx, attention, desc->kv_cache, &num_pages);
     if (status != QSFI_STATUS_OK)
         return status;
-    return validate_page_table_exec(ctx, plan, desc->page_table);
+    return validate_page_table_exec(ctx, plan, desc->page_table, num_pages);
 }
 
 qsfi_status validate_prefill_execute(
@@ -945,13 +1113,14 @@ qsfi_status validate_prefill_execute(
             return set_invalid_arg(ctx, "prefill o shape must match q shape");
         }
     }
-    if (default_one(desc->v_scale) != 1.0f) {
+    if (qsfi_default_one(desc->v_scale) != 1.0f) {
         return set_unsupported(ctx, "v_scale other than 1 is not wired yet");
     }
-    status = validate_kv_cache(ctx, attention, desc->kv_cache, nullptr);
+    uint32_t num_pages = 0;
+    status = validate_kv_cache(ctx, attention, desc->kv_cache, &num_pages);
     if (status != QSFI_STATUS_OK)
         return status;
-    return validate_page_table_exec(ctx, plan, desc->page_table);
+    return validate_page_table_exec(ctx, plan, desc->page_table, num_pages);
 }
 
 } // namespace
@@ -967,7 +1136,7 @@ qsfi_status qsfi_batch_decode_plan_create(
 {
     if (ctx == nullptr || out == nullptr)
         return QSFI_STATUS_INVALID_ARGUMENT;
-    clear_error(&ctx->last_error);
+    qsfi_clear_error_info(&ctx->last_error);
     *out = nullptr;
     qsfi_status status = activate_context(ctx);
     if (status != QSFI_STATUS_OK)
@@ -999,17 +1168,17 @@ qsfi_status qsfi_batch_decode_plan_create(
     plan->scratch_generation = ctx->scratch_generation;
     status = allocate_plan_workspaces(ctx, plan);
     if (status != QSFI_STATUS_OK) {
-        destroy_decode_plan(handle);
+        destroy_batch_plan(handle);
         return status;
     }
     try {
         cudaError_t err = decode_plan_dispatch(ctx, plan, attention, page_table, &plan->decode);
         if (err != cudaSuccess) {
-            destroy_decode_plan(handle);
+            destroy_batch_plan(handle);
             return set_cuda_error(ctx, err, "flashinfer decode plan");
         }
     } catch (const std::exception& ex) {
-        destroy_decode_plan(handle);
+        destroy_batch_plan(handle);
         return set_flashinfer_error(ctx, "flashinfer decode plan", ex);
     }
     *out = handle;
@@ -1024,7 +1193,7 @@ qsfi_status qsfi_batch_decode_execute(
 {
     if (ctx == nullptr || handle == nullptr)
         return QSFI_STATUS_INVALID_ARGUMENT;
-    clear_error(&ctx->last_error);
+    qsfi_clear_error_info(&ctx->last_error);
     qsfi_status status = activate_context(ctx);
     if (status != QSFI_STATUS_OK)
         return status;
@@ -1061,7 +1230,7 @@ qsfi_status qsfi_batch_prefill_plan_create(
 {
     if (ctx == nullptr || out == nullptr)
         return QSFI_STATUS_INVALID_ARGUMENT;
-    clear_error(&ctx->last_error);
+    qsfi_clear_error_info(&ctx->last_error);
     *out = nullptr;
     qsfi_status status = activate_context(ctx);
     if (status != QSFI_STATUS_OK)
@@ -1100,18 +1269,22 @@ qsfi_status qsfi_batch_prefill_plan_create(
     plan->scratch_generation = ctx->scratch_generation;
     status = allocate_plan_workspaces(ctx, plan);
     if (status != QSFI_STATUS_OK) {
-        destroy_prefill_plan(handle);
+        destroy_batch_plan(handle);
         return status;
     }
     try {
         cudaError_t err
             = prefill_plan_dispatch(ctx, plan, attention, qo, page_table, &plan->prefill);
         if (err != cudaSuccess) {
-            destroy_prefill_plan(handle);
+            destroy_batch_plan(handle);
             return set_cuda_error(ctx, err, "flashinfer prefill plan");
         }
+        if (plan->prefill.cta_tile_q != 16) {
+            destroy_batch_plan(handle);
+            return set_unsupported(ctx, "compiled prefill dispatch supports only cta_tile_q=16");
+        }
     } catch (const std::exception& ex) {
-        destroy_prefill_plan(handle);
+        destroy_batch_plan(handle);
         return set_flashinfer_error(ctx, "flashinfer prefill plan", ex);
     }
     *out = handle;
@@ -1126,7 +1299,7 @@ qsfi_status qsfi_batch_prefill_execute(
 {
     if (ctx == nullptr || handle == nullptr)
         return QSFI_STATUS_INVALID_ARGUMENT;
-    clear_error(&ctx->last_error);
+    qsfi_clear_error_info(&ctx->last_error);
     qsfi_status status = activate_context(ctx);
     if (status != QSFI_STATUS_OK)
         return status;
@@ -1155,12 +1328,12 @@ qsfi_status qsfi_batch_prefill_execute(
 
 void qsfi_batch_decode_plan_destroy(qsfi_batch_decode_plan* plan)
 {
-    destroy_decode_plan(plan);
+    destroy_batch_plan(plan);
 }
 
 void qsfi_batch_prefill_plan_destroy(qsfi_batch_prefill_plan* plan)
 {
-    destroy_prefill_plan(plan);
+    destroy_batch_plan(plan);
 }
 
 qsfi_status qsfi_append_paged_kv_decode(
@@ -1169,7 +1342,7 @@ qsfi_status qsfi_append_paged_kv_decode(
 {
     if (ctx == nullptr)
         return QSFI_STATUS_INVALID_ARGUMENT;
-    clear_error(&ctx->last_error);
+    qsfi_clear_error_info(&ctx->last_error);
     qsfi_status status = activate_context(ctx);
     if (status != QSFI_STATUS_OK)
         return status;
@@ -1205,13 +1378,15 @@ qsfi_status qsfi_append_paged_kv_decode(
             "decode append input must be contiguous [batch, kv_heads, head_dim]"
         );
     }
-    status = validate_kv_cache(ctx, *attention, append->kv_cache, nullptr);
+    uint32_t num_pages = 0;
+    status = validate_kv_cache(ctx, *attention, append->kv_cache, &num_pages);
     if (status != QSFI_STATUS_OK)
         return status;
     qsfi_plan shape_plan {};
+    shape_plan.attention = *attention;
     shape_plan.batch_size = append->page_table.batch_size;
     shape_plan.num_indices = append->page_table.num_indices;
-    status = validate_page_table_exec(ctx, &shape_plan, append->page_table);
+    status = validate_page_table_exec(ctx, &shape_plan, append->page_table, num_pages);
     if (status != QSFI_STATUS_OK)
         return status;
     try {
@@ -1230,7 +1405,7 @@ qsfi_status qsfi_append_paged_kv_prefill(
 {
     if (ctx == nullptr)
         return QSFI_STATUS_INVALID_ARGUMENT;
-    clear_error(&ctx->last_error);
+    qsfi_clear_error_info(&ctx->last_error);
     qsfi_status status = activate_context(ctx);
     if (status != QSFI_STATUS_OK)
         return status;
@@ -1264,13 +1439,18 @@ qsfi_status qsfi_append_paged_kv_prefill(
             return set_invalid_arg(ctx, "prefill append v shape must match k shape");
         }
     }
-    status = validate_kv_cache(ctx, *attention, append->kv_cache, nullptr);
+    uint32_t num_pages = 0;
+    status = validate_kv_cache(ctx, *attention, append->kv_cache, &num_pages);
     if (status != QSFI_STATUS_OK)
         return status;
     qsfi_plan shape_plan {};
+    shape_plan.attention = *attention;
     shape_plan.batch_size = append->page_table.batch_size;
     shape_plan.num_indices = append->page_table.num_indices;
-    status = validate_page_table_exec(ctx, &shape_plan, append->page_table);
+    status = validate_page_table_exec(ctx, &shape_plan, append->page_table, num_pages);
+    if (status != QSFI_STATUS_OK)
+        return status;
+    status = validate_append_prefill_positions(ctx, *attention, append);
     if (status != QSFI_STATUS_OK)
         return status;
     try {

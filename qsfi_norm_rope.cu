@@ -325,7 +325,7 @@ qsfi_status validate_rope_apply(qsfi_context* ctx, const qsfi_rope_apply_desc* d
 template <typename T, typename IdType>
 cudaError_t launch_rope_apply(qsfi_context* ctx, const qsfi_rope_apply_desc* desc)
 {
-    const float rope_scale = default_one(desc->rope_scale);
+    const float rope_scale = qsfi_default_one(desc->rope_scale);
     const float rope_theta = desc->rope_theta == 0.0f ? 10000.0f : desc->rope_theta;
     return flashinfer::BatchQKApplyRotaryPosIds<T, IdType>(
         static_cast<T*>(desc->q.data),
@@ -370,7 +370,7 @@ qsfi_status qsfi_rmsnorm(qsfi_context* ctx, const qsfi_rmsnorm_desc* desc)
 {
     if (ctx == nullptr)
         return QSFI_STATUS_INVALID_ARGUMENT;
-    clear_error(&ctx->last_error);
+    qsfi_clear_error_info(&ctx->last_error);
     if (desc == nullptr)
         return set_invalid_arg(ctx, "rmsnorm desc must not be null");
     qsfi_status status = activate_context(ctx);
@@ -404,7 +404,7 @@ qsfi_status qsfi_fused_add_rmsnorm(qsfi_context* ctx, const qsfi_fused_add_rmsno
 {
     if (ctx == nullptr)
         return QSFI_STATUS_INVALID_ARGUMENT;
-    clear_error(&ctx->last_error);
+    qsfi_clear_error_info(&ctx->last_error);
     if (desc == nullptr)
         return set_invalid_arg(ctx, "fused_add_rmsnorm desc must not be null");
     qsfi_status status = activate_context(ctx);
@@ -430,7 +430,7 @@ qsfi_status qsfi_rope_apply(qsfi_context* ctx, const qsfi_rope_apply_desc* desc)
 {
     if (ctx == nullptr)
         return QSFI_STATUS_INVALID_ARGUMENT;
-    clear_error(&ctx->last_error);
+    qsfi_clear_error_info(&ctx->last_error);
     qsfi_status status = activate_context(ctx);
     if (status != QSFI_STATUS_OK)
         return status;

@@ -2,9 +2,11 @@
 
 pub mod engine;
 pub mod ffi;
+pub mod model;
 mod runtime;
 
 pub use engine::{
     AppendBatch, BatchKind, Commit, CoreState, DType, DecodeBatch, Engine, EngineConfig,
     EngineLayer, EngineTrait, KvLayout, RequestId, Status,
 };
+pub use model::{ModelRunner, QwenConfig, QwenRequest, QwenResult, QwenWeights};

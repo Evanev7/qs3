@@ -36,9 +36,11 @@ typedef struct {
 qsfi_status qscu_silu_and_mul_bf16(const qscu_silu_and_mul_desc* desc, qsfi_cuda_stream stream);
 
 /*
- * BF16 embedding row gather. token_ids may be i32 or u32. When
- * validate_token_ids is non-zero, this helper synchronizes the stream to report
- * out-of-range non-padding ids as QSFI_STATUS_INVALID_ARGUMENT.
+ * BF16 embedding row gather. token_ids may be i32 or u32. In checked native
+ * validation builds, validate_token_ids synchronizes the stream to report
+ * out-of-range non-padding ids as QSFI_STATUS_INVALID_ARGUMENT. Unchecked
+ * release builds still zero invalid rows in-kernel but do not wait for the
+ * validation flag.
  */
 typedef struct {
     qsfi_tensor1 token_ids; /* i32/u32 [num_tokens]. */

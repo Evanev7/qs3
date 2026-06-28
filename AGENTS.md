@@ -7,18 +7,39 @@ gathering.
 run tests with the gitignored test script
 
 ground rules:
-- do not worry about backward compatibility, abi stability or versioning.
-- no cmake; we'll figure out a build system later.
+- do not maintain backward compatibility, abi stability or versioning.
+- if you introduce a replacement api or build target, remove the old entrypoint.
+- take the time to cleanup and remove legacy calls after refactors.
+- no cmake.
 - keep the runtime qwen3.6-specific. validate early, fail loudly, avoid generic
-  runtime compatibility work. take the time to cleanup and tidy after refactors.
+  runtime compatibility work. 
 
 current state:
 - `EngineCore` already owns request ids, sequence lengths, a page allocator,
   page tables, last-page lengths, append positions, and staged batch state.
+- `EngineCore` begin/commit/abort/reset/release paths should stay
+  transactional: build candidate state and live views before installing them.
+  keep allocator invariant checks debug-only.
 - `runtime::EngineInner` already owns per-layer paged K/V caches and reuses
-  FlashInfer prefill/decode plans when the batch/page-table shape permits.
-- the current repo can run FlashInfer attention over externally supplied Q/K/V
-  tensors. it is not yet a runnable model runtime.
+  FlashInfer prefill/decode plans when the batch/page-table metadata permits.
+  plan-cache keys include page ids and last-page lengths, not just CSR shape.
+- the public `ModelRunner` can run a randomized dense BF16 Qwen-shaped model
+  end-to-end: embedding gather, RMSNorm, Q/K/V/O projections, FlashInfer
+  attention, gated SiLU MLP, final norm, LM head logits, and greedy sampling.
+  it owns exact-prefix sync/rebuild for the current single-runner path.
+- the randomized runner is intentionally narrow. current compiled attention
+  support is head dim 64 with no GQA; Rust config/runtime validation should
+  reject unsupported head dims or grouped-query shapes before CUDA setup.
+- normal native objects compile with checked device-content validation disabled
+  (`QSFI_ENABLE_CHECKED_VALIDATION=0`). checked CUDA test objects enable it and
+  cover negative metadata cases. do not add release-mode stream synchronizes for
+  transactionality or validation unless there is a deliberate performance trade.
+- validation before device addressing is part of the contract: Rust descriptors
+  validate shapes/strides/modes, and checked native paths cover attention page
+  ids and append positions, GDN seq/state metadata, embedding ids, and MoE
+  routes/weights.
+- model loading from config+safetensors, real qwen3.6 tensor mapping, tokenizer,
+  CLI, GDN-in-runner, and MoE-in-runner are still future work.
 
 GDN direction:
 - keep qwen3.6-specific GDN prep glue local for now: causal conv, post-conv
@@ -52,15 +73,15 @@ DS4 lessons worth preserving:
   token match an uninterrupted session.
 
 fastest path to actually running the model:
-- target one qwen3.6 shape first, BF16 correctness first, then NVFP4 for the
-  first optimized path
+- the first randomized dense BF16 path exists. keep it correct and narrow while
+  adding real-model features.
 - add model loading for config + safetensors, map fixed Qwen tensor names, upload
   weights to CUDA.
-- add the missing non-attention kernels/wrappers: embedding gather, RMSNorm,
-  QKV/output projections, gated SiLU MLP, final norm, LM head, logits, and a
-  minimal sampler.
-- build a `ModelRunner` above `Engine` that computes layer activations, supplies
-  Q/K/V to the existing attention engine, stores logits, samples next tokens,
+- keep `ModelRunner` as the boundary above `Engine`: it computes activations,
+  supplies Q/K/V to the attention engine, stores logits, samples next tokens,
   and owns exact-prefix sync/rebuild.
+- wire qwen3.6 GDN and MoE into `ModelRunner` only after their state ownership
+  is engine/runner-owned enough to survive abort, rebuild, and release.
+- after BF16 real-model correctness, add the first optimized NVFP4 path.
 - first runnable CLI may accept and print token ids. tokenizer/chat template can
   follow immediately after the model produces tokens.

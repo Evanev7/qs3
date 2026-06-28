@@ -3,14 +3,16 @@ cuda_lib_path := cuda_root + "/lib64:" + cuda_root + "/lib:" + cuda_root + "/lib
 
 fmt:
         rg --files -g '!{3pty}' -tcuda -tc -tcpp | xargs clang-format -style=file -Werror -i
+        cargo fmt
 build: copy-ninja
         ninja -C build
         cargo build --lib
 
 test: build cargo-test cuda-test
 cuda-test: copy-ninja
-        ninja -C build qsfi_test
-        build/qsfi_test
+        ninja -C build tests
+        build/qsfi_test_checked
+        build/qsfi_test_release
 cargo-test: build
         LIBRARY_PATH="{{cuda_lib_path}}:${LIBRARY_PATH:-}" cargo test
 

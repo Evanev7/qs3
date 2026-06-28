@@ -2,6 +2,7 @@
 #define QSFI_INTERNAL_H
 
 #include "qsfi.h"
+#include "qsfi_native_common.h"
 
 #include <cuda_runtime.h>
 
@@ -18,7 +19,6 @@ struct qsfi_context {
     qsfi_error_info last_error;
 };
 
-void clear_error(qsfi_error_info* err);
 qsfi_status set_error(
     qsfi_context* ctx,
     qsfi_status status,
@@ -34,7 +34,20 @@ qsfi_status set_cuda_error(qsfi_context* ctx, cudaError_t err, const char* op);
 qsfi_status set_flashinfer_error(qsfi_context* ctx, const char* op, const std::exception& ex);
 qsfi_status activate_context(qsfi_context* ctx);
 bool valid_dtype(qsfi_dtype dtype);
-float default_one(float value);
+
+struct qsfi_context_error_reporter {
+    qsfi_context* ctx;
+
+    qsfi_status cuda_error(cudaError_t err, const char* op) const
+    {
+        return set_cuda_error(ctx, err, op);
+    }
+
+    template <typename... Args> qsfi_status invalid_arg(const char* fmt, Args... args) const
+    {
+        return set_invalid_arg(ctx, fmt, args...);
+    }
+};
 
 template <typename Tensor>
 qsfi_status validate_tensor(
@@ -45,22 +58,13 @@ qsfi_status validate_tensor(
     uint32_t expected_rank
 )
 {
-    if (tensor.data == nullptr) {
-        return set_invalid_arg(ctx, "%s.data must not be null", name);
-    }
-    if (tensor.dtype != dtype) {
-        return set_invalid_arg(ctx, "%s dtype does not match expected dtype", name);
-    }
-    constexpr uint32_t rank = sizeof(tensor.shape) / sizeof(tensor.shape[0]);
-    if (rank != expected_rank) {
-        return set_invalid_arg(ctx, "%s rank mismatch", name);
-    }
-    for (uint32_t i = 0; i < rank; ++i) {
-        if (tensor.shape[i] <= 0 || tensor.stride[i] <= 0) {
-            return set_invalid_arg(ctx, "%s shape/stride entries must be positive", name);
-        }
-    }
-    return QSFI_STATUS_OK;
+    return qsfi_validate_native_tensor(
+        qsfi_context_error_reporter { ctx },
+        tensor,
+        name,
+        dtype,
+        expected_rank
+    );
 }
 
 #endif

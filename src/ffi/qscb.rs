@@ -34,6 +34,7 @@ impl Context {
 
     pub(crate) unsafe fn gemm_bf16(&mut self, desc: &Bf16GemmDesc) -> Result<(), Status> {
         ffi::result_from_raw(unsafe { sys::qscb_gemm_bf16(self.raw.as_ptr(), desc) })
+            .inspect_err(|_| _ = self.last_error())
     }
 
     pub(crate) fn last_error(&self) -> Result<ffi::ErrorInfo, Status> {
@@ -42,12 +43,6 @@ impl Context {
             sys::qscb_context_get_last_error(self.raw.as_ptr(), out.as_mut_ptr())
         })?;
         Ok(unsafe { out.assume_init() })
-    }
-
-    pub(crate) fn clear_last_error(&mut self) {
-        unsafe {
-            sys::qscb_context_clear_last_error(self.raw.as_ptr());
-        }
     }
 }
 

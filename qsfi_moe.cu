@@ -8,6 +8,7 @@
 #include <flashinfer/gemm/group_gemm.cuh>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <limits>
 #include <new>
@@ -84,8 +85,10 @@ qsfi_status compute_workspace_layout(
     size_t gate_up_elems = 0;
     size_t act_elems = 0;
     size_t down_elems = 0;
+    size_t twice_intermediate = 0;
     if (mul_overflows_size(max_routes, desc.hidden_size, &hidden_elems)
-        || mul_overflows_size(max_routes, 2u * desc.intermediate_size, &gate_up_elems)
+        || mul_overflows_size(desc.intermediate_size, 2, &twice_intermediate)
+        || mul_overflows_size(max_routes, twice_intermediate, &gate_up_elems)
         || mul_overflows_size(max_routes, desc.intermediate_size, &act_elems)
         || mul_overflows_size(max_routes, desc.hidden_size, &down_elems)) {
         return set_invalid_arg(ctx, "MoE workspace element count overflows size_t");
@@ -147,7 +150,8 @@ qsfi_status validate_plan_desc(qsfi_context* ctx, const qsfi_moe_plan_desc* desc
         || desc->num_experts == 0 || desc->top_k == 0 || desc->local_num_experts == 0) {
         return set_invalid_arg(ctx, "MoE plan dimensions must be non-zero");
     }
-    if (desc->local_expert_offset + desc->local_num_experts > desc->num_experts) {
+    if (static_cast<uint64_t>(desc->local_expert_offset) + desc->local_num_experts
+        > desc->num_experts) {
         return set_invalid_arg(ctx, "MoE local expert range exceeds num_experts");
     }
     if (desc->route_mode != QSFI_MOE_ROUTE_PRECOMPUTED_TOPK) {
@@ -193,6 +197,32 @@ qsfi_status validate_plan_desc(qsfi_context* ctx, const qsfi_moe_plan_desc* desc
         return QSFI_STATUS_OK;
     }
     return set_unsupported(ctx, "unsupported MoE backend");
+}
+
+qsfi_status
+validate_moe_launch_limits(qsfi_context* ctx, const qsfi_moe_plan_desc& p, uint32_t num_tokens)
+{
+    const uint64_t max_routes = static_cast<uint64_t>(num_tokens) * p.top_k;
+    if (max_routes > static_cast<uint64_t>(std::numeric_limits<int32_t>::max())) {
+        return set_unsupported(ctx, "MoE route count exceeds int32 grouped-GEMM limits");
+    }
+    if (p.local_num_experts > static_cast<uint32_t>(std::numeric_limits<int32_t>::max())
+        || p.hidden_size > static_cast<uint32_t>(std::numeric_limits<int32_t>::max())
+        || p.intermediate_size > static_cast<uint32_t>(std::numeric_limits<int32_t>::max())
+        || 2ull * p.intermediate_size
+            > static_cast<uint64_t>(std::numeric_limits<int32_t>::max())) {
+        return set_unsupported(ctx, "MoE dimensions exceed int32 grouped-GEMM limits");
+    }
+
+    const auto grid_ok = [](uint64_t work) {
+        return (work + kThreads - 1) / kThreads <= std::numeric_limits<uint32_t>::max();
+    };
+    if (!grid_ok(max_routes) || !grid_ok(max_routes * static_cast<uint64_t>(p.hidden_size))
+        || !grid_ok(max_routes * static_cast<uint64_t>(p.intermediate_size))
+        || !grid_ok(static_cast<uint64_t>(num_tokens) * p.hidden_size)) {
+        return set_unsupported(ctx, "MoE launch grid is too large");
+    }
+    return QSFI_STATUS_OK;
 }
 
 qsfi_status validate_bf16_execute(
@@ -271,7 +301,27 @@ qsfi_status validate_bf16_execute(
     if (static_cast<size_t>(desc->workspace.shape[0]) < layout->bytes) {
         return set_invalid_arg(ctx, "MoE workspace is too small");
     }
-    return QSFI_STATUS_OK;
+    return validate_moe_launch_limits(ctx, p, desc->num_tokens);
+}
+
+__global__ void validate_routes_kernel(
+    const int32_t* topk_ids,
+    const float* topk_weights,
+    uint32_t total_routes,
+    uint32_t local_expert_offset,
+    uint32_t local_num_experts,
+    int* error
+)
+{
+    const uint32_t route = blockIdx.x * blockDim.x + threadIdx.x;
+    if (route >= total_routes)
+        return;
+    const int32_t expert = topk_ids[route];
+    const int32_t local = expert - static_cast<int32_t>(local_expert_offset);
+    const float weight = topk_weights[route];
+    if (local < 0 || local >= static_cast<int32_t>(local_num_experts) || !isfinite(weight)) {
+        atomicExch(error, 1);
+    }
 }
 
 __global__ void count_routes_kernel(
@@ -441,6 +491,51 @@ __global__ void finalize_kernel(
     out[idx] = __float2bfloat16(acc);
 }
 
+qsfi_status validate_moe_routes(
+    qsfi_context* ctx,
+    const qsfi_moe_plan_desc& p,
+    const qsfi_moe_bf16_execute_desc* desc,
+    uint32_t total_routes
+)
+{
+#if !QSFI_ENABLE_CHECKED_VALIDATION
+    (void)ctx;
+    (void)p;
+    (void)desc;
+    (void)total_routes;
+    return QSFI_STATUS_OK;
+#else
+    qsfi_context_error_reporter errors { ctx };
+    qsfi_checked_validation_flag validation(ctx->stream);
+    qsfi_status status = validation.reset(
+        errors,
+        "cudaMalloc MoE route validation flag",
+        "cudaMemsetAsync MoE route validation flag"
+    );
+    if (status != QSFI_STATUS_OK)
+        return status;
+
+    const uint32_t blocks = (total_routes + kThreads - 1) / kThreads;
+    validate_routes_kernel<<<blocks, kThreads, 0, ctx->stream>>>(
+        static_cast<const int32_t*>(desc->topk_ids.data),
+        static_cast<const float*>(desc->topk_weights.data),
+        total_routes,
+        p.local_expert_offset,
+        p.local_num_experts,
+        validation.device_ptr()
+    );
+    status = validation.check_launch(errors, "launch MoE route validation");
+    if (status != QSFI_STATUS_OK)
+        return status;
+    return validation.finish(
+        errors,
+        "copy MoE route validation flag",
+        "cudaFree MoE route validation flag",
+        "MoE routes must target local experts and weights must be finite"
+    );
+#endif
+}
+
 cudaError_t launch_bf16_moe(
     qsfi_context* ctx,
     const qsfi_moe_plan_desc& p,
@@ -449,7 +544,7 @@ cudaError_t launch_bf16_moe(
 )
 {
     const uint32_t num_tokens = desc->num_tokens;
-    const uint32_t max_routes = num_tokens * p.top_k;
+    const uint32_t max_routes = static_cast<uint32_t>(static_cast<uint64_t>(num_tokens) * p.top_k);
     const uint32_t local_experts = p.local_num_experts;
     cudaStream_t stream = ctx->stream;
     const uint32_t route_blocks = (max_routes + kThreads - 1) / kThreads;
@@ -640,7 +735,7 @@ qsfi_moe_plan_create(qsfi_context* ctx, const qsfi_moe_plan_desc* desc, qsfi_moe
     *out = nullptr;
     if (ctx == nullptr)
         return QSFI_STATUS_INVALID_ARGUMENT;
-    clear_error(&ctx->last_error);
+    qsfi_clear_error_info(&ctx->last_error);
     qsfi_status status = validate_plan_desc(ctx, desc);
     if (status != QSFI_STATUS_OK)
         return status;
@@ -666,7 +761,7 @@ qsfi_status qsfi_moe_workspace_size(
     *device_bytes = 0;
     if (ctx == nullptr || plan == nullptr)
         return QSFI_STATUS_INVALID_ARGUMENT;
-    clear_error(&ctx->last_error);
+    qsfi_clear_error_info(&ctx->last_error);
     if (plan->desc.backend != QSFI_MOE_BACKEND_FLASHINFER_STAGED_BF16) {
         return set_unsupported(ctx, "MoE workspace query is only implemented for staged BF16");
     }
@@ -684,13 +779,21 @@ qsfi_status qsfi_moe_execute_bf16(
 {
     if (ctx == nullptr)
         return QSFI_STATUS_INVALID_ARGUMENT;
-    clear_error(&ctx->last_error);
+    qsfi_clear_error_info(&ctx->last_error);
     qsfi_status status = activate_context(ctx);
     if (status != QSFI_STATUS_OK)
         return status;
 
     moe_workspace layout {};
     status = validate_bf16_execute(ctx, plan, desc, &layout);
+    if (status != QSFI_STATUS_OK)
+        return status;
+    status = validate_moe_routes(
+        ctx,
+        plan->desc,
+        desc,
+        static_cast<uint32_t>(static_cast<uint64_t>(desc->num_tokens) * plan->desc.top_k)
+    );
     if (status != QSFI_STATUS_OK)
         return status;
     try {
@@ -707,7 +810,7 @@ qsfi_status qsfi_moe_execute_nvfp4(
 {
     if (ctx == nullptr)
         return QSFI_STATUS_INVALID_ARGUMENT;
-    clear_error(&ctx->last_error);
+    qsfi_clear_error_info(&ctx->last_error);
     if (plan == nullptr || desc == nullptr) {
         return set_invalid_arg(ctx, "plan/desc is null");
     }

@@ -90,6 +90,7 @@ pub(crate) unsafe fn gdn_decode(
     desc: &GdnDecodeDesc,
 ) -> Result<(), Status> {
     ffi::result_from_raw(unsafe { sys::qscu_gdn_decode(ctx.as_raw(), desc) })
+        .inspect_err(|_| _ = ctx.last_error())
 }
 
 pub(crate) unsafe fn gdn_prefill(
@@ -97,6 +98,7 @@ pub(crate) unsafe fn gdn_prefill(
     desc: &GdnPrefillDesc,
 ) -> Result<(), Status> {
     ffi::result_from_raw(unsafe { sys::qscu_gdn_prefill(ctx.as_raw(), desc) })
+        .inspect_err(|_| _ = ctx.last_error())
 }
 
 pub(crate) unsafe fn router_topk(

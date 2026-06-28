@@ -5,18 +5,7 @@
 
 #include <cstdarg>
 #include <cstdio>
-#include <cstring>
 #include <new>
-
-void clear_error(qsfi_error_info* err)
-{
-    if (err == nullptr)
-        return;
-    err->status = QSFI_STATUS_OK;
-    err->source = QSFI_ERROR_SOURCE_NONE;
-    err->native_code = 0;
-    err->message[0] = '\0';
-}
 
 static qsfi_status set_errorv(
     qsfi_context* ctx,
@@ -120,11 +109,6 @@ bool valid_dtype(qsfi_dtype dtype)
         || dtype == QSFI_DTYPE_I8 || dtype == QSFI_DTYPE_U8;
 }
 
-float default_one(float value)
-{
-    return value == 0.0f ? 1.0f : value;
-}
-
 extern "C" {
 
 const char* qsfi_status_string(qsfi_status status)
@@ -164,7 +148,7 @@ qsfi_status qsfi_context_create(const qsfi_context_desc* desc, qsfi_context** ou
     ctx->int_workspace_bytes = 0;
     ctx->host_int_workspace_bytes = 0;
     ctx->scratch_generation = 0;
-    clear_error(&ctx->last_error);
+    qsfi_clear_error_info(&ctx->last_error);
     if (ctx->device_ordinal >= 0) {
         cudaError_t err = cudaSetDevice(ctx->device_ordinal);
         if (err != cudaSuccess) {
@@ -193,7 +177,7 @@ qsfi_status qsfi_context_set_stream(qsfi_context* ctx, qsfi_cuda_stream stream)
     if (ctx == nullptr)
         return QSFI_STATUS_INVALID_ARGUMENT;
     ctx->stream = static_cast<cudaStream_t>(stream);
-    clear_error(&ctx->last_error);
+    qsfi_clear_error_info(&ctx->last_error);
     return QSFI_STATUS_OK;
 }
 
@@ -215,7 +199,7 @@ qsfi_status qsfi_context_get_info(qsfi_context* ctx, qsfi_context_info* out)
 {
     if (ctx == nullptr || out == nullptr)
         return QSFI_STATUS_INVALID_ARGUMENT;
-    clear_error(&ctx->last_error);
+    qsfi_clear_error_info(&ctx->last_error);
     qsfi_status status = activate_context(ctx);
     if (status != QSFI_STATUS_OK)
         return status;
@@ -263,7 +247,7 @@ qsfi_status qsfi_context_reserve_workspace(
 {
     if (ctx == nullptr)
         return QSFI_STATUS_INVALID_ARGUMENT;
-    clear_error(&ctx->last_error);
+    qsfi_clear_error_info(&ctx->last_error);
     qsfi_status status = activate_context(ctx);
     if (status != QSFI_STATUS_OK)
         return status;
@@ -295,7 +279,7 @@ void qsfi_context_clear_last_error(qsfi_context* ctx)
 {
     if (ctx == nullptr)
         return;
-    clear_error(&ctx->last_error);
+    qsfi_clear_error_info(&ctx->last_error);
 }
 
 } // extern "C"

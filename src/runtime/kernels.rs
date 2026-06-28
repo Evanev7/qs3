@@ -193,7 +193,7 @@ impl Bf16Heads {
         })
     }
 
-    fn tensor(self) -> ffi::Tensor3 {
+    pub(crate) fn tensor(self) -> ffi::Tensor3 {
         ffi::Tensor3 {
             data: self.data,
             dtype: ffi::DTYPE_BF16,
@@ -434,110 +434,27 @@ impl GdnRecurrentState {
     }
 }
 
-pub(crate) struct KernelFacade;
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum GdnStateIndexPolicy {
+    NegativeSkips,
+    NonNegative,
+}
 
-impl KernelFacade {
-    pub(crate) unsafe fn embedding_gather_bf16(
-        desc: &EmbeddingGatherBf16,
-        stream: ffi::CudaStream,
-    ) -> Result<(), Status> {
-        unsafe { qscu::embedding_gather_bf16(&desc.raw, stream) }
-    }
-
-    pub(crate) unsafe fn silu_and_mul_bf16(
-        desc: &SiluAndMulBf16,
-        stream: ffi::CudaStream,
-    ) -> Result<(), Status> {
-        unsafe { qscu::silu_and_mul_bf16(&desc.raw, stream) }
-    }
-
-    pub(crate) unsafe fn logits_soft_cap_f32(
-        desc: &LogitsSoftCapF32,
-        stream: ffi::CudaStream,
-    ) -> Result<(), Status> {
-        unsafe {
-            qscu::logits_soft_cap_f32(
-                &desc.logits,
-                desc.rows,
-                desc.vocab_size,
-                desc.soft_cap,
-                stream,
-            )
+impl GdnStateIndexPolicy {
+    fn validate_host_indices(self, indices: &[i32], state_pool: u32) -> Result<(), Status> {
+        validate_nonzero(&[state_pool])?;
+        for &index in indices {
+            if index < 0 {
+                if self == Self::NegativeSkips {
+                    continue;
+                }
+                return Err(Status::InvalidArgument);
+            }
+            if u32::try_from(index).map_err(|_| Status::InvalidArgument)? >= state_pool {
+                return Err(Status::InvalidArgument);
+            }
         }
-    }
-
-    pub(crate) unsafe fn greedy_argmax_f32(
-        desc: &GreedyArgmaxF32,
-        stream: ffi::CudaStream,
-    ) -> Result<(), Status> {
-        unsafe { qscu::greedy_argmax_f32(&desc.raw, stream) }
-    }
-
-    pub(crate) unsafe fn router_topk(
-        desc: &RouterTopK,
-        stream: ffi::CudaStream,
-    ) -> Result<(), Status> {
-        unsafe { qscu::router_topk(&desc.raw, stream) }
-    }
-
-    pub(crate) unsafe fn gemm_bf16(ctx: &mut qscb::Context, desc: &Bf16Gemm) -> Result<(), Status> {
-        unsafe { ctx.gemm_bf16(&desc.raw) }
-    }
-
-    pub(crate) unsafe fn rmsnorm_bf16(
-        ctx: &mut qsfi::Context,
-        desc: &RmsNormBf16,
-    ) -> Result<(), Status> {
-        unsafe { ctx.rmsnorm(&desc.raw) }
-    }
-
-    pub(crate) unsafe fn fused_add_rmsnorm_bf16(
-        ctx: &mut qsfi::Context,
-        desc: &FusedAddRmsNormBf16,
-    ) -> Result<(), Status> {
-        unsafe { ctx.fused_add_rmsnorm(&desc.raw) }
-    }
-
-    pub(crate) unsafe fn rope_apply_bf16(
-        ctx: &mut qsfi::Context,
-        desc: &RopeApplyBf16,
-    ) -> Result<(), Status> {
-        unsafe { ctx.rope_apply(&desc.raw) }
-    }
-
-    pub(crate) unsafe fn qwen36_gdn_causal_conv1d_bf16(
-        desc: &GdnCausalConv1dBf16,
-        stream: ffi::CudaStream,
-    ) -> Result<(), Status> {
-        unsafe { qscu::qwen36_gdn_causal_conv1d_bf16(&desc.raw, stream) }
-    }
-
-    pub(crate) unsafe fn qwen36_gdn_post_conv_prepare_bf16(
-        desc: &GdnPostConvPrepareBf16,
-        stream: ffi::CudaStream,
-    ) -> Result<(), Status> {
-        unsafe { qscu::qwen36_gdn_post_conv_prepare_bf16(&desc.raw, stream) }
-    }
-
-    pub(crate) unsafe fn qwen36_gdn_rmsnorm_gated_bf16(
-        desc: &GdnRmsNormGatedBf16,
-        stream: ffi::CudaStream,
-    ) -> Result<(), Status> {
-        unsafe { qscu::qwen36_gdn_rmsnorm_gated_bf16(&desc.raw, stream) }
-    }
-
-    pub(crate) unsafe fn gdn_decode_bf16(
-        ctx: &mut qsfi::Context,
-        desc: &GdnDecodeBf16,
-    ) -> Result<(), Status> {
-        unsafe { qscu::gdn_decode(ctx, &desc.raw) }
-    }
-
-    pub(crate) unsafe fn gdn_prefill_bf16(
-        ctx: &mut qsfi::Context,
-        desc: &GdnPrefillBf16,
-    ) -> Result<(), Status> {
-        unsafe { qscu::gdn_prefill(ctx, &desc.raw) }
+        Ok(())
     }
 }
 
@@ -560,77 +477,85 @@ impl<'a> KernelOps<'a> {
         &mut self,
         desc: &EmbeddingGatherBf16,
     ) -> Result<(), Status> {
-        unsafe { KernelFacade::embedding_gather_bf16(desc, self.stream) }
+        unsafe { qscu::embedding_gather_bf16(&desc.raw, self.stream) }
     }
 
     pub(crate) unsafe fn silu_and_mul_bf16(&mut self, desc: &SiluAndMulBf16) -> Result<(), Status> {
-        unsafe { KernelFacade::silu_and_mul_bf16(desc, self.stream) }
+        unsafe { qscu::silu_and_mul_bf16(&desc.raw, self.stream) }
     }
 
     pub(crate) unsafe fn logits_soft_cap_f32(
         &mut self,
         desc: &LogitsSoftCapF32,
     ) -> Result<(), Status> {
-        unsafe { KernelFacade::logits_soft_cap_f32(desc, self.stream) }
+        unsafe {
+            qscu::logits_soft_cap_f32(
+                &desc.logits,
+                desc.rows,
+                desc.vocab_size,
+                desc.soft_cap,
+                self.stream,
+            )
+        }
     }
 
     pub(crate) unsafe fn greedy_argmax_f32(
         &mut self,
         desc: &GreedyArgmaxF32,
     ) -> Result<(), Status> {
-        unsafe { KernelFacade::greedy_argmax_f32(desc, self.stream) }
+        unsafe { qscu::greedy_argmax_f32(&desc.raw, self.stream) }
     }
 
     pub(crate) unsafe fn router_topk(&mut self, desc: &RouterTopK) -> Result<(), Status> {
-        unsafe { KernelFacade::router_topk(desc, self.stream) }
+        unsafe { qscu::router_topk(&desc.raw, self.stream) }
     }
 
     pub(crate) unsafe fn gemm_bf16(&mut self, desc: &Bf16Gemm) -> Result<(), Status> {
-        unsafe { KernelFacade::gemm_bf16(self.qscb, desc) }
+        unsafe { self.qscb.gemm_bf16(&desc.raw) }
     }
 
     pub(crate) unsafe fn rmsnorm_bf16(&mut self, desc: &RmsNormBf16) -> Result<(), Status> {
-        unsafe { KernelFacade::rmsnorm_bf16(self.qsfi, desc) }
+        unsafe { self.qsfi.rmsnorm(&desc.raw) }
     }
 
     pub(crate) unsafe fn fused_add_rmsnorm_bf16(
         &mut self,
         desc: &FusedAddRmsNormBf16,
     ) -> Result<(), Status> {
-        unsafe { KernelFacade::fused_add_rmsnorm_bf16(self.qsfi, desc) }
+        unsafe { self.qsfi.fused_add_rmsnorm(&desc.raw) }
     }
 
     pub(crate) unsafe fn rope_apply_bf16(&mut self, desc: &RopeApplyBf16) -> Result<(), Status> {
-        unsafe { KernelFacade::rope_apply_bf16(self.qsfi, desc) }
+        unsafe { self.qsfi.rope_apply(&desc.raw) }
     }
 
     pub(crate) unsafe fn qwen36_gdn_causal_conv1d_bf16(
         &mut self,
         desc: &GdnCausalConv1dBf16,
     ) -> Result<(), Status> {
-        unsafe { KernelFacade::qwen36_gdn_causal_conv1d_bf16(desc, self.stream) }
+        unsafe { qscu::qwen36_gdn_causal_conv1d_bf16(&desc.raw, self.stream) }
     }
 
     pub(crate) unsafe fn qwen36_gdn_post_conv_prepare_bf16(
         &mut self,
         desc: &GdnPostConvPrepareBf16,
     ) -> Result<(), Status> {
-        unsafe { KernelFacade::qwen36_gdn_post_conv_prepare_bf16(desc, self.stream) }
+        unsafe { qscu::qwen36_gdn_post_conv_prepare_bf16(&desc.raw, self.stream) }
     }
 
     pub(crate) unsafe fn qwen36_gdn_rmsnorm_gated_bf16(
         &mut self,
         desc: &GdnRmsNormGatedBf16,
     ) -> Result<(), Status> {
-        unsafe { KernelFacade::qwen36_gdn_rmsnorm_gated_bf16(desc, self.stream) }
+        unsafe { qscu::qwen36_gdn_rmsnorm_gated_bf16(&desc.raw, self.stream) }
     }
 
     pub(crate) unsafe fn gdn_decode_bf16(&mut self, desc: &GdnDecodeBf16) -> Result<(), Status> {
-        unsafe { KernelFacade::gdn_decode_bf16(self.qsfi, desc) }
+        unsafe { qscu::gdn_decode(self.qsfi, &desc.raw) }
     }
 
     pub(crate) unsafe fn gdn_prefill_bf16(&mut self, desc: &GdnPrefillBf16) -> Result<(), Status> {
-        unsafe { KernelFacade::gdn_prefill_bf16(self.qsfi, desc) }
+        unsafe { qscu::gdn_prefill(self.qsfi, &desc.raw) }
     }
 }
 
@@ -1248,9 +1173,13 @@ impl GdnDecodeBf16 {
             args.out,
             tokens,
         )?;
-        require_i32_vec(args.state_indices, tokens)?;
+        require_gdn_state_index_vec(
+            args.state_indices,
+            tokens,
+            GdnStateIndexPolicy::NegativeSkips,
+        )?;
         if let Some(indices) = args.state_out_indices {
-            require_i32_vec(indices, tokens)?;
+            require_gdn_state_index_vec(indices, tokens, GdnStateIndexPolicy::NegativeSkips)?;
         }
         Ok(Self {
             raw: qscu::GdnDecodeDesc {
@@ -1328,9 +1257,17 @@ impl GdnPrefillBf16 {
             .checked_add(1)
             .ok_or(Status::InvalidArgument)?;
         require_i32_vec(args.seq_indptr, seq_indptr_len)?;
-        require_i32_vec(args.state_indices, args.batch_size)?;
+        require_gdn_state_index_vec(
+            args.state_indices,
+            args.batch_size,
+            GdnStateIndexPolicy::NegativeSkips,
+        )?;
         if let Some(indices) = args.state_out_indices {
-            require_i32_vec(indices, args.batch_size)?;
+            require_gdn_state_index_vec(
+                indices,
+                args.batch_size,
+                GdnStateIndexPolicy::NegativeSkips,
+            )?;
         }
         Ok(Self {
             raw: qscu::GdnPrefillDesc {
@@ -1437,6 +1374,14 @@ fn require_i32_vec(vec: DVec<{ ffi::DTYPE_I32 }>, expected_len: u32) -> Result<(
     Ok(())
 }
 
+fn require_gdn_state_index_vec(
+    vec: DVec<{ ffi::DTYPE_I32 }>,
+    expected_len: u32,
+    _policy: GdnStateIndexPolicy,
+) -> Result<(), Status> {
+    require_i32_vec(vec, expected_len)
+}
+
 fn require_qwen36_gdn_heads(
     heads: Bf16Heads,
     expected_heads: u32,
@@ -1526,10 +1471,6 @@ mod tests {
         DVec::contiguous(device_ptr(offset), len).unwrap()
     }
 
-    fn i32_mat(offset: usize, rows: u32, cols: u32) -> DMat<{ ffi::DTYPE_I32 }> {
-        DMat::contiguous(device_ptr(offset), rows, cols).unwrap()
-    }
-
     fn heads(offset: usize, tokens: u32, heads: u32, head_dim: u32) -> Bf16Heads {
         Bf16Heads::contiguous(device_ptr(offset), tokens, heads, head_dim).unwrap()
     }
@@ -1572,7 +1513,9 @@ mod tests {
         assert_eq!(f32_tensor.shape, [2, 3]);
         assert_eq!(f32_tensor.stride, [8, 1]);
 
-        let i32_tensor = i32_mat(6, 3, 2).tensor();
+        let i32_tensor = DMat::<{ ffi::DTYPE_I32 }>::contiguous(device_ptr(6), 3, 2)
+            .unwrap()
+            .tensor();
         assert_eq!(i32_tensor.dtype, ffi::DTYPE_I32);
     }
 
@@ -1646,7 +1589,7 @@ mod tests {
         assert!(
             RouterTopK::new(
                 Bf16OrF32Mat::F32(logits),
-                i32_mat(21, 2, 4),
+                DMat::<{ ffi::DTYPE_I32 }>::contiguous(device_ptr(21), 2, 4).unwrap(),
                 f32_mat(22, 2, 4),
                 RouterScore::Softmax,
                 true,
@@ -1657,7 +1600,7 @@ mod tests {
         assert!(
             RouterTopK::new(
                 Bf16OrF32Mat::Bf16(bf16_mat(23, 2, 128)),
-                i32_mat(24, 2, 4),
+                DMat::<{ ffi::DTYPE_I32 }>::contiguous(device_ptr(24), 2, 4).unwrap(),
                 f32_mat(25, 2, 4),
                 RouterScore::Sigmoid,
                 false,
@@ -1668,7 +1611,8 @@ mod tests {
         assert!(matches!(
             RouterTopK::new(
                 Bf16OrF32Mat::F32(logits),
-                i32_mat(26, 2, ROUTER_MAX_TOP_K + 1),
+                DMat::<{ ffi::DTYPE_I32 }>::contiguous(device_ptr(26), 2, ROUTER_MAX_TOP_K + 1)
+                    .unwrap(),
                 f32_mat(27, 2, ROUTER_MAX_TOP_K + 1),
                 RouterScore::Softmax,
                 true,
@@ -1679,7 +1623,7 @@ mod tests {
         assert!(matches!(
             RouterTopK::new(
                 Bf16OrF32Mat::F32(logits),
-                i32_mat(28, 2, 4),
+                DMat::<{ ffi::DTYPE_I32 }>::contiguous(device_ptr(28), 2, 4).unwrap(),
                 f32_mat(29, 2, 4),
                 RouterScore::Softmax,
                 true,
@@ -1865,5 +1809,25 @@ mod tests {
             GdnPrefillBf16::new(bad_prefill),
             Err(Status::InvalidArgument)
         ));
+    }
+
+    #[test]
+    fn gdn_state_index_policy_validates_host_indices() {
+        assert_eq!(
+            GdnStateIndexPolicy::NegativeSkips.validate_host_indices(&[-1, 0, 3], 4),
+            Ok(())
+        );
+        assert_eq!(
+            GdnStateIndexPolicy::NonNegative.validate_host_indices(&[-1, 0], 4),
+            Err(Status::InvalidArgument)
+        );
+        assert_eq!(
+            GdnStateIndexPolicy::NegativeSkips.validate_host_indices(&[4], 4),
+            Err(Status::InvalidArgument)
+        );
+        assert_eq!(
+            GdnStateIndexPolicy::NegativeSkips.validate_host_indices(&[0], 0),
+            Err(Status::InvalidArgument)
+        );
     }
 }

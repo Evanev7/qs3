@@ -137,7 +137,6 @@ static void test_qscu_utils_embedding_gather_bf16()
     constexpr size_t out_elems = static_cast<size_t>(tokens) * hidden;
 
     const int32_t token_ids[] = { 2, padding_id, 0, 3 };
-    const int32_t invalid_token_ids[] = { 2, padding_id, vocab, 3 };
     std::vector<uint16_t> h_embedding(embedding_elems);
     std::vector<uint16_t> h_out(out_elems, kQscuUtilsBf16Sentinel);
     for (int row = 0; row < vocab; ++row) {
@@ -203,6 +202,8 @@ static void test_qscu_utils_embedding_gather_bf16()
         }
     }
 
+#if QSFI_ENABLE_CHECKED_VALIDATION
+    const int32_t invalid_token_ids[] = { 2, padding_id, vocab, 3 };
     if (check_cuda(
             cudaMemcpy(
                 d_token_ids,
@@ -218,6 +219,7 @@ static void test_qscu_utils_embedding_gather_bf16()
             "qscu embedding rejects invalid token id"
         );
     }
+#endif
 
     qscu_utils_free_device(d_token_ids);
     qscu_utils_free_device(d_embedding);

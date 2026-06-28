@@ -1,6 +1,7 @@
 #include "qscu.h"
 
 #include "qsfi_macros.h"
+#include "qsfi_native_common.h"
 
 #include <cuda_bf16.h>
 #include <cuda_runtime.h>
@@ -100,6 +101,20 @@ qsfi_status validate_cuda(cudaError_t err)
         return QSFI_STATUS_OUT_OF_MEMORY;
     return QSFI_STATUS_CUDA_ERROR;
 }
+
+#if QSFI_ENABLE_CHECKED_VALIDATION
+struct qscu_status_reporter {
+    qsfi_status cuda_error(cudaError_t err, const char*) const
+    {
+        return validate_cuda(err);
+    }
+
+    template <typename... Args> qsfi_status invalid_arg(const char*, Args...) const
+    {
+        return QSFI_STATUS_INVALID_ARGUMENT;
+    }
+};
+#endif
 
 qsfi_status checked_grid(uint64_t items, uint32_t threads, uint32_t* blocks)
 {
@@ -462,6 +477,45 @@ __global__ void qwen36_gdn_causal_conv1d_kernel(conv1d_params p, StateT* state)
     }
 }
 
+#if QSFI_ENABLE_CHECKED_VALIDATION
+__device__ bool qscu_invalid_state_slot(int32_t slot, int32_t state_pool)
+{
+    return slot >= state_pool;
+}
+
+__global__ void validate_conv1d_metadata_kernel(
+    const int32_t* seq_indptr,
+    const int32_t* read_indices,
+    const int32_t* write_indices,
+    uint32_t batch_size,
+    uint32_t num_tokens,
+    int32_t state_pool,
+    int* error
+)
+{
+    const uint32_t seq = blockIdx.x * blockDim.x + threadIdx.x;
+    if (seq >= batch_size)
+        return;
+    const int32_t token_begin = seq_indptr == nullptr ? static_cast<int32_t>(seq) : seq_indptr[seq];
+    const int32_t token_end
+        = seq_indptr == nullptr ? static_cast<int32_t>(seq + 1) : seq_indptr[seq + 1];
+    if (token_begin < 0 || token_end < token_begin || token_end > static_cast<int32_t>(num_tokens)
+        || (seq_indptr != nullptr
+            && ((seq == 0 && token_begin != 0)
+                || (seq + 1 == batch_size && token_end != static_cast<int32_t>(num_tokens))))) {
+        atomicExch(error, 1);
+    }
+
+    const int32_t fallback_slot = write_indices == nullptr ? -1 : write_indices[seq];
+    const int32_t read_slot = read_indices == nullptr ? fallback_slot : read_indices[seq];
+    const int32_t write_slot = write_indices == nullptr ? read_slot : write_indices[seq];
+    if (qscu_invalid_state_slot(read_slot, state_pool)
+        || qscu_invalid_state_slot(write_slot, state_pool)) {
+        atomicExch(error, 1);
+    }
+}
+#endif
+
 struct post_conv_params {
     const __nv_bfloat16* conv_out;
     int64_t conv_stride0;
@@ -674,6 +728,12 @@ __device__ float load_router_logit(const router_topk_params& p, uint32_t token, 
     return load_bf16(p.logits_bf16 + offset);
 }
 
+__device__ float finite_router_logit(const router_topk_params& p, uint32_t token, uint32_t expert)
+{
+    const float logit = load_router_logit(p, token, expert);
+    return isfinite(logit) ? logit : kRouterNegInf;
+}
+
 __device__ bool
 better_router_candidate(float score, int32_t expert, float best, int32_t best_expert)
 {
@@ -693,19 +753,23 @@ __global__ void router_topk_kernel(router_topk_params p)
     float max_logit = kRouterNegInf;
     if (p.score == QSCU_ROUTER_SCORE_SOFTMAX) {
         for (uint32_t expert = 0; expert < p.num_experts; ++expert) {
-            max_logit = fmaxf(max_logit, load_router_logit(p, token, expert));
+            max_logit = fmaxf(max_logit, finite_router_logit(p, token, expert));
         }
     }
 
     float softmax_denom = 0.0f;
     if (p.score == QSCU_ROUTER_SCORE_SOFTMAX) {
         for (uint32_t expert = 0; expert < p.num_experts; ++expert) {
-            softmax_denom += expf(load_router_logit(p, token, expert) - max_logit);
+            const float logit = finite_router_logit(p, token, expert);
+            if (logit != kRouterNegInf)
+                softmax_denom += expf(logit - max_logit);
         }
     }
 
     for (uint32_t expert = 0; expert < p.num_experts; ++expert) {
-        const float logit = load_router_logit(p, token, expert);
+        const float logit = finite_router_logit(p, token, expert);
+        if (logit == kRouterNegInf)
+            continue;
         const float select_score = p.score == QSCU_ROUTER_SCORE_SOFTMAX ? logit : sigmoid(logit);
         for (uint32_t pos = 0; pos < p.top_k; ++pos) {
             if (!better_router_candidate(
@@ -728,10 +792,15 @@ __global__ void router_topk_kernel(router_topk_params p)
     float selected_sum = 0.0f;
     float weights[kRouterMaxTopK];
     for (uint32_t pos = 0; pos < p.top_k; ++pos) {
-        const float logit = load_router_logit(p, token, static_cast<uint32_t>(best_ids[pos]));
+        if (best_ids[pos] == INT_MAX) {
+            best_ids[pos] = static_cast<int32_t>(pos);
+            weights[pos] = 0.0f;
+            continue;
+        }
+        const float logit = finite_router_logit(p, token, static_cast<uint32_t>(best_ids[pos]));
         float weight = 0.0f;
         if (p.score == QSCU_ROUTER_SCORE_SOFTMAX) {
-            weight = expf(logit - max_logit) / softmax_denom;
+            weight = softmax_denom > 0.0f ? expf(logit - max_logit) / softmax_denom : 0.0f;
         } else {
             weight = sigmoid(logit);
         }
@@ -755,6 +824,8 @@ qsfi_status validate_conv_desc(const qscu_qwen36_gdn_causal_conv1d_desc* desc)
 {
     if (desc == nullptr || desc->num_tokens == 0 || desc->batch_size == 0)
         return QSFI_STATUS_INVALID_ARGUMENT;
+    if (desc->num_tokens > static_cast<uint32_t>(std::numeric_limits<int32_t>::max()))
+        return QSFI_STATUS_UNSUPPORTED;
     if (desc->seq_indptr == nullptr && desc->batch_size != desc->num_tokens)
         return QSFI_STATUS_INVALID_ARGUMENT;
     if (desc->activation != QSCU_ACTIVATION_NONE && desc->activation != QSCU_ACTIVATION_SILU)
@@ -809,6 +880,49 @@ qsfi_status validate_conv_desc(const qscu_qwen36_gdn_causal_conv1d_desc* desc)
         return QSFI_STATUS_INVALID_ARGUMENT;
     }
     return QSFI_STATUS_OK;
+}
+
+qsfi_status
+validate_conv1d_metadata(const qscu_qwen36_gdn_causal_conv1d_desc* desc, cudaStream_t stream)
+{
+    if (desc->state.shape[0] > static_cast<int64_t>(std::numeric_limits<int32_t>::max()))
+        return QSFI_STATUS_UNSUPPORTED;
+
+#if !QSFI_ENABLE_CHECKED_VALIDATION
+    (void)stream;
+    return QSFI_STATUS_OK;
+#else
+    qscu_status_reporter errors;
+    qsfi_checked_validation_flag validation(stream);
+    qsfi_status status = validation.reset(
+        errors,
+        "cudaMalloc conv1d metadata validation flag",
+        "cudaMemsetAsync conv1d metadata validation flag"
+    );
+    if (status != QSFI_STATUS_OK)
+        return status;
+
+    constexpr uint32_t threads = 256;
+    const uint32_t blocks = (desc->batch_size + threads - 1) / threads;
+    validate_conv1d_metadata_kernel<<<blocks, threads, 0, stream>>>(
+        static_cast<const int32_t*>(desc->seq_indptr),
+        static_cast<const int32_t*>(desc->state_read_indices.data),
+        static_cast<const int32_t*>(desc->state_write_indices.data),
+        desc->batch_size,
+        desc->num_tokens,
+        static_cast<int32_t>(desc->state.shape[0]),
+        validation.device_ptr()
+    );
+    status = validation.check_launch(errors, "launch conv1d metadata validation");
+    if (status != QSFI_STATUS_OK)
+        return status;
+    return validation.finish(
+        errors,
+        "copy conv1d metadata validation flag",
+        "cudaFree conv1d metadata validation flag",
+        "conv1d seq_indptr/state indices are out of range"
+    );
+#endif
 }
 
 qsfi_status validate_post_conv_desc(const qscu_qwen36_gdn_post_conv_prepare_desc* desc)
@@ -1133,21 +1247,20 @@ qscu_embedding_gather_bf16(const qscu_embedding_gather_desc* desc, qsfi_cuda_str
 
     cudaStream_t cuda_stream = static_cast<cudaStream_t>(stream);
     int* device_invalid_token = nullptr;
+#if QSFI_ENABLE_CHECKED_VALIDATION
+    qscu_status_reporter errors;
+    qsfi_checked_validation_flag invalid_token(cuda_stream);
     if (desc->validate_token_ids != 0) {
-        status = validate_cuda(cudaMalloc(
-            reinterpret_cast<void**>(&device_invalid_token),
-            sizeof(*device_invalid_token)
-        ));
+        status = invalid_token.reset(
+            errors,
+            "cudaMalloc embedding token validation flag",
+            "cudaMemsetAsync embedding token validation flag"
+        );
         if (status != QSFI_STATUS_OK)
             return status;
-        status = validate_cuda(
-            cudaMemsetAsync(device_invalid_token, 0, sizeof(*device_invalid_token), cuda_stream)
-        );
-        if (status != QSFI_STATUS_OK) {
-            cudaFree(device_invalid_token);
-            return status;
-        }
+        device_invalid_token = invalid_token.device_ptr();
     }
+#endif
 
     if (desc->token_ids.dtype == QSFI_DTYPE_I32) {
         embedding_gather_params<int32_t> params {};
@@ -1184,28 +1297,20 @@ qscu_embedding_gather_bf16(const qscu_embedding_gather_desc* desc, qsfi_cuda_str
     }
 
     status = validate_cuda(cudaGetLastError());
+#if QSFI_ENABLE_CHECKED_VALIDATION
     if (device_invalid_token == nullptr || status != QSFI_STATUS_OK) {
-        if (device_invalid_token != nullptr)
-            cudaFree(device_invalid_token);
         return status;
     }
 
-    int host_invalid_token = 0;
-    status = validate_cuda(cudaMemcpyAsync(
-        &host_invalid_token,
-        device_invalid_token,
-        sizeof(host_invalid_token),
-        cudaMemcpyDeviceToHost,
-        cuda_stream
-    ));
-    if (status == QSFI_STATUS_OK)
-        status = validate_cuda(cudaStreamSynchronize(cuda_stream));
-    const qsfi_status free_status = validate_cuda(cudaFree(device_invalid_token));
-    if (status != QSFI_STATUS_OK)
-        return status;
-    if (free_status != QSFI_STATUS_OK)
-        return free_status;
-    return host_invalid_token == 0 ? QSFI_STATUS_OK : QSFI_STATUS_INVALID_ARGUMENT;
+    return invalid_token.finish(
+        errors,
+        "copy embedding token validation flag",
+        "cudaFree embedding token validation flag",
+        "embedding token ids are out of range"
+    );
+#else
+    return status;
+#endif
 }
 
 qsfi_status qscu_logits_soft_cap_f32(
@@ -1276,6 +1381,10 @@ qsfi_status qscu_qwen36_gdn_causal_conv1d_bf16(
     qsfi_status status = validate_conv_desc(desc);
     if (status != QSFI_STATUS_OK)
         return status;
+    cudaStream_t cuda_stream = static_cast<cudaStream_t>(stream);
+    status = validate_conv1d_metadata(desc, cuda_stream);
+    if (status != QSFI_STATUS_OK)
+        return status;
 
     conv1d_params params {};
     params.x = static_cast<const __nv_bfloat16*>(desc->x.data);
@@ -1304,7 +1413,6 @@ qsfi_status qscu_qwen36_gdn_causal_conv1d_bf16(
     params.activation = desc->activation;
     params.update_state = desc->update_state != 0 ? 1u : 0u;
 
-    cudaStream_t cuda_stream = static_cast<cudaStream_t>(stream);
     if (desc->state.dtype == QSFI_DTYPE_BF16) {
         qwen36_gdn_causal_conv1d_kernel<<<desc->batch_size, 256, 0, cuda_stream>>>(
             params,
@@ -1353,12 +1461,16 @@ qsfi_status qscu_qwen36_gdn_post_conv_prepare_bf16(
     params.v_stride0 = desc->v.stride[0];
     params.v_stride1 = desc->v.stride[1];
     params.v_stride2 = desc->v.stride[2];
-    params.g_out = static_cast<float*>(desc->g_out.data);
-    params.g_stride0 = desc->g_out.stride[0];
-    params.g_stride1 = desc->g_out.stride[1];
-    params.beta_out = static_cast<float*>(desc->beta_out.data);
-    params.beta_stride0 = desc->beta_out.stride[0];
-    params.beta_stride1 = desc->beta_out.stride[1];
+    if (tensor_present(desc->g_out)) {
+        params.g_out = static_cast<float*>(desc->g_out.data);
+        params.g_stride0 = desc->g_out.stride[0];
+        params.g_stride1 = desc->g_out.stride[1];
+    }
+    if (tensor_present(desc->beta_out)) {
+        params.beta_out = static_cast<float*>(desc->beta_out.data);
+        params.beta_stride0 = desc->beta_out.stride[0];
+        params.beta_stride1 = desc->beta_out.stride[1];
+    }
     params.l2norm_eps = desc->l2norm_eps;
     params.forget_gate_output = desc->forget_gate_output;
     params.apply_qk_l2norm = desc->apply_qk_l2norm != 0 ? 1u : 0u;

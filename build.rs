@@ -9,6 +9,7 @@ fn main() {
     println!("cargo:rerun-if-changed=qs_tensor.h");
     println!("cargo:rerun-if-changed=qsfi.h");
     println!("cargo:rerun-if-changed=qsfi_internal.h");
+    println!("cargo:rerun-if-changed=qsfi_native_common.h");
     println!("cargo:rerun-if-changed=qscu.h");
     println!("cargo:rerun-if-changed=qscb.h");
     println!("cargo:rerun-if-changed=qsfi.cu");
@@ -61,7 +62,7 @@ fn link_qsfi_for_tests() {
 
     for object in qsfi_objects {
         println!(
-            "cargo:rustc-link-arg-tests={}",
+            "cargo:rustc-link-arg={}",
             object
                 .canonicalize()
                 .expect("failed to canonicalize qsfi CUDA object")
@@ -84,6 +85,6 @@ fn link_qsfi_for_tests() {
         "-lm",
         "-lc",
     ] {
-        println!("cargo:rustc-link-arg-tests={arg}");
+        println!("cargo:rustc-link-arg={arg}");
     }
 }

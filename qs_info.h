@@ -9,6 +9,14 @@ extern "C" {
 
 #define QSFI_ERROR_MESSAGE_BYTES 512u
 
+#ifndef QSFI_ENABLE_CHECKED_VALIDATION
+#ifdef NDEBUG
+#define QSFI_ENABLE_CHECKED_VALIDATION 0
+#else
+#define QSFI_ENABLE_CHECKED_VALIDATION 1
+#endif
+#endif
+
 typedef enum {
     QSFI_STATUS_OK = 0,
     QSFI_STATUS_INVALID_ARGUMENT = 1,

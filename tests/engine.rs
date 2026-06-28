@@ -222,6 +222,20 @@ fn tiny_config() -> EngineConfig {
 }
 
 #[test]
+fn engine_rejects_unsupported_native_attention_shapes_before_cuda_setup() {
+    let mut config = tiny_config();
+    config.head_dim = 128;
+    config.hidden_size = config.num_q_heads * config.head_dim;
+    assert_eq!(Engine::new(config).err(), Some(qs3::Status::Unsupported));
+
+    let mut config = tiny_config();
+    config.num_q_heads = 4;
+    config.num_kv_heads = 2;
+    config.hidden_size = config.num_q_heads * config.head_dim;
+    assert_eq!(Engine::new(config).err(), Some(qs3::Status::Unsupported));
+}
+
+#[test]
 fn append_and_decode_layer_execute() {
     if !cuda_device_available() {
         return;

@@ -349,6 +349,59 @@ template <typename StateT> __global__ void gdn_prefill_kernel(gdn_kernel_params 
     );
 }
 
+#if QSFI_ENABLE_CHECKED_VALIDATION
+__device__ bool invalid_state_slot(int32_t slot, int32_t state_pool)
+{
+    return slot >= state_pool;
+}
+
+__global__ void validate_gdn_decode_indices_kernel(
+    const int32_t* state_indices,
+    const int32_t* state_out_indices,
+    uint32_t num_tokens,
+    int32_t state_pool,
+    int* error
+)
+{
+    const uint32_t token = blockIdx.x * blockDim.x + threadIdx.x;
+    if (token >= num_tokens)
+        return;
+    const int32_t read_slot = state_indices[token];
+    const int32_t write_slot = state_out_indices == nullptr ? read_slot : state_out_indices[token];
+    if (invalid_state_slot(read_slot, state_pool) || invalid_state_slot(write_slot, state_pool)) {
+        atomicExch(error, 1);
+    }
+}
+
+__global__ void validate_gdn_prefill_metadata_kernel(
+    const int32_t* seq_indptr,
+    const int32_t* state_indices,
+    const int32_t* state_out_indices,
+    uint32_t batch_size,
+    uint32_t total_tokens,
+    int32_t state_pool,
+    int* error
+)
+{
+    const uint32_t sequence = blockIdx.x * blockDim.x + threadIdx.x;
+    if (sequence >= batch_size)
+        return;
+    const int32_t begin = seq_indptr[sequence];
+    const int32_t end = seq_indptr[sequence + 1];
+    if ((sequence == 0 && begin != 0) || begin < 0 || end < begin
+        || end > static_cast<int32_t>(total_tokens)
+        || (sequence + 1 == batch_size && end != static_cast<int32_t>(total_tokens))) {
+        atomicExch(error, 1);
+    }
+    const int32_t read_slot = state_indices[sequence];
+    const int32_t write_slot
+        = state_out_indices == nullptr ? read_slot : state_out_indices[sequence];
+    if (invalid_state_slot(read_slot, state_pool) || invalid_state_slot(write_slot, state_pool)) {
+        atomicExch(error, 1);
+    }
+}
+#endif
+
 qsfi_status require_exact_shape(qsfi_context* ctx, const gdn_shape& shape)
 {
     if (shape.num_q_heads != kDefaultNumQHeads || shape.num_k_heads != kDefaultNumKHeads
@@ -480,6 +533,9 @@ qsfi_status validate_gdn_tensors(
         || out.shape[2] != static_cast<int64_t>(shape.value_dim)) {
         return set_invalid_arg(ctx, "gdn tensor shape mismatch");
     }
+    if (state.shape[0] > static_cast<int64_t>(std::numeric_limits<int32_t>::max())) {
+        return set_unsupported(ctx, "gdn state pool exceeds int32 index range");
+    }
     return QSFI_STATUS_OK;
 }
 
@@ -526,6 +582,85 @@ qsfi_status check_work_items(qsfi_context* ctx, uint64_t items)
     return QSFI_STATUS_OK;
 }
 
+qsfi_status validate_gdn_decode_metadata(qsfi_context* ctx, const qscu_gdn_decode_desc* desc)
+{
+#if !QSFI_ENABLE_CHECKED_VALIDATION
+    (void)ctx;
+    (void)desc;
+    return QSFI_STATUS_OK;
+#else
+    qsfi_context_error_reporter errors { ctx };
+    qsfi_checked_validation_flag validation(ctx->stream);
+    qsfi_status status = validation.reset(
+        errors,
+        "cudaMalloc gdn decode validation flag",
+        "cudaMemsetAsync gdn decode validation flag"
+    );
+    if (status != QSFI_STATUS_OK)
+        return status;
+
+    constexpr uint32_t threads = 256;
+    const uint32_t blocks = (desc->num_tokens + threads - 1) / threads;
+    validate_gdn_decode_indices_kernel<<<blocks, threads, 0, ctx->stream>>>(
+        static_cast<const int32_t*>(desc->state_indices.data),
+        static_cast<const int32_t*>(desc->state_out_indices.data),
+        desc->num_tokens,
+        static_cast<int32_t>(desc->state.shape[0]),
+        validation.device_ptr()
+    );
+    status = validation.check_launch(errors, "launch gdn decode validation");
+    if (status != QSFI_STATUS_OK)
+        return status;
+    return validation.finish(
+        errors,
+        "copy gdn decode validation flag",
+        "cudaFree gdn decode validation flag",
+        "gdn state indices must be negative or within state pool"
+    );
+#endif
+}
+
+qsfi_status validate_gdn_prefill_metadata(qsfi_context* ctx, const qscu_gdn_prefill_desc* desc)
+{
+#if !QSFI_ENABLE_CHECKED_VALIDATION
+    (void)ctx;
+    (void)desc;
+    return QSFI_STATUS_OK;
+#else
+    qsfi_context_error_reporter errors { ctx };
+    qsfi_checked_validation_flag validation(ctx->stream);
+    qsfi_status status = validation.reset(
+        errors,
+        "cudaMalloc gdn prefill validation flag",
+        "cudaMemsetAsync gdn prefill validation flag"
+    );
+    if (status != QSFI_STATUS_OK)
+        return status;
+
+    constexpr uint32_t threads = 256;
+    const uint32_t blocks = (desc->batch_size + threads - 1) / threads;
+    validate_gdn_prefill_metadata_kernel<<<blocks, threads, 0, ctx->stream>>>(
+        static_cast<const int32_t*>(desc->seq_indptr),
+        static_cast<const int32_t*>(desc->state_indices.data),
+        static_cast<const int32_t*>(desc->state_out_indices.data),
+        desc->batch_size,
+        desc->total_tokens,
+        static_cast<int32_t>(desc->state.shape[0]),
+        validation.device_ptr()
+    );
+    status = validation.check_launch(errors, "launch gdn prefill validation");
+    if (status != QSFI_STATUS_OK)
+        return status;
+    return validation.finish(
+        errors,
+        "copy gdn prefill validation flag",
+        "cudaFree gdn prefill validation flag",
+        "gdn seq_indptr must be monotonic and final-count matched; state indices must be "
+        "negative or within state pool"
+    );
+#endif
+}
+
 template <typename StateT>
 cudaError_t
 launch_gdn_decode(qsfi_context* ctx, const qscu_gdn_decode_desc* desc, const gdn_shape& shape)
@@ -561,12 +696,15 @@ qsfi_status qscu_gdn_decode(qsfi_context* ctx, const qscu_gdn_decode_desc* desc)
 {
     if (ctx == nullptr || desc == nullptr)
         return QSFI_STATUS_INVALID_ARGUMENT;
-    clear_error(&ctx->last_error);
+    qsfi_clear_error_info(&ctx->last_error);
     qsfi_status status = activate_context(ctx);
     if (status != QSFI_STATUS_OK)
         return status;
     if (desc->num_tokens == 0) {
         return set_invalid_arg(ctx, "gdn decode num_tokens must be non-zero");
+    }
+    if (desc->num_tokens > static_cast<uint32_t>(std::numeric_limits<int32_t>::max())) {
+        return set_unsupported(ctx, "gdn decode num_tokens exceeds int32 range");
     }
     if (desc->state_layout != QSCU_GDN_STATE_LAYOUT_VK) {
         return set_unsupported(ctx, "only VK GDN state layout is wired");
@@ -610,6 +748,9 @@ qsfi_status qscu_gdn_decode(qsfi_context* ctx, const qscu_gdn_decode_desc* desc)
     status = check_work_items(ctx, work_items(desc->num_tokens, shape));
     if (status != QSFI_STATUS_OK)
         return status;
+    status = validate_gdn_decode_metadata(ctx, desc);
+    if (status != QSFI_STATUS_OK)
+        return status;
 
     cudaError_t err = cudaSuccess;
     if (desc->state.dtype == QSFI_DTYPE_BF16) {
@@ -624,7 +765,7 @@ qsfi_status qscu_gdn_prefill(qsfi_context* ctx, const qscu_gdn_prefill_desc* des
 {
     if (ctx == nullptr || desc == nullptr)
         return QSFI_STATUS_INVALID_ARGUMENT;
-    clear_error(&ctx->last_error);
+    qsfi_clear_error_info(&ctx->last_error);
     qsfi_status status = activate_context(ctx);
     if (status != QSFI_STATUS_OK)
         return status;
@@ -633,6 +774,9 @@ qsfi_status qscu_gdn_prefill(qsfi_context* ctx, const qscu_gdn_prefill_desc* des
             ctx,
             "gdn prefill batch_size, total_tokens, and seq_indptr must be set"
         );
+    }
+    if (desc->total_tokens > static_cast<uint32_t>(std::numeric_limits<int32_t>::max())) {
+        return set_unsupported(ctx, "gdn prefill total_tokens exceeds int32 range");
     }
     if (desc->state_layout != QSCU_GDN_STATE_LAYOUT_VK) {
         return set_unsupported(ctx, "only VK GDN state layout is wired");
@@ -674,6 +818,9 @@ qsfi_status qscu_gdn_prefill(qsfi_context* ctx, const qscu_gdn_prefill_desc* des
     if (status != QSFI_STATUS_OK)
         return status;
     status = check_work_items(ctx, work_items(desc->batch_size, shape));
+    if (status != QSFI_STATUS_OK)
+        return status;
+    status = validate_gdn_prefill_metadata(ctx, desc);
     if (status != QSFI_STATUS_OK)
         return status;
 

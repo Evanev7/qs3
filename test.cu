@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 #include <vector>
 
 namespace {
@@ -1046,6 +1047,470 @@ void test_moe_bf16_staged_grouped_gemm()
     qsfi_context_destroy(ctx);
 }
 
+#if QSFI_ENABLE_CHECKED_VALIDATION
+
+void check_invalid_arg_message(
+    qsfi_context* ctx, qsfi_status got, const char* message_fragment, const char* what
+)
+{
+    if (!check_status(got, QSFI_STATUS_INVALID_ARGUMENT, what))
+        return;
+
+    qsfi_error_info error {};
+    if (!check_status(qsfi_context_get_last_error(ctx, &error), QSFI_STATUS_OK, what))
+        return;
+    if (std::strstr(error.message, message_fragment) == nullptr) {
+        std::fprintf(
+            stderr,
+            "FAIL: %s: last error message \"%s\" does not contain \"%s\"\n",
+            what,
+            error.message,
+            message_fragment
+        );
+        failures += 1;
+    }
+}
+
+void test_checked_append_decode_rejects_invalid_page_id()
+{
+    qsfi_context* ctx = nullptr;
+    if (!make_context(&ctx))
+        return;
+
+    constexpr size_t cache_elems = static_cast<size_t>(kNumPages) * kPageSize * kKvHeads * kHeadDim;
+    constexpr size_t append_elems = static_cast<size_t>(kBatch) * kKvHeads * kHeadDim;
+
+    std::vector<uint16_t> h_k_append(append_elems);
+    std::vector<uint16_t> h_v_append(append_elems);
+    fill_append(h_k_append, h_v_append);
+
+    const int32_t indptr[] = { 0, 2, 3 };
+    const int32_t indices[] = { 0, kNumPages, 2 };
+    const int32_t last_page_len[] = { 1, 4 };
+
+    uint16_t* d_k_cache = nullptr;
+    uint16_t* d_v_cache = nullptr;
+    uint16_t* d_k_append = nullptr;
+    uint16_t* d_v_append = nullptr;
+    int32_t* d_indptr = nullptr;
+    int32_t* d_indices = nullptr;
+    int32_t* d_last_page_len = nullptr;
+
+    const bool ok = alloc_device(&d_k_cache, cache_elems, "alloc checked invalid page k cache")
+        && alloc_device(&d_v_cache, cache_elems, "alloc checked invalid page v cache")
+        && copy_to_device(
+                        &d_k_append,
+                        h_k_append.data(),
+                        h_k_append.size(),
+                        "copy checked invalid page k"
+        )
+        && copy_to_device(
+                        &d_v_append,
+                        h_v_append.data(),
+                        h_v_append.size(),
+                        "copy checked invalid page v"
+        )
+        && copy_to_device(&d_indptr, indptr, 3, "copy checked invalid page indptr")
+        && copy_to_device(&d_indices, indices, 3, "copy checked invalid page indices")
+        && copy_to_device(&d_last_page_len, last_page_len, 2, "copy checked invalid page lengths");
+
+    if (ok) {
+        qsfi_append_decode_desc append {};
+        append.k = tensor3(d_k_append, kBatch);
+        append.v = tensor3(d_v_append, kBatch);
+        append.kv_cache = cache_desc(d_k_cache, d_v_cache);
+        append.page_table = page_table_desc(d_indptr, d_indices, d_last_page_len);
+
+        const qsfi_attention_desc attention = attention_desc();
+        check_invalid_arg_message(
+            ctx,
+            qsfi_append_paged_kv_decode(ctx, &attention, &append),
+            "page table indptr/last_page_len/indices",
+            "checked append decode rejects invalid page id"
+        );
+    }
+
+    cudaFree(d_k_cache);
+    cudaFree(d_v_cache);
+    cudaFree(d_k_append);
+    cudaFree(d_v_append);
+    cudaFree(d_indptr);
+    cudaFree(d_indices);
+    cudaFree(d_last_page_len);
+    qsfi_context_destroy(ctx);
+}
+
+void test_checked_append_prefill_rejects_invalid_position()
+{
+    qsfi_context* ctx = nullptr;
+    if (!make_context(&ctx))
+        return;
+
+    constexpr int num_tokens = 1;
+    constexpr size_t cache_elems = static_cast<size_t>(kNumPages) * kPageSize * kKvHeads * kHeadDim;
+    constexpr size_t append_elems = static_cast<size_t>(num_tokens) * kKvHeads * kHeadDim;
+
+    std::vector<uint16_t> h_k_append(append_elems);
+    std::vector<uint16_t> h_v_append(append_elems);
+    const int32_t batch_indices[] = { 0 };
+    const int32_t positions[] = { 5 };
+    fill_append(h_k_append, h_v_append);
+
+    uint16_t* d_k_cache = nullptr;
+    uint16_t* d_v_cache = nullptr;
+    uint16_t* d_k_append = nullptr;
+    uint16_t* d_v_append = nullptr;
+    int32_t* d_indptr = nullptr;
+    int32_t* d_indices = nullptr;
+    int32_t* d_last_page_len = nullptr;
+    int32_t* d_batch_indices = nullptr;
+    int32_t* d_positions = nullptr;
+
+    const bool ok = alloc_device(&d_k_cache, cache_elems, "alloc checked invalid pos k cache")
+        && alloc_device(&d_v_cache, cache_elems, "alloc checked invalid pos v cache")
+        && copy_to_device(
+                        &d_k_append,
+                        h_k_append.data(),
+                        h_k_append.size(),
+                        "copy checked invalid pos k"
+        )
+        && copy_to_device(
+                        &d_v_append,
+                        h_v_append.data(),
+                        h_v_append.size(),
+                        "copy checked invalid pos v"
+        )
+        && make_page_table(&d_indptr, &d_indices, &d_last_page_len)
+        && copy_to_device(&d_batch_indices, batch_indices, 1, "copy checked invalid pos batch")
+        && copy_to_device(&d_positions, positions, 1, "copy checked invalid pos positions");
+
+    if (ok) {
+        qsfi_append_prefill_desc append {};
+        append.k = tensor3(d_k_append, num_tokens);
+        append.v = tensor3(d_v_append, num_tokens);
+        append.batch_indices = d_batch_indices;
+        append.positions = d_positions;
+        append.kv_cache = cache_desc(d_k_cache, d_v_cache);
+        append.page_table = page_table_desc(d_indptr, d_indices, d_last_page_len);
+        append.num_tokens = num_tokens;
+
+        const qsfi_attention_desc attention = attention_desc();
+        check_invalid_arg_message(
+            ctx,
+            qsfi_append_paged_kv_prefill(ctx, &attention, &append),
+            "append batch_indices/positions",
+            "checked append prefill rejects invalid position"
+        );
+    }
+
+    cudaFree(d_k_cache);
+    cudaFree(d_v_cache);
+    cudaFree(d_k_append);
+    cudaFree(d_v_append);
+    cudaFree(d_indptr);
+    cudaFree(d_indices);
+    cudaFree(d_last_page_len);
+    cudaFree(d_batch_indices);
+    cudaFree(d_positions);
+    qsfi_context_destroy(ctx);
+}
+
+struct checked_gdn_buffers {
+    uint16_t* q;
+    uint16_t* k;
+    uint16_t* v;
+    uint16_t* a;
+    uint16_t* b;
+    float* a_log;
+    float* dt_bias;
+    uint16_t* state;
+    uint16_t* out;
+};
+
+void free_checked_gdn_buffers(checked_gdn_buffers& buffers)
+{
+    cudaFree(buffers.q);
+    cudaFree(buffers.k);
+    cudaFree(buffers.v);
+    cudaFree(buffers.a);
+    cudaFree(buffers.b);
+    cudaFree(buffers.a_log);
+    cudaFree(buffers.dt_bias);
+    cudaFree(buffers.state);
+    cudaFree(buffers.out);
+}
+
+bool make_checked_gdn_buffers(checked_gdn_buffers& buffers, int tokens)
+{
+    const size_t qk_elems = static_cast<size_t>(tokens) * kGdnQHeads * kGdnKeyDim;
+    const size_t v_elems = static_cast<size_t>(tokens) * kGdnVHeads * kGdnValueDim;
+    const size_t gate_elems = static_cast<size_t>(tokens) * kGdnVHeads;
+    const size_t state_elems
+        = static_cast<size_t>(kGdnStateSlots) * kGdnVHeads * kGdnValueDim * kGdnKeyDim;
+
+    std::vector<uint16_t> h_q(qk_elems);
+    std::vector<uint16_t> h_k(qk_elems);
+    std::vector<uint16_t> h_v(v_elems);
+    std::vector<uint16_t> h_a(gate_elems);
+    std::vector<uint16_t> h_b(gate_elems);
+    std::vector<float> h_a_log(kGdnVHeads, 0.0f);
+    std::vector<float> h_dt_bias(kGdnVHeads, 0.0f);
+    std::vector<uint16_t> h_state(state_elems, kBf16Zero);
+    std::vector<uint16_t> h_out(v_elems, kSentinel);
+    fill_gdn_inputs(h_q, h_k, h_v, h_a, h_b, tokens);
+
+    return copy_to_device(&buffers.q, h_q.data(), h_q.size(), "copy checked gdn q")
+        && copy_to_device(&buffers.k, h_k.data(), h_k.size(), "copy checked gdn k")
+        && copy_to_device(&buffers.v, h_v.data(), h_v.size(), "copy checked gdn v")
+        && copy_to_device(&buffers.a, h_a.data(), h_a.size(), "copy checked gdn a")
+        && copy_to_device(&buffers.b, h_b.data(), h_b.size(), "copy checked gdn b")
+        && copy_to_device(&buffers.a_log, h_a_log.data(), h_a_log.size(), "copy checked gdn A_log")
+        && copy_to_device(
+               &buffers.dt_bias,
+               h_dt_bias.data(),
+               h_dt_bias.size(),
+               "copy checked gdn dt_bias"
+        )
+        && copy_to_device(&buffers.state, h_state.data(), h_state.size(), "copy checked gdn state")
+        && copy_to_device(&buffers.out, h_out.data(), h_out.size(), "copy checked gdn out");
+}
+
+void test_checked_gdn_decode_rejects_invalid_state_index()
+{
+    qsfi_context* ctx = nullptr;
+    if (!make_context(&ctx))
+        return;
+
+    constexpr int tokens = 1;
+    const int32_t state_indices[] = { kGdnStateSlots };
+    checked_gdn_buffers buffers {};
+    int32_t* d_state_indices = nullptr;
+
+    const bool ok = make_checked_gdn_buffers(buffers, tokens)
+        && copy_to_device(
+                        &d_state_indices,
+                        state_indices,
+                        1,
+                        "copy checked gdn invalid decode state indices"
+        );
+
+    if (ok) {
+        qscu_gdn_decode_desc desc {};
+        desc.q = gdn_tensor3_bf16(buffers.q, tokens, kGdnQHeads, kGdnKeyDim);
+        desc.k = gdn_tensor3_bf16(buffers.k, tokens, kGdnKHeads, kGdnKeyDim);
+        desc.v = gdn_tensor3_bf16(buffers.v, tokens, kGdnVHeads, kGdnValueDim);
+        desc.a = gdn_tensor2_bf16(buffers.a, tokens, kGdnVHeads);
+        desc.b = gdn_tensor2_bf16(buffers.b, tokens, kGdnVHeads);
+        desc.a_log = gdn_tensor1_f32(buffers.a_log, kGdnVHeads);
+        desc.dt_bias = gdn_tensor1_f32(buffers.dt_bias, kGdnVHeads);
+        desc.state = gdn_state_tensor_bf16(buffers.state);
+        desc.state_indices = gdn_tensor1_i32(d_state_indices, tokens);
+        desc.out = gdn_tensor3_bf16(buffers.out, tokens, kGdnVHeads, kGdnValueDim);
+        desc.num_tokens = tokens;
+        desc.num_q_heads = kGdnQHeads;
+        desc.num_k_heads = kGdnKHeads;
+        desc.num_v_heads = kGdnVHeads;
+        desc.key_dim = kGdnKeyDim;
+        desc.value_dim = kGdnValueDim;
+        desc.state_layout = QSCU_GDN_STATE_LAYOUT_VK;
+        desc.scale = 1.0f;
+
+        check_invalid_arg_message(
+            ctx,
+            qscu_gdn_decode(ctx, &desc),
+            "gdn state indices",
+            "checked gdn decode rejects invalid state index"
+        );
+    }
+
+    cudaFree(d_state_indices);
+    free_checked_gdn_buffers(buffers);
+    qsfi_context_destroy(ctx);
+}
+
+void test_checked_gdn_prefill_rejects_invalid_seq_indptr()
+{
+    qsfi_context* ctx = nullptr;
+    if (!make_context(&ctx))
+        return;
+
+    constexpr int tokens = 2;
+    const int32_t seq_indptr[] = { 0, tokens + 1 };
+    const int32_t state_indices[] = { 0 };
+    checked_gdn_buffers buffers {};
+    int32_t* d_seq_indptr = nullptr;
+    int32_t* d_state_indices = nullptr;
+
+    const bool ok = make_checked_gdn_buffers(buffers, tokens)
+        && copy_to_device(
+                        &d_seq_indptr,
+                        seq_indptr,
+                        2,
+                        "copy checked gdn invalid prefill seq indptr"
+        )
+        && copy_to_device(
+                        &d_state_indices,
+                        state_indices,
+                        1,
+                        "copy checked gdn prefill state indices"
+        );
+
+    if (ok) {
+        qscu_gdn_prefill_desc desc {};
+        desc.q = gdn_tensor3_bf16(buffers.q, tokens, kGdnQHeads, kGdnKeyDim);
+        desc.k = gdn_tensor3_bf16(buffers.k, tokens, kGdnKHeads, kGdnKeyDim);
+        desc.v = gdn_tensor3_bf16(buffers.v, tokens, kGdnVHeads, kGdnValueDim);
+        desc.a = gdn_tensor2_bf16(buffers.a, tokens, kGdnVHeads);
+        desc.b = gdn_tensor2_bf16(buffers.b, tokens, kGdnVHeads);
+        desc.a_log = gdn_tensor1_f32(buffers.a_log, kGdnVHeads);
+        desc.dt_bias = gdn_tensor1_f32(buffers.dt_bias, kGdnVHeads);
+        desc.state = gdn_state_tensor_bf16(buffers.state);
+        desc.seq_indptr = d_seq_indptr;
+        desc.state_indices = gdn_tensor1_i32(d_state_indices, 1);
+        desc.out = gdn_tensor3_bf16(buffers.out, tokens, kGdnVHeads, kGdnValueDim);
+        desc.batch_size = 1;
+        desc.total_tokens = tokens;
+        desc.num_q_heads = kGdnQHeads;
+        desc.num_k_heads = kGdnKHeads;
+        desc.num_v_heads = kGdnVHeads;
+        desc.key_dim = kGdnKeyDim;
+        desc.value_dim = kGdnValueDim;
+        desc.state_layout = QSCU_GDN_STATE_LAYOUT_VK;
+        desc.scale = 1.0f;
+
+        check_invalid_arg_message(
+            ctx,
+            qscu_gdn_prefill(ctx, &desc),
+            "gdn seq_indptr",
+            "checked gdn prefill rejects invalid seq_indptr"
+        );
+    }
+
+    cudaFree(d_seq_indptr);
+    cudaFree(d_state_indices);
+    free_checked_gdn_buffers(buffers);
+    qsfi_context_destroy(ctx);
+}
+
+void run_checked_moe_route_negative(int32_t route_id, float route_weight, const char* what)
+{
+    qsfi_context* ctx = nullptr;
+    if (!make_context(&ctx))
+        return;
+
+    constexpr int tokens = 1;
+    constexpr int hidden = 8;
+    constexpr int intermediate = 8;
+    constexpr int experts = 2;
+    constexpr int top_k = 1;
+    constexpr size_t hidden_elems = static_cast<size_t>(tokens) * hidden;
+    constexpr size_t gate_up_elems = static_cast<size_t>(experts) * 2 * intermediate * hidden;
+    constexpr size_t down_elems = static_cast<size_t>(experts) * hidden * intermediate;
+
+    std::vector<uint16_t> h_hidden(hidden_elems, kBf16Zero);
+    std::vector<int32_t> h_topk_ids = { route_id };
+    std::vector<float> h_topk_weights = { route_weight };
+    std::vector<uint16_t> h_gate_up(gate_up_elems, kBf16Zero);
+    std::vector<uint16_t> h_down(down_elems, kBf16Zero);
+    std::vector<uint16_t> h_out(hidden_elems, kSentinel);
+
+    uint16_t* d_hidden = nullptr;
+    int32_t* d_topk_ids = nullptr;
+    float* d_topk_weights = nullptr;
+    uint16_t* d_gate_up = nullptr;
+    uint16_t* d_down = nullptr;
+    uint16_t* d_out = nullptr;
+    uint8_t* d_workspace = nullptr;
+    qsfi_moe_plan* plan = nullptr;
+
+    bool ok = copy_to_device(&d_hidden, h_hidden.data(), h_hidden.size(), "copy checked moe hidden")
+        && copy_to_device(
+                  &d_topk_ids,
+                  h_topk_ids.data(),
+                  h_topk_ids.size(),
+                  "copy checked moe topk ids"
+        )
+        && copy_to_device(
+                  &d_topk_weights,
+                  h_topk_weights.data(),
+                  h_topk_weights.size(),
+                  "copy checked moe topk weights"
+        )
+        && copy_to_device(&d_gate_up, h_gate_up.data(), h_gate_up.size(), "copy checked moe gate")
+        && copy_to_device(&d_down, h_down.data(), h_down.size(), "copy checked moe down")
+        && copy_to_device(&d_out, h_out.data(), h_out.size(), "copy checked moe out");
+
+    qsfi_moe_plan_desc plan_desc {};
+    plan_desc.backend = QSFI_MOE_BACKEND_FLASHINFER_STAGED_BF16;
+    plan_desc.route_mode = QSFI_MOE_ROUTE_PRECOMPUTED_TOPK;
+    plan_desc.max_num_tokens = tokens;
+    plan_desc.hidden_size = hidden;
+    plan_desc.intermediate_size = intermediate;
+    plan_desc.num_experts = experts;
+    plan_desc.top_k = top_k;
+    plan_desc.local_num_experts = experts;
+    plan_desc.activation_dtype = QSFI_DTYPE_BF16;
+    plan_desc.weight_dtype = QSFI_DTYPE_BF16;
+    plan_desc.output_dtype = QSFI_DTYPE_BF16;
+
+    if (ok)
+        ok = check_status(qsfi_moe_plan_create(ctx, &plan_desc, &plan), QSFI_STATUS_OK, what);
+
+    size_t workspace_bytes = 0;
+    if (ok) {
+        ok = check_status(
+                 qsfi_moe_workspace_size(ctx, plan, tokens, &workspace_bytes),
+                 QSFI_STATUS_OK,
+                 what
+             )
+            && alloc_device(&d_workspace, workspace_bytes, "alloc checked moe workspace");
+    }
+
+    if (ok) {
+        qsfi_moe_bf16_execute_desc desc {};
+        desc.hidden = tensor2_bf16(d_hidden, tokens, hidden);
+        desc.topk_ids = tensor2_i32(d_topk_ids, tokens, top_k);
+        desc.topk_weights = tensor2_f32(d_topk_weights, tokens, top_k);
+        desc.gate_up_weight = tensor3_bf16(d_gate_up, experts, 2 * intermediate, hidden);
+        desc.down_weight = tensor3_bf16(d_down, experts, hidden, intermediate);
+        desc.out = tensor2_bf16(d_out, tokens, hidden);
+        desc.workspace = tensor1_u8(d_workspace, static_cast<int64_t>(workspace_bytes));
+        desc.num_tokens = tokens;
+
+        check_invalid_arg_message(ctx, qsfi_moe_execute_bf16(ctx, plan, &desc), "MoE routes", what);
+    }
+
+    cudaFree(d_hidden);
+    cudaFree(d_topk_ids);
+    cudaFree(d_topk_weights);
+    cudaFree(d_gate_up);
+    cudaFree(d_down);
+    cudaFree(d_out);
+    cudaFree(d_workspace);
+    qsfi_moe_plan_destroy(plan);
+    qsfi_context_destroy(ctx);
+}
+
+void test_checked_moe_rejects_invalid_route_id()
+{
+    run_checked_moe_route_negative(
+        static_cast<int32_t>(2),
+        1.0f,
+        "checked moe rejects invalid route id"
+    );
+}
+
+void test_checked_moe_rejects_non_finite_route_weight()
+{
+    run_checked_moe_route_negative(
+        1,
+        std::numeric_limits<float>::quiet_NaN(),
+        "checked moe rejects non-finite route weight"
+    );
+}
+
+#endif
+
 #include "tests_cuda_flashinfer_norm_rope.inc"
 #include "tests_cuda_qscb_gemm.inc"
 #include "tests_cuda_qscu_gdn_router.inc"
@@ -1069,6 +1534,14 @@ int main()
     test_gdn_decode_one_hot_recurrence();
     test_gdn_prefill_two_token_recurrence();
     test_moe_bf16_staged_grouped_gemm();
+#if QSFI_ENABLE_CHECKED_VALIDATION
+    test_checked_append_decode_rejects_invalid_page_id();
+    test_checked_append_prefill_rejects_invalid_position();
+    test_checked_gdn_decode_rejects_invalid_state_index();
+    test_checked_gdn_prefill_rejects_invalid_seq_indptr();
+    test_checked_moe_rejects_invalid_route_id();
+    test_checked_moe_rejects_non_finite_route_weight();
+#endif
     test_qsfi_rmsnorm_bf16_matches_cpu();
     test_qsfi_fused_add_rmsnorm_bf16_inplace_updates_residual();
     test_qsfi_fused_add_rmsnorm_rejects_non_alias_out();
