@@ -122,6 +122,12 @@ impl QwenConfig {
         Ok(())
     }
 
+    fn resolved_device_config(&self) -> Result<Self, Status> {
+        let mut config = *self;
+        config.device_ordinal = resolve_device_ordinal(config.device_ordinal)?;
+        Ok(config)
+    }
+
     fn kv_hidden_size(&self) -> Result<u32, Status> {
         checked_u32_product(&[self.num_kv_heads, self.head_dim])
     }
@@ -176,6 +182,7 @@ pub struct QwenWeights {
 impl QwenWeights {
     pub fn random_bf16(config: &QwenConfig, seed: u64) -> Result<Self, Status> {
         config.validate()?;
+        let config = config.resolved_device_config()?;
         let mut rng = DeterministicRng::new(seed);
         let device = config.device_ordinal;
         let stream = config.stream;
@@ -269,7 +276,7 @@ impl QwenWeights {
         }
 
         Ok(Self {
-            config: *config,
+            config,
             token_embedding,
             final_norm,
             lm_head,
@@ -369,6 +376,7 @@ pub struct ModelRunner {
 impl ModelRunner {
     pub fn new(config: QwenConfig, weights: QwenWeights) -> Result<Self, Status> {
         config.validate()?;
+        let config = config.resolved_device_config()?;
         weights.validate_for(&config)?;
         let engine = Engine::new(config.engine_config())?;
         let mut qscb_workspace = DeviceBuffer::empty(config.device_ordinal);
@@ -1057,13 +1065,13 @@ impl<T> DeviceBuffer<T> {
     }
 
     fn ensure(&mut self, len: usize) -> Result<(), Status> {
+        activate_device(self.device_ordinal)?;
         if len == 0 || self.cap >= len {
             return Ok(());
         }
         let bytes = len
             .checked_mul(mem::size_of::<T>())
             .ok_or(Status::InvalidArgument)?;
-        activate_device(self.device_ordinal)?;
         let mut next = ptr::null_mut();
         result_from_cuda(unsafe { cuda::cudaMalloc(&mut next, bytes) })?;
         if !self.ptr.is_null() {
@@ -1105,6 +1113,7 @@ impl<T> DeviceBuffer<T> {
         if self.ptr.is_null() || out.len() > self.cap {
             return Err(Status::InvalidArgument);
         }
+        activate_device(self.device_ordinal)?;
         result_from_cuda(unsafe {
             cuda::cudaMemcpyAsync(
                 out.as_mut_ptr().cast(),
@@ -1229,6 +1238,15 @@ fn activate_device(device_ordinal: i32) -> Result<(), Status> {
         return Ok(());
     }
     result_from_cuda(unsafe { cuda::cudaSetDevice(device_ordinal) })
+}
+
+fn resolve_device_ordinal(device_ordinal: i32) -> Result<i32, Status> {
+    if device_ordinal >= 0 {
+        return Ok(device_ordinal);
+    }
+    let mut current = 0;
+    result_from_cuda(unsafe { cuda::cudaGetDevice(&mut current) })?;
+    Ok(current)
 }
 
 fn synchronize_stream(stream: *mut c_void) -> Result<(), Status> {

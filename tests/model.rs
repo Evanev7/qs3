@@ -35,17 +35,28 @@ fn assert_cuda(err: i32, what: &str) {
 }
 
 fn cuda_device_available() -> bool {
-    let mut device_count = 0;
-    let err = unsafe { cudaGetDeviceCount(&mut device_count) };
-    if err != CUDA_SUCCESS || device_count == 0 {
-        eprintln!(
-            "SKIP: no CUDA device available: {} ({err})",
-            cuda_error_string(err)
-        );
+    let Some(device_count) = cuda_device_count() else {
+        return false;
+    };
+    if device_count == 0 {
+        eprintln!("SKIP: no CUDA device available");
         return false;
     }
     assert_cuda(unsafe { cudaSetDevice(0) }, "set CUDA test device");
     true
+}
+
+fn cuda_device_count() -> Option<i32> {
+    let mut device_count = 0;
+    let err = unsafe { cudaGetDeviceCount(&mut device_count) };
+    if err != CUDA_SUCCESS {
+        eprintln!(
+            "SKIP: CUDA device count unavailable: {} ({err})",
+            cuda_error_string(err)
+        );
+        return None;
+    }
+    Some(device_count)
 }
 
 fn run_random_model(
@@ -357,4 +368,102 @@ fn qwen_weights_are_bound_to_device_and_stream_config() {
         ModelRunner::new(mismatched_stream, weights).err(),
         Some(Status::InvalidArgument)
     );
+}
+
+#[test]
+fn current_device_sentinel_is_resolved_for_weights_and_runner() {
+    if !cuda_device_available() {
+        return;
+    }
+
+    let explicit = QwenConfig::tiny_random_test(0);
+    let sentinel = QwenConfig::tiny_random_test(-1);
+
+    assert_cuda(
+        unsafe { cudaSetDevice(0) },
+        "set CUDA current device before sentinel weights",
+    );
+    let weights = QwenWeights::random_bf16(&sentinel, RANDOM_MODEL_SEED).unwrap();
+    let runner = ModelRunner::new(explicit, weights).unwrap();
+    drop(runner);
+
+    assert_cuda(
+        unsafe { cudaSetDevice(0) },
+        "set CUDA current device before sentinel runner",
+    );
+    let weights = QwenWeights::random_bf16(&explicit, RANDOM_MODEL_SEED).unwrap();
+    let runner = ModelRunner::new(sentinel, weights).unwrap();
+    drop(runner);
+}
+
+#[test]
+fn sentinel_weights_reject_runner_after_current_device_switch() {
+    let Some(device_count) = cuda_device_count() else {
+        return;
+    };
+    if device_count < 2 {
+        eprintln!("SKIP: requires at least two CUDA devices");
+        return;
+    }
+
+    let sentinel = QwenConfig::tiny_random_test(-1);
+    assert_cuda(
+        unsafe { cudaSetDevice(0) },
+        "set CUDA current device before sentinel weights",
+    );
+    let weights = QwenWeights::random_bf16(&sentinel, RANDOM_MODEL_SEED).unwrap();
+
+    assert_cuda(
+        unsafe { cudaSetDevice(1) },
+        "switch CUDA current device before runner",
+    );
+    assert_eq!(
+        ModelRunner::new(sentinel, weights).err(),
+        Some(Status::InvalidArgument)
+    );
+    assert_cuda(unsafe { cudaSetDevice(0) }, "restore CUDA test device");
+}
+
+#[test]
+fn runner_reactivates_bound_device_when_reusing_buffers() {
+    let Some(device_count) = cuda_device_count() else {
+        return;
+    };
+    if device_count < 2 {
+        eprintln!("SKIP: requires at least two CUDA devices");
+        return;
+    }
+
+    assert_cuda(
+        unsafe { cudaSetDevice(0) },
+        "set CUDA current device before runner",
+    );
+    let config = QwenConfig::tiny_random_test(0);
+    let mut runner = ModelRunner::random_bf16(config, RANDOM_MODEL_SEED).unwrap();
+    let first = runner
+        .run(QwenRequest {
+            request_id: 61,
+            tokens: &[1, 2, 3],
+            max_new_tokens: 0,
+        })
+        .unwrap();
+
+    assert_cuda(
+        unsafe { cudaSetDevice(1) },
+        "switch CUDA current device before buffer reuse",
+    );
+    let continued = runner
+        .run(QwenRequest {
+            request_id: 61,
+            tokens: &first.live_tokens,
+            max_new_tokens: 1,
+        })
+        .unwrap();
+
+    assert_eq!(continued.generated_tokens.len(), 1);
+    assert_eq!(
+        &continued.live_tokens[..first.live_tokens.len()],
+        first.live_tokens
+    );
+    assert_cuda(unsafe { cudaSetDevice(0) }, "restore CUDA test device");
 }
