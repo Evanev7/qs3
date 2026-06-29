@@ -9,6 +9,22 @@ impl Engine {
     pub(crate) fn kernel_ops(&mut self) -> runtime::kernels::KernelOps<'_> {
         self.inner.kernel_ops()
     }
+
+    pub(crate) fn complete_append_layer_without_attention(
+        &mut self,
+        layer_idx: u32,
+    ) -> Result<(), Status> {
+        self.inner
+            .complete_append_layer_without_attention(layer_idx)
+    }
+
+    pub(crate) fn complete_decode_layer_without_attention(
+        &mut self,
+        layer_idx: u32,
+    ) -> Result<(), Status> {
+        self.inner
+            .complete_decode_layer_without_attention(layer_idx)
+    }
 }
 
 pub trait EngineTrait {

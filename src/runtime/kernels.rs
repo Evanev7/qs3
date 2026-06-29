@@ -5,6 +5,8 @@ use crate::{
     ffi::{self, qscb, qscu, qsfi},
 };
 
+use super::device_tensor::{DMat, DTensor3, DVec};
+
 use std::ptr;
 
 const QWEN36_GDN_NUM_Q_HEADS: u32 = 16;
@@ -18,6 +20,8 @@ const QWEN36_GDN_PACKED_DIM: u32 =
     2 * QWEN36_GDN_NUM_K_HEADS * QWEN36_GDN_KEY_DIM + QWEN36_GDN_NUM_V_HEADS * QWEN36_GDN_VALUE_DIM;
 const ROUTER_MAX_TOP_K: u32 = 16;
 const ROUTER_MAX_EXPERTS: u32 = 4096;
+
+pub(crate) type MoePlan = qsfi::MoePlan;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct Workspace {
@@ -45,101 +49,16 @@ impl Workspace {
         }
         Ok(())
     }
-}
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct DVec<const DTYPE: ffi::DTypeRaw> {
-    data: ffi::DevicePtr,
-    len: u32,
-    stride: u32,
-}
-
-impl<const DT: ffi::DTypeRaw> DVec<DT> {
-    pub(crate) fn contiguous(data: ffi::DevicePtr, len: u32) -> Result<Self, Status> {
-        Self::new(data, len, 1)
-    }
-
-    pub(crate) fn new(data: ffi::DevicePtr, len: u32, stride: u32) -> Result<Self, Status> {
-        validate_ptr(data)?;
-        validate_nonzero(&[len, stride])?;
-        Ok(Self { data, len, stride })
-    }
-
-    fn tensor(self) -> ffi::Tensor1 {
-        ffi::Tensor1 {
+    fn tensor(self, dtype: ffi::DTypeRaw) -> Result<ffi::Tensor1, Status> {
+        self.validate()?;
+        let len = i64::try_from(self.bytes).map_err(|_| Status::InvalidArgument)?;
+        Ok(ffi::Tensor1 {
             data: self.data,
-            dtype: DT,
-            shape: [self.len.into()],
-            stride: [self.stride.into()],
-        }
-    }
-
-    fn is_contiguous(self) -> bool {
-        self.stride == 1
-    }
-    fn require_contiguous(&self) -> Result<(), Status> {
-        if !self.is_contiguous() {
-            Err(Status::InvalidArgument)
-        } else {
-            Ok(())
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct DMat<const DTYPE: ffi::DTypeRaw> {
-    data: ffi::DevicePtr,
-    rows: u32,
-    cols: u32,
-    row_stride: u32,
-}
-
-impl<const DT: ffi::DTypeRaw> DMat<DT> {
-    pub(crate) fn contiguous(data: ffi::DevicePtr, rows: u32, cols: u32) -> Result<Self, Status> {
-        Self::new(data, rows, cols, cols)
-    }
-
-    pub(crate) fn new(
-        data: ffi::DevicePtr,
-        rows: u32,
-        cols: u32,
-        row_stride: u32,
-    ) -> Result<Self, Status> {
-        validate_ptr(data)?;
-        validate_nonzero(&[rows, cols, row_stride])?;
-        if row_stride < cols {
-            return Err(Status::InvalidArgument);
-        }
-        Ok(Self {
-            data,
-            rows,
-            cols,
-            row_stride,
+            dtype,
+            shape: [len],
+            stride: [1],
         })
-    }
-
-    fn tensor(self) -> ffi::Tensor2 {
-        ffi::Tensor2 {
-            data: self.data,
-            dtype: DT,
-            shape: [self.rows.into(), self.cols.into()],
-            stride: [self.row_stride.into(), 1],
-        }
-    }
-
-    fn same_shape<const T: ffi::DTypeRaw>(self, other: DMat<T>) -> bool {
-        self.rows == other.rows && self.cols == other.cols
-    }
-
-    fn is_contiguous(self) -> bool {
-        self.row_stride == self.cols
-    }
-    fn require_contiguous(&self) -> Result<(), Status> {
-        if !self.is_contiguous() {
-            Err(Status::InvalidArgument)
-        } else {
-            Ok(())
-        }
     }
 }
 
@@ -557,6 +476,30 @@ impl<'a> KernelOps<'a> {
     pub(crate) unsafe fn gdn_prefill_bf16(&mut self, desc: &GdnPrefillBf16) -> Result<(), Status> {
         unsafe { qscu::gdn_prefill(self.qsfi, &desc.raw) }
     }
+
+    pub(crate) unsafe fn create_moe_bf16_plan(
+        &mut self,
+        config: MoeBf16PlanConfig,
+    ) -> Result<MoePlan, Status> {
+        let desc = config.desc()?;
+        unsafe { self.qsfi.create_moe_plan(&desc) }
+    }
+
+    pub(crate) unsafe fn moe_workspace_size(
+        &mut self,
+        plan: &MoePlan,
+        num_tokens: u32,
+    ) -> Result<usize, Status> {
+        unsafe { self.qsfi.moe_workspace_size(plan, num_tokens) }
+    }
+
+    pub(crate) unsafe fn moe_execute_bf16(
+        &mut self,
+        plan: &MoePlan,
+        desc: &MoeBf16Execute,
+    ) -> Result<(), Status> {
+        unsafe { self.qsfi.moe_execute_bf16(plan, &desc.raw) }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -741,6 +684,93 @@ impl RouterTopK {
                 score: score.raw(),
                 renormalize: u32::from(renormalize),
                 routed_scaling_factor,
+            },
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct MoeBf16PlanConfig {
+    pub(crate) max_num_tokens: u32,
+    pub(crate) hidden_size: u32,
+    pub(crate) intermediate_size: u32,
+    pub(crate) num_experts: u32,
+    pub(crate) top_k: u32,
+}
+
+impl MoeBf16PlanConfig {
+    fn desc(self) -> Result<ffi::MoePlanDesc, Status> {
+        validate_nonzero(&[
+            self.max_num_tokens,
+            self.hidden_size,
+            self.intermediate_size,
+            self.num_experts,
+            self.top_k,
+        ])?;
+        if self.top_k > self.num_experts {
+            return Err(Status::InvalidArgument);
+        }
+        Ok(ffi::MoePlanDesc {
+            backend: ffi::MOE_BACKEND_FLASHINFER_STAGED_BF16,
+            route_mode: ffi::MOE_ROUTE_PRECOMPUTED_TOPK,
+            max_num_tokens: self.max_num_tokens,
+            hidden_size: self.hidden_size,
+            intermediate_size: self.intermediate_size,
+            num_experts: self.num_experts,
+            top_k: self.top_k,
+            local_expert_offset: 0,
+            local_num_experts: self.num_experts,
+            activation_dtype: ffi::DTYPE_BF16,
+            weight_dtype: ffi::DTYPE_BF16,
+            output_dtype: ffi::DTYPE_BF16,
+            reserved0: 0,
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct MoeBf16ExecuteArgs {
+    pub(crate) hidden: DMat<{ ffi::DTYPE_BF16 }>,
+    pub(crate) topk_ids: DMat<{ ffi::DTYPE_I32 }>,
+    pub(crate) topk_weights: DMat<{ ffi::DTYPE_F32 }>,
+    pub(crate) gate_up_weight: DTensor3<{ ffi::DTYPE_BF16 }>,
+    pub(crate) down_weight: DTensor3<{ ffi::DTYPE_BF16 }>,
+    pub(crate) out: DMat<{ ffi::DTYPE_BF16 }>,
+    pub(crate) workspace: Workspace,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct MoeBf16Execute {
+    raw: ffi::MoeBf16ExecuteDesc,
+}
+
+impl MoeBf16Execute {
+    pub(crate) fn new(args: MoeBf16ExecuteArgs) -> Result<Self, Status> {
+        args.hidden.require_contiguous()?;
+        args.topk_ids.require_contiguous()?;
+        args.topk_weights.require_contiguous()?;
+        args.gate_up_weight.require_contiguous()?;
+        args.down_weight.require_contiguous()?;
+        args.out.require_contiguous()?;
+        if args.hidden.rows == 0
+            || args.topk_ids.rows != args.hidden.rows
+            || args.topk_weights.rows != args.hidden.rows
+            || args.topk_ids.cols != args.topk_weights.cols
+            || args.topk_ids.cols == 0
+            || !args.hidden.same_shape(args.out)
+        {
+            return Err(Status::InvalidArgument);
+        }
+        Ok(Self {
+            raw: ffi::MoeBf16ExecuteDesc {
+                hidden: args.hidden.tensor(),
+                topk_ids: args.topk_ids.tensor(),
+                topk_weights: args.topk_weights.tensor(),
+                gate_up_weight: args.gate_up_weight.tensor(),
+                down_weight: args.down_weight.tensor(),
+                out: args.out.tensor(),
+                workspace: args.workspace.tensor(ffi::DTYPE_U8)?,
+                num_tokens: args.hidden.rows,
             },
         })
     }

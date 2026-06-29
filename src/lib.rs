@@ -9,4 +9,4 @@ pub use engine::{
     AppendBatch, BatchKind, Commit, CoreState, DType, DecodeBatch, Engine, EngineConfig,
     EngineLayer, EngineTrait, KvLayout, RequestId, Status,
 };
-pub use model::{ModelRunner, QwenConfig, QwenRequest, QwenResult, QwenWeights};
+pub use model::{ModelRunner, QwenConfig, QwenMoeConfig, QwenRequest, QwenResult, QwenWeights};

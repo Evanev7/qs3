@@ -17,5 +17,11 @@ unsafe extern "C" {
         kind: i32,
         stream: *mut c_void,
     ) -> i32;
+    pub(crate) fn cudaMemsetAsync(
+        dev_ptr: *mut c_void,
+        value: i32,
+        count: usize,
+        stream: *mut c_void,
+    ) -> i32;
     pub(crate) fn cudaStreamSynchronize(stream: *mut c_void) -> i32;
 }

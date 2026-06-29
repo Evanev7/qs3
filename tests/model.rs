@@ -1,4 +1,4 @@
-use qs3::{ModelRunner, QwenConfig, QwenRequest, QwenResult, QwenWeights, Status};
+use qs3::{ModelRunner, QwenConfig, QwenMoeConfig, QwenRequest, QwenResult, QwenWeights, Status};
 
 use std::ffi::{CStr, c_char};
 
@@ -81,7 +81,7 @@ fn randomized_dense_model_runs_prefill_and_two_decodes() {
         return;
     }
 
-    let config = QwenConfig::tiny_random_test(0);
+    let config = QwenConfig::randomized_dense_tiny_fixture(0);
     let mut runner = ModelRunner::random_bf16(config, RANDOM_MODEL_SEED).unwrap();
 
     assert_eq!(
@@ -140,12 +140,224 @@ fn randomized_dense_model_runs_prefill_and_two_decodes() {
 }
 
 #[test]
+fn randomized_qwen_gdn_model_runs_prefill_decode_rebuild_and_failed_rewrite() {
+    if !cuda_device_available() {
+        return;
+    }
+
+    let config = QwenConfig::randomized_qwen36_moe_gdn_one_block_fixture(0);
+    let mut runner = ModelRunner::random_bf16(config, RANDOM_MODEL_SEED).unwrap();
+
+    let prefill = runner
+        .run(QwenRequest {
+            request_id: 171,
+            tokens: &[1, 7, 13],
+            max_new_tokens: 0,
+        })
+        .unwrap();
+    assert!(prefill.generated_tokens.is_empty());
+    assert_eq!(prefill.live_tokens, vec![1, 7, 13]);
+    assert_eq!(prefill.logits_rows, 3);
+    assert_eq!(prefill.logits_vocab_size, config.vocab_size);
+
+    let decoded = runner
+        .run(QwenRequest {
+            request_id: 171,
+            tokens: &prefill.live_tokens,
+            max_new_tokens: 2,
+        })
+        .unwrap();
+    assert_eq!(decoded.generated_tokens.len(), 2);
+    assert_eq!(decoded.live_tokens.len(), 5);
+    assert_eq!(
+        &decoded.live_tokens[..prefill.live_tokens.len()],
+        [1, 7, 13]
+    );
+    for token in &decoded.generated_tokens {
+        assert!(*token >= 0 && *token < config.vocab_size as i32);
+    }
+
+    let first = run_random_model(config, 173, &[3, 5, 8], 2);
+    let second = run_random_model(config, 173, &[3, 5, 8], 2);
+    assert_eq!(first, second);
+
+    let original = runner
+        .run(QwenRequest {
+            request_id: 179,
+            tokens: &[2, 4, 6],
+            max_new_tokens: 2,
+        })
+        .unwrap();
+    assert_eq!(original.live_tokens.len(), 5);
+
+    let rewritten_prompt = [2, 5, 6];
+    let rebuilt = runner
+        .run(QwenRequest {
+            request_id: 179,
+            tokens: &rewritten_prompt,
+            max_new_tokens: 2,
+        })
+        .unwrap();
+    let fresh = run_random_model(config, 179, &rewritten_prompt, 2);
+    assert_eq!(rebuilt, fresh);
+
+    let live_before_failed_rewrite = runner.live_tokens().to_vec();
+    assert_eq!(
+        runner
+            .run(QwenRequest {
+                request_id: 179,
+                tokens: &[2, config.vocab_size as i32, 6],
+                max_new_tokens: 1,
+            })
+            .unwrap_err(),
+        Status::InvalidArgument
+    );
+    assert_eq!(runner.live_tokens(), live_before_failed_rewrite.as_slice());
+
+    let continued = runner
+        .run(QwenRequest {
+            request_id: 179,
+            tokens: &live_before_failed_rewrite,
+            max_new_tokens: 1,
+        })
+        .unwrap();
+    let fresh_continued = run_random_model(config, 179, &live_before_failed_rewrite, 1);
+    assert_eq!(continued, fresh_continued);
+
+    runner.reset().unwrap();
+    assert!(runner.live_tokens().is_empty());
+    let after_reset = runner
+        .run(QwenRequest {
+            request_id: 181,
+            tokens: &[1, 2],
+            max_new_tokens: 1,
+        })
+        .unwrap();
+    let fresh_after_reset = run_random_model(config, 181, &[1, 2], 1);
+    assert_eq!(after_reset, fresh_after_reset);
+
+    runner.release_requests(&[181]).unwrap();
+    assert!(runner.live_tokens().is_empty());
+    let after_release = runner
+        .run(QwenRequest {
+            request_id: 181,
+            tokens: &[1, 2],
+            max_new_tokens: 1,
+        })
+        .unwrap();
+    assert_eq!(after_release, fresh_after_reset);
+
+    assert_cuda(
+        unsafe { cudaDeviceSynchronize() },
+        "sync randomized qwen GDN model test",
+    );
+}
+
+#[test]
+fn randomized_moe_model_runs_prefill_decode_rebuild_and_failed_rewrite() {
+    if !cuda_device_available() {
+        return;
+    }
+
+    let config = QwenConfig::randomized_moe_tiny_fixture(0);
+    let mut runner = ModelRunner::random_bf16(config, RANDOM_MODEL_SEED).unwrap();
+
+    let prefill = runner
+        .run(QwenRequest {
+            request_id: 71,
+            tokens: &[1, 7, 13],
+            max_new_tokens: 0,
+        })
+        .unwrap();
+    assert!(prefill.generated_tokens.is_empty());
+    assert_eq!(prefill.live_tokens, vec![1, 7, 13]);
+    assert_eq!(prefill.logits_rows, 3);
+    assert_eq!(prefill.logits_vocab_size, config.vocab_size);
+
+    let decoded = runner
+        .run(QwenRequest {
+            request_id: 71,
+            tokens: &prefill.live_tokens,
+            max_new_tokens: 2,
+        })
+        .unwrap();
+    assert_eq!(decoded.generated_tokens.len(), 2);
+    assert_eq!(decoded.live_tokens.len(), 5);
+    assert_eq!(
+        &decoded.live_tokens[..prefill.live_tokens.len()],
+        [1, 7, 13]
+    );
+    for token in &decoded.generated_tokens {
+        assert!(*token >= 0 && *token < config.vocab_size as i32);
+    }
+
+    let first = run_random_model(config, 73, &[3, 5, 8, 13], 2);
+    let second = run_random_model(config, 73, &[3, 5, 8, 13], 2);
+    assert_eq!(first, second);
+    assert_eq!(first.generated_tokens.len(), 2);
+
+    let original = runner
+        .run(QwenRequest {
+            request_id: 79,
+            tokens: &[2, 4, 6, 8],
+            max_new_tokens: 2,
+        })
+        .unwrap();
+    assert_eq!(original.live_tokens.len(), 6);
+
+    let rewritten_prompt = [2, 4, 9, 8];
+    let rebuilt = runner
+        .run(QwenRequest {
+            request_id: 79,
+            tokens: &rewritten_prompt,
+            max_new_tokens: 2,
+        })
+        .unwrap();
+    let fresh = run_random_model(config, 79, &rewritten_prompt, 2);
+    assert_eq!(rebuilt.generated_tokens, fresh.generated_tokens);
+    assert_eq!(rebuilt.live_tokens, fresh.live_tokens);
+    assert_eq!(rebuilt.logits_rows, fresh.logits_rows);
+    assert_eq!(rebuilt.logits_vocab_size, fresh.logits_vocab_size);
+
+    let live_before_failed_rewrite = runner.live_tokens().to_vec();
+    assert_eq!(
+        runner
+            .run(QwenRequest {
+                request_id: 79,
+                tokens: &[2, config.vocab_size as i32, 9, 8],
+                max_new_tokens: 1,
+            })
+            .unwrap_err(),
+        Status::InvalidArgument
+    );
+    assert_eq!(runner.live_tokens(), live_before_failed_rewrite.as_slice());
+
+    let continued = runner
+        .run(QwenRequest {
+            request_id: 79,
+            tokens: &live_before_failed_rewrite,
+            max_new_tokens: 1,
+        })
+        .unwrap();
+    assert_eq!(continued.generated_tokens.len(), 1);
+    assert_eq!(
+        &continued.live_tokens[..live_before_failed_rewrite.len()],
+        live_before_failed_rewrite.as_slice()
+    );
+
+    assert_cuda(
+        unsafe { cudaDeviceSynchronize() },
+        "sync randomized MoE model test",
+    );
+}
+
+#[test]
 fn randomized_dense_model_is_repeatable_for_same_seed_and_request() {
     if !cuda_device_available() {
         return;
     }
 
-    let config = QwenConfig::tiny_random_test(0);
+    let config = QwenConfig::randomized_dense_tiny_fixture(0);
     let first = run_random_model(config, 21, &[3, 5, 8, 13], 3);
     let second = run_random_model(config, 21, &[3, 5, 8, 13], 3);
 
@@ -168,7 +380,7 @@ fn prompt_rewrite_behind_live_tail_rebuilds_like_fresh_runner() {
         return;
     }
 
-    let config = QwenConfig::tiny_random_test(0);
+    let config = QwenConfig::randomized_dense_tiny_fixture(0);
     let mut runner = ModelRunner::random_bf16(config, RANDOM_MODEL_SEED).unwrap();
     let original = runner
         .run(QwenRequest {
@@ -210,7 +422,7 @@ fn failed_prompt_rewrite_keeps_previous_live_state() {
         return;
     }
 
-    let config = QwenConfig::tiny_random_test(0);
+    let config = QwenConfig::randomized_dense_tiny_fixture(0);
     let mut runner = ModelRunner::random_bf16(config, RANDOM_MODEL_SEED).unwrap();
     let original = runner
         .run(QwenRequest {
@@ -258,7 +470,7 @@ fn oversized_run_request_is_rejected_without_mutating_live_state() {
         return;
     }
 
-    let config = QwenConfig::tiny_random_test(0);
+    let config = QwenConfig::randomized_dense_tiny_fixture(0);
     let mut runner = ModelRunner::random_bf16(config, RANDOM_MODEL_SEED).unwrap();
     let original = runner
         .run(QwenRequest {
@@ -302,47 +514,147 @@ fn oversized_run_request_is_rejected_without_mutating_live_state() {
 
 #[test]
 fn qwen_config_rejects_unsupported_dense_runner_shapes() {
-    let mut config = QwenConfig::tiny_random_test(-1);
+    let mut config = QwenConfig::randomized_dense_tiny_fixture(-1);
     config.hidden_size = 96;
     assert_eq!(config.validate(), Err(Status::InvalidArgument));
 
-    let mut config = QwenConfig::tiny_random_test(-1);
+    let mut config = QwenConfig::randomized_dense_tiny_fixture(-1);
     config.max_batch_size = 2;
     assert_eq!(config.validate(), Err(Status::Unsupported));
 
-    let mut config = QwenConfig::tiny_random_test(-1);
+    let mut config = QwenConfig::randomized_dense_tiny_fixture(-1);
     config.head_dim = 80;
     config.hidden_size = config.num_q_heads * config.head_dim;
     assert_eq!(config.validate(), Err(Status::Unsupported));
 
     for head_dim in [128, 256, 512] {
-        let mut config = QwenConfig::tiny_random_test(-1);
+        let mut config = QwenConfig::randomized_dense_tiny_fixture(-1);
         config.head_dim = head_dim;
         config.hidden_size = config.num_q_heads * config.head_dim;
         assert_eq!(config.validate(), Err(Status::Unsupported));
     }
 
-    let mut config = QwenConfig::tiny_random_test(-1);
+    let mut config = QwenConfig::randomized_dense_tiny_fixture(-1);
     config.num_q_heads = 4;
     config.num_kv_heads = 2;
     config.hidden_size = config.num_q_heads * config.head_dim;
     assert_eq!(config.validate(), Err(Status::Unsupported));
 
-    let mut config = QwenConfig::tiny_random_test(-1);
+    let mut config = QwenConfig::randomized_dense_tiny_fixture(-1);
     config.rope_theta = 0.0;
     assert_eq!(config.validate(), Err(Status::InvalidArgument));
 
-    let mut config = QwenConfig::tiny_random_test(-1);
+    let mut config = QwenConfig::randomized_dense_tiny_fixture(-1);
     config.rope_scale = 0.0;
     assert_eq!(config.validate(), Err(Status::InvalidArgument));
 
-    let mut config = QwenConfig::tiny_random_test(-1);
+    let mut config = QwenConfig::randomized_dense_tiny_fixture(-1);
     config.logits_soft_cap = -1.0;
     assert_eq!(config.validate(), Err(Status::InvalidArgument));
 
-    let mut config = QwenConfig::tiny_random_test(-1);
+    let mut config = QwenConfig::randomized_dense_tiny_fixture(-1);
     config.logits_soft_cap = f32::INFINITY;
     assert_eq!(config.validate(), Err(Status::InvalidArgument));
+}
+
+#[test]
+fn qwen_config_validates_public_moe_config_json_fields() {
+    let tiny = QwenConfig::randomized_moe_tiny_fixture(-1);
+    assert_eq!(
+        tiny.moe,
+        Some(QwenMoeConfig {
+            num_experts: 4,
+            num_experts_per_tok: 2,
+            moe_intermediate_size: 64,
+            shared_expert_intermediate_size: 0,
+        })
+    );
+
+    let qwen36 = QwenConfig::randomized_qwen36_moe_gdn_one_block_fixture(-1);
+    assert_eq!(qwen36.moe, Some(QwenMoeConfig::qwen36_35b_a3b()));
+
+    let mut config = QwenConfig::randomized_moe_tiny_fixture(-1);
+    config.moe = Some(QwenMoeConfig {
+        num_experts: 4,
+        num_experts_per_tok: 0,
+        moe_intermediate_size: 64,
+        shared_expert_intermediate_size: 0,
+    });
+    assert_eq!(config.validate(), Err(Status::InvalidArgument));
+
+    let mut config = QwenConfig::randomized_moe_tiny_fixture(-1);
+    config.moe = Some(QwenMoeConfig {
+        num_experts: 4,
+        num_experts_per_tok: 5,
+        moe_intermediate_size: 64,
+        shared_expert_intermediate_size: 0,
+    });
+    assert_eq!(config.validate(), Err(Status::InvalidArgument));
+
+    let mut config = QwenConfig::randomized_moe_tiny_fixture(-1);
+    config.moe = Some(QwenMoeConfig {
+        num_experts: 32,
+        num_experts_per_tok: 17,
+        moe_intermediate_size: 64,
+        shared_expert_intermediate_size: 0,
+    });
+    assert_eq!(config.validate(), Err(Status::Unsupported));
+
+    let mut config = QwenConfig::randomized_moe_tiny_fixture(-1);
+    config.moe = Some(QwenMoeConfig {
+        num_experts: 4097,
+        num_experts_per_tok: 2,
+        moe_intermediate_size: 64,
+        shared_expert_intermediate_size: 0,
+    });
+    assert_eq!(config.validate(), Err(Status::Unsupported));
+
+    let mut config = QwenConfig::randomized_moe_tiny_fixture(-1);
+    config.moe = Some(QwenMoeConfig {
+        num_experts: 4,
+        num_experts_per_tok: 2,
+        moe_intermediate_size: 66,
+        shared_expert_intermediate_size: 0,
+    });
+    assert_eq!(config.validate(), Err(Status::InvalidArgument));
+
+    let mut config = QwenConfig::randomized_moe_tiny_fixture(-1);
+    config.moe = Some(QwenMoeConfig {
+        num_experts: 4,
+        num_experts_per_tok: 2,
+        moe_intermediate_size: 64,
+        shared_expert_intermediate_size: 66,
+    });
+    assert_eq!(config.validate(), Err(Status::InvalidArgument));
+
+    let mut config = QwenConfig::randomized_moe_tiny_fixture(-1);
+    config.intermediate_size = 256;
+    assert_eq!(config.validate(), Err(Status::InvalidArgument));
+
+    let mut config = QwenConfig::randomized_moe_tiny_fixture(-1);
+    config.moe = Some(QwenMoeConfig {
+        num_experts: 4,
+        num_experts_per_tok: 2,
+        moe_intermediate_size: 64,
+        shared_expert_intermediate_size: 64,
+    });
+    assert_eq!(config.validate(), Err(Status::Unsupported));
+}
+
+#[test]
+fn randomized_fixture_constructors_validate_supported_public_shapes() {
+    assert_eq!(
+        QwenConfig::randomized_dense_tiny_fixture(-1).validate(),
+        Ok(())
+    );
+    assert_eq!(
+        QwenConfig::randomized_moe_tiny_fixture(-1).validate(),
+        Ok(())
+    );
+    assert_eq!(
+        QwenConfig::randomized_qwen36_moe_gdn_one_block_fixture(-1).validate(),
+        Ok(())
+    );
 }
 
 #[test]
@@ -351,7 +663,7 @@ fn qwen_weights_are_bound_to_device_and_stream_config() {
         return;
     }
 
-    let config = QwenConfig::tiny_random_test(0);
+    let config = QwenConfig::randomized_dense_tiny_fixture(0);
     let weights = QwenWeights::random_bf16(&config, RANDOM_MODEL_SEED).unwrap();
 
     let mut mismatched_device = config;
@@ -376,8 +688,8 @@ fn current_device_sentinel_is_resolved_for_weights_and_runner() {
         return;
     }
 
-    let explicit = QwenConfig::tiny_random_test(0);
-    let sentinel = QwenConfig::tiny_random_test(-1);
+    let explicit = QwenConfig::randomized_dense_tiny_fixture(0);
+    let sentinel = QwenConfig::randomized_dense_tiny_fixture(-1);
 
     assert_cuda(
         unsafe { cudaSetDevice(0) },
@@ -406,7 +718,7 @@ fn sentinel_weights_reject_runner_after_current_device_switch() {
         return;
     }
 
-    let sentinel = QwenConfig::tiny_random_test(-1);
+    let sentinel = QwenConfig::randomized_dense_tiny_fixture(-1);
     assert_cuda(
         unsafe { cudaSetDevice(0) },
         "set CUDA current device before sentinel weights",
@@ -438,7 +750,7 @@ fn runner_reactivates_bound_device_when_reusing_buffers() {
         unsafe { cudaSetDevice(0) },
         "set CUDA current device before runner",
     );
-    let config = QwenConfig::tiny_random_test(0);
+    let config = QwenConfig::randomized_dense_tiny_fixture(0);
     let mut runner = ModelRunner::random_bf16(config, RANDOM_MODEL_SEED).unwrap();
     let first = runner
         .run(QwenRequest {
