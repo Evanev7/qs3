@@ -15,6 +15,8 @@ ground rules:
   runtime compatibility work. 
 
 current state:
+- `3pty` contains vendored kernels and refernce code
+- `target` is the rust build directory
 - `EngineCore` already owns request ids, sequence lengths, a page allocator,
   page tables, last-page lengths, append positions, and staged batch state.
 - `EngineCore` begin/commit/abort/reset/release paths should stay
