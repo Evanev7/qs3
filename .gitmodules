@@ -7,3 +7,6 @@
 [submodule "3pty/vllm"]
 	path = 3pty/vllm
 	url = https://github.com/vllm-project/vllm
+[submodule "3pty/InstantTensor"]
+	path = 3pty/InstantTensor
+	url = https://github.com/scitix/InstantTensor

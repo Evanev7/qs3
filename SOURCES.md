@@ -4,5 +4,7 @@ ds4:
 	https://github.com/antirez/ds4
 vllm:
 	https://github.com/vllm-project/vllm
+instanttensor:
+    https://github.com/scitix/InstantTensor
 recurrent-rollback:
     https://github.com/quivent/recurrent-rollback
