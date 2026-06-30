@@ -99,6 +99,16 @@ qsfi_tensor3 qscu_test_tensor3_f32(void* data, int64_t d0, int64_t d1, int64_t d
     return tensor;
 }
 
+qsfi_tensor1 qscu_test_tensor1_bf16(void* data, int64_t n)
+{
+    qsfi_tensor1 tensor {};
+    tensor.data = data;
+    tensor.dtype = QSFI_DTYPE_BF16;
+    tensor.shape[0] = n;
+    tensor.stride[0] = 1;
+    return tensor;
+}
+
 void* qscu_test_validation_ptr(uintptr_t tag)
 {
     return reinterpret_cast<void*>(0x1000u + tag * 0x1000u);
@@ -718,6 +728,85 @@ void test_qscu_qwen36_gdn_post_conv_prepare_bf16_cpu_reference()
                     );
                 }
             }
+
+            desc.apply_qk_l2norm = 0;
+            desc.g_out = qsfi_tensor2 {};
+            desc.beta_out = qsfi_tensor2 {};
+            desc.forget_gate_output = QSCU_GDN_FORGET_LINEAR_ALPHA;
+            if (check_status(
+                    qscu_qwen36_gdn_post_conv_prepare_bf16(&desc, nullptr),
+                    QSFI_STATUS_OK,
+                    "qscu post conv prepare no l2 optional gates"
+                )) {
+                check_cuda(cudaDeviceSynchronize(), "sync qscu post conv prepare no l2");
+                if (check_cuda(
+                        cudaMemcpy(
+                            h_q.data(),
+                            d_q,
+                            h_q.size() * sizeof(uint16_t),
+                            cudaMemcpyDeviceToHost
+                        ),
+                        "copy qscu post q no l2"
+                    )
+                    && check_cuda(
+                        cudaMemcpy(
+                            h_k.data(),
+                            d_k,
+                            h_k.size() * sizeof(uint16_t),
+                            cudaMemcpyDeviceToHost
+                        ),
+                        "copy qscu post k no l2"
+                    )
+                    && check_cuda(
+                        cudaMemcpy(
+                            h_v.data(),
+                            d_v,
+                            h_v.size() * sizeof(uint16_t),
+                            cudaMemcpyDeviceToHost
+                        ),
+                        "copy qscu post v no l2"
+                    )) {
+                    auto check_raw_qkv = [&](int token, float v_want) {
+                        qscu_test_check_bf16_near(
+                            h_q,
+                            gdn_qk_offset(token, kQHead, kDim0),
+                            bf16_to_f32(h_conv[qscu_test_packed_q_offset(token, kQHead, kDim0)]),
+                            0.0f,
+                            "qscu post no l2 q"
+                        );
+                        qscu_test_check_bf16_near(
+                            h_q,
+                            gdn_qk_offset(token, kQHead, kDim1),
+                            bf16_to_f32(h_conv[qscu_test_packed_q_offset(token, kQHead, kDim1)]),
+                            0.0f,
+                            "qscu post no l2 q"
+                        );
+                        qscu_test_check_bf16_near(
+                            h_k,
+                            gdn_qk_offset(token, kQHead, kDim0),
+                            bf16_to_f32(h_conv[qscu_test_packed_k_offset(token, kQHead, kDim0)]),
+                            0.0f,
+                            "qscu post no l2 k"
+                        );
+                        qscu_test_check_bf16_near(
+                            h_k,
+                            gdn_qk_offset(token, kQHead, kDim1),
+                            bf16_to_f32(h_conv[qscu_test_packed_k_offset(token, kQHead, kDim1)]),
+                            0.0f,
+                            "qscu post no l2 k"
+                        );
+                        qscu_test_check_bf16_near(
+                            h_v,
+                            gdn_v_offset(token, kVHead, kVDim),
+                            v_want,
+                            0.0f,
+                            "qscu post no l2 v"
+                        );
+                    };
+                    check_raw_qkv(0, 1.25f);
+                    check_raw_qkv(1, -2.5f);
+                }
+            }
         }
     }
 
@@ -746,12 +835,14 @@ void test_qscu_qwen36_gdn_rmsnorm_gated_bf16_cpu_reference()
     std::vector<uint16_t> h_x(static_cast<size_t>(kTokens) * kGdnVHeads * kGdnValueDim, kBf16Zero);
     std::vector<uint16_t> h_gate(h_x.size(), kBf16Zero);
     std::vector<float> h_weight(kGdnValueDim, 1.0f);
+    std::vector<uint16_t> h_weight_bf16(kGdnValueDim, kBf16One);
 
     float sum_squares = 0.0f;
     for (int i = 0; i < 4; ++i) {
         qscu_test_store_bf16(h_x, gdn_v_offset(0, kHead, dims[i]), x_values[i]);
         qscu_test_store_bf16(h_gate, gdn_v_offset(0, kHead, dims[i]), gate_values[i]);
         h_weight[dims[i]] = weight_values[i];
+        h_weight_bf16[dims[i]] = qscu_test_f32_to_bf16(weight_values[i]);
         const float x_bf16 = bf16_to_f32(h_x[gdn_v_offset(0, kHead, dims[i])]);
         sum_squares += x_bf16 * x_bf16;
     }
@@ -759,11 +850,18 @@ void test_qscu_qwen36_gdn_rmsnorm_gated_bf16_cpu_reference()
     uint16_t* d_x = nullptr;
     uint16_t* d_gate = nullptr;
     uint16_t* d_out = nullptr;
+    uint16_t* d_weight_bf16 = nullptr;
     float* d_weight = nullptr;
 
     const bool ok = copy_to_device(&d_x, h_x.data(), h_x.size(), "copy qscu rms x")
         && copy_to_device(&d_gate, h_gate.data(), h_gate.size(), "copy qscu rms gate")
         && copy_to_device(&d_weight, h_weight.data(), h_weight.size(), "copy qscu rms weight")
+        && copy_to_device(
+                        &d_weight_bf16,
+                        h_weight_bf16.data(),
+                        h_weight_bf16.size(),
+                        "copy qscu rms bf16 weight"
+        )
         && alloc_device(&d_out, h_x.size(), "alloc qscu rms out");
 
     if (ok) {
@@ -815,11 +913,46 @@ void test_qscu_qwen36_gdn_rmsnorm_gated_bf16_cpu_reference()
                 "qscu rms inactive out"
             );
         }
+
+        desc.weight = qscu_test_tensor1_bf16(d_weight_bf16, kGdnValueDim);
+        desc.gate_activation = QSCU_ACTIVATION_SIGMOID;
+        check_status(
+            qscu_qwen36_gdn_rmsnorm_gated_bf16(&desc, nullptr),
+            QSFI_STATUS_OK,
+            "qscu rmsnorm gated sigmoid bf16 weight"
+        );
+        check_cuda(cudaDeviceSynchronize(), "sync qscu rmsnorm gated sigmoid");
+        if (check_cuda(
+                cudaMemcpy(
+                    h_out.data(),
+                    d_out,
+                    h_out.size() * sizeof(uint16_t),
+                    cudaMemcpyDeviceToHost
+                ),
+                "copy qscu rms sigmoid out"
+            )) {
+            const float rstd
+                = 1.0f / std::sqrt(sum_squares / static_cast<float>(kGdnValueDim) + kEps);
+            for (int i = 0; i < 4; ++i) {
+                const size_t offset = gdn_v_offset(0, kHead, dims[i]);
+                const float x = bf16_to_f32(h_x[offset]);
+                const float gate = bf16_to_f32(h_gate[offset]);
+                const float weight = bf16_to_f32(h_weight_bf16[dims[i]]);
+                qscu_test_check_bf16_near(
+                    h_out,
+                    offset,
+                    x * rstd * weight * qscu_test_sigmoid(gate),
+                    0.04f,
+                    "qscu rms sigmoid out"
+                );
+            }
+        }
     }
 
     cudaFree(d_x);
     cudaFree(d_gate);
     cudaFree(d_weight);
+    cudaFree(d_weight_bf16);
     cudaFree(d_out);
 }
 
@@ -984,6 +1117,140 @@ void test_qscu_router_topk_cpu_reference()
     cudaFree(d_sigmoid_weights);
 }
 
+#if QSFI_ENABLE_CHECKED_VALIDATION
+
+void test_qscu_qwen36_gdn_causal_conv1d_bf16_checked_validation()
+{
+    constexpr int kTokens = 2;
+    constexpr int kBatchSize = 2;
+    constexpr int kStateSlots = 1;
+
+    std::vector<uint16_t> h_x(static_cast<size_t>(kTokens) * kQscuTestGdnPackedDim, kBf16Zero);
+    std::vector<uint16_t> h_weight(
+        static_cast<size_t>(kQscuTestGdnPackedDim) * kQscuTestConvWidth,
+        kBf16Zero
+    );
+    std::vector<float> h_state(
+        static_cast<size_t>(kStateSlots) * kQscuTestGdnPackedDim * kQscuTestConvState,
+        0.0f
+    );
+    const int32_t h_seq_indptr[kBatchSize + 1] = { 0, 1, 2 };
+    const int32_t h_bad_seq_indptr[kBatchSize + 1] = { 0, 2, 1 };
+    const int32_t h_indices[kBatchSize] = { 0, 0 };
+    const int32_t h_bad_read_indices[kBatchSize] = { kStateSlots, 0 };
+
+    uint16_t* d_x = nullptr;
+    uint16_t* d_weight = nullptr;
+    uint16_t* d_out = nullptr;
+    float* d_state = nullptr;
+    int32_t* d_read_indices = nullptr;
+    int32_t* d_write_indices = nullptr;
+    int32_t* d_seq_indptr = nullptr;
+
+    const bool ok = copy_to_device(&d_x, h_x.data(), h_x.size(), "copy qscu conv checked x")
+        && copy_to_device(
+                        &d_weight,
+                        h_weight.data(),
+                        h_weight.size(),
+                        "copy qscu conv checked weight"
+        )
+        && copy_to_device(
+                        &d_state,
+                        h_state.data(),
+                        h_state.size(),
+                        "copy qscu conv checked state"
+        )
+        && copy_to_device(
+                        &d_read_indices,
+                        h_indices,
+                        kBatchSize,
+                        "copy qscu conv checked read indices"
+        )
+        && copy_to_device(
+                        &d_write_indices,
+                        h_indices,
+                        kBatchSize,
+                        "copy qscu conv checked write indices"
+        )
+        && copy_to_device(
+                        &d_seq_indptr,
+                        h_seq_indptr,
+                        kBatchSize + 1,
+                        "copy qscu conv checked seq indptr"
+        )
+        && alloc_device(
+                        &d_out,
+                        static_cast<size_t>(kTokens) * kQscuTestGdnPackedDim,
+                        "alloc qscu conv checked out"
+        );
+
+    if (ok) {
+        qscu_qwen36_gdn_causal_conv1d_desc desc {};
+        desc.x = tensor2_bf16(d_x, kTokens, kQscuTestGdnPackedDim);
+        desc.weight = tensor2_bf16(d_weight, kQscuTestGdnPackedDim, kQscuTestConvWidth);
+        desc.state = qscu_test_tensor3_f32(
+            d_state,
+            kStateSlots,
+            kQscuTestGdnPackedDim,
+            kQscuTestConvState
+        );
+        desc.state_read_indices = gdn_tensor1_i32(d_read_indices, kBatchSize);
+        desc.state_write_indices = gdn_tensor1_i32(d_write_indices, kBatchSize);
+        desc.seq_indptr = d_seq_indptr;
+        desc.out = tensor2_bf16(d_out, kTokens, kQscuTestGdnPackedDim);
+        desc.num_tokens = kTokens;
+        desc.batch_size = kBatchSize;
+        desc.activation = QSCU_ACTIVATION_SILU;
+        desc.update_state = 1;
+
+        if (check_cuda(
+                cudaMemcpy(
+                    d_read_indices,
+                    h_bad_read_indices,
+                    sizeof(h_bad_read_indices),
+                    cudaMemcpyHostToDevice
+                ),
+                "copy qscu conv checked bad read index"
+            )) {
+            check_status(
+                qscu_qwen36_gdn_causal_conv1d_bf16(&desc, nullptr),
+                QSFI_STATUS_INVALID_ARGUMENT,
+                "qscu conv rejects invalid state index"
+            );
+        }
+
+        if (check_cuda(
+                cudaMemcpy(d_read_indices, h_indices, sizeof(h_indices), cudaMemcpyHostToDevice),
+                "restore qscu conv checked read indices"
+            )
+            && check_cuda(
+                cudaMemcpy(
+                    d_seq_indptr,
+                    h_bad_seq_indptr,
+                    sizeof(h_bad_seq_indptr),
+                    cudaMemcpyHostToDevice
+                ),
+                "copy qscu conv checked bad seq indptr"
+            )) {
+            check_status(
+                qscu_qwen36_gdn_causal_conv1d_bf16(&desc, nullptr),
+                QSFI_STATUS_INVALID_ARGUMENT,
+                "qscu conv rejects invalid seq indptr"
+            );
+        }
+    }
+
+    cudaFree(d_x);
+    cudaFree(d_weight);
+    cudaFree(d_state);
+    cudaFree(d_read_indices);
+    cudaFree(d_write_indices);
+    cudaFree(d_seq_indptr);
+    cudaFree(d_out);
+}
+
+#endif
+
 void test_qscu_gdn_router_validation_errors()
 {
     check_status(
@@ -1069,6 +1336,9 @@ void test_qscu_gdn_router_helpers()
     test_qscu_qwen36_gdn_post_conv_prepare_bf16_cpu_reference();
     test_qscu_qwen36_gdn_rmsnorm_gated_bf16_cpu_reference();
     test_qscu_router_topk_cpu_reference();
+#if QSFI_ENABLE_CHECKED_VALIDATION
+    test_qscu_qwen36_gdn_causal_conv1d_bf16_checked_validation();
+#endif
     test_qscu_gdn_router_validation_errors();
 }
 

@@ -35,6 +35,23 @@ typedef struct {
 qsfi_status qscu_silu_and_mul_bf16(const qscu_silu_and_mul_desc* desc, qsfi_cuda_stream stream);
 
 /*
+ * Qwen3.6 shared expert combine: out += sigmoid(gate_logits[row, 0]) * shared.
+ * gate_logits may be bf16/f32 [num_tokens, 1]. shared/out are bf16
+ * [num_tokens, hidden_size]. All tensors must be contiguous row-major.
+ */
+typedef struct {
+    qsfi_tensor2 gate_logits;
+    qsfi_tensor2 shared;
+    qsfi_tensor2 out;
+    uint32_t num_tokens;
+    uint32_t hidden_size;
+} qscu_qwen36_shared_expert_gate_add_desc;
+
+qsfi_status qscu_qwen36_shared_expert_gate_add_bf16(
+    const qscu_qwen36_shared_expert_gate_add_desc* desc, qsfi_cuda_stream stream
+);
+
+/*
  * BF16 embedding row gather. token_ids may be i32 or u32. In checked native
  * validation builds, validate_token_ids synchronizes the stream to report
  * out-of-range non-padding ids as QSFI_STATUS_INVALID_ARGUMENT. Unchecked
@@ -63,7 +80,11 @@ qsfi_status qscu_logits_soft_cap_f32(
 
 /*
  * Greedy F32 argmax only: temperature <= 0, no top-k/top-p/min-p, no logprobs.
- * Ties pick lowest id.
+ * Ties pick lowest id. Checked native validation builds reject non-finite
+ * logits. Release builds do not scan logits: NaN comparisons do not win,
+ * infinities follow CUDA floating-point comparisons, and an all-NaN row writes
+ * the internal UINT_MAX sentinel cast to the selected output dtype (-1 for i32,
+ * UINT_MAX for u32).
  */
 typedef struct {
     qsfi_tensor2 logits; /* f32 [batch, vocab_size]. */
@@ -230,6 +251,11 @@ qsfi_status qscu_qwen36_gdn_rmsnorm_gated_bf16(
 qsfi_status qscu_gdn_decode(qsfi_context* ctx, const qscu_gdn_decode_desc* desc);
 qsfi_status qscu_gdn_prefill(qsfi_context* ctx, const qscu_gdn_prefill_desc* desc);
 
+/*
+ * Checked native validation builds reject non-finite router logits before
+ * launching the router. Release builds do not scan logits; CUDA math and
+ * comparison behavior applies, so non-finite inputs may propagate to weights.
+ */
 qsfi_status qscu_router_topk(const qscu_router_topk_desc* desc, qsfi_cuda_stream stream);
 
 #ifdef __cplusplus

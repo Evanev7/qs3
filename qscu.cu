@@ -137,6 +137,76 @@ __device__ void store_bf16(__nv_bfloat16* ptr, float value)
     *ptr = __float2bfloat16(value);
 }
 
+#if QSFI_ENABLE_CHECKED_VALIDATION
+struct finite_tensor2_params {
+    const __nv_bfloat16* bf16;
+    const float* f32;
+    int64_t stride0;
+    int64_t stride1;
+    uint32_t cols;
+    int* error;
+};
+
+__device__ float
+load_finite_tensor2_value(const finite_tensor2_params& p, uint32_t row, uint32_t col)
+{
+    const int64_t offset
+        = static_cast<int64_t>(row) * p.stride0 + static_cast<int64_t>(col) * p.stride1;
+    if (p.f32 != nullptr)
+        return p.f32[offset];
+    return load_bf16(p.bf16 + offset);
+}
+
+__global__ void validate_finite_tensor2_kernel(finite_tensor2_params p)
+{
+    const uint32_t row = blockIdx.x;
+    for (uint32_t col = threadIdx.x; col < p.cols; col += blockDim.x) {
+        if (!isfinite(load_finite_tensor2_value(p, row, col)))
+            atomicExch(p.error, 1);
+    }
+}
+
+qsfi_status validate_finite_tensor2_contents(
+    const qsfi_tensor2& tensor,
+    uint32_t rows,
+    uint32_t cols,
+    cudaStream_t stream,
+    const char* invalid_message
+)
+{
+    qscu_status_reporter errors;
+    qsfi_checked_validation_flag validation(stream);
+    qsfi_status status = validation.reset(
+        errors,
+        "cudaMalloc finite tensor validation flag",
+        "cudaMemsetAsync finite tensor validation flag"
+    );
+    if (status != QSFI_STATUS_OK)
+        return status;
+
+    finite_tensor2_params params {};
+    if (tensor.dtype == QSFI_DTYPE_F32)
+        params.f32 = static_cast<const float*>(tensor.data);
+    else
+        params.bf16 = static_cast<const __nv_bfloat16*>(tensor.data);
+    params.stride0 = tensor.stride[0];
+    params.stride1 = tensor.stride[1];
+    params.cols = cols;
+    params.error = validation.device_ptr();
+
+    validate_finite_tensor2_kernel<<<rows, kElementwiseThreads, 0, stream>>>(params);
+    status = validation.check_launch(errors, "launch finite tensor validation");
+    if (status != QSFI_STATUS_OK)
+        return status;
+    return validation.finish(
+        errors,
+        "copy finite tensor validation flag",
+        "cudaFree finite tensor validation flag",
+        invalid_message
+    );
+}
+#endif
+
 template <typename T> __device__ float load_state(const T* ptr)
 {
     return static_cast<float>(*ptr);
@@ -190,6 +260,20 @@ struct silu_and_mul_params {
     uint64_t total_elements;
 };
 
+struct qwen36_shared_expert_gate_add_params {
+    const __nv_bfloat16* gate_bf16;
+    const float* gate_f32;
+    int64_t gate_stride0;
+    const __nv_bfloat16* shared;
+    int64_t shared_stride0;
+    int64_t shared_stride1;
+    __nv_bfloat16* out;
+    int64_t out_stride0;
+    int64_t out_stride1;
+    uint32_t hidden_size;
+    uint64_t total_elements;
+};
+
 __global__ void silu_and_mul_bf16_kernel(silu_and_mul_params p)
 {
     const uint64_t linear = static_cast<uint64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
@@ -211,6 +295,34 @@ __global__ void silu_and_mul_bf16_kernel(silu_and_mul_params p)
             + static_cast<int64_t>(dim) * p.out_stride1,
         silu(gate) * up
     );
+}
+
+__device__ float
+load_qwen36_shared_expert_gate(const qwen36_shared_expert_gate_add_params& p, uint32_t row)
+{
+    const int64_t offset = static_cast<int64_t>(row) * p.gate_stride0;
+    if (p.gate_f32 != nullptr)
+        return p.gate_f32[offset];
+    return load_bf16(p.gate_bf16 + offset);
+}
+
+__global__ void qwen36_shared_expert_gate_add_bf16_kernel(qwen36_shared_expert_gate_add_params p)
+{
+    const uint64_t linear = static_cast<uint64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (linear >= p.total_elements)
+        return;
+
+    const uint32_t row = static_cast<uint32_t>(linear / p.hidden_size);
+    const uint32_t dim = static_cast<uint32_t>(linear - static_cast<uint64_t>(row) * p.hidden_size);
+    const float gate = sigmoid(load_qwen36_shared_expert_gate(p, row));
+    const int64_t offset
+        = static_cast<int64_t>(row) * p.out_stride0 + static_cast<int64_t>(dim) * p.out_stride1;
+    const float shared = load_bf16(
+        p.shared + static_cast<int64_t>(row) * p.shared_stride0
+        + static_cast<int64_t>(dim) * p.shared_stride1
+    );
+    const float current = load_bf16(p.out + offset);
+    store_bf16(p.out + offset, current + gate * shared);
 }
 
 template <typename TokenT> __device__ bool is_padding_token(TokenT token, int32_t padding_token_id)
@@ -329,8 +441,6 @@ __global__ void greedy_argmax_f32_kernel(greedy_argmax_params p)
         float score = p.logits
                           [static_cast<int64_t>(row) * p.logits_stride0
                            + static_cast<int64_t>(token) * p.logits_stride1];
-        if (score != score)
-            score = kRouterNegInf;
         if (better_argmax_candidate(score, token, best_score, best_token)) {
             best_score = score;
             best_token = token;
@@ -728,12 +838,6 @@ __device__ float load_router_logit(const router_topk_params& p, uint32_t token, 
     return load_bf16(p.logits_bf16 + offset);
 }
 
-__device__ float finite_router_logit(const router_topk_params& p, uint32_t token, uint32_t expert)
-{
-    const float logit = load_router_logit(p, token, expert);
-    return isfinite(logit) ? logit : kRouterNegInf;
-}
-
 __device__ bool
 better_router_candidate(float score, int32_t expert, float best, int32_t best_expert)
 {
@@ -753,23 +857,22 @@ __global__ void router_topk_kernel(router_topk_params p)
     float max_logit = kRouterNegInf;
     if (p.score == QSCU_ROUTER_SCORE_SOFTMAX) {
         for (uint32_t expert = 0; expert < p.num_experts; ++expert) {
-            max_logit = fmaxf(max_logit, finite_router_logit(p, token, expert));
+            const float logit = load_router_logit(p, token, expert);
+            if (logit > max_logit)
+                max_logit = logit;
         }
     }
 
     float softmax_denom = 0.0f;
     if (p.score == QSCU_ROUTER_SCORE_SOFTMAX) {
         for (uint32_t expert = 0; expert < p.num_experts; ++expert) {
-            const float logit = finite_router_logit(p, token, expert);
-            if (logit != kRouterNegInf)
-                softmax_denom += expf(logit - max_logit);
+            const float logit = load_router_logit(p, token, expert);
+            softmax_denom += expf(logit - max_logit);
         }
     }
 
     for (uint32_t expert = 0; expert < p.num_experts; ++expert) {
-        const float logit = finite_router_logit(p, token, expert);
-        if (logit == kRouterNegInf)
-            continue;
+        const float logit = load_router_logit(p, token, expert);
         const float select_score = p.score == QSCU_ROUTER_SCORE_SOFTMAX ? logit : sigmoid(logit);
         for (uint32_t pos = 0; pos < p.top_k; ++pos) {
             if (!better_router_candidate(
@@ -797,7 +900,7 @@ __global__ void router_topk_kernel(router_topk_params p)
             weights[pos] = 0.0f;
             continue;
         }
-        const float logit = finite_router_logit(p, token, static_cast<uint32_t>(best_ids[pos]));
+        const float logit = load_router_logit(p, token, static_cast<uint32_t>(best_ids[pos]));
         float weight = 0.0f;
         if (p.score == QSCU_ROUTER_SCORE_SOFTMAX) {
             weight = softmax_denom > 0.0f ? expf(logit - max_logit) / softmax_denom : 0.0f;
@@ -929,6 +1032,7 @@ qsfi_status validate_post_conv_desc(const qscu_qwen36_gdn_post_conv_prepare_desc
 {
     if (desc == nullptr || desc->num_tokens == 0)
         return QSFI_STATUS_INVALID_ARGUMENT;
+    // Host descriptor scalar: invalid eps would poison every normalization denominator.
     if (desc->l2norm_eps <= 0.0f || !std::isfinite(desc->l2norm_eps))
         return QSFI_STATUS_INVALID_ARGUMENT;
     if (desc->forget_gate_output != QSCU_GDN_FORGET_LOG_DECAY
@@ -1003,6 +1107,7 @@ qsfi_status validate_rmsnorm_gated_desc(const qscu_qwen36_gdn_rmsnorm_gated_desc
 {
     if (desc == nullptr || desc->num_tokens == 0)
         return QSFI_STATUS_INVALID_ARGUMENT;
+    // Host descriptor scalar: invalid eps would poison every normalization denominator.
     if (desc->eps <= 0.0f || !std::isfinite(desc->eps))
         return QSFI_STATUS_INVALID_ARGUMENT;
     if (desc->gate_activation != QSCU_ACTIVATION_SILU
@@ -1044,6 +1149,7 @@ qsfi_status validate_router_desc(const qscu_router_topk_desc* desc)
         return QSFI_STATUS_UNSUPPORTED;
     if (desc->score != QSCU_ROUTER_SCORE_SOFTMAX && desc->score != QSCU_ROUTER_SCORE_SIGMOID)
         return QSFI_STATUS_UNSUPPORTED;
+    // Host descriptor scalar: the kernel multiplies selected weights by this value.
     if (!std::isfinite(desc->routed_scaling_factor) || desc->routed_scaling_factor <= 0.0f)
         return QSFI_STATUS_INVALID_ARGUMENT;
 
@@ -1098,6 +1204,35 @@ qsfi_status validate_silu_and_mul_desc(const qscu_silu_and_mul_desc* desc)
     return QSFI_STATUS_OK;
 }
 
+qsfi_status
+validate_qwen36_shared_expert_gate_add_desc(const qscu_qwen36_shared_expert_gate_add_desc* desc)
+{
+    if (desc == nullptr || desc->num_tokens == 0 || desc->hidden_size == 0)
+        return QSFI_STATUS_INVALID_ARGUMENT;
+
+    qsfi_status status = validate_tensor2(desc->gate_logits, QSFI_DTYPE_BF16, QSFI_DTYPE_F32);
+    if (status != QSFI_STATUS_OK)
+        return status;
+    status = validate_tensor(desc->shared, QSFI_DTYPE_BF16);
+    if (status != QSFI_STATUS_OK)
+        return status;
+    status = validate_tensor(desc->out, QSFI_DTYPE_BF16);
+    if (status != QSFI_STATUS_OK)
+        return status;
+
+    if (!contiguous2(desc->gate_logits) || !contiguous2(desc->shared) || !contiguous2(desc->out))
+        return QSFI_STATUS_INVALID_ARGUMENT;
+    if (desc->gate_logits.shape[0] != static_cast<int64_t>(desc->num_tokens)
+        || desc->gate_logits.shape[1] != 1
+        || desc->shared.shape[0] != static_cast<int64_t>(desc->num_tokens)
+        || desc->shared.shape[1] != static_cast<int64_t>(desc->hidden_size)
+        || desc->out.shape[0] != static_cast<int64_t>(desc->num_tokens)
+        || desc->out.shape[1] != static_cast<int64_t>(desc->hidden_size)) {
+        return QSFI_STATUS_INVALID_ARGUMENT;
+    }
+    return QSFI_STATUS_OK;
+}
+
 qsfi_status validate_embedding_gather_desc(const qscu_embedding_gather_desc* desc)
 {
     if (desc == nullptr)
@@ -1133,6 +1268,7 @@ qsfi_status validate_logits_soft_cap_desc(
 {
     if (logits == nullptr || rows == 0 || vocab_size == 0)
         return QSFI_STATUS_INVALID_ARGUMENT;
+    // Host descriptor scalar: positive soft caps are used as a divisor and scale.
     if (!(soft_cap <= 0.0f) && !std::isfinite(soft_cap))
         return QSFI_STATUS_INVALID_ARGUMENT;
 
@@ -1152,6 +1288,7 @@ qsfi_status validate_greedy_argmax_desc(const qscu_sampling_desc* desc)
 {
     if (desc == nullptr || desc->batch_size == 0 || desc->vocab_size == 0)
         return QSFI_STATUS_INVALID_ARGUMENT;
+    // Host descriptor scalars: NaN would silently bypass the unsupported sampling-mode checks.
     if (std::isnan(desc->temperature) || std::isnan(desc->top_p) || std::isnan(desc->min_p))
         return QSFI_STATUS_INVALID_ARGUMENT;
     if (desc->temperature > 0.0f || desc->top_k != 0 || (desc->top_p > 0.0f && desc->top_p < 1.0f)
@@ -1222,6 +1359,44 @@ qsfi_status qscu_silu_and_mul_bf16(const qscu_silu_and_mul_desc* desc, qsfi_cuda
     silu_and_mul_bf16_kernel<<<blocks, kElementwiseThreads, 0, static_cast<cudaStream_t>(stream)>>>(
         params
     );
+    return validate_cuda(cudaGetLastError());
+}
+
+qsfi_status qscu_qwen36_shared_expert_gate_add_bf16(
+    const qscu_qwen36_shared_expert_gate_add_desc* desc, qsfi_cuda_stream stream
+)
+{
+    qsfi_status status = validate_qwen36_shared_expert_gate_add_desc(desc);
+    if (status != QSFI_STATUS_OK)
+        return status;
+
+    const uint64_t items
+        = static_cast<uint64_t>(desc->num_tokens) * static_cast<uint64_t>(desc->hidden_size);
+    uint32_t blocks = 0;
+    status = checked_grid(items, kElementwiseThreads, &blocks);
+    if (status != QSFI_STATUS_OK)
+        return status;
+
+    qwen36_shared_expert_gate_add_params params {};
+    if (desc->gate_logits.dtype == QSFI_DTYPE_F32)
+        params.gate_f32 = static_cast<const float*>(desc->gate_logits.data);
+    else
+        params.gate_bf16 = static_cast<const __nv_bfloat16*>(desc->gate_logits.data);
+    params.gate_stride0 = desc->gate_logits.stride[0];
+    params.shared = static_cast<const __nv_bfloat16*>(desc->shared.data);
+    params.shared_stride0 = desc->shared.stride[0];
+    params.shared_stride1 = desc->shared.stride[1];
+    params.out = static_cast<__nv_bfloat16*>(desc->out.data);
+    params.out_stride0 = desc->out.stride[0];
+    params.out_stride1 = desc->out.stride[1];
+    params.hidden_size = desc->hidden_size;
+    params.total_elements = items;
+
+    qwen36_shared_expert_gate_add_bf16_kernel<<<
+        blocks,
+        kElementwiseThreads,
+        0,
+        static_cast<cudaStream_t>(stream)>>>(params);
     return validate_cuda(cudaGetLastError());
 }
 
@@ -1350,6 +1525,19 @@ qsfi_status qscu_greedy_argmax_f32(const qscu_sampling_desc* desc, qsfi_cuda_str
     qsfi_status status = validate_greedy_argmax_desc(desc);
     if (status != QSFI_STATUS_OK)
         return status;
+    cudaStream_t cuda_stream = static_cast<cudaStream_t>(stream);
+
+#if QSFI_ENABLE_CHECKED_VALIDATION
+    status = validate_finite_tensor2_contents(
+        desc->logits,
+        desc->batch_size,
+        desc->vocab_size,
+        cuda_stream,
+        "qscu greedy argmax logits contain non-finite values"
+    );
+    if (status != QSFI_STATUS_OK)
+        return status;
+#endif
 
     greedy_argmax_params params {};
     params.logits = static_cast<const float*>(desc->logits.data);
@@ -1362,11 +1550,7 @@ qsfi_status qscu_greedy_argmax_f32(const qscu_sampling_desc* desc, qsfi_cuda_str
     params.out_stride0 = desc->next_token_ids.stride[0];
     params.vocab_size = desc->vocab_size;
 
-    greedy_argmax_f32_kernel<<<
-        desc->batch_size,
-        kArgmaxThreads,
-        0,
-        static_cast<cudaStream_t>(stream)>>>(params);
+    greedy_argmax_f32_kernel<<<desc->batch_size, kArgmaxThreads, 0, cuda_stream>>>(params);
     return validate_cuda(cudaGetLastError());
 }
 
@@ -1528,6 +1712,19 @@ qsfi_status qscu_router_topk(const qscu_router_topk_desc* desc, qsfi_cuda_stream
     qsfi_status status = validate_router_desc(desc);
     if (status != QSFI_STATUS_OK)
         return status;
+    cudaStream_t cuda_stream = static_cast<cudaStream_t>(stream);
+
+#if QSFI_ENABLE_CHECKED_VALIDATION
+    status = validate_finite_tensor2_contents(
+        desc->logits,
+        desc->num_tokens,
+        desc->num_experts,
+        cuda_stream,
+        "qscu router logits contain non-finite values"
+    );
+    if (status != QSFI_STATUS_OK)
+        return status;
+#endif
 
     router_topk_params params {};
     if (desc->logits.dtype == QSFI_DTYPE_F32)
@@ -1548,7 +1745,7 @@ qsfi_status qscu_router_topk(const qscu_router_topk_desc* desc, qsfi_cuda_stream
     params.renormalize = desc->renormalize != 0 ? 1u : 0u;
     params.routed_scaling_factor = desc->routed_scaling_factor;
 
-    router_topk_kernel<<<desc->num_tokens, 1, 0, static_cast<cudaStream_t>(stream)>>>(params);
+    router_topk_kernel<<<desc->num_tokens, 1, 0, cuda_stream>>>(params);
     return validate_cuda(cudaGetLastError());
 }
 

@@ -101,8 +101,7 @@ void destroy_plan(qsfi_plan* plan)
     plan->host_int_workspace = nullptr;
 }
 
-template <typename Plan>
-void destroy_batch_plan(Plan* plan)
+template <typename Plan> void destroy_batch_plan(Plan* plan)
 {
     if (plan == nullptr)
         return;

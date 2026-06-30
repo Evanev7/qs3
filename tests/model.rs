@@ -140,7 +140,51 @@ fn randomized_dense_model_runs_prefill_and_two_decodes() {
 }
 
 #[test]
-fn qwen36_gdn_configs_require_full_attention_and_reject_unsupported_execution() {
+fn exact_prefix_extension_accepts_caller_suffix_tokens() {
+    if !cuda_device_available() {
+        return;
+    }
+
+    let config = QwenConfig::randomized_dense_tiny_fixture(0);
+    let mut runner = ModelRunner::random_bf16(config, RANDOM_MODEL_SEED).unwrap();
+
+    let base = runner
+        .run(QwenRequest {
+            request_id: 17,
+            tokens: &[1, 7, 13],
+            max_new_tokens: 0,
+        })
+        .unwrap();
+    assert!(base.generated_tokens.is_empty());
+    assert_eq!(base.live_tokens, [1, 7, 13]);
+
+    let extended_prompt = [1, 7, 13, 21, 34];
+    let extended = runner
+        .run(QwenRequest {
+            request_id: 17,
+            tokens: &extended_prompt,
+            max_new_tokens: 2,
+        })
+        .unwrap();
+    let fresh = run_random_model(config, 17, &extended_prompt, 2);
+
+    assert_eq!(extended.generated_tokens, fresh.generated_tokens);
+    assert_eq!(extended.live_tokens, fresh.live_tokens);
+    assert_eq!(extended.logits_rows, fresh.logits_rows);
+    assert_eq!(extended.logits_vocab_size, fresh.logits_vocab_size);
+    assert_eq!(
+        &extended.live_tokens[..extended_prompt.len()],
+        &extended_prompt
+    );
+
+    assert_cuda(
+        unsafe { cudaDeviceSynchronize() },
+        "sync caller-suffix exact-prefix extension test",
+    );
+}
+
+#[test]
+fn qwen36_gdn_configs_require_full_attention_and_shared_expert() {
     let mut no_attention = QwenConfig::randomized_qwen36_moe_gdn_one_block_fixture(-1);
     no_attention.num_layers = 1;
     assert_eq!(no_attention.validate(), Err(Status::InvalidArgument));
@@ -150,11 +194,22 @@ fn qwen36_gdn_configs_require_full_attention_and_reject_unsupported_execution() 
     );
 
     let config = QwenConfig::randomized_qwen36_moe_gdn_one_block_fixture(-1);
-    assert_eq!(config.validate(), Err(Status::Unsupported));
+    assert_eq!(config.validate(), Ok(()));
+
+    let mut incomplete_schedule = config;
+    incomplete_schedule.num_layers = 5;
+    assert_eq!(incomplete_schedule.validate(), Err(Status::InvalidArgument));
     assert_eq!(
-        ModelRunner::random_bf16(config, RANDOM_MODEL_SEED).err(),
-        Some(Status::Unsupported)
+        ModelRunner::random_bf16(incomplete_schedule, RANDOM_MODEL_SEED).err(),
+        Some(Status::InvalidArgument)
     );
+
+    let mut missing_shared = config;
+    missing_shared.moe = Some(QwenMoeConfig {
+        shared_expert_intermediate_size: 0,
+        ..QwenMoeConfig::qwen36_35b_a3b()
+    });
+    assert_eq!(missing_shared.validate(), Err(Status::Unsupported));
 }
 
 #[test]
@@ -252,6 +307,61 @@ fn randomized_moe_model_runs_prefill_decode_rebuild_and_failed_rewrite() {
     assert_cuda(
         unsafe { cudaDeviceSynchronize() },
         "sync randomized MoE model test",
+    );
+}
+
+#[test]
+fn randomized_shared_moe_model_runs_prefill_and_decode() {
+    if !cuda_device_available() {
+        return;
+    }
+
+    let config = QwenConfig::randomized_shared_moe_tiny_fixture(0);
+    let mut runner = ModelRunner::random_bf16(config, RANDOM_MODEL_SEED).unwrap();
+
+    let result = runner
+        .run(QwenRequest {
+            request_id: 81,
+            tokens: &[1, 7, 13],
+            max_new_tokens: 2,
+        })
+        .unwrap();
+    assert_eq!(result.generated_tokens.len(), 2);
+    assert_eq!(result.live_tokens.len(), 5);
+    assert_eq!(&result.live_tokens[..3], &[1, 7, 13]);
+    assert_eq!(result.logits_rows, 1);
+    assert_eq!(result.logits_vocab_size, config.vocab_size);
+    for token in &result.generated_tokens {
+        assert!(*token >= 0 && *token < config.vocab_size as i32);
+    }
+
+    assert_cuda(
+        unsafe { cudaDeviceSynchronize() },
+        "sync randomized shared MoE model test",
+    );
+}
+
+#[test]
+fn randomized_dense_model_runs_with_logits_soft_cap() {
+    if !cuda_device_available() {
+        return;
+    }
+
+    let mut config = QwenConfig::randomized_dense_tiny_fixture(0);
+    config.logits_soft_cap = 2.0;
+
+    let first = run_random_model(config, 25, &[3, 5, 8, 13], 2);
+    let second = run_random_model(config, 25, &[3, 5, 8, 13], 2);
+
+    assert_eq!(first, second);
+    assert_eq!(first.generated_tokens.len(), 2);
+    assert_eq!(first.live_tokens.len(), 6);
+    assert_eq!(first.logits_rows, 1);
+    assert_eq!(first.logits_vocab_size, config.vocab_size);
+
+    assert_cuda(
+        unsafe { cudaDeviceSynchronize() },
+        "sync soft-capped randomized model test",
     );
 }
 
@@ -477,6 +587,17 @@ fn qwen_config_validates_public_moe_config_json_fields() {
     let qwen36 = QwenConfig::randomized_qwen36_moe_gdn_one_block_fixture(-1);
     assert_eq!(qwen36.moe, Some(QwenMoeConfig::qwen36_35b_a3b()));
 
+    let shared_tiny = QwenConfig::randomized_shared_moe_tiny_fixture(-1);
+    assert_eq!(
+        shared_tiny.moe,
+        Some(QwenMoeConfig {
+            num_experts: 4,
+            num_experts_per_tok: 2,
+            moe_intermediate_size: 64,
+            shared_expert_intermediate_size: 32,
+        })
+    );
+
     let mut config = QwenConfig::randomized_moe_tiny_fixture(-1);
     config.moe = Some(QwenMoeConfig {
         num_experts: 4,
@@ -542,23 +663,14 @@ fn qwen_config_validates_public_moe_config_json_fields() {
         moe_intermediate_size: 64,
         shared_expert_intermediate_size: 64,
     });
-    assert_eq!(config.validate(), Err(Status::Unsupported));
-}
+    assert_eq!(config.validate(), Ok(()));
 
-#[test]
-fn randomized_fixture_constructors_validate_current_public_shapes() {
-    assert_eq!(
-        QwenConfig::randomized_dense_tiny_fixture(-1).validate(),
-        Ok(())
-    );
-    assert_eq!(
-        QwenConfig::randomized_moe_tiny_fixture(-1).validate(),
-        Ok(())
-    );
-    assert_eq!(
-        QwenConfig::randomized_qwen36_moe_gdn_one_block_fixture(-1).validate(),
-        Err(Status::Unsupported)
-    );
+    let mut qwen36_without_shared = qwen36;
+    qwen36_without_shared.moe = Some(QwenMoeConfig {
+        shared_expert_intermediate_size: 0,
+        ..QwenMoeConfig::qwen36_35b_a3b()
+    });
+    assert_eq!(qwen36_without_shared.validate(), Err(Status::Unsupported));
 }
 
 #[test]

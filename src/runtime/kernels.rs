@@ -403,6 +403,13 @@ impl<'a> KernelOps<'a> {
         unsafe { qscu::silu_and_mul_bf16(&desc.raw, self.stream) }
     }
 
+    pub(crate) unsafe fn qwen36_shared_expert_gate_add_bf16(
+        &mut self,
+        desc: &Qwen36SharedExpertGateAddBf16,
+    ) -> Result<(), Status> {
+        unsafe { qscu::qwen36_shared_expert_gate_add_bf16(&desc.raw, self.stream) }
+    }
+
     pub(crate) unsafe fn logits_soft_cap_f32(
         &mut self,
         desc: &LogitsSoftCapF32,
@@ -565,6 +572,35 @@ impl SiluAndMulBf16 {
                 out: out.tensor(),
                 num_tokens: gate.rows,
                 intermediate_size: gate.cols,
+            },
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Qwen36SharedExpertGateAddBf16 {
+    raw: qscu::Qwen36SharedExpertGateAddDesc,
+}
+
+impl Qwen36SharedExpertGateAddBf16 {
+    pub(crate) fn new(
+        gate_logits: Bf16OrF32Mat,
+        shared: DMat<{ ffi::DTYPE_BF16 }>,
+        out: DMat<{ ffi::DTYPE_BF16 }>,
+    ) -> Result<Self, Status> {
+        if !gate_logits.is_contiguous() || !shared.is_contiguous() || !out.is_contiguous() {
+            return Err(Status::InvalidArgument);
+        }
+        if gate_logits.rows() != shared.rows || gate_logits.cols() != 1 || !shared.same_shape(out) {
+            return Err(Status::InvalidArgument);
+        }
+        Ok(Self {
+            raw: qscu::Qwen36SharedExpertGateAddDesc {
+                gate_logits: gate_logits.tensor(),
+                shared: shared.tensor(),
+                out: out.tensor(),
+                num_tokens: shared.rows,
+                hidden_size: shared.cols,
             },
         })
     }
@@ -1561,6 +1597,31 @@ mod tests {
         let padded_gate = DMat::new(device_ptr(13), 2, 8, 16).unwrap();
         assert!(matches!(
             SiluAndMulBf16::new(padded_gate, up, out),
+            Err(Status::InvalidArgument)
+        ));
+
+        assert!(
+            Qwen36SharedExpertGateAddBf16::new(
+                Bf16OrF32Mat::F32(f32_mat(110, 2, 1)),
+                bf16_mat(111, 2, 8),
+                bf16_mat(112, 2, 8),
+            )
+            .is_ok()
+        );
+        assert!(
+            Qwen36SharedExpertGateAddBf16::new(
+                Bf16OrF32Mat::Bf16(bf16_mat(113, 2, 1)),
+                bf16_mat(114, 2, 8),
+                bf16_mat(115, 2, 8),
+            )
+            .is_ok()
+        );
+        assert!(matches!(
+            Qwen36SharedExpertGateAddBf16::new(
+                Bf16OrF32Mat::F32(f32_mat(116, 2, 2)),
+                bf16_mat(117, 2, 8),
+                bf16_mat(118, 2, 8),
+            ),
             Err(Status::InvalidArgument)
         ));
 

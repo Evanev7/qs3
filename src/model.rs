@@ -11,7 +11,8 @@ use crate::runtime::kernels::{
     GdnDecodeBf16Args, GdnForgetGateOutput, GdnPostConvPrepareBf16, GdnPostConvPrepareBf16Args,
     GdnPrefillBf16, GdnPrefillBf16Args, GdnRecurrentState, GdnRmsNormGatedBf16,
     GdnRmsNormGatedBf16Args, GreedyArgmaxF32, LogitsSoftCapF32, MoeBf16Execute, MoeBf16ExecuteArgs,
-    MoeBf16PlanConfig, MoePlan, RmsNormBf16, RouterScore, RouterTopK, SiluAndMulBf16, Workspace,
+    MoeBf16PlanConfig, MoePlan, Qwen36SharedExpertGateAddBf16, RmsNormBf16, RouterScore,
+    RouterTopK, SiluAndMulBf16, Workspace,
 };
 
 use std::ffi::c_void;
@@ -176,6 +177,19 @@ enum QwenBlockKind {
 }
 
 impl QwenLayerPattern {
+    fn validate_schedule(self, num_layers: u32) -> Result<(), Status> {
+        match self {
+            Self::FullAttentionOnly => Ok(()),
+            Self::Qwen36HybridGdn { .. } => {
+                if num_layers.is_multiple_of(4) {
+                    Ok(())
+                } else {
+                    Err(Status::InvalidArgument)
+                }
+            }
+        }
+    }
+
     fn block_kind(self, layer_idx: u32) -> QwenBlockKind {
         match self {
             Self::FullAttentionOnly => QwenBlockKind::FullAttention,
@@ -257,6 +271,7 @@ impl QwenModelShape {
     }
 
     fn validate(self, config: &QwenConfig) -> Result<(), Status> {
+        self.layer_pattern.validate_schedule(config.num_layers)?;
         match config.moe {
             Some(moe) => {
                 moe.validate(config.hidden_size)?;
@@ -279,11 +294,6 @@ impl QwenModelShape {
             gdn.validate_config(config)?;
         }
         config.validate_full_attention_shape()?;
-        if let Some(moe) = config.moe
-            && moe.shared_expert_intermediate_size != 0
-        {
-            return Err(Status::Unsupported);
-        }
         Ok(())
     }
 }
@@ -351,6 +361,15 @@ impl QwenConfig {
         let mut config = Self::randomized_dense_tiny_fixture(device_ordinal);
         config.intermediate_size = moe.moe_intermediate_size;
         config.moe = Some(moe);
+        config
+    }
+
+    pub fn randomized_shared_moe_tiny_fixture(device_ordinal: i32) -> Self {
+        let mut config = Self::randomized_moe_tiny_fixture(device_ordinal);
+        config.moe = Some(QwenMoeConfig {
+            shared_expert_intermediate_size: 32,
+            ..QwenMoeConfig::randomized_tiny_fixture()
+        });
         config
     }
 
@@ -566,8 +585,6 @@ impl QwenWeights {
         let device = config.device_ordinal;
         let stream = config.stream;
         let hidden = config.hidden_size;
-        let intermediate = config.intermediate_size;
-        let moe = config.moe_config();
         let vocab = config.vocab_size;
 
         let token_embedding = DeviceBuffer::from_slice(
@@ -585,6 +602,13 @@ impl QwenWeights {
 
         let mut layers = try_vec_with_capacity(config.num_layers as usize)?;
         for layer_idx in 0..config.num_layers {
+            let mlp_norm = DeviceBuffer::from_slice(
+                device,
+                stream,
+                &constant_bf16_values(hidden as usize, 1.0)?,
+            )?;
+            let mlp = Self::random_mlp_weights(&config, &mut rng)?;
+
             if config.layer_kind(layer_idx) == QwenBlockKind::LinearAttention {
                 layers.push(QwenLayerWeights::Gdn(QwenGdnWeights {
                     norm: DeviceBuffer::from_slice(
@@ -666,82 +690,13 @@ impl QwenWeights {
                             0.01,
                         )?,
                     )?,
+                    mlp_norm,
+                    mlp,
                 }));
                 continue;
             }
 
             let kv_hidden = config.kv_hidden_size()?;
-            let mlp = if let Some(moe) = moe {
-                QwenMlpWeights::Moe {
-                    router_proj: DeviceBuffer::from_slice(
-                        device,
-                        stream,
-                        &random_bf16_values(
-                            &mut rng,
-                            checked_usize_product(&[moe.num_experts, hidden])?,
-                            0.03,
-                        )?,
-                    )?,
-                    gate_up_proj: DeviceBuffer::from_slice(
-                        device,
-                        stream,
-                        &random_bf16_values(
-                            &mut rng,
-                            checked_usize_product(&[
-                                moe.num_experts,
-                                2,
-                                moe.moe_intermediate_size,
-                                hidden,
-                            ])?,
-                            0.03,
-                        )?,
-                    )?,
-                    down_proj: DeviceBuffer::from_slice(
-                        device,
-                        stream,
-                        &random_bf16_values(
-                            &mut rng,
-                            checked_usize_product(&[
-                                moe.num_experts,
-                                hidden,
-                                moe.moe_intermediate_size,
-                            ])?,
-                            0.03,
-                        )?,
-                    )?,
-                }
-            } else {
-                QwenMlpWeights::Dense {
-                    gate_proj: DeviceBuffer::from_slice(
-                        device,
-                        stream,
-                        &random_bf16_values(
-                            &mut rng,
-                            checked_usize_product(&[intermediate, hidden])?,
-                            0.035,
-                        )?,
-                    )?,
-                    up_proj: DeviceBuffer::from_slice(
-                        device,
-                        stream,
-                        &random_bf16_values(
-                            &mut rng,
-                            checked_usize_product(&[intermediate, hidden])?,
-                            0.035,
-                        )?,
-                    )?,
-                    down_proj: DeviceBuffer::from_slice(
-                        device,
-                        stream,
-                        &random_bf16_values(
-                            &mut rng,
-                            checked_usize_product(&[hidden, intermediate])?,
-                            0.035,
-                        )?,
-                    )?,
-                }
-            };
-
             layers.push(QwenLayerWeights::AttentionMlp(QwenAttentionMlpWeights {
                 attn_norm: DeviceBuffer::from_slice(
                     device,
@@ -776,11 +731,7 @@ impl QwenWeights {
                     stream,
                     &random_bf16_values(&mut rng, checked_usize_product(&[hidden, hidden])?, 0.04)?,
                 )?,
-                mlp_norm: DeviceBuffer::from_slice(
-                    device,
-                    stream,
-                    &constant_bf16_values(hidden as usize, 1.0)?,
-                )?,
+                mlp_norm,
                 mlp,
             }));
         }
@@ -792,6 +743,125 @@ impl QwenWeights {
             lm_head,
             layers,
         })
+    }
+
+    fn random_mlp_weights(
+        config: &QwenConfig,
+        rng: &mut DeterministicRng,
+    ) -> Result<QwenMlpWeights, Status> {
+        let device = config.device_ordinal;
+        let stream = config.stream;
+        let hidden = config.hidden_size;
+        let intermediate = config.intermediate_size;
+        if let Some(moe) = config.moe_config() {
+            let shared = if moe.shared_expert_intermediate_size == 0 {
+                None
+            } else {
+                Some(QwenSharedExpertWeights {
+                    gate_proj: DeviceBuffer::from_slice(
+                        device,
+                        stream,
+                        &random_bf16_values(
+                            rng,
+                            checked_usize_product(&[moe.shared_expert_intermediate_size, hidden])?,
+                            0.03,
+                        )?,
+                    )?,
+                    up_proj: DeviceBuffer::from_slice(
+                        device,
+                        stream,
+                        &random_bf16_values(
+                            rng,
+                            checked_usize_product(&[moe.shared_expert_intermediate_size, hidden])?,
+                            0.03,
+                        )?,
+                    )?,
+                    down_proj: DeviceBuffer::from_slice(
+                        device,
+                        stream,
+                        &random_bf16_values(
+                            rng,
+                            checked_usize_product(&[hidden, moe.shared_expert_intermediate_size])?,
+                            0.03,
+                        )?,
+                    )?,
+                    shared_expert_gate: DeviceBuffer::from_slice(
+                        device,
+                        stream,
+                        &random_bf16_values(rng, checked_usize_product(&[1, hidden])?, 0.03)?,
+                    )?,
+                })
+            };
+            Ok(QwenMlpWeights::Moe {
+                router_proj: DeviceBuffer::from_slice(
+                    device,
+                    stream,
+                    &random_bf16_values(
+                        rng,
+                        checked_usize_product(&[moe.num_experts, hidden])?,
+                        0.03,
+                    )?,
+                )?,
+                gate_up_proj: DeviceBuffer::from_slice(
+                    device,
+                    stream,
+                    &random_bf16_values(
+                        rng,
+                        checked_usize_product(&[
+                            moe.num_experts,
+                            2,
+                            moe.moe_intermediate_size,
+                            hidden,
+                        ])?,
+                        0.03,
+                    )?,
+                )?,
+                down_proj: DeviceBuffer::from_slice(
+                    device,
+                    stream,
+                    &random_bf16_values(
+                        rng,
+                        checked_usize_product(&[
+                            moe.num_experts,
+                            hidden,
+                            moe.moe_intermediate_size,
+                        ])?,
+                        0.03,
+                    )?,
+                )?,
+                shared,
+            })
+        } else {
+            Ok(QwenMlpWeights::Dense {
+                gate_proj: DeviceBuffer::from_slice(
+                    device,
+                    stream,
+                    &random_bf16_values(
+                        rng,
+                        checked_usize_product(&[intermediate, hidden])?,
+                        0.035,
+                    )?,
+                )?,
+                up_proj: DeviceBuffer::from_slice(
+                    device,
+                    stream,
+                    &random_bf16_values(
+                        rng,
+                        checked_usize_product(&[intermediate, hidden])?,
+                        0.035,
+                    )?,
+                )?,
+                down_proj: DeviceBuffer::from_slice(
+                    device,
+                    stream,
+                    &random_bf16_values(
+                        rng,
+                        checked_usize_product(&[hidden, intermediate])?,
+                        0.035,
+                    )?,
+                )?,
+            })
+        }
     }
 
     fn validate_for(&self, config: &QwenConfig) -> Result<(), Status> {
@@ -806,6 +876,17 @@ impl QwenWeights {
         let expected_layers = config.num_layers as usize;
         if self.layers.len() != expected_layers {
             return Err(Status::InvalidArgument);
+        }
+        for (idx, layer) in self.layers.iter().enumerate() {
+            match (config.layer_kind(idx as u32), layer) {
+                (QwenBlockKind::FullAttention, QwenLayerWeights::AttentionMlp(layer)) => {
+                    layer.mlp.validate_for(config.moe_config())?;
+                }
+                (QwenBlockKind::LinearAttention, QwenLayerWeights::Gdn(layer)) => {
+                    layer.mlp.validate_for(config.moe_config())?;
+                }
+                _ => return Err(Status::InvalidArgument),
+            }
         }
         Ok(())
     }
@@ -838,6 +919,8 @@ struct QwenGdnWeights {
     dt_bias: DeviceBuffer<f32>,
     rms_weight: DeviceBuffer<u16>,
     out_proj: DeviceBuffer<u16>,
+    mlp_norm: DeviceBuffer<u16>,
+    mlp: QwenMlpWeights,
 }
 
 enum QwenMlpWeights {
@@ -850,7 +933,15 @@ enum QwenMlpWeights {
         router_proj: DeviceBuffer<u16>,
         gate_up_proj: DeviceBuffer<u16>,
         down_proj: DeviceBuffer<u16>,
+        shared: Option<QwenSharedExpertWeights>,
     },
+}
+
+struct QwenSharedExpertWeights {
+    gate_proj: DeviceBuffer<u16>,
+    up_proj: DeviceBuffer<u16>,
+    down_proj: DeviceBuffer<u16>,
+    shared_expert_gate: DeviceBuffer<u16>,
 }
 
 #[derive(Clone, Copy)]
@@ -864,10 +955,33 @@ enum QwenMlpPtrs {
         router_proj: ffi::DevicePtr,
         gate_up_proj: ffi::DevicePtr,
         down_proj: ffi::DevicePtr,
+        shared: Option<QwenSharedExpertPtrs>,
     },
 }
 
+#[derive(Clone, Copy)]
+struct QwenSharedExpertPtrs {
+    gate_proj: ffi::DevicePtr,
+    up_proj: ffi::DevicePtr,
+    down_proj: ffi::DevicePtr,
+    shared_expert_gate: ffi::DevicePtr,
+}
+
 impl QwenMlpWeights {
+    fn validate_for(&self, moe: Option<QwenMoeConfig>) -> Result<(), Status> {
+        match (self, moe) {
+            (Self::Dense { .. }, None) => Ok(()),
+            (Self::Moe { shared, .. }, Some(moe)) => {
+                if shared.is_some() == (moe.shared_expert_intermediate_size != 0) {
+                    Ok(())
+                } else {
+                    Err(Status::InvalidArgument)
+                }
+            }
+            _ => Err(Status::InvalidArgument),
+        }
+    }
+
     fn ptrs(&self) -> QwenMlpPtrs {
         match self {
             Self::Dense {
@@ -883,10 +997,17 @@ impl QwenMlpWeights {
                 router_proj,
                 gate_up_proj,
                 down_proj,
+                shared,
             } => QwenMlpPtrs::Moe {
                 router_proj: router_proj.as_device_ptr(),
                 gate_up_proj: gate_up_proj.as_device_ptr(),
                 down_proj: down_proj.as_device_ptr(),
+                shared: shared.as_ref().map(|shared| QwenSharedExpertPtrs {
+                    gate_proj: shared.gate_proj.as_device_ptr(),
+                    up_proj: shared.up_proj.as_device_ptr(),
+                    down_proj: shared.down_proj.as_device_ptr(),
+                    shared_expert_gate: shared.shared_expert_gate.as_device_ptr(),
+                }),
             },
         }
     }
@@ -933,6 +1054,8 @@ impl QwenLayerWeights {
                 dt_bias: layer.dt_bias.as_device_ptr(),
                 rms_weight: layer.rms_weight.as_device_ptr(),
                 out_proj: layer.out_proj.as_device_ptr(),
+                mlp_norm: layer.mlp_norm.as_device_ptr(),
+                mlp: layer.mlp.ptrs(),
             }),
         }
     }
@@ -943,6 +1066,19 @@ impl QwenLayerPtrs {
         match self {
             Self::AttentionMlp(layer) => layer.attn_norm,
             Self::Gdn(layer) => layer.norm,
+        }
+    }
+
+    fn post_attention_mlp(self) -> QwenPostAttentionMlpPtrs {
+        match self {
+            Self::AttentionMlp(layer) => QwenPostAttentionMlpPtrs {
+                norm: layer.mlp_norm,
+                mlp: layer.mlp,
+            },
+            Self::Gdn(layer) => QwenPostAttentionMlpPtrs {
+                norm: layer.mlp_norm,
+                mlp: layer.mlp,
+            },
         }
     }
 }
@@ -960,6 +1096,14 @@ struct QwenGdnPtrs {
     dt_bias: ffi::DevicePtr,
     rms_weight: ffi::DevicePtr,
     out_proj: ffi::DevicePtr,
+    mlp_norm: ffi::DevicePtr,
+    mlp: QwenMlpPtrs,
+}
+
+#[derive(Clone, Copy)]
+struct QwenPostAttentionMlpPtrs {
+    norm: ffi::DevicePtr,
+    mlp: QwenMlpPtrs,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1327,44 +1471,6 @@ impl ModelRunner {
                         layer,
                         run.kind,
                     )?;
-                    self.fused_add_rmsnorm(
-                        self.scratch.attn_proj.as_device_ptr(),
-                        self.scratch.residual.as_device_ptr(),
-                        layer.mlp_norm,
-                        rows,
-                    )?;
-                    match layer.mlp {
-                        QwenMlpPtrs::Dense {
-                            gate_proj,
-                            up_proj,
-                            down_proj,
-                        } => self.execute_dense_mlp(
-                            rows,
-                            hidden,
-                            intermediate,
-                            gate_proj,
-                            up_proj,
-                            down_proj,
-                        )?,
-                        QwenMlpPtrs::Moe {
-                            router_proj,
-                            gate_up_proj,
-                            down_proj,
-                        } => self.execute_moe_mlp(
-                            rows,
-                            hidden,
-                            router_proj,
-                            gate_up_proj,
-                            down_proj,
-                        )?,
-                    }
-                    self.fused_add_rmsnorm(
-                        self.scratch.mlp_out.as_device_ptr(),
-                        self.scratch.residual.as_device_ptr(),
-                        next_weight,
-                        rows,
-                    )?;
-                    layer_input = self.scratch.mlp_out.as_device_ptr();
                 }
                 QwenLayerPtrs::Gdn(layer) => {
                     let gdn_layer_idx = self.config.gdn_layer_index(layer_idx)?;
@@ -1376,15 +1482,18 @@ impl ModelRunner {
                         layer,
                         run.kind,
                     )?;
-                    self.fused_add_rmsnorm(
-                        self.scratch.attn_proj.as_device_ptr(),
-                        self.scratch.residual.as_device_ptr(),
-                        next_weight,
-                        rows,
-                    )?;
-                    layer_input = self.scratch.attn_proj.as_device_ptr();
                 }
             }
+            let post_mlp = layer.post_attention_mlp();
+            self.execute_post_attention_mlp(
+                rows,
+                hidden,
+                intermediate,
+                post_mlp.norm,
+                post_mlp.mlp,
+                next_weight,
+            )?;
+            layer_input = self.scratch.mlp_out.as_device_ptr();
         }
 
         self.gemm_bf16(
@@ -1746,6 +1855,46 @@ impl ModelRunner {
         Ok(())
     }
 
+    fn execute_post_attention_mlp(
+        &mut self,
+        rows: u32,
+        hidden: u32,
+        intermediate: u32,
+        mlp_norm: ffi::DevicePtr,
+        mlp: QwenMlpPtrs,
+        next_weight: ffi::DevicePtr,
+    ) -> Result<(), Status> {
+        self.fused_add_rmsnorm(
+            self.scratch.attn_proj.as_device_ptr(),
+            self.scratch.residual.as_device_ptr(),
+            mlp_norm,
+            rows,
+        )?;
+        match mlp {
+            QwenMlpPtrs::Dense {
+                gate_proj,
+                up_proj,
+                down_proj,
+            } => {
+                self.execute_dense_mlp(rows, hidden, intermediate, gate_proj, up_proj, down_proj)?
+            }
+            QwenMlpPtrs::Moe {
+                router_proj,
+                gate_up_proj,
+                down_proj,
+                shared,
+            } => {
+                self.execute_moe_mlp(rows, hidden, router_proj, gate_up_proj, down_proj, shared)?
+            }
+        }
+        self.fused_add_rmsnorm(
+            self.scratch.mlp_out.as_device_ptr(),
+            self.scratch.residual.as_device_ptr(),
+            next_weight,
+            rows,
+        )
+    }
+
     fn execute_dense_mlp(
         &mut self,
         rows: u32,
@@ -1773,7 +1922,13 @@ impl ModelRunner {
             intermediate,
             GemmOut::Bf16,
         )?;
-        self.silu_and_mul(rows)?;
+        self.silu_and_mul(
+            rows,
+            intermediate,
+            self.scratch.gate.as_device_ptr(),
+            self.scratch.up.as_device_ptr(),
+            self.scratch.mlp.as_device_ptr(),
+        )?;
         self.gemm_bf16(
             self.scratch.mlp.as_device_ptr(),
             rows,
@@ -1792,6 +1947,7 @@ impl ModelRunner {
         router_proj: ffi::DevicePtr,
         gate_up_proj: ffi::DevicePtr,
         down_proj: ffi::DevicePtr,
+        shared: Option<QwenSharedExpertPtrs>,
     ) -> Result<(), Status> {
         let moe = self.config.moe_config().ok_or(Status::InternalError)?;
         self.gemm_bf16(
@@ -1870,8 +2026,76 @@ impl ModelRunner {
                 self.scratch.moe_workspace.cap,
             )?,
         })?;
-        let mut ops = self.engine.kernel_ops();
-        unsafe { ops.moe_execute_bf16(plan, &execute) }
+        {
+            let mut ops = self.engine.kernel_ops();
+            unsafe { ops.moe_execute_bf16(plan, &execute)? };
+        }
+
+        if let Some(shared) = shared {
+            self.execute_shared_expert_mlp(
+                rows,
+                hidden,
+                moe.shared_expert_intermediate_size,
+                shared,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn execute_shared_expert_mlp(
+        &mut self,
+        rows: u32,
+        hidden: u32,
+        intermediate: u32,
+        shared: QwenSharedExpertPtrs,
+    ) -> Result<(), Status> {
+        if intermediate == 0 {
+            return Err(Status::InternalError);
+        }
+        self.gemm_bf16(
+            self.scratch.attn_proj.as_device_ptr(),
+            rows,
+            hidden,
+            shared.gate_proj,
+            self.scratch.shared_gate.as_device_ptr(),
+            intermediate,
+            GemmOut::Bf16,
+        )?;
+        self.gemm_bf16(
+            self.scratch.attn_proj.as_device_ptr(),
+            rows,
+            hidden,
+            shared.up_proj,
+            self.scratch.shared_up.as_device_ptr(),
+            intermediate,
+            GemmOut::Bf16,
+        )?;
+        self.silu_and_mul(
+            rows,
+            intermediate,
+            self.scratch.shared_gate.as_device_ptr(),
+            self.scratch.shared_up.as_device_ptr(),
+            self.scratch.shared_mlp.as_device_ptr(),
+        )?;
+        self.gemm_bf16(
+            self.scratch.shared_mlp.as_device_ptr(),
+            rows,
+            intermediate,
+            shared.down_proj,
+            self.scratch.shared_out.as_device_ptr(),
+            hidden,
+            GemmOut::Bf16,
+        )?;
+        self.gemm_bf16(
+            self.scratch.attn_proj.as_device_ptr(),
+            rows,
+            hidden,
+            shared.shared_expert_gate,
+            self.scratch.shared_gate_logits.as_device_ptr(),
+            1,
+            GemmOut::F32,
+        )?;
+        self.shared_expert_gate_add(rows, hidden)
     }
 
     fn upload_batch_inputs(&mut self, tokens: &[i32], start_pos: u32) -> Result<(), Status> {
@@ -2047,26 +2271,43 @@ impl ModelRunner {
         unsafe { ops.gemm_bf16(&desc) }
     }
 
-    fn silu_and_mul(&mut self, rows: u32) -> Result<(), Status> {
+    fn silu_and_mul(
+        &mut self,
+        rows: u32,
+        intermediate: u32,
+        gate: ffi::DevicePtr,
+        up: ffi::DevicePtr,
+        out: ffi::DevicePtr,
+    ) -> Result<(), Status> {
         let desc = SiluAndMulBf16::new(
-            DMat::<{ ffi::DTYPE_BF16 }>::contiguous(
-                self.scratch.gate.as_device_ptr(),
-                rows,
-                self.config.intermediate_size,
-            )?,
-            DMat::<{ ffi::DTYPE_BF16 }>::contiguous(
-                self.scratch.up.as_device_ptr(),
-                rows,
-                self.config.intermediate_size,
-            )?,
-            DMat::<{ ffi::DTYPE_BF16 }>::contiguous(
-                self.scratch.mlp.as_device_ptr(),
-                rows,
-                self.config.intermediate_size,
-            )?,
+            DMat::<{ ffi::DTYPE_BF16 }>::contiguous(gate, rows, intermediate)?,
+            DMat::<{ ffi::DTYPE_BF16 }>::contiguous(up, rows, intermediate)?,
+            DMat::<{ ffi::DTYPE_BF16 }>::contiguous(out, rows, intermediate)?,
         )?;
         let mut ops = self.engine.kernel_ops();
         unsafe { ops.silu_and_mul_bf16(&desc) }
+    }
+
+    fn shared_expert_gate_add(&mut self, rows: u32, hidden: u32) -> Result<(), Status> {
+        let desc = Qwen36SharedExpertGateAddBf16::new(
+            Bf16OrF32Mat::F32(DMat::<{ ffi::DTYPE_F32 }>::contiguous(
+                self.scratch.shared_gate_logits.as_device_ptr(),
+                rows,
+                1,
+            )?),
+            DMat::<{ ffi::DTYPE_BF16 }>::contiguous(
+                self.scratch.shared_out.as_device_ptr(),
+                rows,
+                hidden,
+            )?,
+            DMat::<{ ffi::DTYPE_BF16 }>::contiguous(
+                self.scratch.mlp_out.as_device_ptr(),
+                rows,
+                hidden,
+            )?,
+        )?;
+        let mut ops = self.engine.kernel_ops();
+        unsafe { ops.qwen36_shared_expert_gate_add_bf16(&desc) }
     }
 
     fn sample_logits(&mut self, rows: u32) -> Result<Vec<i32>, Status> {
@@ -2263,6 +2504,11 @@ struct RunnerScratch {
     up: DeviceBuffer<u16>,
     mlp: DeviceBuffer<u16>,
     mlp_out: DeviceBuffer<u16>,
+    shared_gate: DeviceBuffer<u16>,
+    shared_up: DeviceBuffer<u16>,
+    shared_mlp: DeviceBuffer<u16>,
+    shared_out: DeviceBuffer<u16>,
+    shared_gate_logits: DeviceBuffer<f32>,
     router_logits: DeviceBuffer<f32>,
     topk_ids: DeviceBuffer<i32>,
     topk_weights: DeviceBuffer<f32>,
@@ -2300,6 +2546,11 @@ impl RunnerScratch {
             up: DeviceBuffer::empty(device_ordinal),
             mlp: DeviceBuffer::empty(device_ordinal),
             mlp_out: DeviceBuffer::empty(device_ordinal),
+            shared_gate: DeviceBuffer::empty(device_ordinal),
+            shared_up: DeviceBuffer::empty(device_ordinal),
+            shared_mlp: DeviceBuffer::empty(device_ordinal),
+            shared_out: DeviceBuffer::empty(device_ordinal),
+            shared_gate_logits: DeviceBuffer::empty(device_ordinal),
             router_logits: DeviceBuffer::empty(device_ordinal),
             topk_ids: DeviceBuffer::empty(device_ordinal),
             topk_weights: DeviceBuffer::empty(device_ordinal),
@@ -2343,6 +2594,15 @@ impl RunnerScratch {
             let topk = checked_usize_product(&[rows, moe.num_experts_per_tok])?;
             self.topk_ids.ensure(topk)?;
             self.topk_weights.ensure(topk)?;
+            if moe.shared_expert_intermediate_size != 0 {
+                let shared_intermediate =
+                    checked_usize_product(&[rows, moe.shared_expert_intermediate_size])?;
+                self.shared_gate.ensure(shared_intermediate)?;
+                self.shared_up.ensure(shared_intermediate)?;
+                self.shared_mlp.ensure(shared_intermediate)?;
+                self.shared_out.ensure(hidden)?;
+                self.shared_gate_logits.ensure(row_count)?;
+            }
         } else {
             let intermediate = checked_usize_product(&[rows, config.intermediate_size])?;
             self.gate.ensure(intermediate)?;
@@ -2639,6 +2899,75 @@ mod tests {
         config
     }
 
+    fn empty_bf16_buffer() -> DeviceBuffer<u16> {
+        DeviceBuffer::empty(-1)
+    }
+
+    fn empty_f32_buffer() -> DeviceBuffer<f32> {
+        DeviceBuffer::empty(-1)
+    }
+
+    fn empty_shared_expert_weights() -> QwenSharedExpertWeights {
+        QwenSharedExpertWeights {
+            gate_proj: empty_bf16_buffer(),
+            up_proj: empty_bf16_buffer(),
+            down_proj: empty_bf16_buffer(),
+            shared_expert_gate: empty_bf16_buffer(),
+        }
+    }
+
+    fn empty_qwen36_moe_mlp_weights() -> QwenMlpWeights {
+        QwenMlpWeights::Moe {
+            router_proj: empty_bf16_buffer(),
+            gate_up_proj: empty_bf16_buffer(),
+            down_proj: empty_bf16_buffer(),
+            shared: Some(empty_shared_expert_weights()),
+        }
+    }
+
+    fn test_device_ptr(addr: usize) -> ffi::DevicePtr {
+        addr as *mut c_void
+    }
+
+    unsafe extern "C" {
+        fn cudaGetDeviceCount(count: *mut i32) -> i32;
+    }
+
+    fn cuda_device_available() -> bool {
+        let mut device_count = 0;
+        let err = unsafe { cudaGetDeviceCount(&mut device_count) };
+        if err != cuda::CUDA_SUCCESS || device_count == 0 {
+            eprintln!("SKIP: no CUDA device available");
+            return false;
+        }
+        assert_eq!(unsafe { cuda::cudaSetDevice(0) }, cuda::CUDA_SUCCESS);
+        true
+    }
+
+    fn filled_bf16_buffer(
+        device_ordinal: i32,
+        stream: *mut c_void,
+        len: usize,
+        value: f32,
+    ) -> DeviceBuffer<u16> {
+        DeviceBuffer::from_slice(
+            device_ordinal,
+            stream,
+            &constant_bf16_values(len, value).unwrap(),
+        )
+        .unwrap()
+    }
+
+    fn download_bf16(buffer: &DeviceBuffer<u16>, stream: *mut c_void, len: usize) -> Vec<u16> {
+        let mut values = vec![0_u16; len];
+        buffer.download(stream, &mut values).unwrap();
+        values
+    }
+
+    fn has_nonzero_bf16(values: &[u16]) -> bool {
+        values.iter().any(|value| *value != 0)
+    }
+
     #[test]
     fn public_moe_config_validation_rejects_invalid_config_json_shapes() {
         assert_eq!(
@@ -2738,10 +3067,14 @@ mod tests {
         );
 
         let introduces_full_attention = QwenConfig::randomized_qwen36_moe_gdn_one_block_fixture(-1);
-        assert_eq!(
-            introduces_full_attention.validate(),
-            Err(Status::Unsupported)
-        );
+        assert_eq!(introduces_full_attention.validate(), Ok(()));
+
+        let mut missing_shared = QwenConfig::randomized_qwen36_moe_gdn_one_block_fixture(-1);
+        missing_shared.moe = Some(QwenMoeConfig {
+            shared_expert_intermediate_size: 0,
+            ..QwenMoeConfig::qwen36_35b_a3b()
+        });
+        assert_eq!(missing_shared.validate(), Err(Status::Unsupported));
     }
 
     #[test]
@@ -2754,9 +3087,18 @@ mod tests {
     }
 
     #[test]
+    fn qwen36_incomplete_hybrid_schedule_is_invalid() {
+        let mut config = QwenConfig::randomized_qwen36_moe_gdn_one_block_fixture(-1);
+        config.num_layers = 5;
+        assert_eq!(config.attention_layer_count(), 1);
+        assert_eq!(config.gdn_layer_count(), 4);
+        assert_eq!(config.validate(), Err(Status::InvalidArgument));
+    }
+
+    #[test]
     fn qwen36_one_schedule_block_engine_config_uses_real_attention_dimensions() {
         let config = QwenConfig::randomized_qwen36_moe_gdn_one_block_fixture(-1);
-        assert_eq!(config.validate(), Err(Status::Unsupported));
+        assert_eq!(config.validate(), Ok(()));
         assert_eq!(config.attention_layer_count(), 1);
         assert_eq!(config.gdn_layer_count(), 3);
 
@@ -2765,6 +3107,232 @@ mod tests {
         assert_eq!(engine.num_q_heads, config.num_q_heads);
         assert_eq!(engine.num_kv_heads, config.num_kv_heads);
         assert_eq!(engine.head_dim, config.head_dim);
+    }
+
+    #[test]
+    fn qwen36_gdn_weights_carry_post_attention_shared_moe() {
+        let layer = QwenLayerWeights::Gdn(QwenGdnWeights {
+            norm: empty_bf16_buffer(),
+            in_proj: empty_bf16_buffer(),
+            gate_proj: empty_bf16_buffer(),
+            a_proj: empty_bf16_buffer(),
+            b_proj: empty_bf16_buffer(),
+            conv_weight: empty_bf16_buffer(),
+            conv_bias: empty_bf16_buffer(),
+            a_log: empty_f32_buffer(),
+            dt_bias: empty_f32_buffer(),
+            rms_weight: empty_bf16_buffer(),
+            out_proj: empty_bf16_buffer(),
+            mlp_norm: empty_bf16_buffer(),
+            mlp: empty_qwen36_moe_mlp_weights(),
+        });
+
+        match &layer {
+            QwenLayerWeights::Gdn(gdn) => {
+                assert_eq!(
+                    gdn.mlp.validate_for(Some(QwenMoeConfig::qwen36_35b_a3b())),
+                    Ok(())
+                );
+            }
+            QwenLayerWeights::AttentionMlp(_) => unreachable!(),
+        }
+
+        match layer.ptrs() {
+            QwenLayerPtrs::Gdn(gdn) => match gdn.mlp {
+                QwenMlpPtrs::Moe {
+                    shared: Some(_), ..
+                } => {}
+                _ => panic!("GDN layers must carry shared MoE post-attention weights"),
+            },
+            QwenLayerPtrs::AttentionMlp(_) => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn layer_ptrs_make_post_attention_mlp_common_after_attention_and_gdn_core() {
+        let attention = QwenLayerPtrs::AttentionMlp(QwenAttentionMlpPtrs {
+            attn_norm: test_device_ptr(1),
+            q_proj: test_device_ptr(2),
+            k_proj: test_device_ptr(3),
+            v_proj: test_device_ptr(4),
+            o_proj: test_device_ptr(5),
+            mlp_norm: test_device_ptr(6),
+            mlp: QwenMlpPtrs::Dense {
+                gate_proj: test_device_ptr(7),
+                up_proj: test_device_ptr(8),
+                down_proj: test_device_ptr(9),
+            },
+        });
+        let post = attention.post_attention_mlp();
+        assert_eq!(post.norm, test_device_ptr(6));
+        match post.mlp {
+            QwenMlpPtrs::Dense {
+                gate_proj,
+                up_proj,
+                down_proj,
+            } => {
+                assert_eq!(gate_proj, test_device_ptr(7));
+                assert_eq!(up_proj, test_device_ptr(8));
+                assert_eq!(down_proj, test_device_ptr(9));
+            }
+            QwenMlpPtrs::Moe { .. } => panic!("attention layer post-MLP payload changed shape"),
+        }
+
+        let gdn = QwenLayerPtrs::Gdn(QwenGdnPtrs {
+            norm: test_device_ptr(10),
+            in_proj: test_device_ptr(11),
+            gate_proj: test_device_ptr(12),
+            a_proj: test_device_ptr(13),
+            b_proj: test_device_ptr(14),
+            conv_weight: test_device_ptr(15),
+            conv_bias: test_device_ptr(16),
+            a_log: test_device_ptr(17),
+            dt_bias: test_device_ptr(18),
+            rms_weight: test_device_ptr(19),
+            out_proj: test_device_ptr(20),
+            mlp_norm: test_device_ptr(21),
+            mlp: QwenMlpPtrs::Moe {
+                router_proj: test_device_ptr(22),
+                gate_up_proj: test_device_ptr(23),
+                down_proj: test_device_ptr(24),
+                shared: Some(QwenSharedExpertPtrs {
+                    gate_proj: test_device_ptr(25),
+                    up_proj: test_device_ptr(26),
+                    down_proj: test_device_ptr(27),
+                    shared_expert_gate: test_device_ptr(28),
+                }),
+            },
+        });
+        let post = gdn.post_attention_mlp();
+        assert_eq!(post.norm, test_device_ptr(21));
+        match post.mlp {
+            QwenMlpPtrs::Moe {
+                router_proj,
+                gate_up_proj,
+                down_proj,
+                shared: Some(shared),
+            } => {
+                assert_eq!(router_proj, test_device_ptr(22));
+                assert_eq!(gate_up_proj, test_device_ptr(23));
+                assert_eq!(down_proj, test_device_ptr(24));
+                assert_eq!(shared.gate_proj, test_device_ptr(25));
+                assert_eq!(shared.up_proj, test_device_ptr(26));
+                assert_eq!(shared.down_proj, test_device_ptr(27));
+                assert_eq!(shared.shared_expert_gate, test_device_ptr(28));
+            }
+            _ => panic!("GDN post-MLP payload must keep shared MoE pointers"),
+        }
+    }
+
+    #[test]
+    fn shared_moe_execution_produces_routed_and_shared_outputs() {
+        if !cuda_device_available() {
+            return;
+        }
+
+        let config = QwenConfig::randomized_shared_moe_tiny_fixture(0);
+        let mut runner = ModelRunner::random_bf16(config, 0x5153_3300_5a5a_5a5a).unwrap();
+        let rows = 1;
+        let hidden = config.hidden_size;
+        let hidden_len = hidden as usize;
+        let moe = config.moe_config().unwrap();
+        runner.scratch.ensure(&config, rows).unwrap();
+
+        let input = constant_bf16_values(hidden_len, 1.0).unwrap();
+        runner
+            .scratch
+            .attn_proj
+            .upload(config.stream, &input)
+            .unwrap();
+
+        let router_proj = filled_bf16_buffer(
+            config.device_ordinal,
+            config.stream,
+            checked_usize_product(&[moe.num_experts, hidden]).unwrap(),
+            0.0,
+        );
+        let gate_up_proj = filled_bf16_buffer(
+            config.device_ordinal,
+            config.stream,
+            checked_usize_product(&[moe.num_experts, 2, moe.moe_intermediate_size, hidden])
+                .unwrap(),
+            0.003,
+        );
+        let down_proj = filled_bf16_buffer(
+            config.device_ordinal,
+            config.stream,
+            checked_usize_product(&[moe.num_experts, hidden, moe.moe_intermediate_size]).unwrap(),
+            0.01,
+        );
+
+        runner
+            .execute_moe_mlp(
+                rows,
+                hidden,
+                router_proj.as_device_ptr(),
+                gate_up_proj.as_device_ptr(),
+                down_proj.as_device_ptr(),
+                None,
+            )
+            .unwrap();
+        let routed = download_bf16(&runner.scratch.mlp_out, config.stream, hidden_len);
+        assert!(has_nonzero_bf16(&routed));
+
+        runner
+            .scratch
+            .attn_proj
+            .upload(config.stream, &input)
+            .unwrap();
+        let shared_gate_proj = filled_bf16_buffer(
+            config.device_ordinal,
+            config.stream,
+            checked_usize_product(&[moe.shared_expert_intermediate_size, hidden]).unwrap(),
+            0.004,
+        );
+        let shared_up_proj = filled_bf16_buffer(
+            config.device_ordinal,
+            config.stream,
+            checked_usize_product(&[moe.shared_expert_intermediate_size, hidden]).unwrap(),
+            0.004,
+        );
+        let shared_down_proj = filled_bf16_buffer(
+            config.device_ordinal,
+            config.stream,
+            checked_usize_product(&[hidden, moe.shared_expert_intermediate_size]).unwrap(),
+            0.02,
+        );
+        let shared_expert_gate =
+            filled_bf16_buffer(config.device_ordinal, config.stream, hidden_len, 0.02);
+        let shared = QwenSharedExpertPtrs {
+            gate_proj: shared_gate_proj.as_device_ptr(),
+            up_proj: shared_up_proj.as_device_ptr(),
+            down_proj: shared_down_proj.as_device_ptr(),
+            shared_expert_gate: shared_expert_gate.as_device_ptr(),
+        };
+
+        runner
+            .execute_moe_mlp(
+                rows,
+                hidden,
+                router_proj.as_device_ptr(),
+                gate_up_proj.as_device_ptr(),
+                down_proj.as_device_ptr(),
+                Some(shared),
+            )
+            .unwrap();
+
+        let shared_out = download_bf16(&runner.scratch.shared_out, config.stream, hidden_len);
+        let combined = download_bf16(&runner.scratch.mlp_out, config.stream, hidden_len);
+        let mut gate_logits = vec![0.0_f32; rows as usize];
+        runner
+            .scratch
+            .shared_gate_logits
+            .download(config.stream, &mut gate_logits)
+            .unwrap();
+
+        assert!(has_nonzero_bf16(&shared_out));
+        assert!(gate_logits.iter().any(|value| *value != 0.0));
+        assert_ne!(combined, routed);
     }
 
     #[test]
