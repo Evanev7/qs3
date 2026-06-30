@@ -9,22 +9,6 @@ impl Engine {
     pub(crate) fn kernel_ops(&mut self) -> runtime::kernels::KernelOps<'_> {
         self.inner.kernel_ops()
     }
-
-    pub(crate) fn complete_append_layer_without_attention(
-        &mut self,
-        layer_idx: u32,
-    ) -> Result<(), Status> {
-        self.inner
-            .complete_append_layer_without_attention(layer_idx)
-    }
-
-    pub(crate) fn complete_decode_layer_without_attention(
-        &mut self,
-        layer_idx: u32,
-    ) -> Result<(), Status> {
-        self.inner
-            .complete_decode_layer_without_attention(layer_idx)
-    }
 }
 
 pub trait EngineTrait {
@@ -1532,6 +1516,23 @@ mod tests {
         assert_eq!(state.live_token_indptr, &[0, 2]);
         assert_eq!(state.live_tokens, &[200, 201]);
         assert_eq!(state.free_page_count, 7);
+    }
+
+    #[test]
+    fn zero_attention_layers_are_invalid() {
+        let mut config = tiny_config_with_layers(0);
+        assert_eq!(
+            EngineCore::new(config).map(|_| ()),
+            Err(Status::InvalidArgument)
+        );
+
+        config.num_q_heads = 0;
+        config.num_kv_heads = 0;
+        config.head_dim = 0;
+        assert_eq!(
+            EngineCore::new(config).map(|_| ()),
+            Err(Status::InvalidArgument)
+        );
     }
 
     #[test]

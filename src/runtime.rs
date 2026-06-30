@@ -521,14 +521,6 @@ impl EngineInner {
         self.core.complete_append_layer(pending_layer)
     }
 
-    pub(crate) fn complete_append_layer_without_attention(
-        &mut self,
-        layer_idx: u32,
-    ) -> Result<(), Status> {
-        let pending_layer = self.core.pending_append_layer(layer_idx)?;
-        self.core.complete_append_layer(pending_layer)
-    }
-
     pub(crate) fn prepare_decode(&mut self, batch: DecodeBatch<'_>) -> Result<(), Status> {
         self.core.begin_decode(batch.request_ids, batch.tokens)?;
         if let Err(status) = self
@@ -577,14 +569,6 @@ impl EngineInner {
             v_scale: layer.v_scale,
         };
         unsafe { self.ctx.execute_decode(plan, &execute) }?;
-        self.core.complete_decode_layer(pending_layer)
-    }
-
-    pub(crate) fn complete_decode_layer_without_attention(
-        &mut self,
-        layer_idx: u32,
-    ) -> Result<(), Status> {
-        let pending_layer = self.core.pending_decode_layer(layer_idx)?;
         self.core.complete_decode_layer(pending_layer)
     }
 
@@ -731,6 +715,9 @@ fn validate_runtime_config(config: &EngineConfig) -> Result<(), Status> {
         return Err(Status::Unsupported);
     }
     if !matches!(config.kv_layout, KvLayout::NHD | KvLayout::HND) {
+        return Err(Status::InvalidArgument);
+    }
+    if config.num_layers == 0 {
         return Err(Status::InvalidArgument);
     }
     validate_supported_attention_grouping(config.num_q_heads, config.num_kv_heads)?;
@@ -900,6 +887,27 @@ mod tests {
     fn runtime_config_accepts_supported_flashinfer_attention_shape() {
         let config = tiny_config();
         assert_eq!(validate_runtime_config(&config), Ok(()));
+    }
+
+    #[test]
+    fn runtime_config_rejects_zero_attention_layers() {
+        let mut config = tiny_config();
+        config.num_layers = 0;
+        config.num_q_heads = 0;
+        config.num_kv_heads = 0;
+        config.head_dim = 0;
+        assert_eq!(
+            validate_runtime_config(&config),
+            Err(Status::InvalidArgument)
+        );
+
+        config.num_q_heads = 2;
+        config.num_kv_heads = 2;
+        config.head_dim = 64;
+        assert_eq!(
+            validate_runtime_config(&config),
+            Err(Status::InvalidArgument)
+        );
     }
 
     #[test]

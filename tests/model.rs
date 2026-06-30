@@ -140,116 +140,20 @@ fn randomized_dense_model_runs_prefill_and_two_decodes() {
 }
 
 #[test]
-fn randomized_qwen_gdn_model_runs_prefill_decode_rebuild_and_failed_rewrite() {
-    if !cuda_device_available() {
-        return;
-    }
-
-    let config = QwenConfig::randomized_qwen36_moe_gdn_one_block_fixture(0);
-    let mut runner = ModelRunner::random_bf16(config, RANDOM_MODEL_SEED).unwrap();
-
-    let prefill = runner
-        .run(QwenRequest {
-            request_id: 171,
-            tokens: &[1, 7, 13],
-            max_new_tokens: 0,
-        })
-        .unwrap();
-    assert!(prefill.generated_tokens.is_empty());
-    assert_eq!(prefill.live_tokens, vec![1, 7, 13]);
-    assert_eq!(prefill.logits_rows, 3);
-    assert_eq!(prefill.logits_vocab_size, config.vocab_size);
-
-    let decoded = runner
-        .run(QwenRequest {
-            request_id: 171,
-            tokens: &prefill.live_tokens,
-            max_new_tokens: 2,
-        })
-        .unwrap();
-    assert_eq!(decoded.generated_tokens.len(), 2);
-    assert_eq!(decoded.live_tokens.len(), 5);
+fn qwen36_gdn_configs_require_full_attention_and_reject_unsupported_execution() {
+    let mut no_attention = QwenConfig::randomized_qwen36_moe_gdn_one_block_fixture(-1);
+    no_attention.num_layers = 1;
+    assert_eq!(no_attention.validate(), Err(Status::InvalidArgument));
     assert_eq!(
-        &decoded.live_tokens[..prefill.live_tokens.len()],
-        [1, 7, 13]
+        ModelRunner::random_bf16(no_attention, RANDOM_MODEL_SEED).err(),
+        Some(Status::InvalidArgument)
     );
-    for token in &decoded.generated_tokens {
-        assert!(*token >= 0 && *token < config.vocab_size as i32);
-    }
 
-    let first = run_random_model(config, 173, &[3, 5, 8], 2);
-    let second = run_random_model(config, 173, &[3, 5, 8], 2);
-    assert_eq!(first, second);
-
-    let original = runner
-        .run(QwenRequest {
-            request_id: 179,
-            tokens: &[2, 4, 6],
-            max_new_tokens: 2,
-        })
-        .unwrap();
-    assert_eq!(original.live_tokens.len(), 5);
-
-    let rewritten_prompt = [2, 5, 6];
-    let rebuilt = runner
-        .run(QwenRequest {
-            request_id: 179,
-            tokens: &rewritten_prompt,
-            max_new_tokens: 2,
-        })
-        .unwrap();
-    let fresh = run_random_model(config, 179, &rewritten_prompt, 2);
-    assert_eq!(rebuilt, fresh);
-
-    let live_before_failed_rewrite = runner.live_tokens().to_vec();
+    let config = QwenConfig::randomized_qwen36_moe_gdn_one_block_fixture(-1);
+    assert_eq!(config.validate(), Err(Status::Unsupported));
     assert_eq!(
-        runner
-            .run(QwenRequest {
-                request_id: 179,
-                tokens: &[2, config.vocab_size as i32, 6],
-                max_new_tokens: 1,
-            })
-            .unwrap_err(),
-        Status::InvalidArgument
-    );
-    assert_eq!(runner.live_tokens(), live_before_failed_rewrite.as_slice());
-
-    let continued = runner
-        .run(QwenRequest {
-            request_id: 179,
-            tokens: &live_before_failed_rewrite,
-            max_new_tokens: 1,
-        })
-        .unwrap();
-    let fresh_continued = run_random_model(config, 179, &live_before_failed_rewrite, 1);
-    assert_eq!(continued, fresh_continued);
-
-    runner.reset().unwrap();
-    assert!(runner.live_tokens().is_empty());
-    let after_reset = runner
-        .run(QwenRequest {
-            request_id: 181,
-            tokens: &[1, 2],
-            max_new_tokens: 1,
-        })
-        .unwrap();
-    let fresh_after_reset = run_random_model(config, 181, &[1, 2], 1);
-    assert_eq!(after_reset, fresh_after_reset);
-
-    runner.release_requests(&[181]).unwrap();
-    assert!(runner.live_tokens().is_empty());
-    let after_release = runner
-        .run(QwenRequest {
-            request_id: 181,
-            tokens: &[1, 2],
-            max_new_tokens: 1,
-        })
-        .unwrap();
-    assert_eq!(after_release, fresh_after_reset);
-
-    assert_cuda(
-        unsafe { cudaDeviceSynchronize() },
-        "sync randomized qwen GDN model test",
+        ModelRunner::random_bf16(config, RANDOM_MODEL_SEED).err(),
+        Some(Status::Unsupported)
     );
 }
 
@@ -642,7 +546,7 @@ fn qwen_config_validates_public_moe_config_json_fields() {
 }
 
 #[test]
-fn randomized_fixture_constructors_validate_supported_public_shapes() {
+fn randomized_fixture_constructors_validate_current_public_shapes() {
     assert_eq!(
         QwenConfig::randomized_dense_tiny_fixture(-1).validate(),
         Ok(())
@@ -653,7 +557,7 @@ fn randomized_fixture_constructors_validate_supported_public_shapes() {
     );
     assert_eq!(
         QwenConfig::randomized_qwen36_moe_gdn_one_block_fixture(-1).validate(),
-        Ok(())
+        Err(Status::Unsupported)
     );
 }
 

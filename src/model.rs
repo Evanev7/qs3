@@ -30,9 +30,6 @@ const QWEN36_GDN_PACKED_DIM: u32 =
     2 * QWEN36_GDN_NUM_K_HEADS * QWEN36_GDN_KEY_DIM + QWEN36_GDN_NUM_V_HEADS * QWEN36_GDN_VALUE_DIM;
 const QWEN36_GDN_OUTPUT_DIM: u32 = QWEN36_GDN_NUM_V_HEADS * QWEN36_GDN_VALUE_DIM;
 const QWEN36_GDN_STATE_SLOTS_PER_LAYER: u32 = 2;
-const GDN_ENGINE_NUM_Q_HEADS: u32 = 2;
-const GDN_ENGINE_NUM_KV_HEADS: u32 = 2;
-const GDN_ENGINE_HEAD_DIM: u32 = 64;
 const QWEN36_MOE_ROUTER_SCORE: RouterScore = RouterScore::Softmax;
 const QWEN36_MOE_ROUTER_RENORMALIZE: bool = true;
 const QWEN36_MOE_ROUTER_SCALING_FACTOR: f32 = 1.0;
@@ -159,11 +156,7 @@ impl QwenGdnShape {
         {
             return Err(Status::InternalError);
         }
-        if config.hidden_size != self.packed_dim()?
-            || config.num_q_heads != self.num_key_heads
-            || config.num_kv_heads != self.num_key_heads
-            || config.head_dim != self.key_head_dim
-        {
+        if config.hidden_size != self.packed_dim()? {
             return Err(Status::InvalidArgument);
         }
         Ok(())
@@ -193,6 +186,43 @@ impl QwenLayerPattern {
                     QwenBlockKind::FullAttention
                 } else {
                     QwenBlockKind::LinearAttention
+                }
+            }
+        }
+    }
+
+    fn full_attention_layer_count(self, num_layers: u32) -> u32 {
+        match self {
+            Self::FullAttentionOnly => num_layers,
+            Self::Qwen36HybridGdn { .. } => num_layers / 4,
+        }
+    }
+
+    fn gdn_layer_count(self, num_layers: u32) -> u32 {
+        num_layers - self.full_attention_layer_count(num_layers)
+    }
+
+    fn full_attention_layer_index(self, model_layer_idx: u32) -> Option<u32> {
+        match self {
+            Self::FullAttentionOnly => Some(model_layer_idx),
+            Self::Qwen36HybridGdn { .. } => {
+                if model_layer_idx % 4 == 3 {
+                    Some(model_layer_idx / 4)
+                } else {
+                    None
+                }
+            }
+        }
+    }
+
+    fn gdn_layer_index(self, model_layer_idx: u32) -> Option<u32> {
+        match self {
+            Self::FullAttentionOnly => None,
+            Self::Qwen36HybridGdn { .. } => {
+                if model_layer_idx % 4 == 3 {
+                    None
+                } else {
+                    Some(model_layer_idx - model_layer_idx / 4)
                 }
             }
         }
@@ -233,9 +263,6 @@ impl QwenModelShape {
                 if config.intermediate_size != moe.moe_intermediate_size {
                     return Err(Status::InvalidArgument);
                 }
-                if config.has_full_attention_layers() && moe.shared_expert_intermediate_size != 0 {
-                    return Err(Status::Unsupported);
-                }
             }
             None => {
                 if !config.hidden_size.is_multiple_of(8)
@@ -250,8 +277,12 @@ impl QwenModelShape {
                 return Err(Status::Unsupported);
             }
             gdn.validate_config(config)?;
-        } else {
-            config.validate_full_attention_shape()?;
+        }
+        config.validate_full_attention_shape()?;
+        if let Some(moe) = config.moe
+            && moe.shared_expert_intermediate_size != 0
+        {
+            return Err(Status::Unsupported);
         }
         Ok(())
     }
@@ -328,7 +359,7 @@ impl QwenConfig {
         Self {
             device_ordinal,
             stream: ptr::null_mut(),
-            num_layers: 1,
+            num_layers: 4,
             max_live_requests: 1,
             max_batch_size: 1,
             max_seq_len: 8,
@@ -338,9 +369,9 @@ impl QwenConfig {
             intermediate_size: moe.moe_intermediate_size,
             moe: Some(moe),
             vocab_size: 32,
-            num_q_heads: QWEN36_GDN_NUM_Q_HEADS,
-            num_kv_heads: QWEN36_GDN_NUM_K_HEADS,
-            head_dim: QWEN36_GDN_KEY_DIM,
+            num_q_heads: QWEN36_GDN_PACKED_DIM / 64,
+            num_kv_heads: QWEN36_GDN_PACKED_DIM / 64,
+            head_dim: 64,
             rms_norm_eps: 1.0e-6,
             rope_theta: 10000.0,
             rope_scale: 1.0,
@@ -363,6 +394,10 @@ impl QwenConfig {
             || self.hidden_size == 0
             || self.intermediate_size == 0
             || self.vocab_size == 0
+        {
+            return Err(Status::InvalidArgument);
+        }
+        if self.attention_layer_count() == 0
             || self.num_q_heads == 0
             || self.num_kv_heads == 0
             || self.head_dim == 0
@@ -401,9 +436,6 @@ impl QwenConfig {
         {
             return Err(Status::InvalidArgument);
         }
-        if self.has_gdn_layers() && self.has_full_attention_layers() {
-            return Err(Status::Unsupported);
-        }
         Ok(())
     }
 
@@ -437,13 +469,39 @@ impl QwenConfig {
     }
 
     fn has_gdn_layers(&self) -> bool {
-        (0..self.num_layers)
-            .any(|layer_idx| self.layer_kind(layer_idx) == QwenBlockKind::LinearAttention)
+        self.gdn_layer_count() != 0
     }
 
-    fn has_full_attention_layers(&self) -> bool {
-        (0..self.num_layers)
-            .any(|layer_idx| self.layer_kind(layer_idx) == QwenBlockKind::FullAttention)
+    fn attention_layer_count(&self) -> u32 {
+        self.model_shape
+            .layer_pattern
+            .full_attention_layer_count(self.num_layers)
+    }
+
+    fn gdn_layer_count(&self) -> u32 {
+        self.model_shape
+            .layer_pattern
+            .gdn_layer_count(self.num_layers)
+    }
+
+    fn attention_layer_index(&self, model_layer_idx: u32) -> Result<u32, Status> {
+        if model_layer_idx >= self.num_layers {
+            return Err(Status::InvalidArgument);
+        }
+        self.model_shape
+            .layer_pattern
+            .full_attention_layer_index(model_layer_idx)
+            .ok_or(Status::InternalError)
+    }
+
+    fn gdn_layer_index(&self, model_layer_idx: u32) -> Result<u32, Status> {
+        if model_layer_idx >= self.num_layers {
+            return Err(Status::InvalidArgument);
+        }
+        self.model_shape
+            .layer_pattern
+            .gdn_layer_index(model_layer_idx)
+            .ok_or(Status::InternalError)
     }
 
     fn moe_config(&self) -> Option<QwenMoeConfig> {
@@ -451,10 +509,11 @@ impl QwenConfig {
     }
 
     fn engine_config(&self) -> EngineConfig {
+        let attention_layers = self.attention_layer_count();
         EngineConfig {
             device_ordinal: self.device_ordinal,
             stream: self.stream,
-            num_layers: self.num_layers,
+            num_layers: attention_layers,
             max_live_requests: self.max_live_requests,
             max_batch_size: self.max_batch_size,
             max_seq_len: self.max_seq_len,
@@ -463,21 +522,9 @@ impl QwenConfig {
             hidden_size: self.hidden_size,
             intermediate_size: self.intermediate_size,
             vocab_size: self.vocab_size,
-            num_q_heads: if self.has_gdn_layers() {
-                GDN_ENGINE_NUM_Q_HEADS
-            } else {
-                self.num_q_heads
-            },
-            num_kv_heads: if self.has_gdn_layers() {
-                GDN_ENGINE_NUM_KV_HEADS
-            } else {
-                self.num_kv_heads
-            },
-            head_dim: if self.has_gdn_layers() {
-                GDN_ENGINE_HEAD_DIM
-            } else {
-                self.head_dim
-            },
+            num_q_heads: self.num_q_heads,
+            num_kv_heads: self.num_kv_heads,
+            head_dim: self.head_dim,
             activation_dtype: DType::BF16,
             kv_dtype: DType::BF16,
             kv_layout: KvLayout::NHD,
@@ -954,10 +1001,7 @@ impl ModelRunner {
         weights.validate_for(&config)?;
         let mut engine = Engine::new(config.engine_config())?;
         let mut scratch = RunnerScratch::new(config.device_ordinal);
-        let moe_plan = if let Some(moe) = config
-            .moe_config()
-            .filter(|_| config.has_full_attention_layers())
-        {
+        let moe_plan = if let Some(moe) = config.moe_config() {
             let (plan, workspace_bytes) = {
                 let mut ops = engine.kernel_ops();
                 let plan = unsafe {
@@ -1176,29 +1220,23 @@ impl ModelRunner {
             tokens,
         })?;
 
-        let result = self
-            .execute_active_batch(BatchRun {
-                tokens,
-                start_pos,
-                kind: ActiveRunKind::Append,
-            })
-            .and_then(|sampled| {
-                self.engine
-                    .commit_batch(Commit {
-                        accepted_token_counts: None,
-                    })
-                    .map(|_| sampled)
-            });
+        let result = self.execute_active_batch(BatchRun {
+            tokens,
+            start_pos,
+            kind: ActiveRunKind::Append,
+        });
         match result {
             Ok(sampled) => {
-                self.commit_gdn_state();
+                self.commit_attention_then_gdn(Commit {
+                    accepted_token_counts: None,
+                })?;
                 self.live_tokens.extend_from_slice(tokens);
                 self.live_request_id = Some(request_id);
                 self.last_next_tokens = sampled;
                 Ok(())
             }
             Err(status) => {
-                let _ = self.engine.abort_batch();
+                self.abort_attention_batch();
                 Err(status)
             }
         }
@@ -1218,29 +1256,23 @@ impl ModelRunner {
             tokens: &[token],
         })?;
 
-        let result = self
-            .execute_active_batch(BatchRun {
-                tokens: &[token],
-                start_pos,
-                kind: ActiveRunKind::Decode,
-            })
-            .and_then(|sampled| {
-                self.engine
-                    .commit_batch(Commit {
-                        accepted_token_counts: None,
-                    })
-                    .map(|_| sampled)
-            });
+        let result = self.execute_active_batch(BatchRun {
+            tokens: &[token],
+            start_pos,
+            kind: ActiveRunKind::Decode,
+        });
         match result {
             Ok(sampled) => {
-                self.commit_gdn_state();
+                self.commit_attention_then_gdn(Commit {
+                    accepted_token_counts: None,
+                })?;
                 self.live_tokens.push(token);
                 self.live_request_id = Some(request_id);
                 self.last_next_tokens = sampled;
                 Ok(())
             }
             Err(status) => {
-                let _ = self.engine.abort_batch();
+                self.abort_attention_batch();
                 Err(status)
             }
         }
@@ -1284,9 +1316,10 @@ impl ModelRunner {
             };
             match layer {
                 QwenLayerPtrs::AttentionMlp(layer) => {
+                    let attention_layer_idx = self.config.attention_layer_index(layer_idx)?;
                     let kv_hidden = self.config.kv_hidden_size()?;
                     self.execute_attention_layer(
-                        layer_idx,
+                        attention_layer_idx,
                         rows,
                         hidden,
                         kv_hidden,
@@ -1334,7 +1367,15 @@ impl ModelRunner {
                     layer_input = self.scratch.mlp_out.as_device_ptr();
                 }
                 QwenLayerPtrs::Gdn(layer) => {
-                    self.execute_gdn_layer(layer_idx, rows, hidden, layer_input, layer, run.kind)?;
+                    let gdn_layer_idx = self.config.gdn_layer_index(layer_idx)?;
+                    self.execute_gdn_layer(
+                        gdn_layer_idx,
+                        rows,
+                        hidden,
+                        layer_input,
+                        layer,
+                        run.kind,
+                    )?;
                     self.fused_add_rmsnorm(
                         self.scratch.attn_proj.as_device_ptr(),
                         self.scratch.residual.as_device_ptr(),
@@ -1360,7 +1401,7 @@ impl ModelRunner {
 
     fn execute_attention_layer(
         &mut self,
-        layer_idx: u32,
+        attention_layer_idx: u32,
         rows: u32,
         hidden: u32,
         kv_hidden: u32,
@@ -1397,7 +1438,7 @@ impl ModelRunner {
         )?;
 
         let engine_layer = EngineLayer::bf16_attention(
-            layer_idx,
+            attention_layer_idx,
             self.attention_heads(
                 self.scratch.q.as_device_ptr(),
                 rows,
@@ -1440,7 +1481,7 @@ impl ModelRunner {
 
     fn execute_gdn_layer(
         &mut self,
-        layer_idx: u32,
+        gdn_layer_idx: u32,
         rows: u32,
         hidden: u32,
         layer_input: ffi::DevicePtr,
@@ -1454,7 +1495,7 @@ impl ModelRunner {
             return Err(Status::InvalidArgument);
         }
         let (_state_pool, live_slot, staged_slot, conv_state, recurrent_state) =
-            self.gdn_state_views(layer_idx)?;
+            self.gdn_state_views(gdn_layer_idx)?;
         let live_slot_i32 = i32::try_from(live_slot).map_err(|_| Status::InvalidArgument)?;
         let staged_slot_i32 = i32::try_from(staged_slot).map_err(|_| Status::InvalidArgument)?;
         self.scratch
@@ -1634,8 +1675,6 @@ impl ModelRunner {
                 })?;
                 let mut ops = self.engine.kernel_ops();
                 unsafe { ops.gdn_prefill_bf16(&prefill)? };
-                self.engine
-                    .complete_append_layer_without_attention(layer_idx)?;
             }
             ActiveRunKind::Decode => {
                 let decode = GdnDecodeBf16::new(GdnDecodeBf16Args {
@@ -1676,8 +1715,6 @@ impl ModelRunner {
                 })?;
                 let mut ops = self.engine.kernel_ops();
                 unsafe { ops.gdn_decode_bf16(&decode)? };
-                self.engine
-                    .complete_decode_layer_without_attention(layer_idx)?;
             }
         }
 
@@ -1874,22 +1911,22 @@ impl ModelRunner {
 
     fn gdn_state_views(
         &self,
-        layer_idx: u32,
+        gdn_layer_idx: u32,
     ) -> Result<(u32, u32, u32, GdnConvState, GdnRecurrentState), Status> {
         let state = self.gdn_state.as_ref().ok_or(Status::InternalError)?;
-        let slots = state.layer_slots(layer_idx)?;
+        let slots = state.layer_slots(gdn_layer_idx)?;
         let conv_state = GdnConvState::contiguous(
             state.conv.as_device_ptr(),
             FloatStorage::Bf16,
-            state.state_pool,
+            state.slots.state_pool,
         )?;
         let recurrent_state = GdnRecurrentState::contiguous(
             state.recurrent.as_device_ptr(),
             FloatStorage::Bf16,
-            state.state_pool,
+            state.slots.state_pool,
         )?;
         Ok((
-            state.state_pool,
+            state.slots.state_pool,
             slots.live_slot,
             slots.staged_slot,
             conv_state,
@@ -1901,6 +1938,19 @@ impl ModelRunner {
         if let Some(state) = self.gdn_state.as_mut() {
             state.commit();
         }
+    }
+
+    fn commit_attention_then_gdn(&mut self, commit: Commit<'_>) -> Result<(), Status> {
+        if let Err(status) = self.engine.commit_batch(commit) {
+            self.abort_attention_batch();
+            return Err(status);
+        }
+        self.commit_gdn_state();
+        Ok(())
+    }
+
+    fn abort_attention_batch(&mut self) {
+        let _ = self.engine.abort_batch();
     }
 
     fn embedding_gather(&mut self, rows: u32) -> Result<(), Status> {
@@ -2082,66 +2132,57 @@ struct GdnLayerSlots {
     staged_slot: u32,
 }
 
-struct GdnState {
-    conv: DeviceBuffer<u16>,
-    recurrent: DeviceBuffer<u16>,
+struct GdnSlotMap {
     live_slots: Vec<u32>,
     staged_slots: Vec<u32>,
     state_pool: u32,
 }
 
-impl GdnState {
-    fn new(config: &QwenConfig) -> Result<Self, Status> {
-        let state_pool = config
-            .num_layers
+impl GdnSlotMap {
+    fn new(gdn_layer_count: u32) -> Result<Self, Status> {
+        let state_pool = gdn_layer_count
             .checked_mul(QWEN36_GDN_STATE_SLOTS_PER_LAYER)
             .ok_or(Status::InvalidArgument)?;
-        let conv_len =
-            checked_usize_product(&[state_pool, QWEN36_GDN_PACKED_DIM, QWEN36_GDN_CONV_STATE])?;
-        let recurrent_len = checked_usize_product(&[
-            state_pool,
-            QWEN36_GDN_NUM_V_HEADS,
-            QWEN36_GDN_VALUE_DIM,
-            QWEN36_GDN_KEY_DIM,
-        ])?;
-        let mut live_slots = try_vec_with_capacity(config.num_layers as usize)?;
-        let mut staged_slots = try_vec_with_capacity(config.num_layers as usize)?;
-        for layer_idx in 0..config.num_layers {
-            let base = layer_idx * QWEN36_GDN_STATE_SLOTS_PER_LAYER;
-            live_slots.push(base);
-            staged_slots.push(base.checked_add(1).ok_or(Status::InvalidArgument)?);
-        }
-
-        let mut state = Self {
-            conv: DeviceBuffer::empty(config.device_ordinal),
-            recurrent: DeviceBuffer::empty(config.device_ordinal),
+        let mut live_slots = try_vec_with_capacity(gdn_layer_count as usize)?;
+        let mut staged_slots = try_vec_with_capacity(gdn_layer_count as usize)?;
+        Self::reset_slots(gdn_layer_count, &mut live_slots, &mut staged_slots)?;
+        Ok(Self {
             live_slots,
             staged_slots,
             state_pool,
-        };
-        state.conv.ensure(conv_len)?;
-        state.recurrent.ensure(recurrent_len)?;
-        state.zero(config)?;
-        Ok(state)
+        })
     }
 
-    fn reset(&mut self, config: &QwenConfig) -> Result<(), Status> {
-        for layer_idx in 0..config.num_layers {
-            let idx = layer_idx as usize;
-            let base = layer_idx * QWEN36_GDN_STATE_SLOTS_PER_LAYER;
-            self.live_slots[idx] = base;
-            self.staged_slots[idx] = base.checked_add(1).ok_or(Status::InvalidArgument)?;
+    fn reset(&mut self, gdn_layer_count: u32) -> Result<(), Status> {
+        if gdn_layer_count as usize != self.live_slots.len() {
+            return Err(Status::InternalError);
         }
-        self.zero(config)
+        Self::reset_slots(
+            gdn_layer_count,
+            &mut self.live_slots,
+            &mut self.staged_slots,
+        )
     }
 
-    fn zero(&mut self, config: &QwenConfig) -> Result<(), Status> {
-        self.conv.zero(self.conv.cap, config.stream)?;
-        self.recurrent.zero(self.recurrent.cap, config.stream)
+    fn reset_slots(
+        gdn_layer_count: u32,
+        live_slots: &mut Vec<u32>,
+        staged_slots: &mut Vec<u32>,
+    ) -> Result<(), Status> {
+        live_slots.clear();
+        staged_slots.clear();
+        for gdn_layer_idx in 0..gdn_layer_count {
+            let base = gdn_layer_idx
+                .checked_mul(QWEN36_GDN_STATE_SLOTS_PER_LAYER)
+                .ok_or(Status::InvalidArgument)?;
+            live_slots.push(base);
+            staged_slots.push(base.checked_add(1).ok_or(Status::InvalidArgument)?);
+        }
+        Ok(())
     }
 
-    fn layer_slots(&self, layer_idx: u32) -> Result<GdnLayerSlots, Status> {
-        let idx = layer_idx as usize;
+    fn layer_slots(&self, gdn_layer_idx: u32) -> Result<GdnLayerSlots, Status> {
+        let idx = gdn_layer_idx as usize;
         let live_slot = *self.live_slots.get(idx).ok_or(Status::InvalidArgument)?;
         let staged_slot = *self.staged_slots.get(idx).ok_or(Status::InvalidArgument)?;
         if live_slot >= self.state_pool || staged_slot >= self.state_pool {
@@ -2157,6 +2198,54 @@ impl GdnState {
         for idx in 0..self.live_slots.len() {
             mem::swap(&mut self.live_slots[idx], &mut self.staged_slots[idx]);
         }
+    }
+}
+
+struct GdnState {
+    conv: DeviceBuffer<u16>,
+    recurrent: DeviceBuffer<u16>,
+    slots: GdnSlotMap,
+}
+
+impl GdnState {
+    fn new(config: &QwenConfig) -> Result<Self, Status> {
+        let slots = GdnSlotMap::new(config.gdn_layer_count())?;
+        let state_pool = slots.state_pool;
+        let conv_len =
+            checked_usize_product(&[state_pool, QWEN36_GDN_PACKED_DIM, QWEN36_GDN_CONV_STATE])?;
+        let recurrent_len = checked_usize_product(&[
+            state_pool,
+            QWEN36_GDN_NUM_V_HEADS,
+            QWEN36_GDN_VALUE_DIM,
+            QWEN36_GDN_KEY_DIM,
+        ])?;
+        let mut state = Self {
+            conv: DeviceBuffer::empty(config.device_ordinal),
+            recurrent: DeviceBuffer::empty(config.device_ordinal),
+            slots,
+        };
+        state.conv.ensure(conv_len)?;
+        state.recurrent.ensure(recurrent_len)?;
+        state.zero(config)?;
+        Ok(state)
+    }
+
+    fn reset(&mut self, config: &QwenConfig) -> Result<(), Status> {
+        self.slots.reset(config.gdn_layer_count())?;
+        self.zero(config)
+    }
+
+    fn zero(&mut self, config: &QwenConfig) -> Result<(), Status> {
+        self.conv.zero(self.conv.cap, config.stream)?;
+        self.recurrent.zero(self.recurrent.cap, config.stream)
+    }
+
+    fn layer_slots(&self, gdn_layer_idx: u32) -> Result<GdnLayerSlots, Status> {
+        self.slots.layer_slots(gdn_layer_idx)
+    }
+
+    fn commit(&mut self) {
+        self.slots.commit();
     }
 }
 
@@ -2242,6 +2331,25 @@ impl RunnerScratch {
         self.positions.ensure(row_count)?;
         self.residual.ensure(hidden)?;
         self.norm.ensure(hidden)?;
+        let kv_hidden = checked_usize_product(&[rows, config.kv_hidden_size()?])?;
+        self.q.ensure(hidden)?;
+        self.k.ensure(kv_hidden)?;
+        self.v.ensure(kv_hidden)?;
+        self.attn_out.ensure(hidden)?;
+        self.attn_proj.ensure(hidden)?;
+        if let Some(moe) = config.moe_config() {
+            self.router_logits
+                .ensure(checked_usize_product(&[rows, moe.num_experts])?)?;
+            let topk = checked_usize_product(&[rows, moe.num_experts_per_tok])?;
+            self.topk_ids.ensure(topk)?;
+            self.topk_weights.ensure(topk)?;
+        } else {
+            let intermediate = checked_usize_product(&[rows, config.intermediate_size])?;
+            self.gate.ensure(intermediate)?;
+            self.up.ensure(intermediate)?;
+            self.mlp.ensure(intermediate)?;
+        }
+        self.mlp_out.ensure(hidden)?;
         if config.has_gdn_layers() {
             self.gdn_packed
                 .ensure(checked_usize_product(&[rows, QWEN36_GDN_PACKED_DIM])?)?;
@@ -2270,26 +2378,6 @@ impl RunnerScratch {
             self.gdn_state_indices.ensure(row_count.max(1))?;
             self.gdn_state_out_indices.ensure(row_count.max(1))?;
             self.attn_proj.ensure(hidden)?;
-        } else {
-            let kv_hidden = checked_usize_product(&[rows, config.kv_hidden_size()?])?;
-            self.q.ensure(hidden)?;
-            self.k.ensure(kv_hidden)?;
-            self.v.ensure(kv_hidden)?;
-            self.attn_out.ensure(hidden)?;
-            self.attn_proj.ensure(hidden)?;
-            if let Some(moe) = config.moe_config() {
-                self.router_logits
-                    .ensure(checked_usize_product(&[rows, moe.num_experts])?)?;
-                let topk = checked_usize_product(&[rows, moe.num_experts_per_tok])?;
-                self.topk_ids.ensure(topk)?;
-                self.topk_weights.ensure(topk)?;
-            } else {
-                let intermediate = checked_usize_product(&[rows, config.intermediate_size])?;
-                self.gate.ensure(intermediate)?;
-                self.up.ensure(intermediate)?;
-                self.mlp.ensure(intermediate)?;
-            }
-            self.mlp_out.ensure(hidden)?;
         }
         self.logits.ensure(logits)?;
         self.next_token_ids.ensure(row_count)?;
@@ -2542,6 +2630,15 @@ fn result_from_cuda(err: i32) -> Result<(), Status> {
 mod tests {
     use super::*;
 
+    fn qwen36_hybrid_fixture_with_supported_attention(num_layers: u32) -> QwenConfig {
+        let mut config = QwenConfig::randomized_qwen36_moe_gdn_one_block_fixture(-1);
+        config.num_layers = num_layers;
+        config.head_dim = 64;
+        config.num_q_heads = config.hidden_size / config.head_dim;
+        config.num_kv_heads = config.num_q_heads;
+        config
+    }
+
     #[test]
     fn public_moe_config_validation_rejects_invalid_config_json_shapes() {
         assert_eq!(
@@ -2632,12 +2729,100 @@ mod tests {
         wrong_hidden.hidden_size = 4096;
         assert_eq!(wrong_hidden.validate(), Err(Status::InvalidArgument));
 
-        let mut introduces_full_attention =
+        let mut missing_full_attention =
             QwenConfig::randomized_qwen36_moe_gdn_one_block_fixture(-1);
-        introduces_full_attention.num_layers = 4;
+        missing_full_attention.num_layers = 1;
+        assert_eq!(
+            missing_full_attention.validate(),
+            Err(Status::InvalidArgument)
+        );
+
+        let introduces_full_attention = QwenConfig::randomized_qwen36_moe_gdn_one_block_fixture(-1);
         assert_eq!(
             introduces_full_attention.validate(),
             Err(Status::Unsupported)
         );
+    }
+
+    #[test]
+    fn qwen36_no_full_attention_config_is_invalid() {
+        let mut config = QwenConfig::randomized_qwen36_moe_gdn_one_block_fixture(-1);
+        config.num_layers = 1;
+        assert_eq!(config.attention_layer_count(), 0);
+        assert_eq!(config.gdn_layer_count(), 1);
+        assert_eq!(config.validate(), Err(Status::InvalidArgument));
+    }
+
+    #[test]
+    fn qwen36_one_schedule_block_engine_config_uses_real_attention_dimensions() {
+        let config = QwenConfig::randomized_qwen36_moe_gdn_one_block_fixture(-1);
+        assert_eq!(config.validate(), Err(Status::Unsupported));
+        assert_eq!(config.attention_layer_count(), 1);
+        assert_eq!(config.gdn_layer_count(), 3);
+
+        let engine = config.engine_config();
+        assert_eq!(engine.num_layers, 1);
+        assert_eq!(engine.num_q_heads, config.num_q_heads);
+        assert_eq!(engine.num_kv_heads, config.num_kv_heads);
+        assert_eq!(engine.head_dim, config.head_dim);
+    }
+
+    #[test]
+    fn qwen36_hybrid_schedule_maps_model_layers_to_attention_and_gdn_indices() {
+        let config = qwen36_hybrid_fixture_with_supported_attention(8);
+        assert_eq!(config.attention_layer_count(), 2);
+        assert_eq!(config.gdn_layer_count(), 6);
+        assert_eq!(config.layer_kind(0), QwenBlockKind::LinearAttention);
+        assert_eq!(config.layer_kind(1), QwenBlockKind::LinearAttention);
+        assert_eq!(config.layer_kind(2), QwenBlockKind::LinearAttention);
+        assert_eq!(config.layer_kind(3), QwenBlockKind::FullAttention);
+        assert_eq!(config.layer_kind(4), QwenBlockKind::LinearAttention);
+        assert_eq!(config.layer_kind(7), QwenBlockKind::FullAttention);
+
+        assert_eq!(config.gdn_layer_index(0), Ok(0));
+        assert_eq!(config.gdn_layer_index(1), Ok(1));
+        assert_eq!(config.gdn_layer_index(2), Ok(2));
+        assert_eq!(config.gdn_layer_index(4), Ok(3));
+        assert_eq!(config.gdn_layer_index(6), Ok(5));
+        assert_eq!(config.attention_layer_index(3), Ok(0));
+        assert_eq!(config.attention_layer_index(7), Ok(1));
+        assert_eq!(config.attention_layer_index(0), Err(Status::InternalError));
+        assert_eq!(config.gdn_layer_index(3), Err(Status::InternalError));
+
+        let engine = config.engine_config();
+        assert_eq!(engine.num_layers, 2);
+        assert_eq!(engine.num_q_heads, config.num_q_heads);
+        assert_eq!(engine.num_kv_heads, config.num_kv_heads);
+        assert_eq!(engine.head_dim, config.head_dim);
+    }
+
+    #[test]
+    fn gdn_slot_map_commit_is_explicit_and_uses_gdn_layer_count() {
+        let mut slots = GdnSlotMap::new(3).unwrap();
+        assert_eq!(slots.state_pool, 6);
+        assert_eq!(
+            slots.layer_slots(0).map(|s| (s.live_slot, s.staged_slot)),
+            Ok((0, 1))
+        );
+        assert_eq!(
+            slots.layer_slots(2).map(|s| (s.live_slot, s.staged_slot)),
+            Ok((4, 5))
+        );
+        assert_eq!(slots.layer_slots(3).err(), Some(Status::InvalidArgument));
+
+        let before = slots.layer_slots(1).unwrap();
+        let without_commit = slots.layer_slots(1).unwrap();
+        assert_eq!(without_commit.live_slot, before.live_slot);
+        assert_eq!(without_commit.staged_slot, before.staged_slot);
+
+        slots.commit();
+        let committed = slots.layer_slots(1).unwrap();
+        assert_eq!(committed.live_slot, before.staged_slot);
+        assert_eq!(committed.staged_slot, before.live_slot);
+
+        slots.reset(3).unwrap();
+        let reset = slots.layer_slots(1).unwrap();
+        assert_eq!(reset.live_slot, before.live_slot);
+        assert_eq!(reset.staged_slot, before.staged_slot);
     }
 }
