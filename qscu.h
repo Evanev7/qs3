@@ -22,7 +22,7 @@ typedef struct qsfi_context qsfi_context;
 /*
  * Split-pointer SwiGLU: out = silu(gate) * up for BF16 row-major tensors.
  * Requires gate/up/out shapes to match desc->num_tokens x desc->intermediate_size.
- * Inner stride must be 1. clamp_limit > 0 is intentionally not implemented yet.
+ * Inner stride must be 1.
  */
 typedef struct {
     qsfi_tensor2 gate;
@@ -30,7 +30,6 @@ typedef struct {
     qsfi_tensor2 out;
     uint32_t num_tokens;
     uint32_t intermediate_size;
-    float clamp_limit; /* <= 0 means unclamped. */
 } qscu_silu_and_mul_desc;
 
 qsfi_status qscu_silu_and_mul_bf16(const qscu_silu_and_mul_desc* desc, qsfi_cuda_stream stream);

@@ -55,6 +55,10 @@ typedef struct {
 
 /*
  * Attention and paged KV cache.
+ *
+ * The compiled attention dispatch is intentionally narrow: head_dim_qk and
+ * head_dim_vo must both be 64, and num_qo_heads must equal num_kv_heads. Wider
+ * head dimensions and GQA are valid future API shapes but are not wired yet.
  */
 
 typedef struct {

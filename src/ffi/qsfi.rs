@@ -118,6 +118,9 @@ fn validate_attention_desc(attention: &AttentionDesc) -> Result<(), Status> {
     if attention.head_dim_qk != attention.head_dim_vo {
         return Err(Status::Unsupported);
     }
+    if attention.head_dim_qk != 64 || attention.num_qo_heads != attention.num_kv_heads {
+        return Err(Status::Unsupported);
+    }
     if !matches!(attention.kv_layout, KV_LAYOUT_NHD | KV_LAYOUT_HND) {
         return Err(Status::InvalidArgument);
     }
@@ -1353,7 +1356,7 @@ mod tests {
     fn attention(layout: KvLayoutRaw) -> AttentionDesc {
         AttentionDesc {
             num_qo_heads: 4,
-            num_kv_heads: 2,
+            num_kv_heads: 4,
             head_dim_qk: 64,
             head_dim_vo: 64,
             page_size: 4,
@@ -1376,14 +1379,14 @@ mod tests {
 
     fn kv_cache(layout: KvLayoutRaw) -> PagedKvCache {
         let shape = if layout == KV_LAYOUT_NHD {
-            [8, 4, 2, 64]
+            [8, 4, 4, 64]
         } else {
-            [8, 2, 4, 64]
+            [8, 4, 4, 64]
         };
         let stride = if layout == KV_LAYOUT_NHD {
-            [512, 128, 64, 1]
+            [1024, 256, 64, 1]
         } else {
-            [512, 256, 64, 1]
+            [1024, 256, 64, 1]
         };
         PagedKvCache {
             k: tensor4(device_ptr(1), DTYPE_F16, shape, stride),
@@ -1461,11 +1464,23 @@ mod tests {
             Err(Status::InvalidArgument)
         );
 
-        let mut bad_gqa = valid;
-        bad_gqa.num_qo_heads = 3;
+        let mut non_divisible = valid;
+        non_divisible.num_qo_heads = 3;
         assert_eq!(
-            validate_attention_desc(&bad_gqa),
+            validate_attention_desc(&non_divisible),
             Err(Status::InvalidArgument)
+        );
+
+        let mut gqa = valid;
+        gqa.num_kv_heads = 2;
+        assert_eq!(validate_attention_desc(&gqa), Err(Status::Unsupported));
+
+        let mut unsupported_head_dim = valid;
+        unsupported_head_dim.head_dim_qk = 128;
+        unsupported_head_dim.head_dim_vo = 128;
+        assert_eq!(
+            validate_attention_desc(&unsupported_head_dim),
+            Err(Status::Unsupported)
         );
 
         let mut split_head_dim = valid;
@@ -1666,8 +1681,11 @@ mod tests {
             Ok(8)
         );
 
+        let mut bad_layout_shape = kv_cache(KV_LAYOUT_HND);
+        bad_layout_shape.k.shape[1] = 3;
+        bad_layout_shape.v.shape[1] = 3;
         assert_eq!(
-            validate_kv_cache_desc(&nhd, &kv_cache(KV_LAYOUT_HND)),
+            validate_kv_cache_desc(&nhd, &bad_layout_shape),
             Err(Status::InvalidArgument)
         );
 
@@ -1780,8 +1798,8 @@ mod tests {
             num_indices: 3,
             total_tokens: 5,
         };
-        let decode_kv = tensor3(device_ptr(70), DTYPE_F16, [2, 2, 64], [128, 64, 1]);
-        let prefill_kv = tensor3(device_ptr(71), DTYPE_F16, [5, 2, 64], [128, 64, 1]);
+        let decode_kv = tensor3(device_ptr(70), DTYPE_F16, [2, 4, 64], [256, 64, 1]);
+        let prefill_kv = tensor3(device_ptr(71), DTYPE_F16, [5, 4, 64], [256, 64, 1]);
         let decode = AppendDecode {
             k: decode_kv,
             v: decode_kv,
@@ -1798,8 +1816,8 @@ mod tests {
         );
 
         let mut bad_decode_stride = decode;
-        bad_decode_stride.k.stride[0] = 256;
-        bad_decode_stride.v.stride[0] = 256;
+        bad_decode_stride.k.stride[0] = 320;
+        bad_decode_stride.v.stride[0] = 320;
         assert_eq!(
             validate_append_decode_desc(&attention, &bad_decode_stride),
             Err(Status::Unsupported)

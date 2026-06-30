@@ -1074,10 +1074,6 @@ qsfi_status validate_silu_and_mul_desc(const qscu_silu_and_mul_desc* desc)
 {
     if (desc == nullptr || desc->num_tokens == 0 || desc->intermediate_size == 0)
         return QSFI_STATUS_INVALID_ARGUMENT;
-    if (std::isnan(desc->clamp_limit))
-        return QSFI_STATUS_INVALID_ARGUMENT;
-    if (desc->clamp_limit > 0.0f)
-        return QSFI_STATUS_UNSUPPORTED;
 
     qsfi_status status = validate_tensor(desc->gate, QSFI_DTYPE_BF16);
     if (status != QSFI_STATUS_OK)

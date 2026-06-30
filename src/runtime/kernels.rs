@@ -552,22 +552,12 @@ impl SiluAndMulBf16 {
         up: DMat<{ ffi::DTYPE_BF16 }>,
         out: DMat<{ ffi::DTYPE_BF16 }>,
     ) -> Result<Self, Status> {
-        Self::with_clamp_limit(gate, up, out, 0.0)
-    }
-
-    pub(crate) fn with_clamp_limit(
-        gate: DMat<{ ffi::DTYPE_BF16 }>,
-        up: DMat<{ ffi::DTYPE_BF16 }>,
-        out: DMat<{ ffi::DTYPE_BF16 }>,
-        clamp_limit: f32,
-    ) -> Result<Self, Status> {
         gate.require_contiguous()?;
         up.require_contiguous()?;
         out.require_contiguous()?;
         if !gate.same_shape(up) || !gate.same_shape(out) {
             return Err(Status::InvalidArgument);
         }
-        validate_qscu_clamp_limit(clamp_limit)?;
         Ok(Self {
             raw: qscu::SiluAndMulDesc {
                 gate: gate.tensor(),
@@ -575,7 +565,6 @@ impl SiluAndMulBf16 {
                 out: out.tensor(),
                 num_tokens: gate.rows,
                 intermediate_size: gate.cols,
-                clamp_limit,
             },
         })
     }
@@ -1356,16 +1345,6 @@ fn validate_eps(eps: f32) -> Result<(), Status> {
     Ok(())
 }
 
-fn validate_qscu_clamp_limit(clamp_limit: f32) -> Result<(), Status> {
-    if clamp_limit.is_nan() {
-        return Err(Status::InvalidArgument);
-    }
-    if clamp_limit > 0.0 {
-        return Err(Status::Unsupported);
-    }
-    Ok(())
-}
-
 fn validate_soft_cap(soft_cap: f32) -> Result<(), Status> {
     if soft_cap.is_nan() || (soft_cap > 0.0 && !soft_cap.is_finite()) {
         return Err(Status::InvalidArgument);
@@ -1579,10 +1558,6 @@ mod tests {
         let up = bf16_mat(11, 2, 8);
         let out = bf16_mat(12, 2, 8);
         assert!(SiluAndMulBf16::new(gate, up, out).is_ok());
-        assert!(matches!(
-            SiluAndMulBf16::with_clamp_limit(gate, up, out, 1.0),
-            Err(Status::Unsupported)
-        ));
         let padded_gate = DMat::new(device_ptr(13), 2, 8, 16).unwrap();
         assert!(matches!(
             SiluAndMulBf16::new(padded_gate, up, out),

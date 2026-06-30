@@ -112,7 +112,6 @@ static void test_qscu_utils_silu_and_mul_bf16()
     desc.out = tensor2_bf16(d_out, tokens, intermediate);
     desc.num_tokens = tokens;
     desc.intermediate_size = intermediate;
-    desc.clamp_limit = 0.0f;
 
     check_status(qscu_silu_and_mul_bf16(&desc, nullptr), QSFI_STATUS_OK, "qscu silu bf16");
     check_cuda(cudaDeviceSynchronize(), "sync qscu silu bf16");
@@ -336,11 +335,11 @@ static void test_qscu_utils_negative_validation()
     silu_desc.out = tensor2_bf16(d_out, 1, 1);
     silu_desc.num_tokens = 1;
     silu_desc.intermediate_size = 1;
-    silu_desc.clamp_limit = 1.0f;
+    silu_desc.intermediate_size = 0;
     check_status(
         qscu_silu_and_mul_bf16(&silu_desc, nullptr),
-        QSFI_STATUS_UNSUPPORTED,
-        "qscu silu unsupported clamp"
+        QSFI_STATUS_INVALID_ARGUMENT,
+        "qscu silu rejects zero intermediate size"
     );
 
     const float h_logits[] = { 0.0f };
