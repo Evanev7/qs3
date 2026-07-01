@@ -86,7 +86,7 @@ impl<T> DeviceBuffer<T> {
 }
 
 impl DeviceBuffer<u16> {
-    fn assert_all_close_f16(&self, expected: f32, abs_tol: f32, what: &str) {
+    fn to_f32_vec(&self, what: &str) -> Vec<f32> {
         let mut host = vec![u16::MAX; self.len];
         assert_cuda(
             unsafe {
@@ -99,8 +99,11 @@ impl DeviceBuffer<u16> {
             },
             what,
         );
-        for (idx, value) in host.iter().enumerate() {
-            let actual = f16_to_f32(*value);
+        host.into_iter().map(f16_to_f32).collect()
+    }
+
+    fn assert_all_close_f16(&self, expected: f32, abs_tol: f32, what: &str) {
+        for (idx, actual) in self.to_f32_vec(what).into_iter().enumerate() {
             assert!(
                 (actual - expected).abs() <= abs_tol,
                 "{what}: output[{idx}] = {actual}, expected {expected} +/- {abs_tol}"
@@ -160,6 +163,40 @@ fn f16_to_f32(bits: u16) -> f32 {
         sign | ((exp + 112) << 23) | (frac << 13)
     };
     f32::from_bits(f32_bits)
+}
+
+fn assert_f32_slices_close(actual: &[f32], expected: &[f32], abs_tol: f32, what: &str) {
+    assert_eq!(actual.len(), expected.len(), "{what}: length mismatch");
+    for (idx, (&actual, &expected)) in actual.iter().zip(expected).enumerate() {
+        assert!(
+            (actual - expected).abs() <= abs_tol,
+            "{what}: output[{idx}] = {actual}, expected {expected} +/- {abs_tol}"
+        );
+    }
+}
+
+fn patterned_f16(len: usize, seed: usize) -> Vec<u16> {
+    const VALUES: [u16; 16] = [
+        0xB800, // -0.5
+        0xB400, // -0.25
+        0xB000, // -0.125
+        0xAC00, // -0.0625
+        0x2800, // 0.03125
+        0x2C00, // 0.0625
+        0x3000, // 0.125
+        0x3400, // 0.25
+        0x3800, // 0.5
+        0x3A00, // 0.75
+        0x3C00, // 1.0
+        0x3D00, // 1.25
+        0x3E00, // 1.5
+        0x3F00, // 1.75
+        0x4000, // 2.0
+        0x4100, // 2.5
+    ];
+    (0..len)
+        .map(|idx| VALUES[(idx.wrapping_mul(7).wrapping_add(seed)) % VALUES.len()])
+        .collect()
 }
 
 fn cuda_device_available() -> bool {
@@ -395,4 +432,188 @@ fn append_and_decode_layer_execute() {
 
     let decode_state = session.state().unwrap();
     assert_eq!(decode_state.live_seq_lens, &[4]);
+}
+
+fn run_attention_with_q_rope_offsets(
+    config: EngineConfig,
+    append_offsets: Option<&[i32]>,
+    decode_offsets: Option<&[i32]>,
+) -> (Vec<f32>, Vec<f32>) {
+    let request_id = 91;
+    let append_q_elems = 3 * config.num_q_heads as usize * config.head_dim as usize;
+    let append_kv_elems = 3 * config.num_kv_heads as usize * config.head_dim as usize;
+    let decode_q_elems = config.num_q_heads as usize * config.head_dim as usize;
+    let decode_kv_elems = config.num_kv_heads as usize * config.head_dim as usize;
+
+    let append_q = DeviceBuffer::from_slice(&patterned_f16(append_q_elems, 1));
+    let append_k = DeviceBuffer::from_slice(&patterned_f16(append_kv_elems, 3));
+    let append_v = DeviceBuffer::from_slice(&patterned_f16(append_kv_elems, 5));
+    let append_o = DeviceBuffer::<u16>::new(append_q_elems);
+    let decode_q = DeviceBuffer::from_slice(&patterned_f16(decode_q_elems, 7));
+    let decode_k = DeviceBuffer::from_slice(&patterned_f16(decode_kv_elems, 11));
+    let decode_v = DeviceBuffer::from_slice(&patterned_f16(decode_kv_elems, 13));
+    let decode_o = DeviceBuffer::<u16>::new(decode_q_elems);
+    let append_rope = append_offsets.map(DeviceBuffer::from_slice);
+    let decode_rope = decode_offsets.map(DeviceBuffer::from_slice);
+
+    append_o.memset(0xA5);
+    decode_o.memset(0xA5);
+
+    let mut session = Engine::new(config).unwrap();
+    session
+        .begin_append(AppendBatch {
+            request_ids: &[request_id],
+            token_indptr: &[0, 3],
+            tokens: &[20, 21, 22],
+        })
+        .unwrap();
+
+    let append_layer = EngineLayer {
+        layer_idx: 0,
+        q: tensor3(
+            append_q.as_device_ptr(),
+            ffi::DTYPE_F16,
+            3,
+            config.num_q_heads,
+            config.head_dim,
+        ),
+        k: tensor3(
+            append_k.as_device_ptr(),
+            ffi::DTYPE_F16,
+            3,
+            config.num_kv_heads,
+            config.head_dim,
+        ),
+        v: tensor3(
+            append_v.as_device_ptr(),
+            ffi::DTYPE_F16,
+            3,
+            config.num_kv_heads,
+            config.head_dim,
+        ),
+        o: tensor3(
+            append_o.as_device_ptr(),
+            ffi::DTYPE_F16,
+            3,
+            config.num_q_heads,
+            config.head_dim,
+        ),
+        q_rope_offset: append_rope
+            .as_ref()
+            .map_or(ptr::null_mut(), DeviceBuffer::as_device_ptr),
+        lse: ptr::null_mut(),
+        q_scale: 0.0,
+        k_scale: 0.0,
+        v_scale: 0.0,
+    };
+    unsafe {
+        session.append_layer(&append_layer).unwrap();
+    }
+    assert_cuda(unsafe { cudaDeviceSynchronize() }, "sync append rope test");
+    let append_output = append_o.to_f32_vec("copy append rope test output");
+    session
+        .commit_batch(Commit {
+            accepted_token_counts: None,
+        })
+        .unwrap();
+
+    session
+        .begin_decode(DecodeBatch {
+            request_ids: &[request_id],
+            tokens: &[23],
+        })
+        .unwrap();
+    let decode_layer = EngineLayer {
+        layer_idx: 0,
+        q: tensor3(
+            decode_q.as_device_ptr(),
+            ffi::DTYPE_F16,
+            1,
+            config.num_q_heads,
+            config.head_dim,
+        ),
+        k: tensor3(
+            decode_k.as_device_ptr(),
+            ffi::DTYPE_F16,
+            1,
+            config.num_kv_heads,
+            config.head_dim,
+        ),
+        v: tensor3(
+            decode_v.as_device_ptr(),
+            ffi::DTYPE_F16,
+            1,
+            config.num_kv_heads,
+            config.head_dim,
+        ),
+        o: tensor3(
+            decode_o.as_device_ptr(),
+            ffi::DTYPE_F16,
+            1,
+            config.num_q_heads,
+            config.head_dim,
+        ),
+        q_rope_offset: decode_rope
+            .as_ref()
+            .map_or(ptr::null_mut(), DeviceBuffer::as_device_ptr),
+        lse: ptr::null_mut(),
+        q_scale: 0.0,
+        k_scale: 0.0,
+        v_scale: 0.0,
+    };
+    unsafe {
+        session.decode_layer(&decode_layer).unwrap();
+    }
+    assert_cuda(unsafe { cudaDeviceSynchronize() }, "sync decode rope test");
+    let decode_output = decode_o.to_f32_vec("copy decode rope test output");
+
+    (append_output, decode_output)
+}
+
+#[test]
+fn attention_ignores_q_rope_offset_after_explicit_rope() {
+    if !cuda_device_available() {
+        return;
+    }
+
+    let config = tiny_config();
+    let (append_base, decode_base) =
+        run_attention_with_q_rope_offsets(config, Some(&[0, 1, 2]), Some(&[3]));
+    let (append_shifted, decode_shifted) =
+        run_attention_with_q_rope_offsets(config, Some(&[4096, 8192, 12288]), Some(&[16384]));
+    let (append_null, decode_null) = run_attention_with_q_rope_offsets(config, None, None);
+
+    assert!(
+        append_base.iter().any(|value| value.abs() > 1.0e-4),
+        "append output stayed zero despite nonzero Q/K/V"
+    );
+    assert!(
+        decode_base.iter().any(|value| value.abs() > 1.0e-4),
+        "decode output stayed zero despite nonzero Q/K/V"
+    );
+
+    assert_f32_slices_close(
+        &append_shifted,
+        &append_base,
+        2.0e-3,
+        "append output changed when q_rope_offset changed after explicit RoPE",
+    );
+    assert_f32_slices_close(
+        &decode_shifted,
+        &decode_base,
+        2.0e-3,
+        "decode output changed when q_rope_offset changed after explicit RoPE",
+    );
+    assert_f32_slices_close(
+        &append_null,
+        &append_base,
+        2.0e-3,
+        "append output changed with null q_rope_offset after explicit RoPE",
+    );
+    assert_f32_slices_close(
+        &decode_null,
+        &decode_base,
+        2.0e-3,
+        "decode output changed with null q_rope_offset after explicit RoPE",
+    );
 }

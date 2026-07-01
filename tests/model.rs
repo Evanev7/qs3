@@ -530,7 +530,8 @@ fn oversized_run_request_is_rejected_without_mutating_live_state() {
 fn qwen_config_rejects_unsupported_dense_runner_shapes() {
     let config = QwenConfig::randomized_dense_tiny_fixture(-1);
     assert_eq!(config.validate(), Ok(()));
-    assert_ne!(config.hidden_size, config.num_q_heads * config.head_dim);
+    assert_eq!(config.hidden_size, 2048);
+    assert_eq!(config.num_q_heads * config.head_dim, 4096);
 
     let mut config = QwenConfig::randomized_dense_tiny_fixture(-1);
     config.hidden_size = 97;

@@ -11,43 +11,23 @@ use crate::runtime::kernels::{
     GdnDecodeBf16Args, GdnForgetGateOutput, GdnPostConvPrepareBf16, GdnPostConvPrepareBf16Args,
     GdnPrefillBf16, GdnPrefillBf16Args, GdnRecurrentState, GdnRmsNormGatedBf16,
     GdnRmsNormGatedBf16Args, GreedyArgmaxF32, LogitsSoftCapF32, MoeBf16Execute, MoeBf16ExecuteArgs,
-    MoeBf16PlanConfig, MoePlan, Qwen36SharedExpertGateAddBf16, RmsNormBf16, RouterScore,
-    RouterTopK, SiluAndMulBf16, Workspace,
+    MoeBf16PlanConfig, MoePlan, Qwen36FullAttentionOutputGateBf16, Qwen36SharedExpertGateAddBf16,
+    RmsNormBf16, RopeApplyBf16, RouterTopK, SiluAndMulBf16, Workspace,
+};
+use crate::{
+    QWEN36_FULL_ATTN_GROUP_SIZE, QWEN36_FULL_ATTN_HEAD_DIM, QWEN36_FULL_ATTN_KV_HEADS,
+    QWEN36_FULL_ATTN_KV_HIDDEN, QWEN36_FULL_ATTN_Q_HEADS, QWEN36_FULL_ATTN_Q_HIDDEN,
+    QWEN36_FULL_ATTN_Q_PROJ_OUT, QWEN36_FULL_ATTN_ROTARY_DIM, QWEN36_GDN_CONV_STATE,
+    QWEN36_GDN_CONV_WIDTH, QWEN36_GDN_KEY_DIM, QWEN36_GDN_NUM_K_HEADS, QWEN36_GDN_NUM_Q_HEADS,
+    QWEN36_GDN_NUM_V_HEADS, QWEN36_GDN_OUTPUT_DIM, QWEN36_GDN_PACKED_DIM,
+    QWEN36_GDN_STATE_SLOTS_PER_LAYER, QWEN36_GDN_VALUE_DIM, QWEN36_HIDDEN_SIZE,
+    QWEN36_MOE_INTERMEDIATE_SIZE, QWEN36_MOE_MAX_EXPERTS, QWEN36_MOE_MAX_TOP_K,
+    QWEN36_MOE_NUM_EXPERTS, QWEN36_MOE_ROUTER_RENORMALIZE, QWEN36_MOE_ROUTER_SCALING_FACTOR,
+    QWEN36_MOE_ROUTER_SCORE, QWEN36_MOE_SHARED_EXPERT_INTERMEDIATE_SIZE, QWEN36_MOE_TOP_K,
 };
 
 use std::ffi::c_void;
 use std::{mem, ptr};
-
-const QWEN_MOE_MAX_TOP_K: u32 = 16;
-const QWEN_MOE_MAX_EXPERTS: u32 = 4096;
-const QWEN36_HIDDEN_SIZE: u32 = 2048;
-const QWEN36_ATTENTION_NUM_Q_HEADS: u32 = 16;
-const QWEN36_ATTENTION_NUM_KV_HEADS: u32 = 2;
-const QWEN36_ATTENTION_HEAD_DIM: u32 = 256;
-const QWEN36_GDN_NUM_Q_HEADS: u32 = 16;
-const QWEN36_GDN_NUM_K_HEADS: u32 = 16;
-const QWEN36_GDN_NUM_V_HEADS: u32 = 32;
-const QWEN36_GDN_KEY_DIM: u32 = 128;
-const QWEN36_GDN_VALUE_DIM: u32 = 128;
-const QWEN36_GDN_CONV_WIDTH: u32 = 4;
-const QWEN36_GDN_CONV_STATE: u32 = QWEN36_GDN_CONV_WIDTH - 1;
-const QWEN36_GDN_PACKED_DIM: u32 =
-    2 * QWEN36_GDN_NUM_K_HEADS * QWEN36_GDN_KEY_DIM + QWEN36_GDN_NUM_V_HEADS * QWEN36_GDN_VALUE_DIM;
-const QWEN36_GDN_OUTPUT_DIM: u32 = QWEN36_GDN_NUM_V_HEADS * QWEN36_GDN_VALUE_DIM;
-const QWEN36_GDN_STATE_SLOTS_PER_LAYER: u32 = 2;
-const QWEN36_MOE_ROUTER_SCORE: RouterScore = RouterScore::Softmax;
-const QWEN36_MOE_ROUTER_RENORMALIZE: bool = true;
-const QWEN36_MOE_ROUTER_SCALING_FACTOR: f32 = 1.0;
-const _: () = assert!(QWEN36_GDN_PACKED_DIM == 8192);
-const _: () = assert!(QWEN36_GDN_OUTPUT_DIM == 4096);
-const _: () = assert!(QWEN36_GDN_NUM_Q_HEADS == 16);
-const _: () = assert!(QWEN36_GDN_NUM_K_HEADS == 16);
-const _: () = assert!(QWEN36_GDN_NUM_V_HEADS == 32);
-const _: () = assert!(QWEN36_GDN_KEY_DIM == 128);
-const _: () = assert!(QWEN36_GDN_VALUE_DIM == 128);
-const _: () = assert!(QWEN36_GDN_CONV_STATE == 3);
-const _: () = assert!(QWEN36_ATTENTION_NUM_Q_HEADS / QWEN36_ATTENTION_NUM_KV_HEADS == 8);
-const _: () = assert!(QWEN36_ATTENTION_HEAD_DIM == 256);
 
 /// Inference-relevant Qwen3.6 MoE fields from HF config.json.
 /// `output_router_logits` and `router_aux_loss_coef` are omitted because they
@@ -72,10 +52,10 @@ impl QwenMoeConfig {
 
     pub const fn qwen36_35b_a3b() -> Self {
         Self {
-            num_experts: 256,
-            num_experts_per_tok: 8,
-            moe_intermediate_size: 512,
-            shared_expert_intermediate_size: 512,
+            num_experts: QWEN36_MOE_NUM_EXPERTS,
+            num_experts_per_tok: QWEN36_MOE_TOP_K,
+            moe_intermediate_size: QWEN36_MOE_INTERMEDIATE_SIZE,
+            shared_expert_intermediate_size: QWEN36_MOE_SHARED_EXPERT_INTERMEDIATE_SIZE,
         }
     }
 
@@ -87,7 +67,8 @@ impl QwenMoeConfig {
         if self.num_experts_per_tok > self.num_experts {
             return Err(Status::InvalidArgument);
         }
-        if self.num_experts_per_tok > QWEN_MOE_MAX_TOP_K || self.num_experts > QWEN_MOE_MAX_EXPERTS
+        if self.num_experts_per_tok > QWEN36_MOE_MAX_TOP_K
+            || self.num_experts > QWEN36_MOE_MAX_EXPERTS
         {
             return Err(Status::Unsupported);
         }
@@ -113,22 +94,22 @@ struct QwenGdnShape {
 impl QwenGdnShape {
     const fn qwen36_moe() -> Self {
         Self {
-            num_key_heads: 16,
-            num_value_heads: 32,
-            key_head_dim: 128,
-            value_head_dim: 128,
-            conv_kernel_dim: 4,
+            num_key_heads: QWEN36_GDN_NUM_K_HEADS,
+            num_value_heads: QWEN36_GDN_NUM_V_HEADS,
+            key_head_dim: QWEN36_GDN_KEY_DIM,
+            value_head_dim: QWEN36_GDN_VALUE_DIM,
+            conv_kernel_dim: QWEN36_GDN_CONV_WIDTH,
         }
     }
 
     #[cfg(test)]
     const fn qwen36_dense_27b() -> Self {
         Self {
-            num_key_heads: 16,
+            num_key_heads: QWEN36_GDN_NUM_K_HEADS,
             num_value_heads: 48,
-            key_head_dim: 128,
-            value_head_dim: 128,
-            conv_kernel_dim: 4,
+            key_head_dim: QWEN36_GDN_KEY_DIM,
+            value_head_dim: QWEN36_GDN_VALUE_DIM,
+            conv_kernel_dim: QWEN36_GDN_CONV_WIDTH,
         }
     }
 
@@ -343,13 +324,13 @@ impl QwenConfig {
             max_seq_len: 16,
             max_pages: 8,
             page_size: 4,
-            hidden_size: 128,
+            hidden_size: QWEN36_HIDDEN_SIZE,
             intermediate_size: 256,
             moe: None,
             vocab_size: 64,
-            num_q_heads: QWEN36_ATTENTION_NUM_Q_HEADS,
-            num_kv_heads: QWEN36_ATTENTION_NUM_KV_HEADS,
-            head_dim: QWEN36_ATTENTION_HEAD_DIM,
+            num_q_heads: QWEN36_FULL_ATTN_Q_HEADS,
+            num_kv_heads: QWEN36_FULL_ATTN_KV_HEADS,
+            head_dim: QWEN36_FULL_ATTN_HEAD_DIM,
             rms_norm_eps: 1.0e-6,
             rope_theta: 10000.0,
             rope_scale: 1.0,
@@ -394,9 +375,9 @@ impl QwenConfig {
             intermediate_size: moe.moe_intermediate_size,
             moe: Some(moe),
             vocab_size: 32,
-            num_q_heads: QWEN36_ATTENTION_NUM_Q_HEADS,
-            num_kv_heads: QWEN36_ATTENTION_NUM_KV_HEADS,
-            head_dim: QWEN36_ATTENTION_HEAD_DIM,
+            num_q_heads: QWEN36_FULL_ATTN_Q_HEADS,
+            num_kv_heads: QWEN36_FULL_ATTN_KV_HEADS,
+            head_dim: QWEN36_FULL_ATTN_HEAD_DIM,
             rms_norm_eps: 1.0e-6,
             rope_theta: 10000.0,
             rope_scale: 1.0,
@@ -483,10 +464,23 @@ impl QwenConfig {
     }
 
     fn validate_full_attention_shape(&self) -> Result<(), Status> {
+        if self.hidden_size != QWEN36_HIDDEN_SIZE {
+            return Err(Status::InvalidArgument);
+        }
         validate_supported_attention_grouping(self.num_q_heads, self.num_kv_heads)?;
-        let _ = self.q_hidden_size()?;
-        let _ = self.kv_hidden_size()?;
-        validate_supported_attention_head_dim(self.head_dim)
+        if self.num_q_heads / self.num_kv_heads != QWEN36_FULL_ATTN_GROUP_SIZE {
+            return Err(Status::Unsupported);
+        }
+        validate_supported_attention_head_dim(self.head_dim)?;
+        if self.head_dim != QWEN36_FULL_ATTN_HEAD_DIM {
+            return Err(Status::Unsupported);
+        }
+        let q_hidden = self.q_hidden_size()?;
+        let kv_hidden = self.kv_hidden_size()?;
+        if q_hidden != QWEN36_FULL_ATTN_Q_HIDDEN || kv_hidden != QWEN36_FULL_ATTN_KV_HIDDEN {
+            return Err(Status::InvalidArgument);
+        }
+        Ok(())
     }
 
     fn layer_kind(&self, layer_idx: u32) -> QwenBlockKind {
@@ -722,15 +716,12 @@ impl QwenWeights {
                     stream,
                     &constant_bf16_values(config.head_dim as usize, 0.0)?,
                 )?,
-                // Runtime integration note: q_norm/k_norm belong after gated-Q/K
-                // projection layout is split and before RoPE. Keep execute_attention_layer
-                // unchanged until gated-Q/RoPE sequencing lands.
                 q_proj: DeviceBuffer::from_slice(
                     device,
                     stream,
                     &random_bf16_values(
                         &mut rng,
-                        checked_usize_product(&[q_hidden, hidden])?,
+                        checked_usize_product(&[QWEN36_FULL_ATTN_Q_PROJ_OUT, hidden])?,
                         0.04,
                     )?,
                 )?,
@@ -1557,19 +1548,16 @@ impl ModelRunner {
         layer: QwenAttentionMlpPtrs,
         kind: ActiveRunKind,
     ) -> Result<(), Status> {
-        // q_norm/k_norm are intentionally not consumed here yet. The real
-        // Qwen3.6 path should apply them after gated-Q/K projection layout is
-        // split and before RoPE, so this waits for the gated-Q/RoPE sequencing.
-        let _qk_norm_weights = (layer.q_norm, layer.k_norm);
         self.gemm_bf16(
             layer_input,
             rows,
             hidden,
             layer.q_proj,
-            self.scratch.q.as_device_ptr(),
-            q_hidden,
+            self.scratch.q_proj_out.as_device_ptr(),
+            QWEN36_FULL_ATTN_Q_PROJ_OUT,
             GemmOut::Bf16,
         )?;
+        self.extract_attention_q_and_gate(rows)?;
         self.gemm_bf16(
             layer_input,
             rows,
@@ -1588,6 +1576,21 @@ impl ModelRunner {
             kv_hidden,
             GemmOut::Bf16,
         )?;
+        self.qwen_qk_norm_heads(
+            self.scratch.q.as_device_ptr(),
+            layer.q_norm,
+            self.scratch.q.as_device_ptr(),
+            rows,
+            self.config.num_q_heads,
+        )?;
+        self.qwen_qk_norm_heads(
+            self.scratch.k.as_device_ptr(),
+            layer.k_norm,
+            self.scratch.k.as_device_ptr(),
+            rows,
+            self.config.num_kv_heads,
+        )?;
+        self.apply_attention_rope(rows)?;
 
         let engine_layer = EngineLayer::bf16_attention(
             attention_layer_idx,
@@ -1619,6 +1622,7 @@ impl ModelRunner {
                 ActiveRunKind::Decode => self.engine.decode_layer(&engine_layer)?,
             }
         }
+        self.apply_attention_output_gate(rows, q_hidden)?;
 
         self.gemm_bf16(
             self.scratch.attn_out.as_device_ptr(),
@@ -1629,6 +1633,91 @@ impl ModelRunner {
             hidden,
             GemmOut::Bf16,
         )
+    }
+
+    fn extract_attention_q_and_gate(&mut self, rows: u32) -> Result<(), Status> {
+        if self.config.num_q_heads != QWEN36_FULL_ATTN_Q_HEADS
+            || self.config.head_dim != QWEN36_FULL_ATTN_HEAD_DIM
+            || self.config.q_hidden_size()? != QWEN36_FULL_ATTN_Q_HIDDEN
+        {
+            return Err(Status::Unsupported);
+        }
+        unsafe {
+            extract_qwen36_packed_attention_q_and_gate_bf16(
+                self.scratch.q_proj_out.as_device_ptr(),
+                self.scratch.q.as_device_ptr(),
+                self.scratch.attn_gate.as_device_ptr(),
+                rows,
+                self.config.stream,
+            )
+        }
+    }
+
+    fn qwen_qk_norm_heads(
+        &mut self,
+        x: ffi::DevicePtr,
+        weight: ffi::DevicePtr,
+        out: ffi::DevicePtr,
+        rows: u32,
+        heads: u32,
+    ) -> Result<(), Status> {
+        if heads == 0 || self.config.head_dim != QWEN36_FULL_ATTN_HEAD_DIM {
+            return Err(Status::InvalidArgument);
+        }
+        let norm_rows = rows.checked_mul(heads).ok_or(Status::InvalidArgument)?;
+        let desc = RmsNormBf16::qwen_qk_norm(
+            DMat::<{ ffi::DTYPE_BF16 }>::contiguous(x, norm_rows, self.config.head_dim)?,
+            DVec::<{ ffi::DTYPE_BF16 }>::contiguous(weight, self.config.head_dim)?,
+            DMat::<{ ffi::DTYPE_BF16 }>::contiguous(out, norm_rows, self.config.head_dim)?,
+            self.config.rms_norm_eps,
+        )?;
+        let mut ops = self.engine.kernel_ops();
+        unsafe { ops.rmsnorm_bf16(&desc) }
+    }
+
+    fn apply_attention_rope(&mut self, rows: u32) -> Result<(), Status> {
+        let q = self.attention_heads(
+            self.scratch.q.as_device_ptr(),
+            rows,
+            self.config.num_q_heads,
+        )?;
+        let k = self.attention_heads(
+            self.scratch.k.as_device_ptr(),
+            rows,
+            self.config.num_kv_heads,
+        )?;
+        let desc = RopeApplyBf16::with_params(
+            q,
+            k,
+            q,
+            k,
+            DVec::<{ ffi::DTYPE_I32 }>::contiguous(self.scratch.positions.as_device_ptr(), rows)?,
+            QWEN36_FULL_ATTN_ROTARY_DIM,
+            self.config.rope_scale,
+            self.config.rope_theta,
+        )?;
+        let mut ops = self.engine.kernel_ops();
+        unsafe { ops.rope_apply_bf16(&desc) }
+    }
+
+    fn apply_attention_output_gate(&mut self, rows: u32, q_hidden: u32) -> Result<(), Status> {
+        if q_hidden != QWEN36_FULL_ATTN_Q_HIDDEN {
+            return Err(Status::Unsupported);
+        }
+        let desc = Qwen36FullAttentionOutputGateBf16::new(
+            DMat::<{ ffi::DTYPE_BF16 }>::contiguous(
+                self.scratch.attn_gate.as_device_ptr(),
+                rows,
+                q_hidden,
+            )?,
+            DMat::<{ ffi::DTYPE_BF16 }>::contiguous(
+                self.scratch.attn_out.as_device_ptr(),
+                rows,
+                q_hidden,
+            )?,
+        )?;
+        let mut ops = self.engine.kernel_ops();
+        unsafe { ops.qwen36_full_attention_output_gate_bf16(&desc) }
     }
 
     fn execute_gdn_layer(
@@ -2535,11 +2624,13 @@ struct RunnerScratch {
     positions: DeviceBuffer<i32>,
     residual: DeviceBuffer<u16>,
     norm: DeviceBuffer<u16>,
+    q_proj_out: DeviceBuffer<u16>,
     q: DeviceBuffer<u16>,
     k: DeviceBuffer<u16>,
     v: DeviceBuffer<u16>,
     attn_out: DeviceBuffer<u16>,
     attn_proj: DeviceBuffer<u16>,
+    attn_gate: DeviceBuffer<u16>,
     gate: DeviceBuffer<u16>,
     up: DeviceBuffer<u16>,
     mlp: DeviceBuffer<u16>,
@@ -2577,11 +2668,13 @@ impl RunnerScratch {
             positions: DeviceBuffer::empty(device_ordinal),
             residual: DeviceBuffer::empty(device_ordinal),
             norm: DeviceBuffer::empty(device_ordinal),
+            q_proj_out: DeviceBuffer::empty(device_ordinal),
             q: DeviceBuffer::empty(device_ordinal),
             k: DeviceBuffer::empty(device_ordinal),
             v: DeviceBuffer::empty(device_ordinal),
             attn_out: DeviceBuffer::empty(device_ordinal),
             attn_proj: DeviceBuffer::empty(device_ordinal),
+            attn_gate: DeviceBuffer::empty(device_ordinal),
             gate: DeviceBuffer::empty(device_ordinal),
             up: DeviceBuffer::empty(device_ordinal),
             mlp: DeviceBuffer::empty(device_ordinal),
@@ -2623,12 +2716,15 @@ impl RunnerScratch {
         self.residual.ensure(hidden)?;
         self.norm.ensure(hidden)?;
         let q_hidden = checked_usize_product(&[rows, config.q_hidden_size()?])?;
+        let q_proj_out = checked_usize_product(&[rows, QWEN36_FULL_ATTN_Q_PROJ_OUT])?;
         let kv_hidden = checked_usize_product(&[rows, config.kv_hidden_size()?])?;
+        self.q_proj_out.ensure(q_proj_out)?;
         self.q.ensure(q_hidden)?;
         self.k.ensure(kv_hidden)?;
         self.v.ensure(kv_hidden)?;
         self.attn_out.ensure(q_hidden)?;
         self.attn_proj.ensure(hidden)?;
+        self.attn_gate.ensure(q_hidden)?;
         if let Some(moe) = config.moe_config() {
             self.router_logits
                 .ensure(checked_usize_product(&[rows, moe.num_experts])?)?;
@@ -2859,6 +2955,48 @@ fn qwen36_gdn_scale() -> f32 {
     1.0 / (QWEN36_GDN_KEY_DIM as f32).sqrt()
 }
 
+/// Extract Qwen3.6 full-attention Q and output-gate heads from packed BF16
+/// q_proj output laid out as `[q0, gate0, q1, gate1, ...]`.
+///
+/// # Safety
+///
+/// `packed`, `q`, and `gate` must be valid device pointers on `stream`'s device.
+/// `packed` must have at least `rows * FULL_ATTN_Q_HEADS * 2 * FULL_ATTN_HEAD_DIM`
+/// BF16 elements, and `q` and `gate` must each have at least
+/// `rows * FULL_ATTN_Q_HEADS * FULL_ATTN_HEAD_DIM` BF16 elements.
+unsafe fn extract_qwen36_packed_attention_q_and_gate_bf16(
+    packed: ffi::DevicePtr,
+    q: ffi::DevicePtr,
+    gate: ffi::DevicePtr,
+    rows: u32,
+    stream: *mut c_void,
+) -> Result<(), Status> {
+    let head_bytes = checked_usize_product(&[
+        QWEN36_FULL_ATTN_HEAD_DIM,
+        u32::try_from(mem::size_of::<u16>()).map_err(|_| Status::InvalidArgument)?,
+    ])?;
+    let packed_head_bytes = head_bytes.checked_mul(2).ok_or(Status::InvalidArgument)?;
+    let height = checked_usize_product(&[rows, QWEN36_FULL_ATTN_Q_HEADS])?;
+    device_copy_2d_on_stream(
+        q,
+        head_bytes,
+        packed,
+        packed_head_bytes,
+        head_bytes,
+        height,
+        stream,
+    )?;
+    device_copy_2d_on_stream(
+        gate,
+        head_bytes,
+        device_ptr_byte_offset(packed, head_bytes)?,
+        packed_head_bytes,
+        head_bytes,
+        height,
+        stream,
+    )
+}
+
 fn f32_to_bf16_bits(value: f32) -> u16 {
     let bits = value.to_bits();
     let lsb = (bits >> 16) & 1;
@@ -2883,6 +3021,47 @@ fn checked_usize_product(values: &[u32]) -> Result<usize, Status> {
             .ok_or(Status::InvalidArgument)?;
     }
     Ok(product)
+}
+
+fn device_ptr_byte_offset(ptr: ffi::DevicePtr, bytes: usize) -> Result<ffi::DevicePtr, Status> {
+    if ptr.is_null() {
+        return Err(Status::InvalidArgument);
+    }
+    Ok(unsafe { ptr.cast::<u8>().add(bytes).cast() })
+}
+
+fn device_copy_2d_on_stream(
+    dst: ffi::DevicePtr,
+    dst_pitch_bytes: usize,
+    src: ffi::DevicePtr,
+    src_pitch_bytes: usize,
+    width_bytes: usize,
+    height: usize,
+    stream: *mut c_void,
+) -> Result<(), Status> {
+    if dst.is_null()
+        || src.is_null()
+        || dst_pitch_bytes == 0
+        || src_pitch_bytes == 0
+        || width_bytes == 0
+        || height == 0
+        || width_bytes > dst_pitch_bytes
+        || width_bytes > src_pitch_bytes
+    {
+        return Err(Status::InvalidArgument);
+    }
+    result_from_cuda(unsafe {
+        cuda::cudaMemcpy2DAsync(
+            dst,
+            dst_pitch_bytes,
+            src.cast_const(),
+            src_pitch_bytes,
+            width_bytes,
+            height,
+            cuda::CUDA_MEMCPY_DEVICE_TO_DEVICE,
+            stream,
+        )
+    })
 }
 
 fn try_vec_with_capacity<T>(capacity: usize) -> Result<Vec<T>, Status> {
@@ -3006,15 +3185,78 @@ mod tests {
         values.iter().any(|value| *value != 0)
     }
 
+    fn qwen36_packed_q_gate_pattern(row: usize, head: usize, lane: usize, gate: bool) -> u16 {
+        let value = (((row + 1) as u16) << 12) | ((head as u16) << 8) | lane as u16;
+        if gate { value ^ 0x8000 } else { value }
+    }
+
+    #[test]
+    fn qwen36_packed_attention_q_gate_extraction_preserves_rows_heads_and_lanes() {
+        if !cuda_device_available() {
+            return;
+        }
+
+        const ROWS: usize = 3;
+        const HEADS: usize = QWEN36_FULL_ATTN_Q_HEADS as usize;
+        const HEAD_DIM: usize = QWEN36_FULL_ATTN_HEAD_DIM as usize;
+        const PACKED_HEAD_DIM: usize = 2 * HEAD_DIM;
+
+        let mut packed = vec![0_u16; ROWS * HEADS * PACKED_HEAD_DIM];
+        let mut expected_q = vec![0_u16; ROWS * HEADS * HEAD_DIM];
+        let mut expected_gate = vec![0_u16; ROWS * HEADS * HEAD_DIM];
+        for row in 0..ROWS {
+            for head in 0..HEADS {
+                for lane in 0..HEAD_DIM {
+                    let packed_base = (row * HEADS + head) * PACKED_HEAD_DIM;
+                    let out_idx = (row * HEADS + head) * HEAD_DIM + lane;
+                    let q = qwen36_packed_q_gate_pattern(row, head, lane, false);
+                    let gate = qwen36_packed_q_gate_pattern(row, head, lane, true);
+                    packed[packed_base + lane] = q;
+                    packed[packed_base + HEAD_DIM + lane] = gate;
+                    expected_q[out_idx] = q;
+                    expected_gate[out_idx] = gate;
+                }
+            }
+        }
+
+        let stream = ptr::null_mut();
+        let packed_device = DeviceBuffer::from_slice(-1, stream, &packed).unwrap();
+        let mut q_device = DeviceBuffer::empty(-1);
+        let mut gate_device = DeviceBuffer::empty(-1);
+        q_device.ensure(expected_q.len()).unwrap();
+        gate_device.ensure(expected_gate.len()).unwrap();
+
+        unsafe {
+            extract_qwen36_packed_attention_q_and_gate_bf16(
+                packed_device.as_device_ptr(),
+                q_device.as_device_ptr(),
+                gate_device.as_device_ptr(),
+                ROWS as u32,
+                stream,
+            )
+            .unwrap();
+        }
+        synchronize_stream(stream).unwrap();
+
+        assert_eq!(
+            download_bf16(&q_device, stream, expected_q.len()),
+            expected_q
+        );
+        assert_eq!(
+            download_bf16(&gate_device, stream, expected_gate.len()),
+            expected_gate
+        );
+    }
+
     #[test]
     fn public_moe_config_validation_rejects_invalid_config_json_shapes() {
         assert_eq!(
             QwenMoeConfig::qwen36_35b_a3b(),
             QwenMoeConfig {
-                num_experts: 256,
-                num_experts_per_tok: 8,
-                moe_intermediate_size: 512,
-                shared_expert_intermediate_size: 512,
+                num_experts: QWEN36_MOE_NUM_EXPERTS,
+                num_experts_per_tok: QWEN36_MOE_TOP_K,
+                moe_intermediate_size: QWEN36_MOE_INTERMEDIATE_SIZE,
+                shared_expert_intermediate_size: QWEN36_MOE_SHARED_EXPERT_INTERMEDIATE_SIZE,
             }
         );
         assert_eq!(
@@ -3140,11 +3382,11 @@ mod tests {
         assert_eq!(config.attention_layer_count(), 1);
         assert_eq!(config.gdn_layer_count(), 3);
         assert_eq!(config.hidden_size, QWEN36_HIDDEN_SIZE);
-        assert_eq!(config.num_q_heads, QWEN36_ATTENTION_NUM_Q_HEADS);
-        assert_eq!(config.num_kv_heads, QWEN36_ATTENTION_NUM_KV_HEADS);
-        assert_eq!(config.head_dim, QWEN36_ATTENTION_HEAD_DIM);
-        assert_eq!(config.q_hidden_size(), Ok(4096));
-        assert_eq!(config.kv_hidden_size(), Ok(512));
+        assert_eq!(config.num_q_heads, QWEN36_FULL_ATTN_Q_HEADS);
+        assert_eq!(config.num_kv_heads, QWEN36_FULL_ATTN_KV_HEADS);
+        assert_eq!(config.head_dim, QWEN36_FULL_ATTN_HEAD_DIM);
+        assert_eq!(config.q_hidden_size(), Ok(QWEN36_FULL_ATTN_Q_HIDDEN));
+        assert_eq!(config.kv_hidden_size(), Ok(QWEN36_FULL_ATTN_KV_HIDDEN));
 
         let engine = config.engine_config();
         assert_eq!(engine.num_layers, 1);
@@ -3167,6 +3409,11 @@ mod tests {
             QwenLayerWeights::AttentionMlp(layer) => {
                 assert_eq!(layer.q_norm.cap, head_dim);
                 assert_eq!(layer.k_norm.cap, head_dim);
+                assert_eq!(
+                    layer.q_proj.cap,
+                    checked_usize_product(&[QWEN36_FULL_ATTN_Q_PROJ_OUT, config.hidden_size])
+                        .unwrap()
+                );
                 assert_eq!(
                     download_bf16(&layer.q_norm, config.stream, head_dim),
                     vec![0_u16; head_dim]
@@ -3442,8 +3689,8 @@ mod tests {
         assert_eq!(engine.num_q_heads, config.num_q_heads);
         assert_eq!(engine.num_kv_heads, config.num_kv_heads);
         assert_eq!(engine.head_dim, config.head_dim);
-        assert_eq!(config.num_q_heads, QWEN36_ATTENTION_NUM_Q_HEADS);
-        assert_eq!(config.num_kv_heads, QWEN36_ATTENTION_NUM_KV_HEADS);
+        assert_eq!(config.num_q_heads, QWEN36_FULL_ATTN_Q_HEADS);
+        assert_eq!(config.num_kv_heads, QWEN36_FULL_ATTN_KV_HEADS);
     }
 
     #[test]

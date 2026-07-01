@@ -20,7 +20,6 @@ pub type DevicePtr = sys::qsfi_device_ptr;
 pub type DTypeRaw = sys::qsfi_dtype;
 pub type KvLayoutRaw = sys::qsfi_kv_layout;
 pub type MaskModeRaw = sys::qsfi_mask_mode;
-pub type PosEncodingRaw = sys::qsfi_pos_encoding;
 
 pub type Tensor1 = sys::qsfi_tensor1;
 pub type Tensor2 = sys::qsfi_tensor2;
@@ -68,8 +67,6 @@ pub const DTYPE_U8: DTypeRaw = sys::QSFI_DTYPE_U8;
 pub const KV_LAYOUT_NHD: KvLayoutRaw = sys::QSFI_KV_LAYOUT_NHD;
 pub const KV_LAYOUT_HND: KvLayoutRaw = sys::QSFI_KV_LAYOUT_HND;
 
-pub const POS_ENCODING_ROPE_LLAMA: PosEncodingRaw = sys::QSFI_POS_ENCODING_ROPE_LLAMA;
-pub const POS_ENCODING_NONE: PosEncodingRaw = sys::QSFI_POS_ENCODING_NONE;
 pub const MASK_MODE_NONE: MaskModeRaw = sys::QSFI_MASK_MODE_NONE;
 pub const MASK_MODE_CAUSAL: MaskModeRaw = sys::QSFI_MASK_MODE_CAUSAL;
 

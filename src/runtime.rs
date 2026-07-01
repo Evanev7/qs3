@@ -10,10 +10,9 @@ use crate::ffi::qscb;
 use crate::ffi::qsfi::{Context, Plan};
 use crate::ffi::{
     AppendDecode, AppendPrefill, AttentionDesc, BatchDecodeExecuteDesc, BatchPrefillExecuteDesc,
-    DTYPE_F16, MASK_MODE_CAUSAL, MASK_MODE_NONE, MaskModeRaw, POS_ENCODING_ROPE_LLAMA,
-    PagedKvCache, PagedKvPlan, PagedKvTable, QoPlan, Tensor3, Tensor4, cuda,
+    DTYPE_F16, MASK_MODE_CAUSAL, MASK_MODE_NONE, MaskModeRaw, PagedKvCache, PagedKvPlan,
+    PagedKvTable, QoPlan, Tensor3, Tensor4, cuda,
 };
-
 use std::ffi::c_void;
 use std::mem;
 use std::ptr;
@@ -736,7 +735,6 @@ fn make_attention(config: &EngineConfig, mask_mode: MaskModeRaw) -> AttentionDes
         kv_dtype: config.kv_dtype.to_raw(),
         o_dtype: config.activation_dtype.to_raw(),
         kv_layout: config.kv_layout.to_raw(),
-        pos_encoding: POS_ENCODING_ROPE_LLAMA,
         mask_mode,
         window_left: -1,
         fixed_split_size: 0,
@@ -815,6 +813,10 @@ fn ptr_or_null<T>(slice: &[T]) -> *const T {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        QWEN36_FULL_ATTN_HEAD_DIM, QWEN36_FULL_ATTN_KV_HEADS, QWEN36_FULL_ATTN_Q_HEADS,
+        QWEN36_HIDDEN_SIZE,
+    };
 
     fn tiny_config() -> EngineConfig {
         EngineConfig {
@@ -826,12 +828,12 @@ mod tests {
             max_seq_len: 8,
             max_pages: 8,
             page_size: 4,
-            hidden_size: 2048,
+            hidden_size: QWEN36_HIDDEN_SIZE,
             intermediate_size: 0,
             vocab_size: 0,
-            num_q_heads: 16,
-            num_kv_heads: 2,
-            head_dim: 256,
+            num_q_heads: QWEN36_FULL_ATTN_Q_HEADS,
+            num_kv_heads: QWEN36_FULL_ATTN_KV_HEADS,
+            head_dim: QWEN36_FULL_ATTN_HEAD_DIM,
             activation_dtype: DType::F16,
             kv_dtype: DType::F16,
             kv_layout: KvLayout::NHD,
@@ -899,6 +901,19 @@ mod tests {
     }
 
     #[test]
+    fn attention_descriptors_rely_on_pre_rotated_qk() {
+        let config = tiny_config();
+        assert_eq!(
+            make_attention(&config, MASK_MODE_CAUSAL).mask_mode,
+            MASK_MODE_CAUSAL
+        );
+        assert_eq!(
+            make_attention(&config, MASK_MODE_NONE).mask_mode,
+            MASK_MODE_NONE
+        );
+    }
+
+    #[test]
     fn runtime_config_rejects_zero_attention_layers() {
         let mut config = tiny_config();
         config.num_layers = 0;
@@ -940,6 +955,27 @@ mod tests {
         bad_shape.shape[0] = 1;
         assert_eq!(
             validate_tensor3_shape(&bad_shape, DTYPE_F16, 2, 3, 64),
+            Err(Status::InvalidArgument)
+        );
+
+        let mut null_data = valid;
+        null_data.data = ptr::null_mut();
+        assert_eq!(
+            validate_tensor3_shape(&null_data, DTYPE_F16, 2, 3, 64),
+            Err(Status::InvalidArgument)
+        );
+
+        let mut zero_outer_stride = valid;
+        zero_outer_stride.stride[0] = 0;
+        assert_eq!(
+            validate_tensor3_shape(&zero_outer_stride, DTYPE_F16, 2, 3, 64),
+            Err(Status::InvalidArgument)
+        );
+
+        let mut negative_inner_stride = valid;
+        negative_inner_stride.stride[2] = -1;
+        assert_eq!(
+            validate_tensor3_shape(&negative_inner_stride, DTYPE_F16, 2, 3, 64),
             Err(Status::InvalidArgument)
         );
     }

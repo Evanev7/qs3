@@ -1,4 +1,6 @@
-use crate::{ffi, runtime};
+use crate::{
+    QWEN36_FULL_ATTN_HEAD_DIM, QWEN36_FULL_ATTN_KV_HEADS, QWEN36_FULL_ATTN_Q_HEADS, ffi, runtime,
+};
 use std::collections::HashSet;
 
 pub struct Engine {
@@ -161,7 +163,7 @@ pub(crate) fn validate_supported_attention_grouping(
     if num_q_heads == 0 || num_kv_heads == 0 || !num_q_heads.is_multiple_of(num_kv_heads) {
         return Err(Status::InvalidArgument);
     }
-    if num_q_heads != 16 || num_kv_heads != 2 {
+    if num_q_heads != QWEN36_FULL_ATTN_Q_HEADS || num_kv_heads != QWEN36_FULL_ATTN_KV_HEADS {
         return Err(Status::Unsupported);
     }
     Ok(())
@@ -171,7 +173,7 @@ pub(crate) fn validate_supported_attention_head_dim(head_dim: u32) -> Result<(),
     if head_dim == 0 {
         return Err(Status::InvalidArgument);
     }
-    if head_dim != 256 {
+    if head_dim != QWEN36_FULL_ATTN_HEAD_DIM {
         return Err(Status::Unsupported);
     }
     Ok(())
@@ -1359,6 +1361,7 @@ impl EngineCore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::QWEN36_HIDDEN_SIZE;
 
     fn tiny_config() -> EngineConfig {
         EngineConfig {
@@ -1370,12 +1373,12 @@ mod tests {
             max_seq_len: 8,
             max_pages: 8,
             page_size: 4,
-            hidden_size: 2048,
+            hidden_size: QWEN36_HIDDEN_SIZE,
             intermediate_size: 0,
             vocab_size: 0,
-            num_q_heads: 16,
-            num_kv_heads: 2,
-            head_dim: 256,
+            num_q_heads: QWEN36_FULL_ATTN_Q_HEADS,
+            num_kv_heads: QWEN36_FULL_ATTN_KV_HEADS,
+            head_dim: QWEN36_FULL_ATTN_HEAD_DIM,
             activation_dtype: DType::F16,
             kv_dtype: DType::F16,
             kv_layout: KvLayout::NHD,

@@ -64,4 +64,3 @@ pub(crate) struct WeightFileRange<'a> {
     offset: u64,
     bytes: usize,
 }
-

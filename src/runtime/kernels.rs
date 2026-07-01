@@ -1,26 +1,16 @@
 #![allow(dead_code)]
 
 use crate::{
-    Status,
+    QWEN36_FULL_ATTN_HEAD_DIM, QWEN36_FULL_ATTN_Q_HIDDEN, QWEN36_FULL_ATTN_ROTARY_DIM,
+    QWEN36_GDN_CONV_STATE, QWEN36_GDN_CONV_WIDTH, QWEN36_GDN_KEY_DIM, QWEN36_GDN_NUM_K_HEADS,
+    QWEN36_GDN_NUM_Q_HEADS, QWEN36_GDN_NUM_V_HEADS, QWEN36_GDN_PACKED_DIM, QWEN36_GDN_VALUE_DIM,
+    QWEN36_MOE_MAX_EXPERTS, QWEN36_MOE_MAX_TOP_K, Status,
     ffi::{self, qscb, qscu, qsfi},
 };
 
 use super::device_tensor::{DMat, DTensor3, DVec};
 
 use std::ptr;
-
-const QWEN36_GDN_NUM_Q_HEADS: u32 = 16;
-const QWEN36_GDN_NUM_K_HEADS: u32 = 16;
-const QWEN36_GDN_NUM_V_HEADS: u32 = 32;
-const QWEN36_GDN_KEY_DIM: u32 = 128;
-const QWEN36_GDN_VALUE_DIM: u32 = 128;
-const QWEN36_GDN_CONV_WIDTH: u32 = 4;
-const QWEN36_GDN_CONV_STATE: u32 = QWEN36_GDN_CONV_WIDTH - 1;
-const QWEN36_GDN_PACKED_DIM: u32 =
-    2 * QWEN36_GDN_NUM_K_HEADS * QWEN36_GDN_KEY_DIM + QWEN36_GDN_NUM_V_HEADS * QWEN36_GDN_VALUE_DIM;
-const QWEN36_FULL_ATTENTION_Q_HIDDEN: u32 = 4096;
-const ROUTER_MAX_TOP_K: u32 = 16;
-const ROUTER_MAX_EXPERTS: u32 = 4096;
 
 pub(crate) type MoePlan = qsfi::MoePlan;
 
@@ -628,7 +618,7 @@ impl Qwen36FullAttentionOutputGateBf16 {
     ) -> Result<Self, Status> {
         gate.require_contiguous()?;
         out.require_contiguous()?;
-        if !gate.same_shape(out) || gate.cols != QWEN36_FULL_ATTENTION_Q_HIDDEN {
+        if !gate.same_shape(out) || gate.cols != QWEN36_FULL_ATTN_Q_HIDDEN {
             return Err(Status::InvalidArgument);
         }
         Ok(Self {
@@ -725,8 +715,8 @@ impl RouterTopK {
         {
             return Err(Status::InvalidArgument);
         }
-        if topk_ids.cols > ROUTER_MAX_TOP_K
-            || logits.cols() > ROUTER_MAX_EXPERTS
+        if topk_ids.cols > QWEN36_MOE_MAX_TOP_K
+            || logits.cols() > QWEN36_MOE_MAX_EXPERTS
             || topk_ids.cols > logits.cols()
         {
             return Err(Status::Unsupported);
@@ -1468,7 +1458,7 @@ fn require_supported_rope_dims(head_dim: u32, rotary_dim: u32) -> Result<(), Sta
     if !matches!(head_dim, 64 | 128 | 256 | 512) {
         return Err(Status::Unsupported);
     }
-    if head_dim == 256 && rotary_dim != 64 {
+    if head_dim == QWEN36_FULL_ATTN_HEAD_DIM && rotary_dim != QWEN36_FULL_ATTN_ROTARY_DIM {
         return Err(Status::Unsupported);
     }
     Ok(())
@@ -1565,6 +1555,7 @@ fn zero_tensor2(dtype: ffi::DTypeRaw) -> ffi::Tensor2 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{QWEN36_FULL_ATTN_KV_HEADS, QWEN36_FULL_ATTN_KV_HIDDEN, QWEN36_FULL_ATTN_Q_HEADS};
 
     use std::ffi::c_void;
 
@@ -1732,15 +1723,15 @@ mod tests {
 
         assert!(
             Qwen36FullAttentionOutputGateBf16::new(
-                bf16_mat(119, 2, QWEN36_FULL_ATTENTION_Q_HIDDEN),
-                bf16_mat(120, 2, QWEN36_FULL_ATTENTION_Q_HIDDEN),
+                bf16_mat(119, 2, QWEN36_FULL_ATTN_Q_HIDDEN),
+                bf16_mat(120, 2, QWEN36_FULL_ATTN_Q_HIDDEN),
             )
             .is_ok()
         );
         assert!(matches!(
             Qwen36FullAttentionOutputGateBf16::new(
-                bf16_mat(121, 2, QWEN36_FULL_ATTENTION_Q_HIDDEN - 1),
-                bf16_mat(122, 2, QWEN36_FULL_ATTENTION_Q_HIDDEN - 1),
+                bf16_mat(121, 2, QWEN36_FULL_ATTN_Q_HIDDEN - 1),
+                bf16_mat(122, 2, QWEN36_FULL_ATTN_Q_HIDDEN - 1),
             ),
             Err(Status::InvalidArgument)
         ));
@@ -1749,18 +1740,18 @@ mod tests {
                 DMat::<{ ffi::DTYPE_BF16 }>::new(
                     device_ptr(123),
                     2,
-                    QWEN36_FULL_ATTENTION_Q_HIDDEN,
-                    QWEN36_FULL_ATTENTION_Q_HIDDEN + 8,
+                    QWEN36_FULL_ATTN_Q_HIDDEN,
+                    QWEN36_FULL_ATTN_Q_HIDDEN + 8,
                 )
                 .unwrap(),
-                bf16_mat(124, 2, QWEN36_FULL_ATTENTION_Q_HIDDEN),
+                bf16_mat(124, 2, QWEN36_FULL_ATTN_Q_HIDDEN),
             ),
             Err(Status::InvalidArgument)
         ));
         assert!(matches!(
             Qwen36FullAttentionOutputGateBf16::new(
-                bf16_mat(125, 2, QWEN36_FULL_ATTENTION_Q_HIDDEN),
-                bf16_mat(126, 1, QWEN36_FULL_ATTENTION_Q_HIDDEN),
+                bf16_mat(125, 2, QWEN36_FULL_ATTN_Q_HIDDEN),
+                bf16_mat(126, 1, QWEN36_FULL_ATTN_Q_HIDDEN),
             ),
             Err(Status::InvalidArgument)
         ));
@@ -1817,9 +1808,13 @@ mod tests {
         assert!(matches!(
             RouterTopK::new(
                 Bf16OrF32Mat::F32(logits),
-                DMat::<{ ffi::DTYPE_I32 }>::contiguous(device_ptr(26), 2, ROUTER_MAX_TOP_K + 1)
-                    .unwrap(),
-                f32_mat(27, 2, ROUTER_MAX_TOP_K + 1),
+                DMat::<{ ffi::DTYPE_I32 }>::contiguous(
+                    device_ptr(26),
+                    2,
+                    QWEN36_MOE_MAX_TOP_K + 1,
+                )
+                .unwrap(),
+                f32_mat(27, 2, QWEN36_MOE_MAX_TOP_K + 1),
                 RouterScore::Softmax,
                 true,
                 1.0,
@@ -1897,10 +1892,42 @@ mod tests {
             RopeApplyBf16::new(q, k, q_out, k_out, i32_vec(52, 2), 256),
             Err(Status::InvalidArgument)
         ));
-        let qwen36_q = Bf16Heads::new(device_ptr(53), 2, 4, 256, 2048, 256).unwrap();
-        let qwen36_k = Bf16Heads::new(device_ptr(54), 2, 2, 256, 1024, 256).unwrap();
-        let qwen36_q_out = Bf16Heads::new(device_ptr(55), 2, 4, 256, 2048, 256).unwrap();
-        let qwen36_k_out = Bf16Heads::new(device_ptr(56), 2, 2, 256, 1024, 256).unwrap();
+        let qwen36_q = Bf16Heads::new(
+            device_ptr(53),
+            2,
+            QWEN36_FULL_ATTN_Q_HEADS,
+            QWEN36_FULL_ATTN_HEAD_DIM,
+            QWEN36_FULL_ATTN_Q_HIDDEN,
+            QWEN36_FULL_ATTN_HEAD_DIM,
+        )
+        .unwrap();
+        let qwen36_k = Bf16Heads::new(
+            device_ptr(54),
+            2,
+            QWEN36_FULL_ATTN_KV_HEADS,
+            QWEN36_FULL_ATTN_HEAD_DIM,
+            QWEN36_FULL_ATTN_KV_HIDDEN,
+            QWEN36_FULL_ATTN_HEAD_DIM,
+        )
+        .unwrap();
+        let qwen36_q_out = Bf16Heads::new(
+            device_ptr(55),
+            2,
+            QWEN36_FULL_ATTN_Q_HEADS,
+            QWEN36_FULL_ATTN_HEAD_DIM,
+            QWEN36_FULL_ATTN_Q_HIDDEN,
+            QWEN36_FULL_ATTN_HEAD_DIM,
+        )
+        .unwrap();
+        let qwen36_k_out = Bf16Heads::new(
+            device_ptr(56),
+            2,
+            QWEN36_FULL_ATTN_KV_HEADS,
+            QWEN36_FULL_ATTN_HEAD_DIM,
+            QWEN36_FULL_ATTN_KV_HIDDEN,
+            QWEN36_FULL_ATTN_HEAD_DIM,
+        )
+        .unwrap();
         assert!(
             RopeApplyBf16::new(
                 qwen36_q,
@@ -1908,7 +1935,7 @@ mod tests {
                 qwen36_q_out,
                 qwen36_k_out,
                 i32_vec(57, 2),
-                64,
+                QWEN36_FULL_ATTN_ROTARY_DIM,
             )
             .is_ok()
         );

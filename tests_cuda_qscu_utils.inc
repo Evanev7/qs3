@@ -318,6 +318,61 @@ static void test_qscu_utils_qwen36_full_attention_output_gate_bf16()
     );
     qscu_utils_check_bf16_close(h_out, want, 0.025f, "qscu extracted full-attn gate out");
 
+    std::vector<uint16_t> h_adjacent(2 * elems);
+    std::vector<uint16_t> h_adjacent_out(elems);
+    std::vector<float> adjacent_want(elems);
+    for (size_t i = 0; i < elems; ++i) {
+        const int gate_pattern = static_cast<int>(i % 4);
+        const float gate_f32 = gate_pattern == 0 ? -3.0f
+            : gate_pattern == 1                    ? -1.25f
+            : gate_pattern == 2                    ? 0.75f
+                                                  : 2.25f;
+        const float magnitude = static_cast<float>((i % 13) + 1) * 0.125f;
+        const float out_f32 = (i % 2 == 0) ? magnitude : -magnitude;
+        h_adjacent[i] = qscu_utils_f32_to_bf16(gate_f32);
+        h_adjacent[elems + i] = qscu_utils_f32_to_bf16(out_f32);
+        const float gate = bf16_to_f32(h_adjacent[i]);
+        const float out = bf16_to_f32(h_adjacent[elems + i]);
+        adjacent_want[i] = out * (1.0f / (1.0f + std::exp(-gate)));
+    }
+
+    uint16_t* d_adjacent = nullptr;
+    if (!copy_to_device(
+            &d_adjacent,
+            h_adjacent.data(),
+            h_adjacent.size(),
+            "copy qscu full-attn adjacent gate/out"
+        )) {
+        qscu_utils_free_device(d_gate);
+        qscu_utils_free_device(d_out);
+        return;
+    }
+
+    desc.gate = tensor2_bf16(d_adjacent, tokens, q_hidden);
+    desc.out = tensor2_bf16(d_adjacent + elems, tokens, q_hidden);
+    check_status(
+        qscu_qwen36_full_attention_output_gate_bf16(&desc, nullptr),
+        QSFI_STATUS_OK,
+        "qscu qwen36 extracted full-attn output gate accepts adjacent gate/out"
+    );
+    check_cuda(cudaDeviceSynchronize(), "sync qscu qwen36 adjacent full-attn output gate");
+    check_cuda(
+        cudaMemcpy(
+            h_adjacent_out.data(),
+            d_adjacent + elems,
+            h_adjacent_out.size() * sizeof(uint16_t),
+            cudaMemcpyDeviceToHost
+        ),
+        "copy qscu qwen36 adjacent full-attn output gate out back"
+    );
+    qscu_utils_check_bf16_close(
+        h_adjacent_out,
+        adjacent_want,
+        0.025f,
+        "qscu adjacent extracted full-attn gate out"
+    );
+
+    qscu_utils_free_device(d_adjacent);
     qscu_utils_free_device(d_gate);
     qscu_utils_free_device(d_out);
 }
@@ -769,12 +824,21 @@ static void test_qscu_utils_negative_validation()
     uint16_t* d_gate = nullptr;
     uint16_t* d_up = nullptr;
     uint16_t* d_out = nullptr;
+    uint16_t* d_full_attn_overlap = nullptr;
+    std::vector<uint16_t> h_full_attn_overlap(4097, kBf16One);
     if (!copy_to_device(&d_gate, h_bf16, 1, "copy qscu negative silu gate")
         || !copy_to_device(&d_up, h_bf16, 1, "copy qscu negative silu up")
-        || !copy_to_device(&d_out, h_bf16, 1, "copy qscu negative silu out")) {
+        || !copy_to_device(&d_out, h_bf16, 1, "copy qscu negative silu out")
+        || !copy_to_device(
+            &d_full_attn_overlap,
+            h_full_attn_overlap.data(),
+            h_full_attn_overlap.size(),
+            "copy qscu negative full-attn overlap"
+        )) {
         qscu_utils_free_device(d_gate);
         qscu_utils_free_device(d_up);
         qscu_utils_free_device(d_out);
+        qscu_utils_free_device(d_full_attn_overlap);
         return;
     }
 
@@ -800,6 +864,7 @@ static void test_qscu_utils_negative_validation()
         qscu_utils_free_device(d_gate);
         qscu_utils_free_device(d_up);
         qscu_utils_free_device(d_out);
+        qscu_utils_free_device(d_full_attn_overlap);
         qscu_utils_free_device(d_logits);
         qscu_utils_free_device(d_next);
         return;
@@ -868,10 +933,25 @@ static void test_qscu_utils_negative_validation()
         QSFI_STATUS_INVALID_ARGUMENT,
         "qscu extracted full-attn output gate rejects padded gate"
     );
+    full_attn_gate_desc.gate = tensor2_bf16(d_out, 1, 4096);
+    full_attn_gate_desc.out = tensor2_bf16(d_out, 1, 4096);
+    check_status(
+        qscu_qwen36_full_attention_output_gate_bf16(&full_attn_gate_desc, nullptr),
+        QSFI_STATUS_INVALID_ARGUMENT,
+        "qscu extracted full-attn output gate rejects exact gate/out alias"
+    );
+    full_attn_gate_desc.gate = tensor2_bf16(d_full_attn_overlap + 1, 1, 4096);
+    full_attn_gate_desc.out = tensor2_bf16(d_full_attn_overlap, 1, 4096);
+    check_status(
+        qscu_qwen36_full_attention_output_gate_bf16(&full_attn_gate_desc, nullptr),
+        QSFI_STATUS_INVALID_ARGUMENT,
+        "qscu extracted full-attn output gate rejects partial gate/out overlap"
+    );
 
     qscu_utils_free_device(d_gate);
     qscu_utils_free_device(d_up);
     qscu_utils_free_device(d_out);
+    qscu_utils_free_device(d_full_attn_overlap);
     qscu_utils_free_device(d_logits);
     qscu_utils_free_device(d_next);
 }

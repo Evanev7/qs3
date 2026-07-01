@@ -29,8 +29,6 @@ typedef enum {
     QSFI_KV_LAYOUT_HND = 1
 } qsfi_kv_layout;
 
-typedef enum { QSFI_POS_ENCODING_NONE = 0, QSFI_POS_ENCODING_ROPE_LLAMA = 1 } qsfi_pos_encoding;
-
 typedef enum { QSFI_MASK_MODE_NONE = 0, QSFI_MASK_MODE_CAUSAL = 1 } qsfi_mask_mode;
 
 typedef struct {
@@ -72,7 +70,6 @@ typedef struct {
     qsfi_dtype kv_dtype;
     qsfi_dtype o_dtype;
     qsfi_kv_layout kv_layout;
-    qsfi_pos_encoding pos_encoding;
     qsfi_mask_mode mask_mode;
     int32_t window_left;
     int32_t fixed_split_size;

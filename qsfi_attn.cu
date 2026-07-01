@@ -200,10 +200,6 @@ qsfi_status validate_attention(qsfi_context* ctx, const qsfi_attention_desc* att
     if (attention->kv_layout != QSFI_KV_LAYOUT_NHD && attention->kv_layout != QSFI_KV_LAYOUT_HND) {
         return set_invalid_arg(ctx, "invalid kv_layout");
     }
-    if (attention->pos_encoding != QSFI_POS_ENCODING_NONE
-        && attention->pos_encoding != QSFI_POS_ENCODING_ROPE_LLAMA) {
-        return set_unsupported(ctx, "unsupported positional encoding");
-    }
     if (!valid_dtype(attention->q_dtype) || !valid_dtype(attention->kv_dtype)
         || !valid_dtype(attention->o_dtype)) {
         return set_invalid_arg(ctx, "invalid attention dtype");
@@ -610,15 +606,6 @@ cudaError_t decode_plan_dtype(
     flashinfer::DecodePlanInfo* out
 )
 {
-    if (attention->pos_encoding == QSFI_POS_ENCODING_ROPE_LLAMA) {
-        return decode_plan_sliding<T, flashinfer::PosEncodingMode::kRoPELlama>(
-            ctx,
-            plan,
-            attention,
-            page_table,
-            out
-        );
-    }
     return decode_plan_sliding<T, flashinfer::PosEncodingMode::kNone>(
         ctx,
         plan,
@@ -749,9 +736,6 @@ cudaError_t decode_execute_dtype(
     qsfi_context* ctx, const qsfi_plan* plan, const qsfi_batch_decode_execute_desc* desc
 )
 {
-    if (plan->attention.pos_encoding == QSFI_POS_ENCODING_ROPE_LLAMA) {
-        return decode_execute_sliding<T, flashinfer::PosEncodingMode::kRoPELlama>(ctx, plan, desc);
-    }
     return decode_execute_sliding<T, flashinfer::PosEncodingMode::kNone>(ctx, plan, desc);
 }
 
@@ -955,9 +939,6 @@ cudaError_t prefill_execute_dtype(
     qsfi_context* ctx, const qsfi_plan* plan, const qsfi_batch_prefill_execute_desc* desc
 )
 {
-    if (plan->attention.pos_encoding == QSFI_POS_ENCODING_ROPE_LLAMA) {
-        return prefill_execute_sliding<T, flashinfer::PosEncodingMode::kRoPELlama>(ctx, plan, desc);
-    }
     return prefill_execute_sliding<T, flashinfer::PosEncodingMode::kNone>(ctx, plan, desc);
 }
 

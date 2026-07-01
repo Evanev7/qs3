@@ -313,7 +313,6 @@ qsfi_attention_desc attention_desc()
     attention.kv_dtype = QSFI_DTYPE_F16;
     attention.o_dtype = QSFI_DTYPE_F16;
     attention.kv_layout = QSFI_KV_LAYOUT_NHD;
-    attention.pos_encoding = QSFI_POS_ENCODING_NONE;
     attention.mask_mode = QSFI_MASK_MODE_NONE;
     attention.window_left = -1;
     attention.rope_scale = 1.0f;
@@ -976,9 +975,7 @@ void test_batch_prefill_attention_matches_cpu_reference()
 }
 
 void expect_attention_plan_unsupported(
-    qsfi_context* ctx,
-    qsfi_attention_desc attention,
-    const char* label
+    qsfi_context* ctx, qsfi_attention_desc attention, const char* label
 )
 {
     const int32_t indptr[] = { 0, 0, 0 };

@@ -94,6 +94,23 @@ bool contiguous3(const qsfi_tensor3& tensor)
         && tensor.stride[0] == tensor.shape[1] * tensor.shape[2];
 }
 
+bool contiguous_bf16_ranges_overlap(const qsfi_tensor2& a, const qsfi_tensor2& b)
+{
+    const uint64_t elem_count
+        = static_cast<uint64_t>(a.shape[0]) * static_cast<uint64_t>(a.shape[1]);
+    constexpr uint64_t max_addr = std::numeric_limits<uintptr_t>::max();
+    if (elem_count > max_addr / sizeof(__nv_bfloat16))
+        return true;
+    const uintptr_t byte_count = static_cast<uintptr_t>(elem_count * sizeof(__nv_bfloat16));
+    const uintptr_t a_begin = reinterpret_cast<uintptr_t>(a.data);
+    const uintptr_t b_begin = reinterpret_cast<uintptr_t>(b.data);
+    if (max_addr - a_begin < byte_count || max_addr - b_begin < byte_count)
+        return true;
+    const uintptr_t a_end = a_begin + byte_count;
+    const uintptr_t b_end = b_begin + byte_count;
+    return a_begin < b_end && b_begin < a_end;
+}
+
 qsfi_status validate_cuda(cudaError_t err)
 {
     if (err == cudaSuccess)
@@ -1285,6 +1302,8 @@ qsfi_status validate_qwen36_full_attention_output_gate_desc(
         || desc->out.shape[1] != static_cast<int64_t>(desc->q_hidden)) {
         return QSFI_STATUS_INVALID_ARGUMENT;
     }
+    if (contiguous_bf16_ranges_overlap(desc->gate, desc->out))
+        return QSFI_STATUS_INVALID_ARGUMENT;
     return QSFI_STATUS_OK;
 }
 

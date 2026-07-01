@@ -45,6 +45,12 @@ real qwen3.6-35b-a3b findings:
 - BF16 experts use fused `mlp.experts.gate_up_proj` / `down_proj`; NVFP4 uses
   split per-expert tensors plus `input_scale`, `weight_scale`, `weight_scale_2`
   reject NVFP4 until its scale/packing semantics are implemented
+- current full attention should keep explicit q/k norm + partial RoPE before
+  `POS_ENCODING_NONE` attention as the correctness baseline. future fusion, if
+  profiling justifies it, should be a qwen-specific prep kernel for packed Q
+  extraction, output gate extraction, q/k norm, and `rotary_dim=64` RoPE. keep
+  paged KV append separate first; only fuse K prep into append if launch/memory
+  pass overhead proves worth coupling model prep to cache transaction details
 
 loader direction:
 - `src/weight_loader.rs` has the backend trait. keep qwen-specific manifest
@@ -75,4 +81,3 @@ near-term todos:
 - then add the first CLI that accepts/prints token ids. tokenizer/chat template
   can follow after model token generation works
 - after BF16 real-model correctness, add the first optimized NVFP4 path
-
