@@ -203,12 +203,12 @@ fn tiny_config() -> EngineConfig {
         max_seq_len: 8,
         max_pages: 8,
         page_size: 4,
-        hidden_size: 128,
+        hidden_size: 2048,
         intermediate_size: 0,
         vocab_size: 0,
-        num_q_heads: 2,
+        num_q_heads: 16,
         num_kv_heads: 2,
-        head_dim: 64,
+        head_dim: 256,
         activation_dtype: DType::F16,
         kv_dtype: DType::F16,
         kv_layout: KvLayout::NHD,
@@ -224,13 +224,26 @@ fn tiny_config() -> EngineConfig {
 #[test]
 fn engine_rejects_unsupported_native_attention_shapes_before_cuda_setup() {
     let mut config = tiny_config();
+    config.num_q_heads = 2;
+    config.num_kv_heads = 2;
+    config.head_dim = 64;
+    config.hidden_size = config.num_q_heads * config.head_dim;
+    assert_eq!(Engine::new(config).err(), Some(qs3::Status::Unsupported));
+
+    let mut config = tiny_config();
     config.head_dim = 128;
     config.hidden_size = config.num_q_heads * config.head_dim;
     assert_eq!(Engine::new(config).err(), Some(qs3::Status::Unsupported));
 
     let mut config = tiny_config();
-    config.num_q_heads = 4;
-    config.num_kv_heads = 2;
+    config.num_q_heads = 8;
+    config.num_kv_heads = 1;
+    config.hidden_size = config.num_q_heads * config.head_dim;
+    assert_eq!(Engine::new(config).err(), Some(qs3::Status::Unsupported));
+
+    let mut config = tiny_config();
+    config.num_q_heads = 32;
+    config.num_kv_heads = 4;
     config.hidden_size = config.num_q_heads * config.head_dim;
     assert_eq!(Engine::new(config).err(), Some(qs3::Status::Unsupported));
 }

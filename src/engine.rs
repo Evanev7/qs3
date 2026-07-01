@@ -161,7 +161,7 @@ pub(crate) fn validate_supported_attention_grouping(
     if num_q_heads == 0 || num_kv_heads == 0 || !num_q_heads.is_multiple_of(num_kv_heads) {
         return Err(Status::InvalidArgument);
     }
-    if num_q_heads != num_kv_heads {
+    if num_q_heads != 16 || num_kv_heads != 2 {
         return Err(Status::Unsupported);
     }
     Ok(())
@@ -171,7 +171,7 @@ pub(crate) fn validate_supported_attention_head_dim(head_dim: u32) -> Result<(),
     if head_dim == 0 {
         return Err(Status::InvalidArgument);
     }
-    if head_dim != 64 {
+    if head_dim != 256 {
         return Err(Status::Unsupported);
     }
     Ok(())
@@ -1370,12 +1370,12 @@ mod tests {
             max_seq_len: 8,
             max_pages: 8,
             page_size: 4,
-            hidden_size: 128,
+            hidden_size: 2048,
             intermediate_size: 0,
             vocab_size: 0,
-            num_q_heads: 2,
+            num_q_heads: 16,
             num_kv_heads: 2,
-            head_dim: 64,
+            head_dim: 256,
             activation_dtype: DType::F16,
             kv_dtype: DType::F16,
             kv_layout: KvLayout::NHD,

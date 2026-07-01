@@ -186,15 +186,16 @@ qsfi_status validate_attention(qsfi_context* ctx, const qsfi_attention_desc* att
     if (attention->num_qo_heads % attention->num_kv_heads != 0) {
         return set_invalid_arg(ctx, "num_qo_heads must be divisible by num_kv_heads");
     }
-    const uint32_t group_size = attention->num_qo_heads / attention->num_kv_heads;
-    if (attention->head_dim_qk != 64 || group_size != 1) {
-        return set_unsupported(
-            ctx,
-            "compiled attention dispatch supports only head_dim=64 and qo/kv group size=1"
-        );
-    }
     if (attention->head_dim_qk != attention->head_dim_vo) {
         return set_unsupported(ctx, "different qk/vo head dimensions are not wired yet");
+    }
+    if (attention->head_dim_qk != 256 || attention->num_qo_heads != 16
+        || attention->num_kv_heads != 2) {
+        return set_unsupported(
+            ctx,
+            "compiled attention dispatch supports only Qwen3.6 full-attention template shape "
+            "num_qo_heads=16 num_kv_heads=2 head_dim=256"
+        );
     }
     if (attention->kv_layout != QSFI_KV_LAYOUT_NHD && attention->kv_layout != QSFI_KV_LAYOUT_HND) {
         return set_invalid_arg(ctx, "invalid kv_layout");
@@ -1278,9 +1279,13 @@ qsfi_status qsfi_batch_prefill_plan_create(
             destroy_batch_plan(handle);
             return set_cuda_error(ctx, err, "flashinfer prefill plan");
         }
-        if (plan->prefill.cta_tile_q != 16) {
+        if (plan->prefill.cta_tile_q != 16 && plan->prefill.cta_tile_q != 32
+            && plan->prefill.cta_tile_q != 64 && plan->prefill.cta_tile_q != 128) {
             destroy_batch_plan(handle);
-            return set_unsupported(ctx, "compiled prefill dispatch supports only cta_tile_q=16");
+            return set_unsupported(
+                ctx,
+                "compiled prefill dispatch supports only cta_tile_q=16/32/64/128"
+            );
         }
     } catch (const std::exception& ex) {
         destroy_batch_plan(handle);

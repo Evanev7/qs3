@@ -78,12 +78,9 @@ static void emit_dispatch_macro(const qsfi_dispatch_spec* spec)
 
 int main(void)
 {
-    // static const int cta_tile_q_values[] = { 16, 32, 64, 128 };
-    // static const int gqa_group_size_values[] = { 1, 2, 3, 4, 8 };
-    // static const int head_dim_values[] = { 64, 128, 256, 512 };
-    static const int cta_tile_q_values[] = { 16 };
-    static const int gqa_group_size_values[] = { 1 };
-    static const int head_dim_values[] = { 64 };
+    static const int cta_tile_q_values[] = { 16, 32, 64, 128 };
+    static const int gqa_group_size_values[] = { 8 };
+    static const int head_dim_values[] = { 256 };
 
     static const qsfi_dispatch_spec specs[] = {
         {

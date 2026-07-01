@@ -528,8 +528,12 @@ fn oversized_run_request_is_rejected_without_mutating_live_state() {
 
 #[test]
 fn qwen_config_rejects_unsupported_dense_runner_shapes() {
+    let config = QwenConfig::randomized_dense_tiny_fixture(-1);
+    assert_eq!(config.validate(), Ok(()));
+    assert_ne!(config.hidden_size, config.num_q_heads * config.head_dim);
+
     let mut config = QwenConfig::randomized_dense_tiny_fixture(-1);
-    config.hidden_size = 96;
+    config.hidden_size = 97;
     assert_eq!(config.validate(), Err(Status::InvalidArgument));
 
     let mut config = QwenConfig::randomized_dense_tiny_fixture(-1);
@@ -538,20 +542,27 @@ fn qwen_config_rejects_unsupported_dense_runner_shapes() {
 
     let mut config = QwenConfig::randomized_dense_tiny_fixture(-1);
     config.head_dim = 80;
-    config.hidden_size = config.num_q_heads * config.head_dim;
     assert_eq!(config.validate(), Err(Status::Unsupported));
 
-    for head_dim in [128, 256, 512] {
+    for head_dim in [64, 128, 512] {
         let mut config = QwenConfig::randomized_dense_tiny_fixture(-1);
         config.head_dim = head_dim;
-        config.hidden_size = config.num_q_heads * config.head_dim;
         assert_eq!(config.validate(), Err(Status::Unsupported));
     }
 
     let mut config = QwenConfig::randomized_dense_tiny_fixture(-1);
     config.num_q_heads = 4;
     config.num_kv_heads = 2;
-    config.hidden_size = config.num_q_heads * config.head_dim;
+    assert_eq!(config.validate(), Err(Status::Unsupported));
+
+    let mut config = QwenConfig::randomized_dense_tiny_fixture(-1);
+    config.num_q_heads = 8;
+    config.num_kv_heads = 1;
+    assert_eq!(config.validate(), Err(Status::Unsupported));
+
+    let mut config = QwenConfig::randomized_dense_tiny_fixture(-1);
+    config.num_q_heads = 32;
+    config.num_kv_heads = 4;
     assert_eq!(config.validate(), Err(Status::Unsupported));
 
     let mut config = QwenConfig::randomized_dense_tiny_fixture(-1);
@@ -586,6 +597,11 @@ fn qwen_config_validates_public_moe_config_json_fields() {
 
     let qwen36 = QwenConfig::randomized_qwen36_moe_gdn_one_block_fixture(-1);
     assert_eq!(qwen36.moe, Some(QwenMoeConfig::qwen36_35b_a3b()));
+    assert_eq!(qwen36.hidden_size, 2048);
+    assert_eq!(qwen36.num_q_heads, 16);
+    assert_eq!(qwen36.num_kv_heads, 2);
+    assert_eq!(qwen36.head_dim, 256);
+    assert_eq!(qwen36.num_q_heads * qwen36.head_dim, 4096);
 
     let shared_tiny = QwenConfig::randomized_shared_moe_tiny_fixture(-1);
     assert_eq!(

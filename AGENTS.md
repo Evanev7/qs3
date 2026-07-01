@@ -17,6 +17,7 @@ ground rules:
 
 current architecture:
 - `3pty` is vendored kernels/reference code; `target` is the rust build dir
+- `.prototypes` for prototype work
 - `EngineCore` owns request ids, tokens, sequence lengths, page allocator,
   page tables, last-page lengths, append positions, and staged batch state
   begin/commit/abort/reset/release paths should stay transactional: build

@@ -17,8 +17,10 @@ namespace {
 constexpr int kBatch = 2;
 constexpr int kNumPages = 3;
 constexpr int kPageSize = 4;
+constexpr int kQHeads = 16;
 constexpr int kKvHeads = 2;
-constexpr int kHeadDim = 64;
+constexpr int kHeadDim = 256;
+constexpr int kGqaGroupSize = kQHeads / kKvHeads;
 constexpr int kNumIndices = 3;
 constexpr uint16_t kSentinel = 0xA5A5u;
 constexpr size_t kAttentionWorkspaceBytes = 64ull << 20;
@@ -117,6 +119,11 @@ size_t cache_offset(int page, int entry, int head, int dim)
 size_t append_offset(int item, int head, int dim)
 {
     return (static_cast<size_t>(item) * kKvHeads + head) * kHeadDim + dim;
+}
+
+size_t attention_q_offset(int item, int head, int dim)
+{
+    return (static_cast<size_t>(item) * kQHeads + head) * kHeadDim + dim;
 }
 
 size_t gdn_qk_offset(int token, int head, int dim)
@@ -297,7 +304,7 @@ qsfi_tensor4 cache_tensor_bf16(void* data)
 qsfi_attention_desc attention_desc()
 {
     qsfi_attention_desc attention {};
-    attention.num_qo_heads = kKvHeads;
+    attention.num_qo_heads = kQHeads;
     attention.num_kv_heads = kKvHeads;
     attention.head_dim_qk = kHeadDim;
     attention.head_dim_vo = kHeadDim;
@@ -473,10 +480,12 @@ uint16_t attention_value_pattern(int request, int token, int head)
 void fill_attention_queries(std::vector<uint16_t>& q)
 {
     std::fill(q.begin(), q.end(), kBf16Zero);
-    const int queries = static_cast<int>(q.size() / (kKvHeads * kHeadDim));
+    const int queries = static_cast<int>(q.size() / (kQHeads * kHeadDim));
     for (int query = 0; query < queries; ++query) {
-        for (int head = 0; head < kKvHeads; ++head)
-            q[append_offset(query, head, head)] = kBf16One;
+        for (int head = 0; head < kQHeads; ++head) {
+            const int kv_head = head / kGqaGroupSize;
+            q[attention_q_offset(query, head, kv_head)] = kBf16One;
+        }
     }
 }
 
@@ -520,20 +529,21 @@ void cpu_attention_reference(
     for (int query = 0; query < num_queries; ++query) {
         const int request = query_to_request[query];
         const int seq_len = attention_seq_len(indptr, last_page_len, request);
-        for (int head = 0; head < kKvHeads; ++head) {
+        for (int head = 0; head < kQHeads; ++head) {
+            const int kv_head = head / kGqaGroupSize;
             std::vector<float> scores(seq_len, 0.0f);
             float max_score = -std::numeric_limits<float>::infinity();
             for (int token = 0; token < seq_len; ++token) {
                 float dot = 0.0f;
                 for (int dim = 0; dim < kHeadDim; ++dim) {
-                    dot += bf16_to_f32(q[append_offset(query, head, dim)])
+                    dot += bf16_to_f32(q[attention_q_offset(query, head, dim)])
                         * bf16_to_f32(
                                k_cache[attention_logical_cache_offset(
                                    indptr,
                                    indices,
                                    request,
                                    token,
-                                   head,
+                                   kv_head,
                                    dim
                                )]
                         );
@@ -558,12 +568,12 @@ void cpu_attention_reference(
                                    indices,
                                    request,
                                    token,
-                                   head,
+                                   kv_head,
                                    dim
                                )]
                         );
                 }
-                out[append_offset(query, head, dim)] = acc;
+                out[attention_q_offset(query, head, dim)] = acc;
             }
         }
     }
@@ -740,7 +750,7 @@ void test_batch_decode_attention_matches_cpu_reference()
     const int32_t last_page_len[] = { 1, 4 };
     const int query_to_request[] = { 0, 1 };
     constexpr size_t cache_elems = static_cast<size_t>(kNumPages) * kPageSize * kKvHeads * kHeadDim;
-    constexpr size_t q_elems = static_cast<size_t>(kBatch) * kKvHeads * kHeadDim;
+    constexpr size_t q_elems = static_cast<size_t>(kBatch) * kQHeads * kHeadDim;
 
     std::vector<uint16_t> h_q(q_elems);
     std::vector<uint16_t> h_k_cache(cache_elems);
@@ -806,8 +816,8 @@ void test_batch_decode_attention_matches_cpu_reference()
     }
     if (ok) {
         qsfi_batch_decode_execute_desc desc {};
-        desc.q = tensor3_bf16(d_q, kBatch, kKvHeads, kHeadDim);
-        desc.o = tensor3_bf16(d_out, kBatch, kKvHeads, kHeadDim);
+        desc.q = tensor3_bf16(d_q, kBatch, kQHeads, kHeadDim);
+        desc.o = tensor3_bf16(d_out, kBatch, kQHeads, kHeadDim);
         desc.kv_cache = cache_desc_bf16(d_k_cache, d_v_cache);
         desc.page_table = page_table_desc(d_indptr, d_indices, d_last_page_len);
 
@@ -857,7 +867,7 @@ void test_batch_prefill_attention_matches_cpu_reference()
     const int32_t last_page_len[] = { 1, 4 };
     const int query_to_request[] = { 0, 0, 1 };
     constexpr size_t cache_elems = static_cast<size_t>(kNumPages) * kPageSize * kKvHeads * kHeadDim;
-    constexpr size_t q_elems = static_cast<size_t>(total_tokens) * kKvHeads * kHeadDim;
+    constexpr size_t q_elems = static_cast<size_t>(total_tokens) * kQHeads * kHeadDim;
 
     std::vector<uint16_t> h_q(q_elems);
     std::vector<uint16_t> h_k_cache(cache_elems);
@@ -929,8 +939,8 @@ void test_batch_prefill_attention_matches_cpu_reference()
     }
     if (ok) {
         qsfi_batch_prefill_execute_desc desc {};
-        desc.q = tensor3_bf16(d_q, total_tokens, kKvHeads, kHeadDim);
-        desc.o = tensor3_bf16(d_out, total_tokens, kKvHeads, kHeadDim);
+        desc.q = tensor3_bf16(d_q, total_tokens, kQHeads, kHeadDim);
+        desc.o = tensor3_bf16(d_out, total_tokens, kQHeads, kHeadDim);
         desc.qo_indptr = d_qo_indptr;
         desc.kv_cache = cache_desc_bf16(d_k_cache, d_v_cache);
         desc.page_table = page_table_desc(d_indptr, d_indices, d_last_page_len);
@@ -962,6 +972,62 @@ void test_batch_prefill_attention_matches_cpu_reference()
     cudaFree(d_indptr);
     cudaFree(d_indices);
     cudaFree(d_last_page_len);
+    qsfi_context_destroy(ctx);
+}
+
+void expect_attention_plan_unsupported(
+    qsfi_context* ctx,
+    qsfi_attention_desc attention,
+    const char* label
+)
+{
+    const int32_t indptr[] = { 0, 0, 0 };
+    const int32_t last_page_len[] = { 0, 0 };
+    qsfi_paged_kv_plan plan_table {};
+    plan_table.indptr = indptr;
+    plan_table.indices = nullptr;
+    plan_table.last_page_len = last_page_len;
+    plan_table.batch_size = kBatch;
+    plan_table.num_indices = 0;
+
+    qsfi_batch_decode_plan* plan = nullptr;
+    check_status_message(
+        ctx,
+        qsfi_batch_decode_plan_create(ctx, &attention, &plan_table, &plan),
+        QSFI_STATUS_UNSUPPORTED,
+        "num_qo_heads=16 num_kv_heads=2 head_dim=256",
+        label
+    );
+    qsfi_batch_decode_plan_destroy(plan);
+}
+
+void test_attention_rejects_non_qwen36_full_attention_shapes()
+{
+    qsfi_context* ctx = nullptr;
+    if (!make_context(&ctx))
+        return;
+    if (!reserve_attention_workspace(ctx)) {
+        qsfi_context_destroy(ctx);
+        return;
+    }
+
+    qsfi_attention_desc attention = attention_desc();
+    attention.num_qo_heads = 2;
+    attention.num_kv_heads = 2;
+    attention.head_dim_qk = 64;
+    attention.head_dim_vo = 64;
+    expect_attention_plan_unsupported(ctx, attention, "attention rejects old no-GQA head_dim64");
+
+    attention = attention_desc();
+    attention.num_qo_heads = 8;
+    attention.num_kv_heads = 1;
+    expect_attention_plan_unsupported(ctx, attention, "attention rejects 8/1 group-size-8 shape");
+
+    attention = attention_desc();
+    attention.num_qo_heads = 32;
+    attention.num_kv_heads = 4;
+    expect_attention_plan_unsupported(ctx, attention, "attention rejects 32/4 group-size-8 shape");
+
     qsfi_context_destroy(ctx);
 }
 
@@ -2241,6 +2307,7 @@ int main()
 
     test_decode_append_uses_post_append_last_page_len();
     test_prefill_append_maps_positions_through_page_table();
+    test_attention_rejects_non_qwen36_full_attention_shapes();
     test_batch_decode_attention_matches_cpu_reference();
     test_batch_prefill_attention_matches_cpu_reference();
     test_gdn_decode_one_hot_recurrence();

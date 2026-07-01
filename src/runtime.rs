@@ -826,12 +826,12 @@ mod tests {
             max_seq_len: 8,
             max_pages: 8,
             page_size: 4,
-            hidden_size: 128,
+            hidden_size: 2048,
             intermediate_size: 0,
             vocab_size: 0,
-            num_q_heads: 2,
+            num_q_heads: 16,
             num_kv_heads: 2,
-            head_dim: 64,
+            head_dim: 256,
             activation_dtype: DType::F16,
             kv_dtype: DType::F16,
             kv_layout: KvLayout::NHD,
@@ -868,7 +868,7 @@ mod tests {
         config.head_dim = 80;
         assert_eq!(validate_runtime_config(&config), Err(Status::Unsupported));
 
-        for head_dim in [128, 256, 512] {
+        for head_dim in [64, 128, 512] {
             let mut config = tiny_config();
             config.head_dim = head_dim;
             assert_eq!(validate_runtime_config(&config), Err(Status::Unsupported));
@@ -876,10 +876,19 @@ mod tests {
     }
 
     #[test]
-    fn runtime_config_rejects_grouped_query_attention() {
+    fn runtime_config_rejects_non_qwen36_attention_grouping() {
         let mut config = tiny_config();
-        config.num_q_heads = 4;
-        config.num_kv_heads = 2;
+        config.num_q_heads = config.num_kv_heads;
+        assert_eq!(validate_runtime_config(&config), Err(Status::Unsupported));
+
+        let mut config = tiny_config();
+        config.num_q_heads = 8;
+        config.num_kv_heads = 1;
+        assert_eq!(validate_runtime_config(&config), Err(Status::Unsupported));
+
+        let mut config = tiny_config();
+        config.num_q_heads = 32;
+        config.num_kv_heads = 4;
         assert_eq!(validate_runtime_config(&config), Err(Status::Unsupported));
     }
 
@@ -901,9 +910,9 @@ mod tests {
             Err(Status::InvalidArgument)
         );
 
-        config.num_q_heads = 2;
+        config.num_q_heads = 16;
         config.num_kv_heads = 2;
-        config.head_dim = 64;
+        config.head_dim = 256;
         assert_eq!(
             validate_runtime_config(&config),
             Err(Status::InvalidArgument)

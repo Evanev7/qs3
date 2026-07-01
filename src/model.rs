@@ -20,6 +20,10 @@ use std::{mem, ptr};
 
 const QWEN_MOE_MAX_TOP_K: u32 = 16;
 const QWEN_MOE_MAX_EXPERTS: u32 = 4096;
+const QWEN36_HIDDEN_SIZE: u32 = 2048;
+const QWEN36_ATTENTION_NUM_Q_HEADS: u32 = 16;
+const QWEN36_ATTENTION_NUM_KV_HEADS: u32 = 2;
+const QWEN36_ATTENTION_HEAD_DIM: u32 = 256;
 const QWEN36_GDN_NUM_Q_HEADS: u32 = 16;
 const QWEN36_GDN_NUM_K_HEADS: u32 = 16;
 const QWEN36_GDN_NUM_V_HEADS: u32 = 32;
@@ -42,6 +46,8 @@ const _: () = assert!(QWEN36_GDN_NUM_V_HEADS == 32);
 const _: () = assert!(QWEN36_GDN_KEY_DIM == 128);
 const _: () = assert!(QWEN36_GDN_VALUE_DIM == 128);
 const _: () = assert!(QWEN36_GDN_CONV_STATE == 3);
+const _: () = assert!(QWEN36_ATTENTION_NUM_Q_HEADS / QWEN36_ATTENTION_NUM_KV_HEADS == 8);
+const _: () = assert!(QWEN36_ATTENTION_HEAD_DIM == 256);
 
 /// Inference-relevant Qwen3.6 MoE fields from HF config.json.
 /// `output_router_logits` and `router_aux_loss_coef` are omitted because they
@@ -157,7 +163,7 @@ impl QwenGdnShape {
         {
             return Err(Status::InternalError);
         }
-        if config.hidden_size != self.packed_dim()? {
+        if config.hidden_size != QWEN36_HIDDEN_SIZE {
             return Err(Status::InvalidArgument);
         }
         Ok(())
@@ -341,9 +347,9 @@ impl QwenConfig {
             intermediate_size: 256,
             moe: None,
             vocab_size: 64,
-            num_q_heads: 2,
-            num_kv_heads: 2,
-            head_dim: 64,
+            num_q_heads: QWEN36_ATTENTION_NUM_Q_HEADS,
+            num_kv_heads: QWEN36_ATTENTION_NUM_KV_HEADS,
+            head_dim: QWEN36_ATTENTION_HEAD_DIM,
             rms_norm_eps: 1.0e-6,
             rope_theta: 10000.0,
             rope_scale: 1.0,
@@ -384,13 +390,13 @@ impl QwenConfig {
             max_seq_len: 8,
             max_pages: 2,
             page_size: 4,
-            hidden_size: QWEN36_GDN_PACKED_DIM,
+            hidden_size: QWEN36_HIDDEN_SIZE,
             intermediate_size: moe.moe_intermediate_size,
             moe: Some(moe),
             vocab_size: 32,
-            num_q_heads: QWEN36_GDN_PACKED_DIM / 64,
-            num_kv_heads: QWEN36_GDN_PACKED_DIM / 64,
-            head_dim: 64,
+            num_q_heads: QWEN36_ATTENTION_NUM_Q_HEADS,
+            num_kv_heads: QWEN36_ATTENTION_NUM_KV_HEADS,
+            head_dim: QWEN36_ATTENTION_HEAD_DIM,
             rms_norm_eps: 1.0e-6,
             rope_theta: 10000.0,
             rope_scale: 1.0,
@@ -470,15 +476,15 @@ impl QwenConfig {
             .ok_or(Status::InvalidArgument)
     }
 
+    fn q_hidden_size(&self) -> Result<u32, Status> {
+        self.num_q_heads
+            .checked_mul(self.head_dim)
+            .ok_or(Status::InvalidArgument)
+    }
+
     fn validate_full_attention_shape(&self) -> Result<(), Status> {
         validate_supported_attention_grouping(self.num_q_heads, self.num_kv_heads)?;
-        let q_hidden = self
-            .num_q_heads
-            .checked_mul(self.head_dim)
-            .ok_or(Status::InvalidArgument)?;
-        if q_hidden != self.hidden_size {
-            return Err(Status::InvalidArgument);
-        }
+        let _ = self.q_hidden_size()?;
         let _ = self.kv_hidden_size()?;
         validate_supported_attention_head_dim(self.head_dim)
     }
@@ -585,6 +591,7 @@ impl QwenWeights {
         let device = config.device_ordinal;
         let stream = config.stream;
         let hidden = config.hidden_size;
+        let q_hidden = config.q_hidden_size()?;
         let vocab = config.vocab_size;
 
         let token_embedding = DeviceBuffer::from_slice(
@@ -703,10 +710,16 @@ impl QwenWeights {
                     stream,
                     &constant_bf16_values(hidden as usize, 1.0)?,
                 )?,
+                // Interim randomized runner: materialize only attention Q.
+                // Real Qwen3.6 still needs gated-Q and q_norm handling here.
                 q_proj: DeviceBuffer::from_slice(
                     device,
                     stream,
-                    &random_bf16_values(&mut rng, checked_usize_product(&[hidden, hidden])?, 0.04)?,
+                    &random_bf16_values(
+                        &mut rng,
+                        checked_usize_product(&[q_hidden, hidden])?,
+                        0.04,
+                    )?,
                 )?,
                 k_proj: DeviceBuffer::from_slice(
                     device,
@@ -729,7 +742,11 @@ impl QwenWeights {
                 o_proj: DeviceBuffer::from_slice(
                     device,
                     stream,
-                    &random_bf16_values(&mut rng, checked_usize_product(&[hidden, hidden])?, 0.04)?,
+                    &random_bf16_values(
+                        &mut rng,
+                        checked_usize_product(&[hidden, q_hidden])?,
+                        0.04,
+                    )?,
                 )?,
                 mlp_norm,
                 mlp,
@@ -1434,6 +1451,7 @@ impl ModelRunner {
         self.embedding_gather(rows)?;
 
         let hidden = self.config.hidden_size;
+        let q_hidden = self.config.q_hidden_size()?;
         let intermediate = self.config.intermediate_size;
         let mut layer_input = self.scratch.norm.as_device_ptr();
         let layer0 = self
@@ -1466,6 +1484,7 @@ impl ModelRunner {
                         attention_layer_idx,
                         rows,
                         hidden,
+                        q_hidden,
                         kv_hidden,
                         layer_input,
                         layer,
@@ -1513,6 +1532,7 @@ impl ModelRunner {
         attention_layer_idx: u32,
         rows: u32,
         hidden: u32,
+        q_hidden: u32,
         kv_hidden: u32,
         layer_input: ffi::DevicePtr,
         layer: QwenAttentionMlpPtrs,
@@ -1524,7 +1544,7 @@ impl ModelRunner {
             hidden,
             layer.q_proj,
             self.scratch.q.as_device_ptr(),
-            hidden,
+            q_hidden,
             GemmOut::Bf16,
         )?;
         self.gemm_bf16(
@@ -1580,7 +1600,7 @@ impl ModelRunner {
         self.gemm_bf16(
             self.scratch.attn_out.as_device_ptr(),
             rows,
-            hidden,
+            q_hidden,
             layer.o_proj,
             self.scratch.attn_proj.as_device_ptr(),
             hidden,
@@ -1597,9 +1617,6 @@ impl ModelRunner {
         layer: QwenGdnPtrs,
         kind: ActiveRunKind,
     ) -> Result<(), Status> {
-        if hidden != QWEN36_GDN_PACKED_DIM {
-            return Err(Status::InvalidArgument);
-        }
         if matches!(kind, ActiveRunKind::Decode) && rows != 1 {
             return Err(Status::InvalidArgument);
         }
@@ -2582,11 +2599,12 @@ impl RunnerScratch {
         self.positions.ensure(row_count)?;
         self.residual.ensure(hidden)?;
         self.norm.ensure(hidden)?;
+        let q_hidden = checked_usize_product(&[rows, config.q_hidden_size()?])?;
         let kv_hidden = checked_usize_product(&[rows, config.kv_hidden_size()?])?;
-        self.q.ensure(hidden)?;
+        self.q.ensure(q_hidden)?;
         self.k.ensure(kv_hidden)?;
         self.v.ensure(kv_hidden)?;
-        self.attn_out.ensure(hidden)?;
+        self.attn_out.ensure(q_hidden)?;
         self.attn_proj.ensure(hidden)?;
         if let Some(moe) = config.moe_config() {
             self.router_logits
@@ -2893,9 +2911,6 @@ mod tests {
     fn qwen36_hybrid_fixture_with_supported_attention(num_layers: u32) -> QwenConfig {
         let mut config = QwenConfig::randomized_qwen36_moe_gdn_one_block_fixture(-1);
         config.num_layers = num_layers;
-        config.head_dim = 64;
-        config.num_q_heads = config.hidden_size / config.head_dim;
-        config.num_kv_heads = config.num_q_heads;
         config
     }
 
@@ -3101,6 +3116,12 @@ mod tests {
         assert_eq!(config.validate(), Ok(()));
         assert_eq!(config.attention_layer_count(), 1);
         assert_eq!(config.gdn_layer_count(), 3);
+        assert_eq!(config.hidden_size, QWEN36_HIDDEN_SIZE);
+        assert_eq!(config.num_q_heads, QWEN36_ATTENTION_NUM_Q_HEADS);
+        assert_eq!(config.num_kv_heads, QWEN36_ATTENTION_NUM_KV_HEADS);
+        assert_eq!(config.head_dim, QWEN36_ATTENTION_HEAD_DIM);
+        assert_eq!(config.q_hidden_size(), Ok(4096));
+        assert_eq!(config.kv_hidden_size(), Ok(512));
 
         let engine = config.engine_config();
         assert_eq!(engine.num_layers, 1);
@@ -3362,6 +3383,8 @@ mod tests {
         assert_eq!(engine.num_q_heads, config.num_q_heads);
         assert_eq!(engine.num_kv_heads, config.num_kv_heads);
         assert_eq!(engine.head_dim, config.head_dim);
+        assert_eq!(config.num_q_heads, QWEN36_ATTENTION_NUM_Q_HEADS);
+        assert_eq!(config.num_kv_heads, QWEN36_ATTENTION_NUM_KV_HEADS);
     }
 
     #[test]

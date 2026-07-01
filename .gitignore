@@ -5,3 +5,4 @@ target
 .ninja_lock
 .ninja_log
 run_cuda_test.sh
+.prototypes
