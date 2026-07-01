@@ -2334,6 +2334,7 @@ int main()
     test_qscb_gemm_bf16_logits_f32_output_beta();
     test_qscu_utils_silu_and_mul_bf16();
     test_qscu_utils_qwen36_shared_expert_gate_add_bf16();
+    test_qscu_utils_qwen36_full_attention_output_gate_bf16();
     test_qscu_utils_embedding_gather_bf16();
     test_qscu_utils_logits_soft_cap_f32();
     test_qscu_utils_greedy_argmax_f32();

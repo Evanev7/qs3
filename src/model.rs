@@ -710,8 +710,21 @@ impl QwenWeights {
                     stream,
                     &constant_bf16_values(hidden as usize, 1.0)?,
                 )?,
-                // Interim randomized runner: materialize only attention Q.
-                // Real Qwen3.6 still needs gated-Q and q_norm handling here.
+                // Raw Qwen q/k norm weights use Gemma-style RMSNorm semantics:
+                // effective weight is raw BF16 + 1.0 in f32.
+                q_norm: DeviceBuffer::from_slice(
+                    device,
+                    stream,
+                    &constant_bf16_values(config.head_dim as usize, 0.0)?,
+                )?,
+                k_norm: DeviceBuffer::from_slice(
+                    device,
+                    stream,
+                    &constant_bf16_values(config.head_dim as usize, 0.0)?,
+                )?,
+                // Runtime integration note: q_norm/k_norm belong after gated-Q/K
+                // projection layout is split and before RoPE. Keep execute_attention_layer
+                // unchanged until gated-Q/RoPE sequencing lands.
                 q_proj: DeviceBuffer::from_slice(
                     device,
                     stream,
@@ -916,6 +929,8 @@ enum QwenLayerWeights {
 
 struct QwenAttentionMlpWeights {
     attn_norm: DeviceBuffer<u16>,
+    q_norm: DeviceBuffer<u16>,
+    k_norm: DeviceBuffer<u16>,
     q_proj: DeviceBuffer<u16>,
     k_proj: DeviceBuffer<u16>,
     v_proj: DeviceBuffer<u16>,
@@ -1039,6 +1054,8 @@ enum QwenLayerPtrs {
 #[derive(Clone, Copy)]
 struct QwenAttentionMlpPtrs {
     attn_norm: ffi::DevicePtr,
+    q_norm: ffi::DevicePtr,
+    k_norm: ffi::DevicePtr,
     q_proj: ffi::DevicePtr,
     k_proj: ffi::DevicePtr,
     v_proj: ffi::DevicePtr,
@@ -1052,6 +1069,8 @@ impl QwenLayerWeights {
         match self {
             Self::AttentionMlp(layer) => QwenLayerPtrs::AttentionMlp(QwenAttentionMlpPtrs {
                 attn_norm: layer.attn_norm.as_device_ptr(),
+                q_norm: layer.q_norm.as_device_ptr(),
+                k_norm: layer.k_norm.as_device_ptr(),
                 q_proj: layer.q_proj.as_device_ptr(),
                 k_proj: layer.k_proj.as_device_ptr(),
                 v_proj: layer.v_proj.as_device_ptr(),
@@ -1538,6 +1557,10 @@ impl ModelRunner {
         layer: QwenAttentionMlpPtrs,
         kind: ActiveRunKind,
     ) -> Result<(), Status> {
+        // q_norm/k_norm are intentionally not consumed here yet. The real
+        // Qwen3.6 path should apply them after gated-Q/K projection layout is
+        // split and before RoPE, so this waits for the gated-Q/RoPE sequencing.
+        let _qk_norm_weights = (layer.q_norm, layer.k_norm);
         self.gemm_bf16(
             layer_input,
             rows,
@@ -3131,6 +3154,33 @@ mod tests {
     }
 
     #[test]
+    fn randomized_full_attention_weights_seed_qk_norm_raw_weights_as_zero_head_dim() {
+        if !cuda_device_available() {
+            return;
+        }
+
+        let config = QwenConfig::randomized_dense_tiny_fixture(0);
+        let weights = QwenWeights::random_bf16(&config, 0x5153_3300_7177_6e6b).unwrap();
+        let head_dim = config.head_dim as usize;
+
+        match &weights.layers[0] {
+            QwenLayerWeights::AttentionMlp(layer) => {
+                assert_eq!(layer.q_norm.cap, head_dim);
+                assert_eq!(layer.k_norm.cap, head_dim);
+                assert_eq!(
+                    download_bf16(&layer.q_norm, config.stream, head_dim),
+                    vec![0_u16; head_dim]
+                );
+                assert_eq!(
+                    download_bf16(&layer.k_norm, config.stream, head_dim),
+                    vec![0_u16; head_dim]
+                );
+            }
+            QwenLayerWeights::Gdn(_) => unreachable!(),
+        }
+    }
+
+    #[test]
     fn qwen36_gdn_weights_carry_post_attention_shared_moe() {
         let layer = QwenLayerWeights::Gdn(QwenGdnWeights {
             norm: empty_bf16_buffer(),
@@ -3173,28 +3223,37 @@ mod tests {
     fn layer_ptrs_make_post_attention_mlp_common_after_attention_and_gdn_core() {
         let attention = QwenLayerPtrs::AttentionMlp(QwenAttentionMlpPtrs {
             attn_norm: test_device_ptr(1),
-            q_proj: test_device_ptr(2),
-            k_proj: test_device_ptr(3),
-            v_proj: test_device_ptr(4),
-            o_proj: test_device_ptr(5),
-            mlp_norm: test_device_ptr(6),
+            q_norm: test_device_ptr(2),
+            k_norm: test_device_ptr(3),
+            q_proj: test_device_ptr(4),
+            k_proj: test_device_ptr(5),
+            v_proj: test_device_ptr(6),
+            o_proj: test_device_ptr(7),
+            mlp_norm: test_device_ptr(8),
             mlp: QwenMlpPtrs::Dense {
-                gate_proj: test_device_ptr(7),
-                up_proj: test_device_ptr(8),
-                down_proj: test_device_ptr(9),
+                gate_proj: test_device_ptr(9),
+                up_proj: test_device_ptr(10),
+                down_proj: test_device_ptr(11),
             },
         });
+        match attention {
+            QwenLayerPtrs::AttentionMlp(layer) => {
+                assert_eq!(layer.q_norm, test_device_ptr(2));
+                assert_eq!(layer.k_norm, test_device_ptr(3));
+            }
+            QwenLayerPtrs::Gdn(_) => unreachable!(),
+        }
         let post = attention.post_attention_mlp();
-        assert_eq!(post.norm, test_device_ptr(6));
+        assert_eq!(post.norm, test_device_ptr(8));
         match post.mlp {
             QwenMlpPtrs::Dense {
                 gate_proj,
                 up_proj,
                 down_proj,
             } => {
-                assert_eq!(gate_proj, test_device_ptr(7));
-                assert_eq!(up_proj, test_device_ptr(8));
-                assert_eq!(down_proj, test_device_ptr(9));
+                assert_eq!(gate_proj, test_device_ptr(9));
+                assert_eq!(up_proj, test_device_ptr(10));
+                assert_eq!(down_proj, test_device_ptr(11));
             }
             QwenMlpPtrs::Moe { .. } => panic!("attention layer post-MLP payload changed shape"),
         }

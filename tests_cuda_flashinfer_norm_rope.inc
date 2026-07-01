@@ -142,7 +142,8 @@ static std::vector<float> norm_rope_rmsnorm_reference(
     const std::vector<uint16_t>& weight,
     int rows,
     int hidden,
-    float eps
+    float eps,
+    float weight_bias = 0.0f
 )
 {
     std::vector<float> out(x.size(), 0.0f);
@@ -155,14 +156,19 @@ static std::vector<float> norm_rope_rmsnorm_reference(
         const float inv_rms = 1.0f / std::sqrt(sum_sq / static_cast<float>(hidden) + eps);
         for (int col = 0; col < hidden; ++col) {
             const size_t offset = static_cast<size_t>(row) * hidden + col;
-            out[offset] = bf16_to_f32(x[offset]) * inv_rms * bf16_to_f32(weight[col]);
+            out[offset] = bf16_to_f32(x[offset]) * inv_rms * (weight_bias + bf16_to_f32(weight[col]));
         }
     }
     return out;
 }
 
 static std::vector<float> norm_rope_rmsnorm_reference(
-    const std::vector<float>& x, const std::vector<float>& weight, int rows, int hidden, float eps
+    const std::vector<float>& x,
+    const std::vector<float>& weight,
+    int rows,
+    int hidden,
+    float eps,
+    float weight_bias = 0.0f
 )
 {
     std::vector<float> out(x.size(), 0.0f);
@@ -175,7 +181,7 @@ static std::vector<float> norm_rope_rmsnorm_reference(
         const float inv_rms = 1.0f / std::sqrt(sum_sq / static_cast<float>(hidden) + eps);
         for (int col = 0; col < hidden; ++col) {
             const size_t offset = static_cast<size_t>(row) * hidden + col;
-            out[offset] = x[offset] * inv_rms * weight[col];
+            out[offset] = x[offset] * inv_rms * (weight_bias + weight[col]);
         }
     }
     return out;
@@ -244,26 +250,60 @@ static size_t norm_rope_q_offset(int token, int head, int dim, int num_heads, in
     return (static_cast<size_t>(token) * num_heads + head) * head_dim + dim;
 }
 
+static void norm_rope_check_bf16_tail_unchanged(
+    const std::vector<uint16_t>& input,
+    const std::vector<uint16_t>& got,
+    int num_tokens,
+    int num_heads,
+    int head_dim,
+    int rotary_dim,
+    const char* what
+)
+{
+    for (int token = 0; token < num_tokens; ++token) {
+        for (int head = 0; head < num_heads; ++head) {
+            for (int dim = rotary_dim; dim < head_dim; ++dim) {
+                const size_t offset = norm_rope_q_offset(token, head, dim, num_heads, head_dim);
+                if (got[offset] != input[offset]) {
+                    std::fprintf(
+                        stderr,
+                        "FAIL: %s token=%d head=%d dim=%d: got 0x%04x, want input 0x%04x\n",
+                        what,
+                        token,
+                        head,
+                        dim,
+                        static_cast<unsigned>(got[offset]),
+                        static_cast<unsigned>(input[offset])
+                    );
+                    failures += 1;
+                    return;
+                }
+            }
+        }
+    }
+}
+
 static void norm_rope_reference_tensor(
     const std::vector<uint16_t>& input,
     const std::vector<int32_t>& positions,
     int num_tokens,
     int num_heads,
     int head_dim,
+    int rotary_dim,
     float rope_scale,
     float rope_theta,
     std::vector<float>& out
 )
 {
     out.assign(input.size(), 0.0f);
-    const int half = head_dim / 2;
+    const int half = rotary_dim / 2;
     const float scale = rope_scale == 0.0f ? 1.0f : rope_scale;
     const float theta = rope_theta == 0.0f ? 10000.0f : rope_theta;
     for (int token = 0; token < num_tokens; ++token) {
         for (int head = 0; head < num_heads; ++head) {
             for (int dim = 0; dim < half; ++dim) {
                 const float freq
-                    = std::pow(theta, -2.0f * static_cast<float>(dim) / head_dim) / scale;
+                    = std::pow(theta, -2.0f * static_cast<float>(dim) / rotary_dim) / scale;
                 const float angle = static_cast<float>(positions[token]) * freq;
                 const float c = std::cos(angle);
                 const float s = std::sin(angle);
@@ -273,6 +313,10 @@ static void norm_rope_reference_tensor(
                 const float x_hi = bf16_to_f32(input[hi]);
                 out[lo] = x_lo * c - x_hi * s;
                 out[hi] = x_hi * c + x_lo * s;
+            }
+            for (int dim = rotary_dim; dim < head_dim; ++dim) {
+                const size_t offset = norm_rope_q_offset(token, head, dim, num_heads, head_dim);
+                out[offset] = bf16_to_f32(input[offset]);
             }
         }
     }
@@ -284,20 +328,21 @@ static void norm_rope_reference_tensor(
     int num_tokens,
     int num_heads,
     int head_dim,
+    int rotary_dim,
     float rope_scale,
     float rope_theta,
     std::vector<float>& out
 )
 {
     out.assign(input.size(), 0.0f);
-    const int half = head_dim / 2;
+    const int half = rotary_dim / 2;
     const float scale = rope_scale == 0.0f ? 1.0f : rope_scale;
     const float theta = rope_theta == 0.0f ? 10000.0f : rope_theta;
     for (int token = 0; token < num_tokens; ++token) {
         for (int head = 0; head < num_heads; ++head) {
             for (int dim = 0; dim < half; ++dim) {
                 const float freq
-                    = std::pow(theta, -2.0f * static_cast<float>(dim) / head_dim) / scale;
+                    = std::pow(theta, -2.0f * static_cast<float>(dim) / rotary_dim) / scale;
                 const float angle = static_cast<float>(positions[token]) * freq;
                 const float c = std::cos(angle);
                 const float s = std::sin(angle);
@@ -307,6 +352,10 @@ static void norm_rope_reference_tensor(
                 const float x_hi = input[hi];
                 out[lo] = x_lo * c - x_hi * s;
                 out[hi] = x_hi * c + x_lo * s;
+            }
+            for (int dim = rotary_dim; dim < head_dim; ++dim) {
+                const size_t offset = norm_rope_q_offset(token, head, dim, num_heads, head_dim);
+                out[offset] = input[offset];
             }
         }
     }
@@ -358,6 +407,84 @@ static void test_qsfi_rmsnorm_f32_matches_cpu()
     cudaFree(d_x);
     cudaFree(d_weight);
     cudaFree(d_out);
+    qsfi_context_destroy(ctx);
+}
+
+static void test_qsfi_rmsnorm_bf16_qwen_qk_norm_flattened_per_head_matches_cpu()
+{
+    constexpr int rows = 2;
+    constexpr int heads = 3;
+    constexpr int head_dim = 256;
+    constexpr int flat_rows = rows * heads;
+    constexpr float eps = 1.0e-6f;
+
+    std::vector<float> x_f32(flat_rows * head_dim);
+    for (size_t i = 0; i < x_f32.size(); ++i) {
+        const int centered = static_cast<int>(i % 37) - 18;
+        const int head = static_cast<int>((i / head_dim) % heads);
+        x_f32[i] = centered * 0.03125f + head * 0.0078125f;
+    }
+    const std::vector<uint16_t> h_x = norm_rope_bf16_from_f32(x_f32);
+    const std::vector<uint16_t> h_weight(head_dim, norm_rope_f32_to_bf16(0.0f));
+    const std::vector<float> want
+        = norm_rope_rmsnorm_reference(h_x, h_weight, flat_rows, head_dim, eps, 1.0f);
+
+    qsfi_context* ctx = nullptr;
+    uint16_t* d_x = nullptr;
+    uint16_t* d_weight = nullptr;
+    uint16_t* d_out = nullptr;
+    uint16_t* d_inplace = nullptr;
+    if (!make_context(&ctx)
+        || !copy_to_device(&d_x, h_x.data(), h_x.size(), "copy qk rmsnorm x")
+        || !copy_to_device(&d_weight, h_weight.data(), h_weight.size(), "copy qk rmsnorm weight")
+        || !alloc_device(&d_out, h_x.size(), "alloc qk rmsnorm out")
+        || !copy_to_device(&d_inplace, h_x.data(), h_x.size(), "copy qk rmsnorm inplace")) {
+        cudaFree(d_x);
+        cudaFree(d_weight);
+        cudaFree(d_out);
+        cudaFree(d_inplace);
+        qsfi_context_destroy(ctx);
+        return;
+    }
+
+    qsfi_rmsnorm_desc desc {};
+    desc.x = tensor2_bf16(d_x, flat_rows, head_dim);
+    desc.weight = norm_rope_tensor1_bf16(d_weight, head_dim);
+    desc.out = tensor2_bf16(d_out, flat_rows, head_dim);
+    desc.hidden_size = head_dim;
+    desc.weight_bias = 1.0f;
+    desc.eps = eps;
+    check_status(qsfi_rmsnorm(ctx, &desc), QSFI_STATUS_OK, "qwen qk rmsnorm flattened");
+    check_cuda(cudaDeviceSynchronize(), "sync qwen qk rmsnorm flattened");
+
+    std::vector<uint16_t> h_out(h_x.size(), 0);
+    check_cuda(
+        cudaMemcpy(h_out.data(), d_out, h_out.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost),
+        "copy qwen qk rmsnorm out"
+    );
+    norm_rope_check_bf16_close(h_out, want, 0.025f, "qwen qk rmsnorm flattened out");
+
+    desc.x = tensor2_bf16(d_inplace, flat_rows, head_dim);
+    desc.out = desc.x;
+    check_status(qsfi_rmsnorm(ctx, &desc), QSFI_STATUS_OK, "qwen qk rmsnorm inplace");
+    check_cuda(cudaDeviceSynchronize(), "sync qwen qk rmsnorm inplace");
+
+    std::vector<uint16_t> h_inplace(h_x.size(), 0);
+    check_cuda(
+        cudaMemcpy(
+            h_inplace.data(),
+            d_inplace,
+            h_inplace.size() * sizeof(uint16_t),
+            cudaMemcpyDeviceToHost
+        ),
+        "copy qwen qk rmsnorm inplace"
+    );
+    norm_rope_check_bf16_close(h_inplace, want, 0.025f, "qwen qk rmsnorm inplace");
+
+    cudaFree(d_x);
+    cudaFree(d_weight);
+    cudaFree(d_out);
+    cudaFree(d_inplace);
     qsfi_context_destroy(ctx);
 }
 
@@ -423,6 +550,22 @@ static void norm_rope_test_rmsnorm_rejects_invalid_desc_shape_dtype()
         qsfi_rmsnorm(ctx, &bad),
         QSFI_STATUS_INVALID_ARGUMENT,
         "rmsnorm rejects non-positive eps"
+    );
+
+    bad = desc;
+    bad.weight_bias = 0.5f;
+    check_status(
+        qsfi_rmsnorm(ctx, &bad),
+        QSFI_STATUS_UNSUPPORTED,
+        "rmsnorm rejects unsupported weight_bias"
+    );
+
+    bad = desc;
+    bad.weight_bias = std::numeric_limits<float>::quiet_NaN();
+    check_status(
+        qsfi_rmsnorm(ctx, &bad),
+        QSFI_STATUS_INVALID_ARGUMENT,
+        "rmsnorm rejects non-finite weight_bias"
     );
 
     cudaFree(d_x);
@@ -630,6 +773,7 @@ static void test_qsfi_rope_apply_f32_u32_positions_matches_cpu()
         tokens,
         q_heads,
         head_dim,
+        head_dim,
         rope_scale,
         rope_theta,
         want_q
@@ -639,6 +783,7 @@ static void test_qsfi_rope_apply_f32_u32_positions_matches_cpu()
         ref_positions,
         tokens,
         kv_heads,
+        head_dim,
         head_dim,
         rope_scale,
         rope_theta,
@@ -679,6 +824,7 @@ static void test_qsfi_rope_apply_f32_u32_positions_matches_cpu()
     desc.num_qo_heads = q_heads;
     desc.num_kv_heads = kv_heads;
     desc.head_dim = head_dim;
+    desc.rotary_dim = head_dim;
     desc.rope_scale = rope_scale;
     desc.rope_theta = rope_theta;
     desc.interleave = 0;
@@ -750,6 +896,7 @@ static void test_qsfi_rope_apply_rejects_invalid_desc_shape_dtype()
     desc.num_qo_heads = q_heads;
     desc.num_kv_heads = kv_heads;
     desc.head_dim = head_dim;
+    desc.rotary_dim = head_dim;
     desc.rope_scale = 1.0f;
     desc.rope_theta = 10000.0f;
     desc.interleave = 0;
@@ -774,6 +921,43 @@ static void test_qsfi_rope_apply_rejects_invalid_desc_shape_dtype()
         qsfi_rope_apply(ctx, &bad),
         QSFI_STATUS_UNSUPPORTED,
         "rope apply rejects unsupported head_dim"
+    );
+
+    bad = desc;
+    bad.rotary_dim = 0;
+    check_status(
+        qsfi_rope_apply(ctx, &bad),
+        QSFI_STATUS_INVALID_ARGUMENT,
+        "rope apply rejects zero rotary_dim"
+    );
+
+    bad = desc;
+    bad.rotary_dim = 63;
+    check_status(
+        qsfi_rope_apply(ctx, &bad),
+        QSFI_STATUS_INVALID_ARGUMENT,
+        "rope apply rejects odd rotary_dim"
+    );
+
+    bad = desc;
+    bad.rotary_dim = 66;
+    check_status(
+        qsfi_rope_apply(ctx, &bad),
+        QSFI_STATUS_INVALID_ARGUMENT,
+        "rope apply rejects rotary_dim past head_dim"
+    );
+
+    bad = desc;
+    bad.q = tensor3_bf16(d_q, tokens, q_heads, 256);
+    bad.k = tensor3_bf16(d_k, tokens, kv_heads, 256);
+    bad.q_out = tensor3_bf16(d_q_out, tokens, q_heads, 256);
+    bad.k_out = tensor3_bf16(d_k_out, tokens, kv_heads, 256);
+    bad.head_dim = 256;
+    bad.rotary_dim = 128;
+    check_status(
+        qsfi_rope_apply(ctx, &bad),
+        QSFI_STATUS_UNSUPPORTED,
+        "rope apply rejects qwen36 head_dim 256 with non-64 rotary_dim"
     );
 
     bad = desc;
@@ -883,6 +1067,7 @@ void test_qsfi_rmsnorm_bf16_matches_cpu()
     qsfi_context_destroy(ctx);
 
     test_qsfi_rmsnorm_f32_matches_cpu();
+    test_qsfi_rmsnorm_bf16_qwen_qk_norm_flattened_per_head_matches_cpu();
     norm_rope_test_rmsnorm_rejects_invalid_desc_shape_dtype();
 }
 
@@ -1072,6 +1257,144 @@ void test_qsfi_fused_add_rmsnorm_rejects_non_alias_out()
     test_qsfi_fused_add_rmsnorm_rejects_invalid_desc_shape_dtype();
 }
 
+static void test_qsfi_rope_apply_bf16_qwen36_partial_rotary_copies_tail()
+{
+    constexpr int tokens = 2;
+    constexpr int q_heads = 2;
+    constexpr int kv_heads = 1;
+    constexpr int head_dim = 256;
+    constexpr int rotary_dim = 64;
+    constexpr float rope_scale = 1.0f;
+    constexpr float rope_theta = 10000.0f;
+
+    std::vector<float> q_f32(tokens * q_heads * head_dim);
+    std::vector<float> k_f32(tokens * kv_heads * head_dim);
+    for (size_t i = 0; i < q_f32.size(); ++i)
+        q_f32[i] = (static_cast<int>(i % 29) - 14) * 0.046875f;
+    for (size_t i = 0; i < k_f32.size(); ++i)
+        k_f32[i] = (static_cast<int>(i % 31) - 15) * 0.0390625f;
+
+    const std::vector<uint16_t> h_q = norm_rope_bf16_from_f32(q_f32);
+    const std::vector<uint16_t> h_k = norm_rope_bf16_from_f32(k_f32);
+    const std::vector<int32_t> h_positions = { 2, 7 };
+
+    std::vector<float> want_q;
+    std::vector<float> want_k;
+    norm_rope_reference_tensor(
+        h_q,
+        h_positions,
+        tokens,
+        q_heads,
+        head_dim,
+        rotary_dim,
+        rope_scale,
+        rope_theta,
+        want_q
+    );
+    norm_rope_reference_tensor(
+        h_k,
+        h_positions,
+        tokens,
+        kv_heads,
+        head_dim,
+        rotary_dim,
+        rope_scale,
+        rope_theta,
+        want_k
+    );
+
+    qsfi_context* ctx = nullptr;
+    uint16_t* d_q = nullptr;
+    uint16_t* d_k = nullptr;
+    uint16_t* d_q_out = nullptr;
+    uint16_t* d_k_out = nullptr;
+    int32_t* d_positions = nullptr;
+    if (!make_context(&ctx) || !copy_to_device(&d_q, h_q.data(), h_q.size(), "copy partial rope q")
+        || !copy_to_device(&d_k, h_k.data(), h_k.size(), "copy partial rope k")
+        || !copy_to_device(
+            &d_positions,
+            h_positions.data(),
+            h_positions.size(),
+            "copy partial rope positions"
+        )
+        || !alloc_device(&d_q_out, h_q.size(), "alloc partial rope q out")
+        || !alloc_device(&d_k_out, h_k.size(), "alloc partial rope k out")) {
+        cudaFree(d_q);
+        cudaFree(d_k);
+        cudaFree(d_q_out);
+        cudaFree(d_k_out);
+        cudaFree(d_positions);
+        qsfi_context_destroy(ctx);
+        return;
+    }
+    check_cuda(cudaMemset(d_q_out, 0xA5, h_q.size() * sizeof(uint16_t)), "clear partial rope q out");
+    check_cuda(cudaMemset(d_k_out, 0xA5, h_k.size() * sizeof(uint16_t)), "clear partial rope k out");
+
+    qsfi_rope_apply_desc desc {};
+    desc.q = tensor3_bf16(d_q, tokens, q_heads, head_dim);
+    desc.k = tensor3_bf16(d_k, tokens, kv_heads, head_dim);
+    desc.q_out = tensor3_bf16(d_q_out, tokens, q_heads, head_dim);
+    desc.k_out = tensor3_bf16(d_k_out, tokens, kv_heads, head_dim);
+    desc.positions = norm_rope_tensor1_i32(d_positions, tokens);
+    desc.num_qo_heads = q_heads;
+    desc.num_kv_heads = kv_heads;
+    desc.head_dim = head_dim;
+    desc.rotary_dim = rotary_dim;
+    desc.rope_scale = rope_scale;
+    desc.rope_theta = rope_theta;
+    desc.interleave = 0;
+    check_status(qsfi_rope_apply(ctx, &desc), QSFI_STATUS_OK, "rope apply bf16 qwen36 partial");
+    check_cuda(cudaDeviceSynchronize(), "sync rope apply bf16 qwen36 partial");
+
+    std::vector<uint16_t> h_q_out(h_q.size(), 0);
+    std::vector<uint16_t> h_k_out(h_k.size(), 0);
+    check_cuda(
+        cudaMemcpy(
+            h_q_out.data(),
+            d_q_out,
+            h_q_out.size() * sizeof(uint16_t),
+            cudaMemcpyDeviceToHost
+        ),
+        "copy partial rope q out"
+    );
+    check_cuda(
+        cudaMemcpy(
+            h_k_out.data(),
+            d_k_out,
+            h_k_out.size() * sizeof(uint16_t),
+            cudaMemcpyDeviceToHost
+        ),
+        "copy partial rope k out"
+    );
+    norm_rope_check_bf16_close(h_q_out, want_q, 0.025f, "partial rope q out");
+    norm_rope_check_bf16_close(h_k_out, want_k, 0.025f, "partial rope k out");
+    norm_rope_check_bf16_tail_unchanged(
+        h_q,
+        h_q_out,
+        tokens,
+        q_heads,
+        head_dim,
+        rotary_dim,
+        "partial rope q tail"
+    );
+    norm_rope_check_bf16_tail_unchanged(
+        h_k,
+        h_k_out,
+        tokens,
+        kv_heads,
+        head_dim,
+        rotary_dim,
+        "partial rope k tail"
+    );
+
+    cudaFree(d_q);
+    cudaFree(d_k);
+    cudaFree(d_q_out);
+    cudaFree(d_k_out);
+    cudaFree(d_positions);
+    qsfi_context_destroy(ctx);
+}
+
 void test_qsfi_rope_apply_bf16_neox_full_head_matches_cpu()
 {
     constexpr int tokens = 2;
@@ -1100,6 +1423,7 @@ void test_qsfi_rope_apply_bf16_neox_full_head_matches_cpu()
         tokens,
         q_heads,
         head_dim,
+        head_dim,
         rope_scale,
         rope_theta,
         want_q
@@ -1109,6 +1433,7 @@ void test_qsfi_rope_apply_bf16_neox_full_head_matches_cpu()
         h_positions,
         tokens,
         kv_heads,
+        head_dim,
         head_dim,
         rope_scale,
         rope_theta,
@@ -1151,6 +1476,7 @@ void test_qsfi_rope_apply_bf16_neox_full_head_matches_cpu()
     desc.num_qo_heads = q_heads;
     desc.num_kv_heads = kv_heads;
     desc.head_dim = head_dim;
+    desc.rotary_dim = head_dim;
     desc.rope_scale = rope_scale;
     desc.rope_theta = rope_theta;
     desc.interleave = 0;
@@ -1194,6 +1520,7 @@ void test_qsfi_rope_apply_bf16_neox_full_head_matches_cpu()
     cudaFree(d_positions);
     qsfi_context_destroy(ctx);
 
+    test_qsfi_rope_apply_bf16_qwen36_partial_rotary_copies_tail();
     test_qsfi_rope_apply_f32_u32_positions_matches_cpu();
     test_qsfi_rope_apply_rejects_invalid_desc_shape_dtype();
 }

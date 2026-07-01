@@ -165,6 +165,7 @@ typedef struct {
     qsfi_tensor1 weight; /* same dtype [hidden_size]. */
     qsfi_tensor2 out; /* same dtype [rows, hidden_size]. */
     uint32_t hidden_size;
+    float weight_bias; /* 0 for standard RMSNorm, 1 for raw-weight+1 Gemma/Qwen q/k norm. */
     float eps;
 } qsfi_rmsnorm_desc;
 
@@ -185,7 +186,8 @@ typedef struct {
     qsfi_tensor1 positions; /* i32/u32 [num_tokens]. */
     uint32_t num_qo_heads;
     uint32_t num_kv_heads;
-    uint32_t head_dim; /* full-head rotary dim for qwen3.6. */
+    uint32_t head_dim;
+    uint32_t rotary_dim; /* prefix rotary dim; qwen3.6 full attention uses 64 of 256. */
     float rope_scale; /* 0 means 1. */
     float rope_theta; /* 0 means 10000. */
     uint32_t interleave; /* must be 0: NeoX/Llama non-interleaved layout. */

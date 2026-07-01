@@ -6,6 +6,8 @@ use super::{self as ffi, sys};
 
 pub(crate) type SiluAndMulDesc = sys::qscu_silu_and_mul_desc;
 pub(crate) type Qwen36SharedExpertGateAddDesc = sys::qscu_qwen36_shared_expert_gate_add_desc;
+pub(crate) type Qwen36FullAttentionOutputGateDesc =
+    sys::qscu_qwen36_full_attention_output_gate_desc;
 pub(crate) type EmbeddingGatherDesc = sys::qscu_embedding_gather_desc;
 pub(crate) type SamplingDesc = sys::qscu_sampling_desc;
 pub(crate) type GdnDecodeDesc = sys::qscu_gdn_decode_desc;
@@ -44,6 +46,13 @@ pub(crate) unsafe fn qwen36_shared_expert_gate_add_bf16(
     stream: ffi::CudaStream,
 ) -> Result<(), Status> {
     ffi::result_from_raw(unsafe { sys::qscu_qwen36_shared_expert_gate_add_bf16(desc, stream) })
+}
+
+pub(crate) unsafe fn qwen36_full_attention_output_gate_bf16(
+    desc: &Qwen36FullAttentionOutputGateDesc,
+    stream: ffi::CudaStream,
+) -> Result<(), Status> {
+    ffi::result_from_raw(unsafe { sys::qscu_qwen36_full_attention_output_gate_bf16(desc, stream) })
 }
 
 pub(crate) unsafe fn embedding_gather_bf16(

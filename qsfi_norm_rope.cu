@@ -147,8 +147,33 @@ qsfi_status validate_rmsnorm_common(
     return validate_eps(ctx, eps);
 }
 
+qsfi_status validate_rmsnorm_weight_bias(qsfi_context* ctx, float weight_bias)
+{
+    if (!std::isfinite(weight_bias)) {
+        return set_invalid_arg(ctx, "rmsnorm weight_bias must be finite");
+    }
+    if (weight_bias != 0.0f && weight_bias != 1.0f) {
+        return set_unsupported(ctx, "rmsnorm weight_bias must be 0.0 or 1.0");
+    }
+    return QSFI_STATUS_OK;
+}
+
 template <typename T> cudaError_t launch_rmsnorm(qsfi_context* ctx, const qsfi_rmsnorm_desc* desc)
 {
+    if (desc->weight_bias == 1.0f) {
+        return flashinfer::norm::GemmaRMSNorm<T>(
+            static_cast<T*>(desc->x.data),
+            static_cast<T*>(desc->weight.data),
+            static_cast<T*>(desc->out.data),
+            static_cast<uint32_t>(desc->x.shape[0]),
+            desc->hidden_size,
+            static_cast<uint32_t>(desc->x.stride[0]),
+            static_cast<uint32_t>(desc->out.stride[0]),
+            desc->eps,
+            false,
+            ctx->stream
+        );
+    }
     return flashinfer::norm::RMSNorm<T>(
         static_cast<T*>(desc->x.data),
         static_cast<T*>(desc->weight.data),
@@ -217,14 +242,24 @@ qsfi_status validate_rope_apply(qsfi_context* ctx, const qsfi_rope_apply_desc* d
     if (desc == nullptr) {
         return set_invalid_arg(ctx, "rope_apply desc must not be null");
     }
-    if (desc->num_qo_heads == 0 || desc->num_kv_heads == 0 || desc->head_dim == 0) {
+    if (desc->num_qo_heads == 0 || desc->num_kv_heads == 0 || desc->head_dim == 0
+        || desc->rotary_dim == 0) {
         return set_invalid_arg(ctx, "rope_apply dimensions must be non-zero");
     }
     if (desc->head_dim % 2 != 0) {
         return set_invalid_arg(ctx, "rope_apply head_dim must be even");
     }
+    if (desc->rotary_dim % 2 != 0) {
+        return set_invalid_arg(ctx, "rope_apply rotary_dim must be even");
+    }
+    if (desc->rotary_dim > desc->head_dim) {
+        return set_invalid_arg(ctx, "rope_apply rotary_dim must be <= head_dim");
+    }
     if (!supported_rope_head_dim(desc->head_dim)) {
         return set_unsupported(ctx, "rope_apply supports only head_dim 64/128/256/512");
+    }
+    if (desc->head_dim == 256 && desc->rotary_dim != 64) {
+        return set_unsupported(ctx, "rope_apply qwen3.6 head_dim 256 requires rotary_dim 64");
     }
     if (desc->interleave != 0) {
         return set_unsupported(ctx, "rope_apply supports only NeoX/Llama interleave=false layout");
@@ -336,7 +371,7 @@ cudaError_t launch_rope_apply(qsfi_context* ctx, const qsfi_rope_apply_desc* des
         static_cast<uint32_t>(desc->q.shape[0]),
         desc->num_qo_heads,
         desc->num_kv_heads,
-        desc->head_dim,
+        desc->rotary_dim,
         desc->head_dim,
         static_cast<size_t>(desc->q.stride[0]),
         static_cast<size_t>(desc->q.stride[1]),
@@ -385,6 +420,9 @@ qsfi_status qsfi_rmsnorm(qsfi_context* ctx, const qsfi_rmsnorm_desc* desc)
         desc->eps,
         "rmsnorm"
     );
+    if (status != QSFI_STATUS_OK)
+        return status;
+    status = validate_rmsnorm_weight_bias(ctx, desc->weight_bias);
     if (status != QSFI_STATUS_OK)
         return status;
 

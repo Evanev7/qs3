@@ -256,6 +256,72 @@ static void test_qscu_utils_qwen36_shared_expert_gate_add_bf16()
     qscu_utils_free_device(d_out);
 }
 
+static void test_qscu_utils_qwen36_full_attention_output_gate_bf16()
+{
+    constexpr int tokens = 2;
+    constexpr int q_hidden = 4096;
+    constexpr size_t elems = static_cast<size_t>(tokens) * q_hidden;
+
+    std::vector<uint16_t> h_gate(elems);
+    std::vector<uint16_t> h_out_initial(elems);
+    std::vector<uint16_t> h_out(elems);
+    std::vector<float> want(elems);
+    // q_proj extraction, q_norm, and RoPE are upstream; this helper sees only
+    // the already-extracted contiguous full-attention gate tensor.
+    for (size_t i = 0; i < elems; ++i) {
+        const int pattern = static_cast<int>(i % 8);
+        const float gate_f32 = pattern == 0 ? -4.0f
+            : pattern == 1                  ? -1.0f
+            : pattern == 2                  ? -0.25f
+            : pattern == 3                  ? 0.0f
+            : pattern == 4                  ? 0.5f
+            : pattern == 5                  ? 1.0f
+            : pattern == 6                  ? 2.5f
+                                            : 4.0f;
+        const float out_f32 = static_cast<float>(static_cast<int>(i % 17) - 8) * 0.25f;
+        h_gate[i] = qscu_utils_f32_to_bf16(gate_f32);
+        h_out_initial[i] = qscu_utils_f32_to_bf16(out_f32);
+        const float gate = bf16_to_f32(h_gate[i]);
+        const float out = bf16_to_f32(h_out_initial[i]);
+        want[i] = out * (1.0f / (1.0f + std::exp(-gate)));
+    }
+
+    uint16_t* d_gate = nullptr;
+    uint16_t* d_out = nullptr;
+    if (!copy_to_device(&d_gate, h_gate.data(), h_gate.size(), "copy qscu full-attn gate")
+        || !copy_to_device(
+            &d_out,
+            h_out_initial.data(),
+            h_out_initial.size(),
+            "copy qscu full-attn gated out"
+        )) {
+        qscu_utils_free_device(d_gate);
+        qscu_utils_free_device(d_out);
+        return;
+    }
+
+    qscu_qwen36_full_attention_output_gate_desc desc {};
+    desc.gate = tensor2_bf16(d_gate, tokens, q_hidden);
+    desc.out = tensor2_bf16(d_out, tokens, q_hidden);
+    desc.num_tokens = tokens;
+    desc.q_hidden = q_hidden;
+
+    check_status(
+        qscu_qwen36_full_attention_output_gate_bf16(&desc, nullptr),
+        QSFI_STATUS_OK,
+        "qscu qwen36 extracted full-attn output gate"
+    );
+    check_cuda(cudaDeviceSynchronize(), "sync qscu qwen36 extracted full-attn output gate");
+    check_cuda(
+        cudaMemcpy(h_out.data(), d_out, h_out.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost),
+        "copy qscu qwen36 extracted full-attn output gate out back"
+    );
+    qscu_utils_check_bf16_close(h_out, want, 0.025f, "qscu extracted full-attn gate out");
+
+    qscu_utils_free_device(d_gate);
+    qscu_utils_free_device(d_out);
+}
+
 static void test_qscu_utils_embedding_gather_bf16()
 {
     constexpr int vocab = 4;
@@ -768,6 +834,39 @@ static void test_qscu_utils_negative_validation()
         qscu_qwen36_shared_expert_gate_add_bf16(&shared_desc, nullptr),
         QSFI_STATUS_INVALID_ARGUMENT,
         "qscu shared expert rejects nonscalar gate"
+    );
+
+    qscu_qwen36_full_attention_output_gate_desc full_attn_gate_desc {};
+    full_attn_gate_desc.gate = tensor2_bf16(d_gate, 1, 1);
+    full_attn_gate_desc.out = tensor2_bf16(d_out, 1, 1);
+    full_attn_gate_desc.num_tokens = 1;
+    full_attn_gate_desc.q_hidden = 4096;
+    check_status(
+        qscu_qwen36_full_attention_output_gate_bf16(&full_attn_gate_desc, nullptr),
+        QSFI_STATUS_INVALID_ARGUMENT,
+        "qscu extracted full-attn output gate rejects short gate shape"
+    );
+    full_attn_gate_desc.q_hidden = 1;
+    check_status(
+        qscu_qwen36_full_attention_output_gate_bf16(&full_attn_gate_desc, nullptr),
+        QSFI_STATUS_INVALID_ARGUMENT,
+        "qscu extracted full-attn output gate rejects non-qwen q_hidden"
+    );
+    full_attn_gate_desc.gate = tensor2_bf16(d_gate, 1, 4096);
+    full_attn_gate_desc.out = tensor2_bf16(d_out, 1, 4096);
+    full_attn_gate_desc.q_hidden = 4096;
+    full_attn_gate_desc.gate.dtype = QSFI_DTYPE_F32;
+    check_status(
+        qscu_qwen36_full_attention_output_gate_bf16(&full_attn_gate_desc, nullptr),
+        QSFI_STATUS_INVALID_ARGUMENT,
+        "qscu extracted full-attn output gate rejects f32 gate"
+    );
+    full_attn_gate_desc.gate = tensor2_bf16(d_gate, 1, 4096);
+    full_attn_gate_desc.gate.stride[0] = 4097;
+    check_status(
+        qscu_qwen36_full_attention_output_gate_bf16(&full_attn_gate_desc, nullptr),
+        QSFI_STATUS_INVALID_ARGUMENT,
+        "qscu extracted full-attn output gate rejects padded gate"
     );
 
     qscu_utils_free_device(d_gate);

@@ -18,6 +18,7 @@ const QWEN36_GDN_CONV_WIDTH: u32 = 4;
 const QWEN36_GDN_CONV_STATE: u32 = QWEN36_GDN_CONV_WIDTH - 1;
 const QWEN36_GDN_PACKED_DIM: u32 =
     2 * QWEN36_GDN_NUM_K_HEADS * QWEN36_GDN_KEY_DIM + QWEN36_GDN_NUM_V_HEADS * QWEN36_GDN_VALUE_DIM;
+const QWEN36_FULL_ATTENTION_Q_HIDDEN: u32 = 4096;
 const ROUTER_MAX_TOP_K: u32 = 16;
 const ROUTER_MAX_EXPERTS: u32 = 4096;
 
@@ -410,6 +411,13 @@ impl<'a> KernelOps<'a> {
         unsafe { qscu::qwen36_shared_expert_gate_add_bf16(&desc.raw, self.stream) }
     }
 
+    pub(crate) unsafe fn qwen36_full_attention_output_gate_bf16(
+        &mut self,
+        desc: &Qwen36FullAttentionOutputGateBf16,
+    ) -> Result<(), Status> {
+        unsafe { qscu::qwen36_full_attention_output_gate_bf16(&desc.raw, self.stream) }
+    }
+
     pub(crate) unsafe fn logits_soft_cap_f32(
         &mut self,
         desc: &LogitsSoftCapF32,
@@ -601,6 +609,34 @@ impl Qwen36SharedExpertGateAddBf16 {
                 out: out.tensor(),
                 num_tokens: shared.rows,
                 hidden_size: shared.cols,
+            },
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Qwen36FullAttentionOutputGateBf16 {
+    raw: qscu::Qwen36FullAttentionOutputGateDesc,
+}
+
+impl Qwen36FullAttentionOutputGateBf16 {
+    // `gate` is already extracted from q_proj's interleaved per-head [q, gate]
+    // output. q_norm/RoPE are upstream of this in-place attention-output gate.
+    pub(crate) fn new(
+        gate: DMat<{ ffi::DTYPE_BF16 }>,
+        out: DMat<{ ffi::DTYPE_BF16 }>,
+    ) -> Result<Self, Status> {
+        gate.require_contiguous()?;
+        out.require_contiguous()?;
+        if !gate.same_shape(out) || gate.cols != QWEN36_FULL_ATTENTION_Q_HIDDEN {
+            return Err(Status::InvalidArgument);
+        }
+        Ok(Self {
+            raw: qscu::Qwen36FullAttentionOutputGateDesc {
+                gate: gate.tensor(),
+                out: out.tensor(),
+                num_tokens: gate.rows,
+                q_hidden: gate.cols,
             },
         })
     }
@@ -860,7 +896,27 @@ impl RmsNormBf16 {
         out: DMat<{ ffi::DTYPE_BF16 }>,
         eps: f32,
     ) -> Result<Self, Status> {
+        Self::with_weight_bias(x, weight, out, eps, 0.0)
+    }
+
+    pub(crate) fn qwen_qk_norm(
+        x: DMat<{ ffi::DTYPE_BF16 }>,
+        weight: DVec<{ ffi::DTYPE_BF16 }>,
+        out: DMat<{ ffi::DTYPE_BF16 }>,
+        eps: f32,
+    ) -> Result<Self, Status> {
+        Self::with_weight_bias(x, weight, out, eps, 1.0)
+    }
+
+    pub(crate) fn with_weight_bias(
+        x: DMat<{ ffi::DTYPE_BF16 }>,
+        weight: DVec<{ ffi::DTYPE_BF16 }>,
+        out: DMat<{ ffi::DTYPE_BF16 }>,
+        eps: f32,
+        weight_bias: f32,
+    ) -> Result<Self, Status> {
         validate_eps(eps)?;
+        validate_rmsnorm_weight_bias(weight_bias)?;
         weight.require_contiguous()?;
         if !x.same_shape(out) || weight.len != x.cols {
             return Err(Status::InvalidArgument);
@@ -871,6 +927,7 @@ impl RmsNormBf16 {
                 weight: weight.tensor(),
                 out: out.tensor(),
                 hidden_size: x.cols,
+                weight_bias,
                 eps,
             },
         })
@@ -919,8 +976,9 @@ impl RopeApplyBf16 {
         q_out: Bf16Heads,
         k_out: Bf16Heads,
         positions: DVec<{ ffi::DTYPE_I32 }>,
+        rotary_dim: u32,
     ) -> Result<Self, Status> {
-        Self::with_params(q, k, q_out, k_out, positions, 0.0, 0.0)
+        Self::with_params(q, k, q_out, k_out, positions, rotary_dim, 0.0, 0.0)
     }
 
     pub(crate) fn with_params(
@@ -929,10 +987,11 @@ impl RopeApplyBf16 {
         q_out: Bf16Heads,
         k_out: Bf16Heads,
         positions: DVec<{ ffi::DTYPE_I32 }>,
+        rotary_dim: u32,
         rope_scale: f32,
         rope_theta: f32,
     ) -> Result<Self, Status> {
-        require_supported_rope_head_dim(q.head_dim)?;
+        require_supported_rope_dims(q.head_dim, rotary_dim)?;
         if q.head_dim != k.head_dim
             || !q.same_shape(q_out)
             || !k.same_shape(k_out)
@@ -965,6 +1024,7 @@ impl RopeApplyBf16 {
                 num_qo_heads: q.heads,
                 num_kv_heads: k.heads,
                 head_dim: q.head_dim,
+                rotary_dim,
                 rope_scale,
                 rope_theta,
                 interleave: 0,
@@ -1381,6 +1441,16 @@ fn validate_eps(eps: f32) -> Result<(), Status> {
     Ok(())
 }
 
+fn validate_rmsnorm_weight_bias(weight_bias: f32) -> Result<(), Status> {
+    if !weight_bias.is_finite() {
+        return Err(Status::InvalidArgument);
+    }
+    if weight_bias != 0.0 && weight_bias != 1.0 {
+        return Err(Status::Unsupported);
+    }
+    Ok(())
+}
+
 fn validate_soft_cap(soft_cap: f32) -> Result<(), Status> {
     if soft_cap.is_nan() || (soft_cap > 0.0 && !soft_cap.is_finite()) {
         return Err(Status::InvalidArgument);
@@ -1388,11 +1458,17 @@ fn validate_soft_cap(soft_cap: f32) -> Result<(), Status> {
     Ok(())
 }
 
-fn require_supported_rope_head_dim(head_dim: u32) -> Result<(), Status> {
-    if head_dim % 2 != 0 {
+fn require_supported_rope_dims(head_dim: u32, rotary_dim: u32) -> Result<(), Status> {
+    if head_dim == 0 || rotary_dim == 0 {
+        return Err(Status::InvalidArgument);
+    }
+    if head_dim % 2 != 0 || rotary_dim % 2 != 0 || rotary_dim > head_dim {
         return Err(Status::InvalidArgument);
     }
     if !matches!(head_dim, 64 | 128 | 256 | 512) {
+        return Err(Status::Unsupported);
+    }
+    if head_dim == 256 && rotary_dim != 64 {
         return Err(Status::Unsupported);
     }
     Ok(())
@@ -1589,6 +1665,35 @@ mod tests {
     }
 
     #[test]
+    fn rmsnorm_builder_supports_qwen_qk_flattened_per_head_norm() {
+        let rows = 2;
+        let heads = 16;
+        let head_dim = 256;
+        let flat_rows = rows * heads;
+        let x = bf16_mat(130, flat_rows, head_dim);
+        let weight = bf16_vec(131, head_dim);
+        let out = bf16_mat(132, flat_rows, head_dim);
+
+        let standard = RmsNormBf16::new(x, weight, out, 1.0e-6).unwrap();
+        assert_eq!(standard.raw.hidden_size, head_dim);
+        assert_eq!(standard.raw.weight_bias, 0.0);
+
+        let qk = RmsNormBf16::qwen_qk_norm(x, weight, out, 1.0e-6).unwrap();
+        assert_eq!(qk.raw.x.shape, [i64::from(flat_rows), i64::from(head_dim)]);
+        assert_eq!(qk.raw.weight.shape, [i64::from(head_dim)]);
+        assert_eq!(qk.raw.weight_bias, 1.0);
+
+        let inplace = RmsNormBf16::qwen_qk_norm(x, weight, x, 1.0e-6).unwrap();
+        assert_eq!(inplace.raw.out.data, inplace.raw.x.data);
+        assert_eq!(inplace.raw.out.stride, inplace.raw.x.stride);
+
+        assert!(matches!(
+            RmsNormBf16::with_weight_bias(x, weight, out, 1.0e-6, 0.5),
+            Err(Status::Unsupported)
+        ));
+    }
+
+    #[test]
     fn qscu_descriptor_builders_validate_shapes_and_modes() {
         let gate = bf16_mat(10, 2, 8);
         let up = bf16_mat(11, 2, 8);
@@ -1621,6 +1726,41 @@ mod tests {
                 Bf16OrF32Mat::F32(f32_mat(116, 2, 2)),
                 bf16_mat(117, 2, 8),
                 bf16_mat(118, 2, 8),
+            ),
+            Err(Status::InvalidArgument)
+        ));
+
+        assert!(
+            Qwen36FullAttentionOutputGateBf16::new(
+                bf16_mat(119, 2, QWEN36_FULL_ATTENTION_Q_HIDDEN),
+                bf16_mat(120, 2, QWEN36_FULL_ATTENTION_Q_HIDDEN),
+            )
+            .is_ok()
+        );
+        assert!(matches!(
+            Qwen36FullAttentionOutputGateBf16::new(
+                bf16_mat(121, 2, QWEN36_FULL_ATTENTION_Q_HIDDEN - 1),
+                bf16_mat(122, 2, QWEN36_FULL_ATTENTION_Q_HIDDEN - 1),
+            ),
+            Err(Status::InvalidArgument)
+        ));
+        assert!(matches!(
+            Qwen36FullAttentionOutputGateBf16::new(
+                DMat::<{ ffi::DTYPE_BF16 }>::new(
+                    device_ptr(123),
+                    2,
+                    QWEN36_FULL_ATTENTION_Q_HIDDEN,
+                    QWEN36_FULL_ATTENTION_Q_HIDDEN + 8,
+                )
+                .unwrap(),
+                bf16_mat(124, 2, QWEN36_FULL_ATTENTION_Q_HIDDEN),
+            ),
+            Err(Status::InvalidArgument)
+        ));
+        assert!(matches!(
+            Qwen36FullAttentionOutputGateBf16::new(
+                bf16_mat(125, 2, QWEN36_FULL_ATTENTION_Q_HIDDEN),
+                bf16_mat(126, 1, QWEN36_FULL_ATTENTION_Q_HIDDEN),
             ),
             Err(Status::InvalidArgument)
         ));
@@ -1733,7 +1873,7 @@ mod tests {
         let k = Bf16Heads::new(device_ptr(41), 2, 2, 128, 512, 128).unwrap();
         let q_out = Bf16Heads::new(device_ptr(42), 2, 4, 128, 1024, 128).unwrap();
         let k_out = Bf16Heads::new(device_ptr(43), 2, 2, 128, 512, 128).unwrap();
-        assert!(RopeApplyBf16::new(q, k, q_out, k_out, i32_vec(44, 2)).is_ok());
+        assert!(RopeApplyBf16::new(q, k, q_out, k_out, i32_vec(44, 2), 128).is_ok());
         assert!(matches!(
             RopeApplyBf16::new(
                 heads(45, 2, 4, 96),
@@ -1741,12 +1881,51 @@ mod tests {
                 heads(47, 2, 4, 96),
                 heads(48, 2, 2, 96),
                 i32_vec(49, 2),
+                96,
+            ),
+            Err(Status::Unsupported)
+        ));
+        assert!(matches!(
+            RopeApplyBf16::new(q, k, q_out, k_out, i32_vec(50, 2), 0),
+            Err(Status::InvalidArgument)
+        ));
+        assert!(matches!(
+            RopeApplyBf16::new(q, k, q_out, k_out, i32_vec(51, 2), 127),
+            Err(Status::InvalidArgument)
+        ));
+        assert!(matches!(
+            RopeApplyBf16::new(q, k, q_out, k_out, i32_vec(52, 2), 256),
+            Err(Status::InvalidArgument)
+        ));
+        let qwen36_q = Bf16Heads::new(device_ptr(53), 2, 4, 256, 2048, 256).unwrap();
+        let qwen36_k = Bf16Heads::new(device_ptr(54), 2, 2, 256, 1024, 256).unwrap();
+        let qwen36_q_out = Bf16Heads::new(device_ptr(55), 2, 4, 256, 2048, 256).unwrap();
+        let qwen36_k_out = Bf16Heads::new(device_ptr(56), 2, 2, 256, 1024, 256).unwrap();
+        assert!(
+            RopeApplyBf16::new(
+                qwen36_q,
+                qwen36_k,
+                qwen36_q_out,
+                qwen36_k_out,
+                i32_vec(57, 2),
+                64,
+            )
+            .is_ok()
+        );
+        assert!(matches!(
+            RopeApplyBf16::new(
+                qwen36_q,
+                qwen36_k,
+                qwen36_q_out,
+                qwen36_k_out,
+                i32_vec(58, 2),
+                128,
             ),
             Err(Status::Unsupported)
         ));
         let alias_bad_stride = Bf16Heads::contiguous(device_ptr(40), 2, 4, 128).unwrap();
         assert!(matches!(
-            RopeApplyBf16::new(q, k, alias_bad_stride, k_out, i32_vec(50, 2)),
+            RopeApplyBf16::new(q, k, alias_bad_stride, k_out, i32_vec(59, 2), 128),
             Err(Status::InvalidArgument)
         ));
     }

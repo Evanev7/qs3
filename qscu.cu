@@ -22,6 +22,7 @@ constexpr uint32_t kQwen36GdnConvWidth = 4;
 constexpr uint32_t kQwen36GdnConvState = kQwen36GdnConvWidth - 1;
 constexpr uint32_t kQwen36GdnPackedDim
     = 2 * kQwen36GdnNumKHeads * kQwen36GdnKeyDim + kQwen36GdnNumVHeads * kQwen36GdnValueDim;
+constexpr uint32_t kQwen36FullAttentionQHidden = 4096;
 constexpr uint32_t kQwen36GdnThreads = QSFI_QWEN36_GDN_THREADS;
 constexpr uint32_t kElementwiseThreads = 256;
 constexpr uint32_t kArgmaxThreads = 256;
@@ -274,6 +275,17 @@ struct qwen36_shared_expert_gate_add_params {
     uint64_t total_elements;
 };
 
+struct qwen36_full_attention_output_gate_params {
+    const __nv_bfloat16* gate;
+    int64_t gate_stride0;
+    int64_t gate_stride1;
+    __nv_bfloat16* out;
+    int64_t out_stride0;
+    int64_t out_stride1;
+    uint32_t q_hidden;
+    uint64_t total_elements;
+};
+
 __global__ void silu_and_mul_bf16_kernel(silu_and_mul_params p)
 {
     const uint64_t linear = static_cast<uint64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
@@ -323,6 +335,24 @@ __global__ void qwen36_shared_expert_gate_add_bf16_kernel(qwen36_shared_expert_g
     );
     const float current = load_bf16(p.out + offset);
     store_bf16(p.out + offset, current + gate * shared);
+}
+
+__global__ void
+qwen36_full_attention_output_gate_bf16_kernel(qwen36_full_attention_output_gate_params p)
+{
+    const uint64_t linear = static_cast<uint64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (linear >= p.total_elements)
+        return;
+
+    const uint32_t row = static_cast<uint32_t>(linear / p.q_hidden);
+    const uint32_t dim = static_cast<uint32_t>(linear - static_cast<uint64_t>(row) * p.q_hidden);
+    const int64_t gate_offset
+        = static_cast<int64_t>(row) * p.gate_stride0 + static_cast<int64_t>(dim) * p.gate_stride1;
+    const int64_t out_offset
+        = static_cast<int64_t>(row) * p.out_stride0 + static_cast<int64_t>(dim) * p.out_stride1;
+    const float gate = load_bf16(p.gate + gate_offset);
+    const float current = load_bf16(p.out + out_offset);
+    store_bf16(p.out + out_offset, current * sigmoid(gate));
 }
 
 template <typename TokenT> __device__ bool is_padding_token(TokenT token, int32_t padding_token_id)
@@ -1233,6 +1263,31 @@ validate_qwen36_shared_expert_gate_add_desc(const qscu_qwen36_shared_expert_gate
     return QSFI_STATUS_OK;
 }
 
+qsfi_status validate_qwen36_full_attention_output_gate_desc(
+    const qscu_qwen36_full_attention_output_gate_desc* desc
+)
+{
+    if (desc == nullptr || desc->num_tokens == 0 || desc->q_hidden != kQwen36FullAttentionQHidden)
+        return QSFI_STATUS_INVALID_ARGUMENT;
+
+    qsfi_status status = validate_tensor(desc->gate, QSFI_DTYPE_BF16);
+    if (status != QSFI_STATUS_OK)
+        return status;
+    status = validate_tensor(desc->out, QSFI_DTYPE_BF16);
+    if (status != QSFI_STATUS_OK)
+        return status;
+
+    if (!contiguous2(desc->gate) || !contiguous2(desc->out))
+        return QSFI_STATUS_INVALID_ARGUMENT;
+    if (desc->gate.shape[0] != static_cast<int64_t>(desc->num_tokens)
+        || desc->gate.shape[1] != static_cast<int64_t>(desc->q_hidden)
+        || desc->out.shape[0] != static_cast<int64_t>(desc->num_tokens)
+        || desc->out.shape[1] != static_cast<int64_t>(desc->q_hidden)) {
+        return QSFI_STATUS_INVALID_ARGUMENT;
+    }
+    return QSFI_STATUS_OK;
+}
+
 qsfi_status validate_embedding_gather_desc(const qscu_embedding_gather_desc* desc)
 {
     if (desc == nullptr)
@@ -1393,6 +1448,39 @@ qsfi_status qscu_qwen36_shared_expert_gate_add_bf16(
     params.total_elements = items;
 
     qwen36_shared_expert_gate_add_bf16_kernel<<<
+        blocks,
+        kElementwiseThreads,
+        0,
+        static_cast<cudaStream_t>(stream)>>>(params);
+    return validate_cuda(cudaGetLastError());
+}
+
+qsfi_status qscu_qwen36_full_attention_output_gate_bf16(
+    const qscu_qwen36_full_attention_output_gate_desc* desc, qsfi_cuda_stream stream
+)
+{
+    qsfi_status status = validate_qwen36_full_attention_output_gate_desc(desc);
+    if (status != QSFI_STATUS_OK)
+        return status;
+
+    const uint64_t items
+        = static_cast<uint64_t>(desc->num_tokens) * static_cast<uint64_t>(desc->q_hidden);
+    uint32_t blocks = 0;
+    status = checked_grid(items, kElementwiseThreads, &blocks);
+    if (status != QSFI_STATUS_OK)
+        return status;
+
+    qwen36_full_attention_output_gate_params params {};
+    params.gate = static_cast<const __nv_bfloat16*>(desc->gate.data);
+    params.gate_stride0 = desc->gate.stride[0];
+    params.gate_stride1 = desc->gate.stride[1];
+    params.out = static_cast<__nv_bfloat16*>(desc->out.data);
+    params.out_stride0 = desc->out.stride[0];
+    params.out_stride1 = desc->out.stride[1];
+    params.q_hidden = desc->q_hidden;
+    params.total_elements = items;
+
+    qwen36_full_attention_output_gate_bf16_kernel<<<
         blocks,
         kElementwiseThreads,
         0,

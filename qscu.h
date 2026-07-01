@@ -52,6 +52,25 @@ qsfi_status qscu_qwen36_shared_expert_gate_add_bf16(
 );
 
 /*
+ * Qwen3.6 full-attention output gate: out *= sigmoid(gate). gate is read-only.
+ * gate/out are bf16 [num_tokens, q_hidden] and q_hidden must be the Qwen3.6
+ * full-attention q projection width, 4096. All tensors must be contiguous
+ * row-major. This helper does not split q_proj's interleaved per-head
+ * [q, gate] layout or apply q_norm/RoPE; callers pass an already-extracted
+ * contiguous gate tensor.
+ */
+typedef struct {
+    qsfi_tensor2 gate;
+    qsfi_tensor2 out;
+    uint32_t num_tokens;
+    uint32_t q_hidden;
+} qscu_qwen36_full_attention_output_gate_desc;
+
+qsfi_status qscu_qwen36_full_attention_output_gate_bf16(
+    const qscu_qwen36_full_attention_output_gate_desc* desc, qsfi_cuda_stream stream
+);
+
+/*
  * BF16 embedding row gather. token_ids may be i32 or u32. In checked native
  * validation builds, validate_token_ids synchronizes the stream to report
  * out-of-range non-padding ids as QSFI_STATUS_INVALID_ARGUMENT. Unchecked
