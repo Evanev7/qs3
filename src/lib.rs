@@ -4,6 +4,7 @@ pub mod engine;
 pub mod ffi;
 pub mod model;
 mod runtime;
+mod weight_loader;
 
 pub use engine::{
     AppendBatch, BatchKind, Commit, CoreState, DType, DecodeBatch, Engine, EngineConfig,

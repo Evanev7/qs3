@@ -1,89 +1,77 @@
 this is quasar3, a minimal qwen3.6 runtime built from flashinfer, inspired by
-dwarfstar4.
+dwarfstar4
 
 rarely record durable facts here unless they took significant information
-gathering.
+gathering
 
 run tests with the gitignored test script
 
 ground rules:
-- do not maintain backward compatibility, abi stability or versioning.
-- if you introduce a replacement api or build target, remove the old entrypoint.
-- take the time to cleanup and remove legacy calls after refactors.
-- no cmake.
-- keep the runtime qwen3.6-specific. validate early, fail loudly, avoid generic
-  runtime compatibility work. 
+- no cmake
+- no backward compatibility, ABI stability, or versioning work
+- if replacing an api/build target, remove the old entrypoint and legacy calls
+- keep the runtime qwen3.6-specific: prototype early, fail loudly, avoid generic
+  model/runtime compatibility
+- avoid release-mode stream synchronizes for transactionality or validation
+  unless making a deliberate performance trade
 
-current state:
-- `3pty` contains vendored kernels and refernce code
-- `target` is the rust build directory
-- `EngineCore` already owns request ids, sequence lengths, a page allocator,
-  page tables, last-page lengths, append positions, and staged batch state.
-- `EngineCore` begin/commit/abort/reset/release paths should stay
-  transactional: build candidate state and live views before installing them.
-  keep allocator invariant checks debug-only.
-- `runtime::EngineInner` already owns per-layer paged K/V caches and reuses
-  FlashInfer prefill/decode plans when the batch/page-table metadata permits.
-  plan-cache keys include page ids and last-page lengths, not just CSR shape.
-- the public `ModelRunner` can run a randomized dense BF16 Qwen-shaped model
-  end-to-end: embedding gather, RMSNorm, Q/K/V/O projections, FlashInfer
-  attention, gated SiLU MLP, final norm, LM head logits, and greedy sampling.
-  it owns exact-prefix sync/rebuild for the current single-runner path.
-- the randomized runner is intentionally narrow. current compiled attention
-  support is head dim 64 with no GQA; Rust config/runtime validation should
-  reject unsupported head dims or grouped-query shapes before CUDA setup.
-- normal native objects compile with checked device-content validation disabled
-  (`QSFI_ENABLE_CHECKED_VALIDATION=0`). checked CUDA test objects enable it and
-  cover negative metadata cases. do not add release-mode stream synchronizes for
-  transactionality or validation unless there is a deliberate performance trade.
-- validation before device addressing is part of the contract: Rust descriptors
-  validate shapes/strides/modes, and checked native paths cover attention page
-  ids and append positions, GDN seq/state metadata, embedding ids, and MoE
-  routes/weights.
-- model loading from config+safetensors, real qwen3.6 tensor mapping, tokenizer,
-  CLI, GDN-in-runner, and MoE-in-runner are still future work.
+current architecture:
+- `3pty` is vendored kernels/reference code; `target` is the rust build dir
+- `EngineCore` owns request ids, tokens, sequence lengths, page allocator,
+  page tables, last-page lengths, append positions, and staged batch state
+  begin/commit/abort/reset/release paths should stay transactional: build
+  candidate state and live views before installing them. allocator invariant
+  checks stay debug-only
+- `runtime::EngineInner` owns CUDA stream/context state, per-layer paged K/V
+  caches, device batch metadata, and FlashInfer prefill/decode plan caches
+  plan-cache keys include page ids and last-page lengths, not just CSR shape
+- `ModelRunner` is the boundary above `Engine`: it computes activations, supplies
+  Q/K/V to attention, stores logits, samples, and owns exact-prefix sync/rebuild
+- validation before device addressing is contract: Rust descriptors validate
+  shapes/strides/modes; checked native paths cover attention page ids and append
+  positions, GDN metadata, embedding ids, and MoE routes/weights
+- public randomized BF16 runner works end-to-end for current narrow shapes. keep
+  it correct while adding real-model support
+
+real qwen3.6-35b-a3b findings:
+- materialized BF16 and NVFP4 safetensors exist on `spark-1565`
+- real text model prefix is `model.language_model.*`; ignore `model.visual.*`
+  and `mtp.*` for the first text-only loader
+- real BF16 shape differs from the randomized fixture: hidden size 2048, 40
+  layers, 3 linear-attention layers then 1 full-attention layer repeated
+  full attention uses GQA, head dim 256, q/k norms, and q/out dims that do not
+  match the old no-GQA/head-dim-64 fixture assumptions
+- BF16 experts use fused `mlp.experts.gate_up_proj` / `down_proj`; NVFP4 uses
+  split per-expert tensors plus `input_scale`, `weight_scale`, `weight_scale_2`
+  reject NVFP4 until its scale/packing semantics are implemented
+
+loader direction:
+- `src/weight_loader.rs` has the backend trait. keep qwen-specific manifest
+  parsing/validation above it
+- validate full config + safetensors indexes/headers before CUDA allocation:
+  duplicate, missing, unexpected, wrong dtype/shape, overlapping, or out-of-range
+  tensors must fail before device addressing
+- first backend for GB10/UMA: `cudaMallocManaged` final weights, `preadv`
+  directly into managed pointers, optional advise/prefetch, one load-end sync
+  probes saw ~5 GiB/s direct managed read and no first-touch penalty
+- keep pinned staging as the dGPU fallback: `cudaMalloc` final weights,
+  `cudaHostAlloc` ring, `preadv`, `cudaMemcpyAsync`, events
+- do not retain mmap or InstantTensor staging pointers as committed weights
+  mmap can be a source view only. cuFile/GDS stays optional behind a hard probe
 
 GDN direction:
 - keep qwen3.6-specific GDN prep glue local for now: causal conv, post-conv
-  Q/K/V split, decay/beta materialization, gated RMSNorm, and a local recurrence
-  fallback.
-- FlashInfer GDN looks like the first replacement path to investigate, not
-  Triton/vLLM: BF16 decode matches the `[pool, HV, V, K]` state shape, and SM12
-  chunked prefill matches the long-prompt path if prep emits linear alpha
-  `exp(g)` plus f32 beta.
-- if FlashInfer GDN is wired, keep it in one FlashInfer-owned TU. do not spread
-  FlashInfer GDN headers/JIT plumbing through local `qscu` files.
-- main mismatches to resolve before replacing the local recurrence: FlashInfer
-  BF16 decode treats `-1` state indices as a sacrificial slot with undefined
-  output, and FlashInfer prefill wants f32 final state while qs3 may want bf16
-  live decode state.
+  Q/K/V split, decay/beta materialization, gated RMSNorm, and local recurrence
+- if FlashInfer GDN is wired, keep it in one FlashInfer-owned TU; do not spread
+  FlashInfer GDN headers/JIT plumbing through local `qscu` files
 
-DS4 lessons worth preserving:
-- keep the public boundary narrow: a loaded model/runtime object plus mutable
-  inference timelines. higher layers should not know tensor internals.
-- durable session state is more than a token count. keep exact request tokens,
-  last logits, paged KV tables, page ownership, and append/frontier positions as
-  explicit engine state.
-- prefix sync policy should be conservative. if a requested prompt extends the
-  live token prefix, append only the suffix. if it rewrites behind the live tail,
-  rebuild or restore an older checkpoint; do not patch only the token vector.
-- separate paths:
-  - long suffix/prompt: chunked prefill.
-  - short/live generation: decode.
-- cache/snapshot payloads, when added, should be engine-owned: exact tokens,
-  logits, page-table/frontier state, and KV contents needed to make the next
-  token match an uninterrupted session.
+near-term todos:
+- adjust `QwenConfig`, `QwenWeights`, attention runtime, and runner for the real
+  BF16 model shapes: hidden 2048, GQA, head dim 256, q/k norms, GDN packed/output
+  dims, and fused MoE expert layout
+- implement BF16 config+safetensors loading through the qwen-specific manifest
+  validator and `WeightLoadBackend`
+- then add the first CLI that accepts/prints token ids. tokenizer/chat template
+  can follow after model token generation works
+- after BF16 real-model correctness, add the first optimized NVFP4 path
 
-fastest path to actually running the model:
-- the first randomized dense BF16 path exists. keep it correct and narrow while
-  adding real-model features.
-- add model loading for config + safetensors, map fixed Qwen tensor names, upload
-  weights to CUDA.
-- keep `ModelRunner` as the boundary above `Engine`: it computes activations,
-  supplies Q/K/V to the attention engine, stores logits, samples next tokens,
-  and owns exact-prefix sync/rebuild.
-- wire qwen3.6 GDN and MoE into `ModelRunner` only after their state ownership
-  is engine/runner-owned enough to survive abort, rebuild, and release.
-- after BF16 real-model correctness, add the first optimized NVFP4 path.
-- first runnable CLI may accept and print token ids. tokenizer/chat template can
-  follow immediately after the model produces tokens.
