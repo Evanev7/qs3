@@ -300,7 +300,8 @@ fn validate_fused_add_rmsnorm_desc(desc: &FusedAddRmsnormDesc) -> Result<(), Sta
     {
         return Err(Status::InvalidArgument);
     }
-    validate_u32_i64(desc.residual_inout.stride[0])
+    validate_u32_i64(desc.residual_inout.stride[0])?;
+    validate_rmsnorm_weight_bias(desc.weight_bias)
 }
 
 fn supported_rope_head_dim(head_dim: u32) -> bool {
@@ -2000,6 +2001,7 @@ mod tests {
             weight: tensor1(device_ptr(42), DTYPE_BF16, [128], [1]),
             out: x,
             hidden_size: 128,
+            weight_bias: 0.0,
             eps: 1.0e-6,
         }
     }
@@ -2020,6 +2022,23 @@ mod tests {
         bad_residual_dtype.residual_inout.dtype = DTYPE_F32;
         assert_eq!(
             validate_fused_add_rmsnorm_desc(&bad_residual_dtype),
+            Err(Status::InvalidArgument)
+        );
+
+        let mut qwen_decoder_norm = valid;
+        qwen_decoder_norm.weight_bias = 1.0;
+        assert_eq!(validate_fused_add_rmsnorm_desc(&qwen_decoder_norm), Ok(()));
+
+        let mut bad_bias = valid;
+        bad_bias.weight_bias = 0.5;
+        assert_eq!(
+            validate_fused_add_rmsnorm_desc(&bad_bias),
+            Err(Status::Unsupported)
+        );
+
+        bad_bias.weight_bias = f32::NAN;
+        assert_eq!(
+            validate_fused_add_rmsnorm_desc(&bad_bias),
             Err(Status::InvalidArgument)
         );
     }

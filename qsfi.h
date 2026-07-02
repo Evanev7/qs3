@@ -162,7 +162,7 @@ typedef struct {
     qsfi_tensor1 weight; /* same dtype [hidden_size]. */
     qsfi_tensor2 out; /* same dtype [rows, hidden_size]. */
     uint32_t hidden_size;
-    float weight_bias; /* 0 for standard RMSNorm, 1 for raw-weight+1 Gemma/Qwen q/k norm. */
+    float weight_bias; /* 0 for standard RMSNorm, 1 for raw-weight+1 Gemma/Qwen norms. */
     float eps;
 } qsfi_rmsnorm_desc;
 
@@ -172,6 +172,7 @@ typedef struct {
     qsfi_tensor1 weight; /* same dtype [hidden_size]. */
     qsfi_tensor2 out; /* must alias x; documents the normalized output tensor. */
     uint32_t hidden_size;
+    float weight_bias; /* 0 for standard RMSNorm, 1 for raw-weight+1 Gemma/Qwen decoder norms. */
     float eps;
 } qsfi_fused_add_rmsnorm_desc;
 

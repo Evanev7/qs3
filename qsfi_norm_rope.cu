@@ -191,6 +191,20 @@ template <typename T> cudaError_t launch_rmsnorm(qsfi_context* ctx, const qsfi_r
 template <typename T>
 cudaError_t launch_fused_add_rmsnorm(qsfi_context* ctx, const qsfi_fused_add_rmsnorm_desc* desc)
 {
+    if (desc->weight_bias == 1.0f) {
+        return flashinfer::norm::GemmaFusedAddRMSNorm<T>(
+            static_cast<T*>(desc->x.data),
+            static_cast<T*>(desc->residual_inout.data),
+            static_cast<T*>(desc->weight.data),
+            static_cast<uint32_t>(desc->x.shape[0]),
+            desc->hidden_size,
+            static_cast<uint32_t>(desc->x.stride[0]),
+            static_cast<uint32_t>(desc->residual_inout.stride[0]),
+            desc->eps,
+            false,
+            ctx->stream
+        );
+    }
     return flashinfer::norm::FusedAddRMSNorm<T>(
         static_cast<T*>(desc->x.data),
         static_cast<T*>(desc->residual_inout.data),
@@ -234,7 +248,10 @@ qsfi_status validate_fused_add_rmsnorm(qsfi_context* ctx, const qsfi_fused_add_r
     if (desc->out.data != desc->x.data || !same_shape_and_stride(desc->out, desc->x)) {
         return set_invalid_arg(ctx, "fused_add_rmsnorm out must alias x exactly");
     }
-    return require_u32(ctx, desc->residual_inout.stride[0], "residual_inout.stride[0]");
+    status = require_u32(ctx, desc->residual_inout.stride[0], "residual_inout.stride[0]");
+    if (status != QSFI_STATUS_OK)
+        return status;
+    return validate_rmsnorm_weight_bias(ctx, desc->weight_bias);
 }
 
 qsfi_status validate_rope_apply(qsfi_context* ctx, const qsfi_rope_apply_desc* desc)

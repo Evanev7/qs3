@@ -898,6 +898,15 @@ impl RmsNormBf16 {
         Self::with_weight_bias(x, weight, out, eps, 1.0)
     }
 
+    pub(crate) fn qwen_decoder_norm(
+        x: DMat<{ ffi::DTYPE_BF16 }>,
+        weight: DVec<{ ffi::DTYPE_BF16 }>,
+        out: DMat<{ ffi::DTYPE_BF16 }>,
+        eps: f32,
+    ) -> Result<Self, Status> {
+        Self::with_weight_bias(x, weight, out, eps, 1.0)
+    }
+
     pub(crate) fn with_weight_bias(
         x: DMat<{ ffi::DTYPE_BF16 }>,
         weight: DVec<{ ffi::DTYPE_BF16 }>,
@@ -936,7 +945,27 @@ impl FusedAddRmsNormBf16 {
         weight: DVec<{ ffi::DTYPE_BF16 }>,
         eps: f32,
     ) -> Result<Self, Status> {
+        Self::with_weight_bias(x, residual_inout, weight, eps, 0.0)
+    }
+
+    pub(crate) fn qwen_decoder_norm(
+        x: DMat<{ ffi::DTYPE_BF16 }>,
+        residual_inout: DMat<{ ffi::DTYPE_BF16 }>,
+        weight: DVec<{ ffi::DTYPE_BF16 }>,
+        eps: f32,
+    ) -> Result<Self, Status> {
+        Self::with_weight_bias(x, residual_inout, weight, eps, 1.0)
+    }
+
+    pub(crate) fn with_weight_bias(
+        x: DMat<{ ffi::DTYPE_BF16 }>,
+        residual_inout: DMat<{ ffi::DTYPE_BF16 }>,
+        weight: DVec<{ ffi::DTYPE_BF16 }>,
+        eps: f32,
+        weight_bias: f32,
+    ) -> Result<Self, Status> {
         validate_eps(eps)?;
+        validate_rmsnorm_weight_bias(weight_bias)?;
         weight.require_contiguous()?;
         if !x.same_shape(residual_inout) || weight.len != x.cols {
             return Err(Status::InvalidArgument);
@@ -948,6 +977,7 @@ impl FusedAddRmsNormBf16 {
                 weight: weight.tensor(),
                 out: x.tensor(),
                 hidden_size: x.cols,
+                weight_bias,
                 eps,
             },
         })
@@ -1674,6 +1704,9 @@ mod tests {
         assert_eq!(qk.raw.weight.shape, [i64::from(head_dim)]);
         assert_eq!(qk.raw.weight_bias, 1.0);
 
+        let decoder = RmsNormBf16::qwen_decoder_norm(x, weight, out, 1.0e-6).unwrap();
+        assert_eq!(decoder.raw.weight_bias, 1.0);
+
         let inplace = RmsNormBf16::qwen_qk_norm(x, weight, x, 1.0e-6).unwrap();
         assert_eq!(inplace.raw.out.data, inplace.raw.x.data);
         assert_eq!(inplace.raw.out.stride, inplace.raw.x.stride);
@@ -1862,7 +1895,16 @@ mod tests {
         ));
 
         let residual = DMat::new(device_ptr(38), 4, 128, 192).unwrap();
-        assert!(FusedAddRmsNormBf16::new(x, residual, bf16_vec(39, 128), 1.0e-6).is_ok());
+        let fused = FusedAddRmsNormBf16::new(x, residual, bf16_vec(39, 128), 1.0e-6).unwrap();
+        assert_eq!(fused.raw.weight_bias, 0.0);
+        let qwen_fused =
+            FusedAddRmsNormBf16::qwen_decoder_norm(x, residual, bf16_vec(140, 128), 1.0e-6)
+                .unwrap();
+        assert_eq!(qwen_fused.raw.weight_bias, 1.0);
+        assert!(matches!(
+            FusedAddRmsNormBf16::with_weight_bias(x, residual, bf16_vec(141, 128), 1.0e-6, 0.5),
+            Err(Status::Unsupported)
+        ));
 
         let q = Bf16Heads::new(device_ptr(40), 2, 4, 128, 1024, 128).unwrap();
         let k = Bf16Heads::new(device_ptr(41), 2, 2, 128, 512, 128).unwrap();

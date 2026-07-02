@@ -594,7 +594,7 @@ impl QwenWeights {
             &random_bf16_values(&mut rng, checked_usize_product(&[vocab, hidden])?, 0.08)?,
         )?;
         let final_norm =
-            DeviceBuffer::from_slice(device, stream, &constant_bf16_values(hidden as usize, 1.0)?)?;
+            DeviceBuffer::from_slice(device, stream, &constant_bf16_values(hidden as usize, 0.0)?)?;
         let lm_head = DeviceBuffer::from_slice(
             device,
             stream,
@@ -606,7 +606,7 @@ impl QwenWeights {
             let mlp_norm = DeviceBuffer::from_slice(
                 device,
                 stream,
-                &constant_bf16_values(hidden as usize, 1.0)?,
+                &constant_bf16_values(hidden as usize, 0.0)?,
             )?;
             let mlp = Self::random_mlp_weights(&config, &mut rng)?;
 
@@ -615,7 +615,7 @@ impl QwenWeights {
                     norm: DeviceBuffer::from_slice(
                         device,
                         stream,
-                        &constant_bf16_values(hidden as usize, 1.0)?,
+                        &constant_bf16_values(hidden as usize, 0.0)?,
                     )?,
                     in_proj: DeviceBuffer::from_slice(
                         device,
@@ -702,7 +702,7 @@ impl QwenWeights {
                 attn_norm: DeviceBuffer::from_slice(
                     device,
                     stream,
-                    &constant_bf16_values(hidden as usize, 1.0)?,
+                    &constant_bf16_values(hidden as usize, 0.0)?,
                 )?,
                 // Raw Qwen q/k norm weights use Gemma-style RMSNorm semantics:
                 // effective weight is raw BF16 + 1.0 in f32.
@@ -2333,7 +2333,7 @@ impl ModelRunner {
         out: ffi::DevicePtr,
         rows: u32,
     ) -> Result<(), Status> {
-        let desc = RmsNormBf16::new(
+        let desc = RmsNormBf16::qwen_decoder_norm(
             DMat::<{ ffi::DTYPE_BF16 }>::contiguous(x, rows, self.config.hidden_size)?,
             DVec::<{ ffi::DTYPE_BF16 }>::contiguous(weight, self.config.hidden_size)?,
             DMat::<{ ffi::DTYPE_BF16 }>::contiguous(out, rows, self.config.hidden_size)?,
@@ -2350,7 +2350,7 @@ impl ModelRunner {
         weight: ffi::DevicePtr,
         rows: u32,
     ) -> Result<(), Status> {
-        let desc = FusedAddRmsNormBf16::new(
+        let desc = FusedAddRmsNormBf16::qwen_decoder_norm(
             DMat::<{ ffi::DTYPE_BF16 }>::contiguous(x, rows, self.config.hidden_size)?,
             DMat::<{ ffi::DTYPE_BF16 }>::contiguous(residual, rows, self.config.hidden_size)?,
             DVec::<{ ffi::DTYPE_BF16 }>::contiguous(weight, self.config.hidden_size)?,
