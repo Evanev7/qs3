@@ -740,6 +740,22 @@ static void test_qsfi_fused_add_rmsnorm_rejects_invalid_desc_shape_dtype()
         "fused add rmsnorm rejects non-positive eps"
     );
 
+    bad = desc;
+    bad.weight_bias = 0.5f;
+    check_status(
+        qsfi_fused_add_rmsnorm(ctx, &bad),
+        QSFI_STATUS_UNSUPPORTED,
+        "fused add rmsnorm rejects unsupported weight_bias"
+    );
+
+    bad = desc;
+    bad.weight_bias = std::numeric_limits<float>::quiet_NaN();
+    check_status(
+        qsfi_fused_add_rmsnorm(ctx, &bad),
+        QSFI_STATUS_INVALID_ARGUMENT,
+        "fused add rmsnorm rejects non-finite weight_bias"
+    );
+
     cudaFree(d_x);
     cudaFree(d_residual);
     cudaFree(d_weight);
