@@ -1,0 +1,98 @@
+{
+  "files": [
+    {
+      "bytes": 160,
+      "path": "combined_output.f32",
+      "sha256": "a7af748798f2f17db76cb20dd55bb96d20df362d1573bd06e336c9908de818c2"
+    },
+    {
+      "bytes": 80,
+      "path": "combined_output_bf16.bf16",
+      "sha256": "60937a5520f55157ba51b98121e0e1fa1344fbd1680e5f3f7cffbbb3b854e80d"
+    },
+    {
+      "bytes": 32768,
+      "path": "down_weight.bf16",
+      "sha256": "13743599093010f93034ed1d47a853ca9ae391222337f568ef4175c5439f718a"
+    },
+    {
+      "bytes": 65536,
+      "path": "gate_up_weight.bf16",
+      "sha256": "98d133a4e937241bed0d5209cb05c09c4e06f7136de4cc04157f4743435963ea"
+    },
+    {
+      "bytes": 80,
+      "path": "hidden.bf16",
+      "sha256": "a842fef24a1d46fae656d8442effa46ac1134be329181ef0d91ace876e240158"
+    },
+    {
+      "bytes": 8088,
+      "path": "manifest.json",
+      "sha256": "daa38888db5e6f7af00c6d05ece1164ca40a64b4458d867b69da199eed186e7b"
+    },
+    {
+      "bytes": 1280,
+      "path": "route_down_output.f32",
+      "sha256": "3cd206a06c260bcb955c1312c97863bf2e77c015439aeb0819d35bfb5540a455"
+    },
+    {
+      "bytes": 160,
+      "path": "routed_moe_output.f32",
+      "sha256": "d02bdf0d705607730cedb1e9f73df1605cec073e6762eac8bd20faeb1cc8ae49"
+    },
+    {
+      "bytes": 80,
+      "path": "routed_moe_output_bf16.bf16",
+      "sha256": "596017ca9e8ea8a72075804d86487ec883b1992fa415f7fdf401590a961c2df4"
+    },
+    {
+      "bytes": 5120,
+      "path": "router_logits.f32",
+      "sha256": "d313a3a4bfe8134790f03e482e2f791a2b91debc92c3b1a2a72fd906e9d1b9e9"
+    },
+    {
+      "bytes": 128,
+      "path": "shared_down_weight.bf16",
+      "sha256": "e92b08fc025012f25b74e9097adc4469ee0c63f3f0f763d0969e3810f12ad937"
+    },
+    {
+      "bytes": 160,
+      "path": "shared_expert_output.f32",
+      "sha256": "d5a9a26e49019d6c1eccb0aeeeaf9a1f09a92161e7c8f9da53ca9146511d7064"
+    },
+    {
+      "bytes": 20,
+      "path": "shared_gate_logits.f32",
+      "sha256": "8c5f5fa3357a008d0a1299707010f25d17c68a3c8bec5e015c52077f34e6d20f"
+    },
+    {
+      "bytes": 20,
+      "path": "shared_gate_sigmoid.f32",
+      "sha256": "9c8763d9e24d4be0b3862f5d26449d14799b279043f5243e388a5e88527ad108"
+    },
+    {
+      "bytes": 256,
+      "path": "shared_gate_up_weight.bf16",
+      "sha256": "99a5cecdb78c7ae59df882c87f12bd80dcf5ac054b88c5da349f691d085c9182"
+    },
+    {
+      "bytes": 160,
+      "path": "topk_ids.i32",
+      "sha256": "2ac5a657419dc398f29912239e6a03b45f507fe81b381364fbe676d02ede77c0"
+    },
+    {
+      "bytes": 160,
+      "path": "topk_unrenormalized_weights.f32",
+      "sha256": "7b0ae0b850b05b46eca01789c23c6e5083dfc48be65e45ed5ef97d88e0fe846d"
+    },
+    {
+      "bytes": 160,
+      "path": "topk_weights.f32",
+      "sha256": "01ab35f9c24a10f5476bf2edf81b3d81608e49301dfef0a64ca295ab375008b4"
+    }
+  ],
+  "group": "moe_shared_expert",
+  "hash": "sha256",
+  "root": "moe_shared_expert",
+  "schema_version": 1
+}

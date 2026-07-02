@@ -13,8 +13,23 @@ cuda-test: copy-ninja
         ninja -C build tests
         build/qsfi_test_checked
         build/qsfi_test_release
-cargo-test: build
+cargo-test: build generate-vectors
         LIBRARY_PATH="{{cuda_lib_path}}:${LIBRARY_PATH:-}" cargo test
+
+generate-vectors: copy-ninja
+        ninja -C build vectors/qwen36_semantics/.oracle-ok
+
+refresh-vector-oracles:
+        python3 build_tools/qwen36-vectors/src/qwen36_vectors/__main__.py generate-all --output-root build/vectors/qwen36_semantics --clean
+        python3 build_tools/qwen36-vectors/src/qwen36_vectors/__main__.py write-oracles --input-root build/vectors/qwen36_semantics
+
+bench *args: copy-ninja
+        ninja -C build bench
+        build/qsfi_bench_native {{args}}
+
+model-bench *args: copy-ninja
+        ninja -C build
+        LIBRARY_PATH="{{cuda_lib_path}}:${LIBRARY_PATH:-}" cargo run --release --bin qs3_model_bench -- {{args}}
 
 copy-ninja:
         mkdir -p build

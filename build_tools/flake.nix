@@ -66,7 +66,6 @@
           clang-tools
           tinycc
           python3
-          uv
           gdb
           just
           ninja

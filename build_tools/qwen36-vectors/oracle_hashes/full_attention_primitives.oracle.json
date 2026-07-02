@@ -1,0 +1,113 @@
+{
+  "files": [
+    {
+      "bytes": 65536,
+      "path": "attention_cos_sin_cache_bf16.bf16",
+      "sha256": "8127d0b990b8464e824e3a2da4075c93fba51f05ca5c80f34882361dcc1b6805"
+    },
+    {
+      "bytes": 131072,
+      "path": "attention_cos_sin_cache_f32.f32",
+      "sha256": "61e8945ad20d2276358a7be5c559fc482ffce5e3f315bc2e30cd2bd911e49bad"
+    },
+    {
+      "bytes": 49152,
+      "path": "attention_gate_extracted.bf16",
+      "sha256": "dd8ac92ea6c631954c1aa01996f7cc012e0a56a0daf811568e126a3bb47ac85b"
+    },
+    {
+      "bytes": 49152,
+      "path": "attention_gate_out_initial.bf16",
+      "sha256": "970376ac3f6575cc500c4c8161e761450ac6a317fe47e211bbb2c03f917e67ce"
+    },
+    {
+      "bytes": 49152,
+      "path": "attention_gated_output_bf16.bf16",
+      "sha256": "bbb88950bb81833ba1c884c3793bbc90793af16bcb5d0ce1e912ddee46768e70"
+    },
+    {
+      "bytes": 98304,
+      "path": "attention_gated_output_f32.f32",
+      "sha256": "836e75436c9e180c49be34d13c92f401528422acb2bb03877a2c27f9c246b223"
+    },
+    {
+      "bytes": 6144,
+      "path": "attention_k_input.bf16",
+      "sha256": "03936455d25e0caa004fa4e1054f865827f6965d2efaac88a270d1c4c6121b6e"
+    },
+    {
+      "bytes": 6144,
+      "path": "attention_k_norm_bf16.bf16",
+      "sha256": "21283cdd6f88fe0af5a8633121352bfca412b7b1c13049217c8e3695bf39f497"
+    },
+    {
+      "bytes": 12288,
+      "path": "attention_k_norm_f32.f32",
+      "sha256": "eb34dfb80f5f283a6589ffa7a8efe9658acdaec7f654aaacbeb6215df8ca3fe5"
+    },
+    {
+      "bytes": 512,
+      "path": "attention_k_norm_raw_weight.bf16",
+      "sha256": "1625d50a9c44c64f833df270d090e0eddf5008f88f97690317caaf0a78435862"
+    },
+    {
+      "bytes": 6144,
+      "path": "attention_k_rope_bf16.bf16",
+      "sha256": "6d75bf626c7f2be68dcd0d6b74dc14d87652a65188f57e06de21cbc5ede6d0ed"
+    },
+    {
+      "bytes": 12288,
+      "path": "attention_k_rope_f32.f32",
+      "sha256": "51505b5aaa87d3fef442493a361157606731d4639b43e2fa103004de38b6e0a0"
+    },
+    {
+      "bytes": 98304,
+      "path": "attention_packed_q_gate.bf16",
+      "sha256": "6ccf876cd79844f1fbd60c82d9778246a02d61d6ea61f5a82f5bd9db9b82d6cc"
+    },
+    {
+      "bytes": 24,
+      "path": "attention_positions.i32",
+      "sha256": "85dcbd97e385de120f3ad849f75093283ccedf9f45bdd3c1a1341928c8304d4c"
+    },
+    {
+      "bytes": 49152,
+      "path": "attention_q_extracted.bf16",
+      "sha256": "c97580ab030f49eedec579d2ce5bcbbbb14d6fb9d33c7dd51607d6127d644513"
+    },
+    {
+      "bytes": 49152,
+      "path": "attention_q_norm_bf16.bf16",
+      "sha256": "fee5ab69bce27f7ec51767140ba881c8467f19b8c12f1338d7bec33e50b13cc8"
+    },
+    {
+      "bytes": 98304,
+      "path": "attention_q_norm_f32.f32",
+      "sha256": "419be9c6d0f0f3329bffde2bdf6f09fa3a3c0d8308a49d92a6ccb6b2516874ab"
+    },
+    {
+      "bytes": 512,
+      "path": "attention_q_norm_raw_weight.bf16",
+      "sha256": "feccc0e9fc0bdeb741ebf4a2c5977bece32d2d2d3681e7e73b39e6189335d665"
+    },
+    {
+      "bytes": 49152,
+      "path": "attention_q_rope_bf16.bf16",
+      "sha256": "448bad61549b98676574529e8adc9d8022c7fadc29ff4d0b64f63313a948d1a2"
+    },
+    {
+      "bytes": 98304,
+      "path": "attention_q_rope_f32.f32",
+      "sha256": "c4dcac95107a7ae136affe958359ad27f4bc0343dd9d97de05bea247b1217dc6"
+    },
+    {
+      "bytes": 13440,
+      "path": "manifest.json",
+      "sha256": "c3dd713551bfc2f3ce3e4a204c330f25ac632d5c101db518098700e3f5b34185"
+    }
+  ],
+  "group": "full_attention_primitives",
+  "hash": "sha256",
+  "root": "full_attention_primitives",
+  "schema_version": 1
+}

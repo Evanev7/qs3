@@ -1,0 +1,228 @@
+{
+  "files": [
+    {
+      "bytes": 633,
+      "path": "README.md",
+      "sha256": "c44debae22363be7148030cba19cf7f19a33a03ef528273367f5521c7db2a850"
+    },
+    {
+      "bytes": 32,
+      "path": "gemma_fused_add_rmsnorm_dim8_debug/expected_output_bf16.bf16",
+      "sha256": "e0d7d59ac232b89ca9c5f4487cbf229a23413433acd0119744321c5ca63e91e9"
+    },
+    {
+      "bytes": 64,
+      "path": "gemma_fused_add_rmsnorm_dim8_debug/expected_output_f32.f32",
+      "sha256": "65d539262d6cf386a1711f55381a218894f4718aa1e861d514dcb17dce9e5f30"
+    },
+    {
+      "bytes": 32,
+      "path": "gemma_fused_add_rmsnorm_dim8_debug/expected_residual_out_bf16.bf16",
+      "sha256": "3fb6d9411a8ff2a11e3c275cba606a16a35710c8d4ec81145d206ede24a11f0e"
+    },
+    {
+      "bytes": 64,
+      "path": "gemma_fused_add_rmsnorm_dim8_debug/expected_residual_out_f32.f32",
+      "sha256": "5f8b359bbafa6a42626c461887078877180ef0e28c8da9545adb55b9ff87d313"
+    },
+    {
+      "bytes": 32,
+      "path": "gemma_fused_add_rmsnorm_dim8_debug/gemma_effective_weight_f32.f32",
+      "sha256": "d1e343275c5566fd3be9652dfef7676b9856af618981c5f8ad08072cee26947f"
+    },
+    {
+      "bytes": 5403,
+      "path": "gemma_fused_add_rmsnorm_dim8_debug/manifest.json",
+      "sha256": "90223e7b7233d54243ec88738efe1db1e75ebdfa1c638719d2c7fd5a866176b5"
+    },
+    {
+      "bytes": 64,
+      "path": "gemma_fused_add_rmsnorm_dim8_debug/output_bf16_margin_to_midpoint_f32.f32",
+      "sha256": "1ea507b222f3cdfd8ea82ae0093d626c0daf5b6854ec8f306413b740bd925d29"
+    },
+    {
+      "bytes": 16,
+      "path": "gemma_fused_add_rmsnorm_dim8_debug/raw_weight.bf16",
+      "sha256": "953d579ad8b8033f14bf0b1d0ccbbba436ae45e7384d809cb517a231d0bb9458"
+    },
+    {
+      "bytes": 32,
+      "path": "gemma_fused_add_rmsnorm_dim8_debug/residual.bf16",
+      "sha256": "f1314858f47440ddca9f7513cb9a87da969e7868079690db631b8bfb0aed01b8"
+    },
+    {
+      "bytes": 32,
+      "path": "gemma_fused_add_rmsnorm_dim8_debug/standard_output_bf16.bf16",
+      "sha256": "89a1a0da6bd4bb43b6099a9c2a2cec7b52fae411acfe190265e75e7da99a5e5c"
+    },
+    {
+      "bytes": 64,
+      "path": "gemma_fused_add_rmsnorm_dim8_debug/standard_output_f32.f32",
+      "sha256": "650e7ff1d811ff5684f393190759b31f3306d3c052a28644c301385a30ef890b"
+    },
+    {
+      "bytes": 32,
+      "path": "gemma_fused_add_rmsnorm_dim8_debug/x.bf16",
+      "sha256": "6de80a996ce1c75eb779ce29ff1318cbdff3bb0b28628f34e2fd593409293723"
+    },
+    {
+      "bytes": 8192,
+      "path": "gemma_fused_add_rmsnorm_hidden2048/expected_output_bf16.bf16",
+      "sha256": "5d1e24e07908de0b2b8986082ce15b02aa63e45bac524eeb66db5ce525a45394"
+    },
+    {
+      "bytes": 16384,
+      "path": "gemma_fused_add_rmsnorm_hidden2048/expected_output_f32.f32",
+      "sha256": "6298381276fb4c2f69eee732676a47681e563e31ae3b4885e208694cbf63dbde"
+    },
+    {
+      "bytes": 8192,
+      "path": "gemma_fused_add_rmsnorm_hidden2048/expected_residual_out_bf16.bf16",
+      "sha256": "0cc607602ce44783abdf8c292b7a9c62f85757c07459d9e117e885c6fda518a8"
+    },
+    {
+      "bytes": 16384,
+      "path": "gemma_fused_add_rmsnorm_hidden2048/expected_residual_out_f32.f32",
+      "sha256": "a33814cdbc548e1f4b7d4d6f5be5e08971fcf81e6b6cfcd0a71985f5b7ca6a26"
+    },
+    {
+      "bytes": 8192,
+      "path": "gemma_fused_add_rmsnorm_hidden2048/gemma_effective_weight_f32.f32",
+      "sha256": "59ef6d25bf50fdeb6c10ddb31cc8448e92449ac1fcee2b9ce6beea9ddef225fe"
+    },
+    {
+      "bytes": 5432,
+      "path": "gemma_fused_add_rmsnorm_hidden2048/manifest.json",
+      "sha256": "bb395cf89ea18ecaf4e55325c6a69a29e5082a795eb9b20060d80a5ac71942a2"
+    },
+    {
+      "bytes": 16384,
+      "path": "gemma_fused_add_rmsnorm_hidden2048/output_bf16_margin_to_midpoint_f32.f32",
+      "sha256": "0aba520b9e2910e4ed41d43ba7c406d26449ed0cd55498898453077c22b93335"
+    },
+    {
+      "bytes": 4096,
+      "path": "gemma_fused_add_rmsnorm_hidden2048/raw_weight.bf16",
+      "sha256": "54e574ed5d73008ab5a125338be3a850490eed77a0034f313bae9cc7df0a6cab"
+    },
+    {
+      "bytes": 8192,
+      "path": "gemma_fused_add_rmsnorm_hidden2048/residual.bf16",
+      "sha256": "49084f545cf2832cfd3f4e00f597d453e1aed897ebe54d27665bff5f26568185"
+    },
+    {
+      "bytes": 8192,
+      "path": "gemma_fused_add_rmsnorm_hidden2048/standard_output_bf16.bf16",
+      "sha256": "602e6629b6c78f2b2bd7ba456bbaefdc7366db8c9b732ec09428d22a8576cf0e"
+    },
+    {
+      "bytes": 16384,
+      "path": "gemma_fused_add_rmsnorm_hidden2048/standard_output_f32.f32",
+      "sha256": "d91eff6a1580e814c867852728dd9627edc8887bffa1daec310c9a65ab3fa94e"
+    },
+    {
+      "bytes": 8192,
+      "path": "gemma_fused_add_rmsnorm_hidden2048/x.bf16",
+      "sha256": "625ceb22d8269d5f51d63dcbc0f9f8b13acdb77e98fc848c37b80b0da3253a0d"
+    },
+    {
+      "bytes": 32,
+      "path": "gemma_rmsnorm_dim8_debug/expected_output_bf16.bf16",
+      "sha256": "f879b9ec8bb1c59070f0e4a663ed26171fdf82717f63a990efb9cf002696115c"
+    },
+    {
+      "bytes": 64,
+      "path": "gemma_rmsnorm_dim8_debug/expected_output_f32.f32",
+      "sha256": "9a0e26f6e19cafe225a3438195a224857579b856d08aa72a6ed1da0a7bccd53c"
+    },
+    {
+      "bytes": 32,
+      "path": "gemma_rmsnorm_dim8_debug/gemma_effective_weight_f32.f32",
+      "sha256": "d1e343275c5566fd3be9652dfef7676b9856af618981c5f8ad08072cee26947f"
+    },
+    {
+      "bytes": 4624,
+      "path": "gemma_rmsnorm_dim8_debug/manifest.json",
+      "sha256": "3e78001861f00dceb44e21ed1449890722e21d6b1f55370729e5bd05ddd2628b"
+    },
+    {
+      "bytes": 64,
+      "path": "gemma_rmsnorm_dim8_debug/output_bf16_margin_to_midpoint_f32.f32",
+      "sha256": "1457da51847c26de26aaa9a0e6355f171801f027f9bbed30fc94a6af774c70e9"
+    },
+    {
+      "bytes": 16,
+      "path": "gemma_rmsnorm_dim8_debug/raw_weight.bf16",
+      "sha256": "953d579ad8b8033f14bf0b1d0ccbbba436ae45e7384d809cb517a231d0bb9458"
+    },
+    {
+      "bytes": 32,
+      "path": "gemma_rmsnorm_dim8_debug/standard_output_bf16.bf16",
+      "sha256": "3e90469b45a8ca983e6396858bfe352af2b5e21524a8f3a156371dbdd80cf1d9"
+    },
+    {
+      "bytes": 64,
+      "path": "gemma_rmsnorm_dim8_debug/standard_output_f32.f32",
+      "sha256": "80cbc5a7645c03d828b55177bd42784485784cc58785dcbf8f05d9661b89524b"
+    },
+    {
+      "bytes": 32,
+      "path": "gemma_rmsnorm_dim8_debug/x.bf16",
+      "sha256": "6de80a996ce1c75eb779ce29ff1318cbdff3bb0b28628f34e2fd593409293723"
+    },
+    {
+      "bytes": 12288,
+      "path": "gemma_rmsnorm_hidden2048/expected_output_bf16.bf16",
+      "sha256": "1f05bff2f258623075b05cae41e8beac8e91b60a4c1a8f3362947d49bbdfa7f7"
+    },
+    {
+      "bytes": 24576,
+      "path": "gemma_rmsnorm_hidden2048/expected_output_f32.f32",
+      "sha256": "8108b4aadcadf926a602542558909dcf190dbba8e22d06c196c43a8e17f8efc1"
+    },
+    {
+      "bytes": 8192,
+      "path": "gemma_rmsnorm_hidden2048/gemma_effective_weight_f32.f32",
+      "sha256": "59ef6d25bf50fdeb6c10ddb31cc8448e92449ac1fcee2b9ce6beea9ddef225fe"
+    },
+    {
+      "bytes": 4643,
+      "path": "gemma_rmsnorm_hidden2048/manifest.json",
+      "sha256": "de996ec913c6847cff8d0e504b65c31bcfc8e1e633f9974bcc5cf5ee716203c6"
+    },
+    {
+      "bytes": 24576,
+      "path": "gemma_rmsnorm_hidden2048/output_bf16_margin_to_midpoint_f32.f32",
+      "sha256": "88bdceab395926f355f424b1d99970e2a5526bf05bb7be7d7ccad839739d8f28"
+    },
+    {
+      "bytes": 4096,
+      "path": "gemma_rmsnorm_hidden2048/raw_weight.bf16",
+      "sha256": "54e574ed5d73008ab5a125338be3a850490eed77a0034f313bae9cc7df0a6cab"
+    },
+    {
+      "bytes": 12288,
+      "path": "gemma_rmsnorm_hidden2048/standard_output_bf16.bf16",
+      "sha256": "13fffedc2a5b21ca43bdc8bef8598c2d542632b656962979989802adc7f797b5"
+    },
+    {
+      "bytes": 24576,
+      "path": "gemma_rmsnorm_hidden2048/standard_output_f32.f32",
+      "sha256": "8a34e74b509830000d9499cc47133757b403dfb8db6774e36a47b3c52f6160d4"
+    },
+    {
+      "bytes": 12288,
+      "path": "gemma_rmsnorm_hidden2048/x.bf16",
+      "sha256": "07a5538560e8458bc20886b0da872837dff2f24cd99cf832bb86aa4b1860e953"
+    },
+    {
+      "bytes": 2611,
+      "path": "index.json",
+      "sha256": "8dbbb1bec9848415f74930477c91e9672006dfc462a133b8280c7aa29de6c98a"
+    }
+  ],
+  "group": "norms",
+  "hash": "sha256",
+  "root": "norms",
+  "schema_version": 1
+}
