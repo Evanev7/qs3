@@ -142,8 +142,7 @@ static std::vector<float> norm_rope_rmsnorm_reference(
     const std::vector<uint16_t>& weight,
     int rows,
     int hidden,
-    float eps,
-    float weight_bias = 0.0f
+    float eps
 )
 {
     std::vector<float> out(x.size(), 0.0f);
@@ -156,7 +155,7 @@ static std::vector<float> norm_rope_rmsnorm_reference(
         const float inv_rms = 1.0f / std::sqrt(sum_sq / static_cast<float>(hidden) + eps);
         for (int col = 0; col < hidden; ++col) {
             const size_t offset = static_cast<size_t>(row) * hidden + col;
-            out[offset] = bf16_to_f32(x[offset]) * inv_rms * (weight_bias + bf16_to_f32(weight[col]));
+            out[offset] = bf16_to_f32(x[offset]) * inv_rms * (1.0f + bf16_to_f32(weight[col]));
         }
     }
     return out;
@@ -167,8 +166,7 @@ static std::vector<float> norm_rope_rmsnorm_reference(
     const std::vector<float>& weight,
     int rows,
     int hidden,
-    float eps,
-    float weight_bias = 0.0f
+    float eps
 )
 {
     std::vector<float> out(x.size(), 0.0f);
@@ -181,7 +179,7 @@ static std::vector<float> norm_rope_rmsnorm_reference(
         const float inv_rms = 1.0f / std::sqrt(sum_sq / static_cast<float>(hidden) + eps);
         for (int col = 0; col < hidden; ++col) {
             const size_t offset = static_cast<size_t>(row) * hidden + col;
-            out[offset] = x[offset] * inv_rms * (weight_bias + weight[col]);
+            out[offset] = x[offset] * inv_rms * (1.0f + weight[col]);
         }
     }
     return out;
@@ -211,7 +209,7 @@ static void norm_rope_fused_add_rmsnorm_reference(
         const float inv_rms = 1.0f / std::sqrt(sum_sq / static_cast<float>(hidden) + eps);
         for (int col = 0; col < hidden; ++col) {
             const size_t offset = static_cast<size_t>(row) * hidden + col;
-            norm_out[offset] = residual_out[offset] * inv_rms * bf16_to_f32(weight[col]);
+            norm_out[offset] = residual_out[offset] * inv_rms * (1.0f + bf16_to_f32(weight[col]));
         }
     }
 }
@@ -240,7 +238,7 @@ static void norm_rope_fused_add_rmsnorm_reference(
         const float inv_rms = 1.0f / std::sqrt(sum_sq / static_cast<float>(hidden) + eps);
         for (int col = 0; col < hidden; ++col) {
             const size_t offset = static_cast<size_t>(row) * hidden + col;
-            norm_out[offset] = residual_out[offset] * inv_rms * weight[col];
+            norm_out[offset] = residual_out[offset] * inv_rms * (1.0f + weight[col]);
         }
     }
 }
@@ -426,8 +424,7 @@ static void test_qsfi_rmsnorm_bf16_qwen_qk_norm_flattened_per_head_matches_cpu()
     }
     const std::vector<uint16_t> h_x = norm_rope_bf16_from_f32(x_f32);
     const std::vector<uint16_t> h_weight(head_dim, norm_rope_f32_to_bf16(0.0f));
-    const std::vector<float> want
-        = norm_rope_rmsnorm_reference(h_x, h_weight, flat_rows, head_dim, eps, 1.0f);
+    const std::vector<float> want = norm_rope_rmsnorm_reference(h_x, h_weight, flat_rows, head_dim, eps);
 
     qsfi_context* ctx = nullptr;
     uint16_t* d_x = nullptr;
@@ -452,7 +449,6 @@ static void test_qsfi_rmsnorm_bf16_qwen_qk_norm_flattened_per_head_matches_cpu()
     desc.weight = norm_rope_tensor1_bf16(d_weight, head_dim);
     desc.out = tensor2_bf16(d_out, flat_rows, head_dim);
     desc.hidden_size = head_dim;
-    desc.weight_bias = 1.0f;
     desc.eps = eps;
     check_status(qsfi_rmsnorm(ctx, &desc), QSFI_STATUS_OK, "qwen qk rmsnorm flattened");
     check_cuda(cudaDeviceSynchronize(), "sync qwen qk rmsnorm flattened");
@@ -550,22 +546,6 @@ static void norm_rope_test_rmsnorm_rejects_invalid_desc_shape_dtype()
         qsfi_rmsnorm(ctx, &bad),
         QSFI_STATUS_INVALID_ARGUMENT,
         "rmsnorm rejects non-positive eps"
-    );
-
-    bad = desc;
-    bad.weight_bias = 0.5f;
-    check_status(
-        qsfi_rmsnorm(ctx, &bad),
-        QSFI_STATUS_UNSUPPORTED,
-        "rmsnorm rejects unsupported weight_bias"
-    );
-
-    bad = desc;
-    bad.weight_bias = std::numeric_limits<float>::quiet_NaN();
-    check_status(
-        qsfi_rmsnorm(ctx, &bad),
-        QSFI_STATUS_INVALID_ARGUMENT,
-        "rmsnorm rejects non-finite weight_bias"
     );
 
     cudaFree(d_x);
@@ -738,22 +718,6 @@ static void test_qsfi_fused_add_rmsnorm_rejects_invalid_desc_shape_dtype()
         qsfi_fused_add_rmsnorm(ctx, &bad),
         QSFI_STATUS_INVALID_ARGUMENT,
         "fused add rmsnorm rejects non-positive eps"
-    );
-
-    bad = desc;
-    bad.weight_bias = 0.5f;
-    check_status(
-        qsfi_fused_add_rmsnorm(ctx, &bad),
-        QSFI_STATUS_UNSUPPORTED,
-        "fused add rmsnorm rejects unsupported weight_bias"
-    );
-
-    bad = desc;
-    bad.weight_bias = std::numeric_limits<float>::quiet_NaN();
-    check_status(
-        qsfi_fused_add_rmsnorm(ctx, &bad),
-        QSFI_STATUS_INVALID_ARGUMENT,
-        "fused add rmsnorm rejects non-finite weight_bias"
     );
 
     cudaFree(d_x);

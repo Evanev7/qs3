@@ -149,12 +149,12 @@ kernel-specific tests run.
 
 Current Rust coverage includes:
 
-- Gemma RMSNorm: upload `x.bf16` and `raw_weight.bf16`, run `qsfi_rmsnorm` with
-  `weight_bias = 1.0`, and compare both BF16 bits and f32 tolerances against
-  `expected_output_bf16` / `expected_output_f32`.
+- Gemma RMSNorm: upload `x.bf16` and `raw_weight.bf16`, run `qsfi_rmsnorm`,
+  and compare both BF16 bits and f32 tolerances against `expected_output_bf16`
+  / `expected_output_f32`.
 - Fused residual RMSNorm: upload `x.bf16`, `residual.bf16`, and
-  `raw_weight.bf16`, run `qsfi_fused_add_rmsnorm` with `weight_bias = 1.0`,
-  and compare normalized output plus updated residual output.
+  `raw_weight.bf16`, run `qsfi_fused_add_rmsnorm`, and compare normalized
+  output plus updated residual output.
 - Attention primitive bundle: upload prepared Q/K/V, q/k norm weights,
   positions, RoPE outputs, append page metadata, and expected attention output;
   assert explicit q/k norm plus partial RoPE before `POS_ENCODING_NONE`

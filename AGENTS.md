@@ -31,8 +31,9 @@ current architecture:
 - validation before device addressing is contract: Rust descriptors validate
   shapes/strides/modes; checked native paths cover attention page ids and append
   positions, GDN metadata, embedding ids, and MoE routes/weights
-- public randomized BF16 runner works end-to-end for current narrow shapes. keep
-  it correct while adding real-model support
+- public randomized/vector BF16 runner paths cover the real hidden/GQA/GDN/MoE
+  shape work for narrow test shapes. keep them correct while adding real-model
+  loading
 
 real qwen3.6-35b-a3b findings:
 - materialized BF16 and NVFP4 safetensors exist on `spark-1565`
@@ -73,11 +74,11 @@ GDN direction:
   FlashInfer GDN headers/JIT plumbing through local `qscu` files
 
 near-term todos:
-- adjust `QwenConfig`, `QwenWeights`, attention runtime, and runner for the real
-  BF16 model shapes: hidden 2048, GQA, head dim 256, q/k norms, GDN packed/output
-  dims, and fused MoE expert layout
 - implement BF16 config+safetensors loading through the qwen-specific manifest
-  validator and `WeightLoadBackend`
-- then add the first CLI that accepts/prints token ids. tokenizer/chat template
+  validator and `WeightLoadBackend`. build the complete tensor plan and reject
+  invalid config/index/header state before CUDA allocation
+- add a real-model smoke path that constructs `QwenConfig`/`QwenWeights` from the
+  loader and runs token-id generation against the BF16 text-only weights
+- add the first user CLI that accepts/prints token ids. tokenizer/chat template
   can follow after model token generation works
 - after BF16 real-model correctness, add the first optimized NVFP4 path

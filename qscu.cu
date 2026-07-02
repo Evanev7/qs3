@@ -683,9 +683,9 @@ struct post_conv_params {
     const __nv_bfloat16* b;
     int64_t b_stride0;
     int64_t b_stride1;
-    const float* a_log;
+    const __nv_bfloat16* a_log;
     int64_t a_log_stride0;
-    const float* dt_bias;
+    const __nv_bfloat16* dt_bias;
     int64_t dt_bias_stride0;
     __nv_bfloat16* q;
     int64_t q_stride0;
@@ -786,9 +786,11 @@ __global__ void qwen36_gdn_post_conv_prepare_kernel(post_conv_params p)
             p.b + static_cast<int64_t>(token) * p.b_stride0
             + static_cast<int64_t>(v_head) * p.b_stride1
         );
-        const float x = a_value + p.dt_bias[static_cast<int64_t>(v_head) * p.dt_bias_stride0];
+        const float x
+            = a_value + load_bf16(p.dt_bias + static_cast<int64_t>(v_head) * p.dt_bias_stride0);
         const float softplus_x = x <= QSFI_QWEN36_GDN_SOFTPLUS_THRESHOLD ? log1pf(expf(x)) : x;
-        float g_value = -expf(p.a_log[static_cast<int64_t>(v_head) * p.a_log_stride0]) * softplus_x;
+        float g_value = -expf(load_bf16(p.a_log + static_cast<int64_t>(v_head) * p.a_log_stride0))
+            * softplus_x;
         if (p.forget_gate_output == QSCU_GDN_FORGET_LINEAR_ALPHA)
             g_value = expf(g_value);
         if (p.g_out != nullptr) {
@@ -1095,10 +1097,10 @@ qsfi_status validate_post_conv_desc(const qscu_qwen36_gdn_post_conv_prepare_desc
     status = validate_tensor(desc->b, QSFI_DTYPE_BF16);
     if (status != QSFI_STATUS_OK)
         return status;
-    status = validate_tensor(desc->a_log, QSFI_DTYPE_F32);
+    status = validate_tensor(desc->a_log, QSFI_DTYPE_BF16);
     if (status != QSFI_STATUS_OK)
         return status;
-    status = validate_tensor(desc->dt_bias, QSFI_DTYPE_F32);
+    status = validate_tensor(desc->dt_bias, QSFI_DTYPE_BF16);
     if (status != QSFI_STATUS_OK)
         return status;
     status = validate_tensor(desc->q, QSFI_DTYPE_BF16);
@@ -1732,9 +1734,9 @@ qsfi_status qscu_qwen36_gdn_post_conv_prepare_bf16(
     params.b = static_cast<const __nv_bfloat16*>(desc->b.data);
     params.b_stride0 = desc->b.stride[0];
     params.b_stride1 = desc->b.stride[1];
-    params.a_log = static_cast<const float*>(desc->a_log.data);
+    params.a_log = static_cast<const __nv_bfloat16*>(desc->a_log.data);
     params.a_log_stride0 = desc->a_log.stride[0];
-    params.dt_bias = static_cast<const float*>(desc->dt_bias.data);
+    params.dt_bias = static_cast<const __nv_bfloat16*>(desc->dt_bias.data);
     params.dt_bias_stride0 = desc->dt_bias.stride[0];
     params.q = static_cast<__nv_bfloat16*>(desc->q.data);
     params.q_stride0 = desc->q.stride[0];

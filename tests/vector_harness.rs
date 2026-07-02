@@ -1658,7 +1658,6 @@ fn qwen36_cuda_rmsnorm_hidden2048_matches_gemma_vector() {
         weight: raw_weight.tensor1().unwrap(),
         out: out.tensor2().unwrap(),
         hidden_size: u32::try_from(hidden).unwrap(),
-        weight_bias: 1.0,
         eps,
     };
 
@@ -1728,7 +1727,6 @@ fn qwen36_cuda_fused_add_rmsnorm_hidden2048_matches_gemma_vector() {
         weight: raw_weight.tensor1().unwrap(),
         out: x.tensor2().unwrap(),
         hidden_size: u32::try_from(hidden).unwrap(),
-        weight_bias: 1.0,
         eps,
     };
 
@@ -1878,8 +1876,8 @@ fn qwen36_cuda_gdn_post_conv_raw_split_and_gates_match_vector() {
     let conv_out = DeviceTensor::from_bf16(conv_out_raw).unwrap();
     let a = DeviceTensor::from_bf16(a_raw).unwrap();
     let b = DeviceTensor::from_bf16(b_raw).unwrap();
-    let a_log = DeviceTensor::from_f32(a_log_raw).unwrap();
-    let dt_bias = DeviceTensor::from_f32(dt_bias_raw).unwrap();
+    let a_log = DeviceTensor::from_bf16(a_log_raw).unwrap();
+    let dt_bias = DeviceTensor::from_bf16(dt_bias_raw).unwrap();
     let q = DeviceTensor::zeroed_bf16(q_raw.spec.shape.clone()).unwrap();
     let k = DeviceTensor::zeroed_bf16(k_raw.spec.shape.clone()).unwrap();
     let v = DeviceTensor::zeroed_bf16(v_raw.spec.shape.clone()).unwrap();
@@ -1984,8 +1982,8 @@ fn qwen36_cuda_gdn_post_conv_l2norm_matches_vector() {
     let conv_out = DeviceTensor::from_bf16(conv_out_raw).unwrap();
     let a = DeviceTensor::from_bf16(a_raw).unwrap();
     let b = DeviceTensor::from_bf16(b_raw).unwrap();
-    let a_log = DeviceTensor::from_f32(a_log_raw).unwrap();
-    let dt_bias = DeviceTensor::from_f32(dt_bias_raw).unwrap();
+    let a_log = DeviceTensor::from_bf16(a_log_raw).unwrap();
+    let dt_bias = DeviceTensor::from_bf16(dt_bias_raw).unwrap();
     let q = DeviceTensor::zeroed_bf16(q_l2norm_raw.spec.shape.clone()).unwrap();
     let k = DeviceTensor::zeroed_bf16(k_l2norm_raw.spec.shape.clone()).unwrap();
     let v = DeviceTensor::zeroed_bf16(v_raw.spec.shape.clone()).unwrap();
@@ -2146,8 +2144,8 @@ fn qscu_gdn_prefill_recurrence_matches_vector() {
     let v = DeviceTensor::from_bf16(v_raw).unwrap();
     let a = DeviceTensor::from_bf16(a_raw).unwrap();
     let b = DeviceTensor::from_bf16(b_raw).unwrap();
-    let a_log = DeviceTensor::from_f32(a_log_raw).unwrap();
-    let dt_bias = DeviceTensor::from_f32(dt_bias_raw).unwrap();
+    let a_log = DeviceTensor::from_bf16(a_log_raw).unwrap();
+    let dt_bias = DeviceTensor::from_bf16(dt_bias_raw).unwrap();
     let seq_indptr = DeviceTensor::from_i32(case_offsets_raw).unwrap();
     let state = DeviceTensor::zeroed_bf16(expected_state_raw.spec.shape.clone()).unwrap();
     let state_indices: Vec<i32> = (0..case_count)
@@ -2320,8 +2318,8 @@ fn qscu_gdn_decode_continuation_matches_vector() {
     let v2 = DeviceTensor::from_bf16(v2_raw).unwrap();
     let a2 = DeviceTensor::from_bf16(a2_raw).unwrap();
     let b2 = DeviceTensor::from_bf16(b2_raw).unwrap();
-    let a_log = DeviceTensor::from_f32(a_log_raw).unwrap();
-    let dt_bias = DeviceTensor::from_f32(dt_bias_raw).unwrap();
+    let a_log = DeviceTensor::from_bf16(a_log_raw).unwrap();
+    let dt_bias = DeviceTensor::from_bf16(dt_bias_raw).unwrap();
     let state = DeviceTensor::<u16>::from_slice_with_dtype(
         &state_pool_words,
         vec![
@@ -2648,8 +2646,8 @@ fn qwen36_cuda_gdn_integrated_prefill_decode_state_evolution_matches_vector() {
     let conv_weight = DeviceTensor::from_bf16(conv_weight_raw).unwrap();
     let a = DeviceTensor::from_bf16(a_raw).unwrap();
     let b = DeviceTensor::from_bf16(b_raw).unwrap();
-    let a_log = DeviceTensor::from_f32(a_log_raw).unwrap();
-    let dt_bias = DeviceTensor::from_f32(dt_bias_raw).unwrap();
+    let a_log = DeviceTensor::from_bf16(a_log_raw).unwrap();
+    let dt_bias = DeviceTensor::from_bf16(dt_bias_raw).unwrap();
     let seq_indptr = DeviceTensor::from_i32(case_offsets_raw).unwrap();
     let slot0_indices = DeviceTensor::<i32>::from_i32_slice(&slot0, vec![case_count]).unwrap();
     let slot1_indices = DeviceTensor::<i32>::from_i32_slice(&slot1, vec![case_count]).unwrap();

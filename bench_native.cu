@@ -635,8 +635,7 @@ bool bench_gemm_f32_out(
         || !weight.alloc(static_cast<size_t>(n) * k, "gemm_f32 weight")
         || !out.alloc(static_cast<size_t>(tokens) * n, "gemm_f32 out")
         || !workspace.alloc(kGemmWorkspaceBytes, "gemm_f32 workspace")
-        || !x.zero(state.stream, "gemm_f32 x")
-        || !weight.zero(state.stream, "gemm_f32 weight")
+        || !x.zero(state.stream, "gemm_f32 x") || !weight.zero(state.stream, "gemm_f32 weight")
         || !out.zero(state.stream, "gemm_f32 out") || !sync_setup(state.stream)) {
         return false;
     }
@@ -679,7 +678,6 @@ bool bench_rmsnorm(BenchState& state, const Options& options, uint32_t tokens)
     desc.weight = tensor1(weight.ptr, QSFI_DTYPE_BF16, kHidden);
     desc.out = tensor2(out.ptr, QSFI_DTYPE_BF16, tokens, kHidden);
     desc.hidden_size = kHidden;
-    desc.weight_bias = 1.0f;
     desc.eps = 1.0e-6f;
 
     BenchRow row {
@@ -714,7 +712,6 @@ bool bench_fused_add_rmsnorm(BenchState& state, const Options& options, uint32_t
     desc.weight = tensor1(weight.ptr, QSFI_DTYPE_BF16, kHidden);
     desc.out = desc.x;
     desc.hidden_size = kHidden;
-    desc.weight_bias = 1.0f;
     desc.eps = 1.0e-6f;
 
     BenchRow row { "fused_add_rmsnorm_hidden2048",
@@ -843,7 +840,6 @@ bool bench_full_attention_head_rmsnorm(
     desc.weight = tensor1(weight.ptr, QSFI_DTYPE_BF16, kAttentionHeadDim);
     desc.out = desc.x;
     desc.hidden_size = kAttentionHeadDim;
-    desc.weight_bias = 1.0f;
     desc.eps = 1.0e-6f;
 
     BenchRow row { name,  "qsfi_rmsnorm",    tokens, rows, 0, 0, kAttentionHeadDim,
@@ -1336,8 +1332,8 @@ bool bench_gdn_post_conv(BenchState& state, const Options& options, uint32_t tok
     DeviceBuffer<uint16_t> conv_out;
     DeviceBuffer<uint16_t> a;
     DeviceBuffer<uint16_t> b;
-    DeviceBuffer<float> a_log;
-    DeviceBuffer<float> dt_bias;
+    DeviceBuffer<uint16_t> a_log;
+    DeviceBuffer<uint16_t> dt_bias;
     DeviceBuffer<uint16_t> q;
     DeviceBuffer<uint16_t> k;
     DeviceBuffer<uint16_t> v;
@@ -1366,8 +1362,8 @@ bool bench_gdn_post_conv(BenchState& state, const Options& options, uint32_t tok
     desc.conv_out = tensor2(conv_out.ptr, QSFI_DTYPE_BF16, tokens, kGdnPackedDim);
     desc.a = tensor2(a.ptr, QSFI_DTYPE_BF16, tokens, kGdnVHeads);
     desc.b = tensor2(b.ptr, QSFI_DTYPE_BF16, tokens, kGdnVHeads);
-    desc.a_log = tensor1(a_log.ptr, QSFI_DTYPE_F32, kGdnVHeads);
-    desc.dt_bias = tensor1(dt_bias.ptr, QSFI_DTYPE_F32, kGdnVHeads);
+    desc.a_log = tensor1(a_log.ptr, QSFI_DTYPE_BF16, kGdnVHeads);
+    desc.dt_bias = tensor1(dt_bias.ptr, QSFI_DTYPE_BF16, kGdnVHeads);
     desc.q = tensor3(q.ptr, QSFI_DTYPE_BF16, tokens, kGdnQHeads, kGdnKeyDim);
     desc.k = tensor3(k.ptr, QSFI_DTYPE_BF16, tokens, kGdnKHeads, kGdnKeyDim);
     desc.v = tensor3(v.ptr, QSFI_DTYPE_BF16, tokens, kGdnVHeads, kGdnValueDim);
@@ -1405,8 +1401,8 @@ bool bench_gdn_prefill(BenchState& state, const Options& options, uint32_t token
     DeviceBuffer<uint16_t> v;
     DeviceBuffer<uint16_t> a;
     DeviceBuffer<uint16_t> b;
-    DeviceBuffer<float> a_log;
-    DeviceBuffer<float> dt_bias;
+    DeviceBuffer<uint16_t> a_log;
+    DeviceBuffer<uint16_t> dt_bias;
     DeviceBuffer<uint16_t> recurrent_state;
     DeviceBuffer<int32_t> seq_indptr;
     DeviceBuffer<int32_t> slot0_indices;
@@ -1445,8 +1441,8 @@ bool bench_gdn_prefill(BenchState& state, const Options& options, uint32_t token
     live_to_staged.v = tensor3(v.ptr, QSFI_DTYPE_BF16, tokens, kGdnVHeads, kGdnValueDim);
     live_to_staged.a = tensor2(a.ptr, QSFI_DTYPE_BF16, tokens, kGdnVHeads);
     live_to_staged.b = tensor2(b.ptr, QSFI_DTYPE_BF16, tokens, kGdnVHeads);
-    live_to_staged.a_log = tensor1(a_log.ptr, QSFI_DTYPE_F32, kGdnVHeads);
-    live_to_staged.dt_bias = tensor1(dt_bias.ptr, QSFI_DTYPE_F32, kGdnVHeads);
+    live_to_staged.a_log = tensor1(a_log.ptr, QSFI_DTYPE_BF16, kGdnVHeads);
+    live_to_staged.dt_bias = tensor1(dt_bias.ptr, QSFI_DTYPE_BF16, kGdnVHeads);
     live_to_staged.state = gdn_state_tensor(recurrent_state.ptr, QSFI_DTYPE_BF16, 2);
     live_to_staged.seq_indptr = seq_indptr.ptr;
     live_to_staged.state_indices = tensor1(slot0_indices.ptr, QSFI_DTYPE_I32, 1);
@@ -1497,8 +1493,8 @@ bool bench_gdn_decode(BenchState& state, const Options& options, uint32_t tokens
     DeviceBuffer<uint16_t> v;
     DeviceBuffer<uint16_t> a;
     DeviceBuffer<uint16_t> b;
-    DeviceBuffer<float> a_log;
-    DeviceBuffer<float> dt_bias;
+    DeviceBuffer<uint16_t> a_log;
+    DeviceBuffer<uint16_t> dt_bias;
     DeviceBuffer<uint16_t> recurrent_state;
     DeviceBuffer<int32_t> slot0_indices;
     DeviceBuffer<int32_t> slot1_indices;
@@ -1535,13 +1531,10 @@ bool bench_gdn_decode(BenchState& state, const Options& options, uint32_t tokens
     live_to_staged.v = tensor3(v.ptr, QSFI_DTYPE_BF16, tokens, kGdnVHeads, kGdnValueDim);
     live_to_staged.a = tensor2(a.ptr, QSFI_DTYPE_BF16, tokens, kGdnVHeads);
     live_to_staged.b = tensor2(b.ptr, QSFI_DTYPE_BF16, tokens, kGdnVHeads);
-    live_to_staged.a_log = tensor1(a_log.ptr, QSFI_DTYPE_F32, kGdnVHeads);
-    live_to_staged.dt_bias = tensor1(dt_bias.ptr, QSFI_DTYPE_F32, kGdnVHeads);
-    live_to_staged.state = gdn_state_tensor(
-        recurrent_state.ptr,
-        QSFI_DTYPE_BF16,
-        static_cast<int64_t>(tokens) * 2
-    );
+    live_to_staged.a_log = tensor1(a_log.ptr, QSFI_DTYPE_BF16, kGdnVHeads);
+    live_to_staged.dt_bias = tensor1(dt_bias.ptr, QSFI_DTYPE_BF16, kGdnVHeads);
+    live_to_staged.state
+        = gdn_state_tensor(recurrent_state.ptr, QSFI_DTYPE_BF16, static_cast<int64_t>(tokens) * 2);
     live_to_staged.state_indices = tensor1(slot0_indices.ptr, QSFI_DTYPE_I32, tokens);
     live_to_staged.state_out_indices = tensor1(slot1_indices.ptr, QSFI_DTYPE_I32, tokens);
     live_to_staged.out = tensor3(out.ptr, QSFI_DTYPE_BF16, tokens, kGdnVHeads, kGdnValueDim);
@@ -1575,8 +1568,7 @@ bool bench_gdn_decode(BenchState& state, const Options& options, uint32_t tokens
         options,
         row,
         [&]() {
-            qscu_gdn_decode_desc& active
-                = (phase++ & 1u) == 0 ? live_to_staged : staged_to_live;
+            qscu_gdn_decode_desc& active = (phase++ & 1u) == 0 ? live_to_staged : staged_to_live;
             return qscu_gdn_decode(state.qsfi, &active);
         },
         [&]() { report_qsfi_error(state.qsfi); }
@@ -1869,7 +1861,8 @@ bool bench_greedy_argmax(BenchState& state, const Options& options, uint32_t tok
     if (!logits.alloc(static_cast<size_t>(tokens) * kLogitsSmokeVocab, "argmax logits")
         || !next_token_ids.alloc(tokens, "argmax next_token_ids")
         || !logits.zero(state.stream, "argmax logits")
-        || !next_token_ids.zero(state.stream, "argmax next_token_ids") || !sync_setup(state.stream)) {
+        || !next_token_ids.zero(state.stream, "argmax next_token_ids")
+        || !sync_setup(state.stream)) {
         return false;
     }
 

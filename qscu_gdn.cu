@@ -35,11 +35,6 @@ struct tensor1_bf16_view {
     int64_t stride0;
 };
 
-struct tensor1_f32_view {
-    const float* data;
-    int64_t stride0;
-};
-
 struct tensor2_bf16_view {
     const __nv_bfloat16* data;
     int64_t stride0;
@@ -73,8 +68,8 @@ struct gdn_kernel_params {
     tensor3_bf16_view v;
     tensor2_bf16_view a;
     tensor2_bf16_view b;
-    tensor1_f32_view a_log;
-    tensor1_f32_view dt_bias;
+    tensor1_bf16_view a_log;
+    tensor1_bf16_view dt_bias;
     state_view state;
     const int32_t* seq_indptr;
     const int32_t* state_indices;
@@ -130,9 +125,9 @@ tensor2_bf16_view tensor2_in(const qsfi_tensor2& tensor)
     return { static_cast<const __nv_bfloat16*>(tensor.data), tensor.stride[0], tensor.stride[1] };
 }
 
-tensor1_f32_view tensor1_f32_in(const qsfi_tensor1& tensor)
+tensor1_bf16_view tensor1_bf16_in(const qsfi_tensor1& tensor)
 {
-    return { static_cast<const float*>(tensor.data), tensor.stride[0] };
+    return { static_cast<const __nv_bfloat16*>(tensor.data), tensor.stride[0] };
 }
 
 state_view state_inout(const qsfi_tensor4& tensor)
@@ -263,8 +258,10 @@ __device__ void run_gdn_sequence_row(
             p.b.data + static_cast<int64_t>(token) * p.b.stride0
             + static_cast<int64_t>(v_head) * p.b.stride1
         );
-        const float a_log = p.a_log.data[static_cast<int64_t>(v_head) * p.a_log.stride0];
-        const float dt_bias = p.dt_bias.data[static_cast<int64_t>(v_head) * p.dt_bias.stride0];
+        const float a_log
+            = load_bf16(p.a_log.data + static_cast<int64_t>(v_head) * p.a_log.stride0);
+        const float dt_bias
+            = load_bf16(p.dt_bias.data + static_cast<int64_t>(v_head) * p.dt_bias.stride0);
         const float g = -expf(a_log)
             * softplus(
                 a_value + dt_bias,
@@ -494,10 +491,10 @@ qsfi_status validate_gdn_tensors(
     status = validate_tensor(ctx, b, "gdn.b", QSFI_DTYPE_BF16, 2);
     if (status != QSFI_STATUS_OK)
         return status;
-    status = validate_tensor(ctx, a_log, "gdn.a_log", QSFI_DTYPE_F32, 1);
+    status = validate_tensor(ctx, a_log, "gdn.a_log", QSFI_DTYPE_BF16, 1);
     if (status != QSFI_STATUS_OK)
         return status;
-    status = validate_tensor(ctx, dt_bias, "gdn.dt_bias", QSFI_DTYPE_F32, 1);
+    status = validate_tensor(ctx, dt_bias, "gdn.dt_bias", QSFI_DTYPE_BF16, 1);
     if (status != QSFI_STATUS_OK)
         return status;
     if (state.dtype != QSFI_DTYPE_BF16 && state.dtype != QSFI_DTYPE_F32) {
@@ -550,8 +547,8 @@ gdn_kernel_params make_params(
     params.v = tensor3_in(desc->v);
     params.a = tensor2_in(desc->a);
     params.b = tensor2_in(desc->b);
-    params.a_log = tensor1_f32_in(desc->a_log);
-    params.dt_bias = tensor1_f32_in(desc->dt_bias);
+    params.a_log = tensor1_bf16_in(desc->a_log);
+    params.dt_bias = tensor1_bf16_in(desc->dt_bias);
     params.state = state_inout(desc->state);
     params.seq_indptr = seq_indptr;
     params.state_indices = static_cast<const int32_t*>(desc->state_indices.data);

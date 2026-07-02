@@ -124,8 +124,10 @@ def build_gdn_decoder_layer_tensors() -> tuple[list[TensorWrite], dict[str, Any]
         [0, ROWS],
     )
     q_raw, k_raw, v_raw = _split_qkv(conv_output_bf16, token_count=ROWS)
-    a_log = tuple(_build_a_log())
-    dt_bias = tuple(_build_dt_bias())
+    a_log_words = _bf16_words(_build_a_log())
+    dt_bias_words = _bf16_words(_build_dt_bias())
+    a_log = tuple(bf16_bits_to_float32(word) for word in a_log_words)
+    dt_bias = tuple(bf16_bits_to_float32(word) for word in dt_bias_words)
     _g, decay_exp, beta = _gating(a, b, list(a_log), list(dt_bias))
     q_values, k_values = _recurrent_qk_values(
         q_raw,
@@ -214,21 +216,21 @@ def build_gdn_decoder_layer_tensors() -> tuple[list[TensorWrite], dict[str, Any]
         ),
         TensorWrite(
             "A_log",
-            "f32",
+            "bf16",
             (VALUE_HEADS,),
-            a_log,
+            a_log_words,
             "input",
             "gdn_recurrence",
-            "Per-value-head A_log used for GDN decay materialization.",
+            "BF16 per-value-head A_log used for GDN decay materialization.",
         ),
         TensorWrite(
             "dt_bias",
-            "f32",
+            "bf16",
             (VALUE_HEADS,),
-            dt_bias,
+            dt_bias_words,
             "input",
             "gdn_recurrence",
-            "Per-value-head dt_bias added to decay gate logits.",
+            "BF16 per-value-head dt_bias added to decay gate logits.",
         ),
         TensorWrite(
             "rms_weight",

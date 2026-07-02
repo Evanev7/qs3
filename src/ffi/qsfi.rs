@@ -197,16 +197,6 @@ fn validate_eps(eps: f32) -> Result<(), Status> {
     Ok(())
 }
 
-fn validate_rmsnorm_weight_bias(weight_bias: f32) -> Result<(), Status> {
-    if !weight_bias.is_finite() {
-        return Err(Status::InvalidArgument);
-    }
-    if weight_bias != 0.0 && weight_bias != 1.0 {
-        return Err(Status::Unsupported);
-    }
-    Ok(())
-}
-
 fn tensor1_is_contiguous(tensor: &Tensor1) -> bool {
     tensor.stride[0] == 1
 }
@@ -286,8 +276,7 @@ fn validate_rmsnorm_common(
 }
 
 fn validate_rmsnorm_desc(desc: &RmsnormDesc) -> Result<(), Status> {
-    validate_rmsnorm_common(&desc.x, &desc.weight, &desc.out, desc.hidden_size, desc.eps)?;
-    validate_rmsnorm_weight_bias(desc.weight_bias)
+    validate_rmsnorm_common(&desc.x, &desc.weight, &desc.out, desc.hidden_size, desc.eps)
 }
 
 fn validate_fused_add_rmsnorm_desc(desc: &FusedAddRmsnormDesc) -> Result<(), Status> {
@@ -300,8 +289,7 @@ fn validate_fused_add_rmsnorm_desc(desc: &FusedAddRmsnormDesc) -> Result<(), Sta
     {
         return Err(Status::InvalidArgument);
     }
-    validate_u32_i64(desc.residual_inout.stride[0])?;
-    validate_rmsnorm_weight_bias(desc.weight_bias)
+    validate_u32_i64(desc.residual_inout.stride[0])
 }
 
 fn supported_rope_head_dim(head_dim: u32) -> bool {
@@ -1940,7 +1928,6 @@ mod tests {
             weight: tensor1(device_ptr(31), dtype, [128], [1]),
             out: tensor2(device_ptr(32), dtype, [3, 128], [128, 1]),
             hidden_size: 128,
-            weight_bias: 0.0,
             eps: 1.0e-6,
         }
     }
@@ -1950,10 +1937,6 @@ mod tests {
         let valid = rmsnorm_desc(DTYPE_BF16);
         assert_eq!(validate_rmsnorm_desc(&valid), Ok(()));
         assert_eq!(validate_rmsnorm_desc(&rmsnorm_desc(DTYPE_F32)), Ok(()));
-
-        let mut qwen_qk_norm = valid;
-        qwen_qk_norm.weight_bias = 1.0;
-        assert_eq!(validate_rmsnorm_desc(&qwen_qk_norm), Ok(()));
 
         let unsupported = rmsnorm_desc(DTYPE_F16);
         assert_eq!(
@@ -1965,16 +1948,6 @@ mod tests {
         bad_eps.eps = 0.0;
         assert_eq!(
             validate_rmsnorm_desc(&bad_eps),
-            Err(Status::InvalidArgument)
-        );
-
-        let mut bad_bias = valid;
-        bad_bias.weight_bias = 0.5;
-        assert_eq!(validate_rmsnorm_desc(&bad_bias), Err(Status::Unsupported));
-
-        bad_bias.weight_bias = f32::NAN;
-        assert_eq!(
-            validate_rmsnorm_desc(&bad_bias),
             Err(Status::InvalidArgument)
         );
 
@@ -2001,7 +1974,6 @@ mod tests {
             weight: tensor1(device_ptr(42), DTYPE_BF16, [128], [1]),
             out: x,
             hidden_size: 128,
-            weight_bias: 0.0,
             eps: 1.0e-6,
         }
     }
@@ -2022,23 +1994,6 @@ mod tests {
         bad_residual_dtype.residual_inout.dtype = DTYPE_F32;
         assert_eq!(
             validate_fused_add_rmsnorm_desc(&bad_residual_dtype),
-            Err(Status::InvalidArgument)
-        );
-
-        let mut qwen_decoder_norm = valid;
-        qwen_decoder_norm.weight_bias = 1.0;
-        assert_eq!(validate_fused_add_rmsnorm_desc(&qwen_decoder_norm), Ok(()));
-
-        let mut bad_bias = valid;
-        bad_bias.weight_bias = 0.5;
-        assert_eq!(
-            validate_fused_add_rmsnorm_desc(&bad_bias),
-            Err(Status::Unsupported)
-        );
-
-        bad_bias.weight_bias = f32::NAN;
-        assert_eq!(
-            validate_fused_add_rmsnorm_desc(&bad_bias),
             Err(Status::InvalidArgument)
         );
     }

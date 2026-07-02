@@ -1,9 +1,9 @@
 {
   "files": [
     {
-      "bytes": 128,
-      "path": "gdn_decoder_A_log.f32",
-      "sha256": "cc49fd81d86b33e0e77980d3e8947524ba9c25b8c9197c7c93a7bf03c41a8fea"
+      "bytes": 64,
+      "path": "gdn_decoder_A_log.bf16",
+      "sha256": "d189625c15e2368aa232b33ac5cf4d048527cb7d4d7dc4040d09a36722fd545d"
     },
     {
       "bytes": 131072,
@@ -26,9 +26,9 @@
       "sha256": "3f2730f9ed71e58b20600039b62f358c5a8eba96b8498db520699c0f63c3cdeb"
     },
     {
-      "bytes": 128,
-      "path": "gdn_decoder_dt_bias.f32",
-      "sha256": "9f27fd72af4b6d7631200776c881ce85bb0b8713712eb60a3e8c1de0247e4a41"
+      "bytes": 64,
+      "path": "gdn_decoder_dt_bias.bf16",
+      "sha256": "d33a528df209b19544787d364680eb4ab8f90578267363a1159b6a6b8cce10c7"
     },
     {
       "bytes": 98304,
@@ -271,9 +271,9 @@
       "sha256": "6a69f39c9a21809e90d38cf38fcab2456a81a4310de59120ec710007746f0c6e"
     },
     {
-      "bytes": 33254,
+      "bytes": 33266,
       "path": "manifest.json",
-      "sha256": "be3f560dd167b02dc7d4db1c9019572edc245e561226d653c9879714a1085126"
+      "sha256": "073c9878528a190837b69de5086717bd9e10fbfd784b0c45ad190c57ef5bd1d9"
     }
   ],
   "group": "gdn_decoder_layer",

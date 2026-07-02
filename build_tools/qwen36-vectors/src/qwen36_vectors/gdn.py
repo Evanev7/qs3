@@ -61,8 +61,10 @@ def build_gdn_artifact() -> tuple[VectorManifest, dict[str, list[float] | list[i
     q_l2norm_f32, q_l2norm_bf16 = _l2_normalize_heads(q_raw, KEY_HEADS, KEY_DIM)
     k_l2norm_f32, k_l2norm_bf16 = _l2_normalize_heads(k_raw, KEY_HEADS, KEY_DIM)
 
-    a_log = _build_a_log()
-    dt_bias = _build_dt_bias()
+    a_log_words = [_bf16(value) for value in _build_a_log()]
+    dt_bias_words = [_bf16(value) for value in _build_dt_bias()]
+    a_log = [bf16_bits_to_float32(word) for word in a_log_words]
+    dt_bias = [bf16_bits_to_float32(word) for word in dt_bias_words]
     g, decay_exp, beta = _gating(a, b, a_log, dt_bias)
 
     recurrent_q, recurrent_k = _recurrent_qk_values(
@@ -133,8 +135,8 @@ def build_gdn_artifact() -> tuple[VectorManifest, dict[str, list[float] | list[i
         "q_l2norm_bf16": q_l2norm_bf16,
         "k_l2norm_f32": k_l2norm_f32,
         "k_l2norm_bf16": k_l2norm_bf16,
-        "A_log": a_log,
-        "dt_bias": dt_bias,
+        "A_log": a_log_words,
+        "dt_bias": dt_bias_words,
         "g": g,
         "decay_exp": decay_exp,
         "beta": beta,
@@ -528,17 +530,17 @@ def _build_manifest(recurrence_debug: dict[str, object]) -> VectorManifest:
             ),
             TensorSpec(
                 "A_log",
-                "f32",
+                "bf16",
                 (VALUE_HEADS,),
                 role="input",
-                description="Per-value-head A_log used for GDN decay materialization.",
+                description="BF16 per-value-head A_log used for GDN decay materialization.",
             ),
             TensorSpec(
                 "dt_bias",
-                "f32",
+                "bf16",
                 (VALUE_HEADS,),
                 role="input",
-                description="Per-value-head dt_bias added to a before softplus.",
+                description="BF16 per-value-head dt_bias added to a before softplus.",
             ),
             TensorSpec(
                 "g",

@@ -231,6 +231,16 @@ qsfi_tensor1 gdn_tensor1_f32(void* data, int64_t n)
     return tensor;
 }
 
+qsfi_tensor1 gdn_tensor1_bf16(void* data, int64_t n)
+{
+    qsfi_tensor1 tensor {};
+    tensor.data = data;
+    tensor.dtype = QSFI_DTYPE_BF16;
+    tensor.shape[0] = n;
+    tensor.stride[0] = 1;
+    return tensor;
+}
+
 qsfi_tensor2 gdn_tensor2_bf16(void* data, int64_t n, int64_t heads)
 {
     qsfi_tensor2 tensor {};
@@ -1232,8 +1242,8 @@ void test_gdn_decode_one_hot_recurrence()
     std::vector<uint16_t> h_v(v_elems);
     std::vector<uint16_t> h_a(gate_elems);
     std::vector<uint16_t> h_b(gate_elems);
-    std::vector<float> h_a_log(kGdnVHeads, 0.0f);
-    std::vector<float> h_dt_bias(kGdnVHeads, 0.0f);
+    std::vector<uint16_t> h_a_log(kGdnVHeads, kBf16Zero);
+    std::vector<uint16_t> h_dt_bias(kGdnVHeads, kBf16Zero);
     std::vector<uint16_t> h_state(state_elems, kBf16Zero);
     std::vector<uint16_t> h_out(v_elems, kSentinel);
     const int32_t state_indices[] = { 0 };
@@ -1244,8 +1254,8 @@ void test_gdn_decode_one_hot_recurrence()
     uint16_t* d_v = nullptr;
     uint16_t* d_a = nullptr;
     uint16_t* d_b = nullptr;
-    float* d_a_log = nullptr;
-    float* d_dt_bias = nullptr;
+    uint16_t* d_a_log = nullptr;
+    uint16_t* d_dt_bias = nullptr;
     uint16_t* d_state = nullptr;
     int32_t* d_state_indices = nullptr;
     uint16_t* d_out = nullptr;
@@ -1275,8 +1285,8 @@ void test_gdn_decode_one_hot_recurrence()
     desc.v = gdn_tensor3_bf16(d_v, tokens, kGdnVHeads, kGdnValueDim);
     desc.a = gdn_tensor2_bf16(d_a, tokens, kGdnVHeads);
     desc.b = gdn_tensor2_bf16(d_b, tokens, kGdnVHeads);
-    desc.a_log = gdn_tensor1_f32(d_a_log, kGdnVHeads);
-    desc.dt_bias = gdn_tensor1_f32(d_dt_bias, kGdnVHeads);
+    desc.a_log = gdn_tensor1_bf16(d_a_log, kGdnVHeads);
+    desc.dt_bias = gdn_tensor1_bf16(d_dt_bias, kGdnVHeads);
     desc.state = gdn_state_tensor_bf16(d_state);
     desc.state_indices = gdn_tensor1_i32(d_state_indices, tokens);
     desc.out = gdn_tensor3_bf16(d_out, tokens, kGdnVHeads, kGdnValueDim);
@@ -1351,8 +1361,8 @@ void test_gdn_prefill_two_token_recurrence()
     std::vector<uint16_t> h_v(v_elems);
     std::vector<uint16_t> h_a(gate_elems);
     std::vector<uint16_t> h_b(gate_elems);
-    std::vector<float> h_a_log(kGdnVHeads, 0.0f);
-    std::vector<float> h_dt_bias(kGdnVHeads, 0.0f);
+    std::vector<uint16_t> h_a_log(kGdnVHeads, kBf16Zero);
+    std::vector<uint16_t> h_dt_bias(kGdnVHeads, kBf16Zero);
     std::vector<uint16_t> h_state(state_elems, kBf16Zero);
     std::vector<uint16_t> h_out(v_elems, kSentinel);
     const int32_t seq_indptr[] = { 0, tokens };
@@ -1364,8 +1374,8 @@ void test_gdn_prefill_two_token_recurrence()
     uint16_t* d_v = nullptr;
     uint16_t* d_a = nullptr;
     uint16_t* d_b = nullptr;
-    float* d_a_log = nullptr;
-    float* d_dt_bias = nullptr;
+    uint16_t* d_a_log = nullptr;
+    uint16_t* d_dt_bias = nullptr;
     uint16_t* d_state = nullptr;
     int32_t* d_seq_indptr = nullptr;
     int32_t* d_state_indices = nullptr;
@@ -1397,8 +1407,8 @@ void test_gdn_prefill_two_token_recurrence()
     desc.v = gdn_tensor3_bf16(d_v, tokens, kGdnVHeads, kGdnValueDim);
     desc.a = gdn_tensor2_bf16(d_a, tokens, kGdnVHeads);
     desc.b = gdn_tensor2_bf16(d_b, tokens, kGdnVHeads);
-    desc.a_log = gdn_tensor1_f32(d_a_log, kGdnVHeads);
-    desc.dt_bias = gdn_tensor1_f32(d_dt_bias, kGdnVHeads);
+    desc.a_log = gdn_tensor1_bf16(d_a_log, kGdnVHeads);
+    desc.dt_bias = gdn_tensor1_bf16(d_dt_bias, kGdnVHeads);
     desc.state = gdn_state_tensor_bf16(d_state);
     desc.seq_indptr = d_seq_indptr;
     desc.state_indices = gdn_tensor1_i32(d_state_indices, 1);
@@ -1994,8 +2004,8 @@ struct checked_gdn_buffers {
     uint16_t* v;
     uint16_t* a;
     uint16_t* b;
-    float* a_log;
-    float* dt_bias;
+    uint16_t* a_log;
+    uint16_t* dt_bias;
     uint16_t* state;
     uint16_t* out;
 };
@@ -2026,8 +2036,8 @@ bool make_checked_gdn_buffers(checked_gdn_buffers& buffers, int tokens)
     std::vector<uint16_t> h_v(v_elems);
     std::vector<uint16_t> h_a(gate_elems);
     std::vector<uint16_t> h_b(gate_elems);
-    std::vector<float> h_a_log(kGdnVHeads, 0.0f);
-    std::vector<float> h_dt_bias(kGdnVHeads, 0.0f);
+    std::vector<uint16_t> h_a_log(kGdnVHeads, kBf16Zero);
+    std::vector<uint16_t> h_dt_bias(kGdnVHeads, kBf16Zero);
     std::vector<uint16_t> h_state(state_elems, kBf16Zero);
     std::vector<uint16_t> h_out(v_elems, kSentinel);
     fill_gdn_inputs(h_q, h_k, h_v, h_a, h_b, tokens);
@@ -2074,8 +2084,8 @@ void test_checked_gdn_decode_rejects_invalid_state_index()
         desc.v = gdn_tensor3_bf16(buffers.v, tokens, kGdnVHeads, kGdnValueDim);
         desc.a = gdn_tensor2_bf16(buffers.a, tokens, kGdnVHeads);
         desc.b = gdn_tensor2_bf16(buffers.b, tokens, kGdnVHeads);
-        desc.a_log = gdn_tensor1_f32(buffers.a_log, kGdnVHeads);
-        desc.dt_bias = gdn_tensor1_f32(buffers.dt_bias, kGdnVHeads);
+        desc.a_log = gdn_tensor1_bf16(buffers.a_log, kGdnVHeads);
+        desc.dt_bias = gdn_tensor1_bf16(buffers.dt_bias, kGdnVHeads);
         desc.state = gdn_state_tensor_bf16(buffers.state);
         desc.state_indices = gdn_tensor1_i32(d_state_indices, tokens);
         desc.out = gdn_tensor3_bf16(buffers.out, tokens, kGdnVHeads, kGdnValueDim);
@@ -2135,8 +2145,8 @@ void test_checked_gdn_prefill_rejects_invalid_seq_indptr()
         desc.v = gdn_tensor3_bf16(buffers.v, tokens, kGdnVHeads, kGdnValueDim);
         desc.a = gdn_tensor2_bf16(buffers.a, tokens, kGdnVHeads);
         desc.b = gdn_tensor2_bf16(buffers.b, tokens, kGdnVHeads);
-        desc.a_log = gdn_tensor1_f32(buffers.a_log, kGdnVHeads);
-        desc.dt_bias = gdn_tensor1_f32(buffers.dt_bias, kGdnVHeads);
+        desc.a_log = gdn_tensor1_bf16(buffers.a_log, kGdnVHeads);
+        desc.dt_bias = gdn_tensor1_bf16(buffers.dt_bias, kGdnVHeads);
         desc.state = gdn_state_tensor_bf16(buffers.state);
         desc.seq_indptr = d_seq_indptr;
         desc.state_indices = gdn_tensor1_i32(d_state_indices, 1);

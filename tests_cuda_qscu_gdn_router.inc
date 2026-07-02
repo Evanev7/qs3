@@ -143,8 +143,8 @@ qscu_qwen36_gdn_post_conv_prepare_desc qscu_test_valid_post_validation_desc()
     desc.conv_out = tensor2_bf16(qscu_test_validation_ptr(11), 1, kQscuTestGdnPackedDim);
     desc.a = gdn_tensor2_bf16(qscu_test_validation_ptr(12), 1, kGdnVHeads);
     desc.b = gdn_tensor2_bf16(qscu_test_validation_ptr(13), 1, kGdnVHeads);
-    desc.a_log = gdn_tensor1_f32(qscu_test_validation_ptr(14), kGdnVHeads);
-    desc.dt_bias = gdn_tensor1_f32(qscu_test_validation_ptr(15), kGdnVHeads);
+    desc.a_log = qscu_test_tensor1_bf16(qscu_test_validation_ptr(14), kGdnVHeads);
+    desc.dt_bias = qscu_test_tensor1_bf16(qscu_test_validation_ptr(15), kGdnVHeads);
     desc.q = gdn_tensor3_bf16(qscu_test_validation_ptr(16), 1, kGdnQHeads, kGdnKeyDim);
     desc.k = gdn_tensor3_bf16(qscu_test_validation_ptr(17), 1, kGdnKHeads, kGdnKeyDim);
     desc.v = gdn_tensor3_bf16(qscu_test_validation_ptr(18), 1, kGdnVHeads, kGdnValueDim);
@@ -515,8 +515,8 @@ void test_qscu_qwen36_gdn_post_conv_prepare_bf16_cpu_reference()
     std::vector<uint16_t> h_conv(static_cast<size_t>(kTokens) * kQscuTestGdnPackedDim, kBf16Zero);
     std::vector<uint16_t> h_a(static_cast<size_t>(kTokens) * kGdnVHeads, kBf16Zero);
     std::vector<uint16_t> h_b(static_cast<size_t>(kTokens) * kGdnVHeads, kBf16Zero);
-    std::vector<float> h_a_log(kGdnVHeads, 0.0f);
-    std::vector<float> h_dt_bias(kGdnVHeads, 0.0f);
+    std::vector<uint16_t> h_a_log(kGdnVHeads, kBf16Zero);
+    std::vector<uint16_t> h_dt_bias(kGdnVHeads, kBf16Zero);
 
     qscu_test_store_bf16(h_conv, qscu_test_packed_q_offset(0, kQHead, kDim0), 3.0f);
     qscu_test_store_bf16(h_conv, qscu_test_packed_q_offset(0, kQHead, kDim1), 4.0f);
@@ -532,8 +532,8 @@ void test_qscu_qwen36_gdn_post_conv_prepare_bf16_cpu_reference()
     qscu_test_store_bf16(h_conv, qscu_test_packed_v_offset(1, kVHead, kVDim), -2.5f);
     qscu_test_store_bf16(h_a, qscu_test_gdn_gate_offset(1, kVHead), -1.0f);
     qscu_test_store_bf16(h_b, qscu_test_gdn_gate_offset(1, kVHead), 1.5f);
-    h_a_log[kVHead] = std::log(2.0f);
-    h_dt_bias[kVHead] = 0.25f;
+    h_a_log[kVHead] = qscu_test_f32_to_bf16(std::log(2.0f));
+    h_dt_bias[kVHead] = qscu_test_f32_to_bf16(0.25f);
 
     uint16_t* d_conv = nullptr;
     uint16_t* d_a = nullptr;
@@ -541,8 +541,8 @@ void test_qscu_qwen36_gdn_post_conv_prepare_bf16_cpu_reference()
     uint16_t* d_q = nullptr;
     uint16_t* d_k = nullptr;
     uint16_t* d_v = nullptr;
-    float* d_a_log = nullptr;
-    float* d_dt_bias = nullptr;
+    uint16_t* d_a_log = nullptr;
+    uint16_t* d_dt_bias = nullptr;
     float* d_g = nullptr;
     float* d_beta = nullptr;
 
@@ -568,8 +568,8 @@ void test_qscu_qwen36_gdn_post_conv_prepare_bf16_cpu_reference()
         desc.conv_out = tensor2_bf16(d_conv, kTokens, kQscuTestGdnPackedDim);
         desc.a = gdn_tensor2_bf16(d_a, kTokens, kGdnVHeads);
         desc.b = gdn_tensor2_bf16(d_b, kTokens, kGdnVHeads);
-        desc.a_log = gdn_tensor1_f32(d_a_log, kGdnVHeads);
-        desc.dt_bias = gdn_tensor1_f32(d_dt_bias, kGdnVHeads);
+        desc.a_log = qscu_test_tensor1_bf16(d_a_log, kGdnVHeads);
+        desc.dt_bias = qscu_test_tensor1_bf16(d_dt_bias, kGdnVHeads);
         desc.q = gdn_tensor3_bf16(d_q, kTokens, kGdnQHeads, kGdnKeyDim);
         desc.k = gdn_tensor3_bf16(d_k, kTokens, kGdnKHeads, kGdnKeyDim);
         desc.v = gdn_tensor3_bf16(d_v, kTokens, kGdnVHeads, kGdnValueDim);
@@ -677,7 +677,9 @@ void test_qscu_qwen36_gdn_post_conv_prepare_bf16_cpu_reference()
             auto expected_log_decay = [&](int token) {
                 const size_t offset = qscu_test_gdn_gate_offset(token, kVHead);
                 const float a_value = bf16_to_f32(h_a[offset]);
-                return -std::exp(h_a_log[kVHead]) * qscu_test_softplus(a_value + h_dt_bias[kVHead]);
+                const float a_log = bf16_to_f32(h_a_log[kVHead]);
+                const float dt_bias = bf16_to_f32(h_dt_bias[kVHead]);
+                return -std::exp(a_log) * qscu_test_softplus(a_value + dt_bias);
             };
             auto check_gates = [&](int token) {
                 const size_t offset = qscu_test_gdn_gate_offset(token, kVHead);

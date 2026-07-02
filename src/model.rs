@@ -670,12 +670,12 @@ impl QwenWeights {
                     a_log: DeviceBuffer::from_slice(
                         device,
                         stream,
-                        &constant_f32_values(QWEN36_GDN_NUM_V_HEADS as usize, -2.0)?,
+                        &constant_bf16_values(QWEN36_GDN_NUM_V_HEADS as usize, -2.0)?,
                     )?,
                     dt_bias: DeviceBuffer::from_slice(
                         device,
                         stream,
-                        &constant_f32_values(QWEN36_GDN_NUM_V_HEADS as usize, -1.0)?,
+                        &constant_bf16_values(QWEN36_GDN_NUM_V_HEADS as usize, -1.0)?,
                     )?,
                     rms_weight: DeviceBuffer::from_slice(
                         device,
@@ -938,8 +938,8 @@ struct QwenGdnWeights {
     b_proj: DeviceBuffer<u16>,
     conv_weight: DeviceBuffer<u16>,
     conv_bias: DeviceBuffer<u16>,
-    a_log: DeviceBuffer<f32>,
-    dt_bias: DeviceBuffer<f32>,
+    a_log: DeviceBuffer<u16>,
+    dt_bias: DeviceBuffer<u16>,
     rms_weight: DeviceBuffer<u16>,
     out_proj: DeviceBuffer<u16>,
     mlp_norm: DeviceBuffer<u16>,
@@ -1848,8 +1848,11 @@ impl ModelRunner {
                 rows,
                 QWEN36_GDN_NUM_V_HEADS,
             )?,
-            a_log: DVec::<{ ffi::DTYPE_F32 }>::contiguous(layer.a_log, QWEN36_GDN_NUM_V_HEADS)?,
-            dt_bias: DVec::<{ ffi::DTYPE_F32 }>::contiguous(layer.dt_bias, QWEN36_GDN_NUM_V_HEADS)?,
+            a_log: DVec::<{ ffi::DTYPE_BF16 }>::contiguous(layer.a_log, QWEN36_GDN_NUM_V_HEADS)?,
+            dt_bias: DVec::<{ ffi::DTYPE_BF16 }>::contiguous(
+                layer.dt_bias,
+                QWEN36_GDN_NUM_V_HEADS,
+            )?,
             q: self.gdn_q_heads(self.scratch.gdn_q.as_device_ptr(), rows)?,
             k: self.gdn_k_heads(self.scratch.gdn_k.as_device_ptr(), rows)?,
             v: self.gdn_v_heads(self.scratch.gdn_v.as_device_ptr(), rows)?,
@@ -1884,11 +1887,11 @@ impl ModelRunner {
                         rows,
                         QWEN36_GDN_NUM_V_HEADS,
                     )?,
-                    a_log: DVec::<{ ffi::DTYPE_F32 }>::contiguous(
+                    a_log: DVec::<{ ffi::DTYPE_BF16 }>::contiguous(
                         layer.a_log,
                         QWEN36_GDN_NUM_V_HEADS,
                     )?,
-                    dt_bias: DVec::<{ ffi::DTYPE_F32 }>::contiguous(
+                    dt_bias: DVec::<{ ffi::DTYPE_BF16 }>::contiguous(
                         layer.dt_bias,
                         QWEN36_GDN_NUM_V_HEADS,
                     )?,
@@ -1929,11 +1932,11 @@ impl ModelRunner {
                         rows,
                         QWEN36_GDN_NUM_V_HEADS,
                     )?,
-                    a_log: DVec::<{ ffi::DTYPE_F32 }>::contiguous(
+                    a_log: DVec::<{ ffi::DTYPE_BF16 }>::contiguous(
                         layer.a_log,
                         QWEN36_GDN_NUM_V_HEADS,
                     )?,
-                    dt_bias: DVec::<{ ffi::DTYPE_F32 }>::contiguous(
+                    dt_bias: DVec::<{ ffi::DTYPE_BF16 }>::contiguous(
                         layer.dt_bias,
                         QWEN36_GDN_NUM_V_HEADS,
                     )?,
@@ -2945,12 +2948,6 @@ fn constant_bf16_values(count: usize, value: f32) -> Result<Vec<u16>, Status> {
     Ok(out)
 }
 
-fn constant_f32_values(count: usize, value: f32) -> Result<Vec<f32>, Status> {
-    let mut out = try_vec_with_capacity(count)?;
-    out.resize(count, value);
-    Ok(out)
-}
-
 fn qwen36_gdn_scale() -> f32 {
     1.0 / (QWEN36_GDN_KEY_DIM as f32).sqrt()
 }
@@ -3152,10 +3149,6 @@ mod tests {
     }
 
     fn empty_bf16_buffer() -> DeviceBuffer<u16> {
-        DeviceBuffer::empty(-1)
-    }
-
-    fn empty_f32_buffer() -> DeviceBuffer<f32> {
         DeviceBuffer::empty(-1)
     }
 
@@ -4161,8 +4154,8 @@ mod tests {
             a_log: DeviceBuffer::from_slice(
                 device,
                 stream,
-                &read_gdn_decoder_f32_vector(
-                    "gdn_decoder_A_log.f32",
+                &read_gdn_decoder_bf16_vector(
+                    "gdn_decoder_A_log.bf16",
                     QWEN36_GDN_NUM_V_HEADS as usize,
                 ),
             )
@@ -4170,8 +4163,8 @@ mod tests {
             dt_bias: DeviceBuffer::from_slice(
                 device,
                 stream,
-                &read_gdn_decoder_f32_vector(
-                    "gdn_decoder_dt_bias.f32",
+                &read_gdn_decoder_bf16_vector(
+                    "gdn_decoder_dt_bias.bf16",
                     QWEN36_GDN_NUM_V_HEADS as usize,
                 ),
             )
@@ -5996,8 +5989,8 @@ mod tests {
             b_proj: empty_bf16_buffer(),
             conv_weight: empty_bf16_buffer(),
             conv_bias: empty_bf16_buffer(),
-            a_log: empty_f32_buffer(),
-            dt_bias: empty_f32_buffer(),
+            a_log: empty_bf16_buffer(),
+            dt_bias: empty_bf16_buffer(),
             rms_weight: empty_bf16_buffer(),
             out_proj: empty_bf16_buffer(),
             mlp_norm: empty_bf16_buffer(),

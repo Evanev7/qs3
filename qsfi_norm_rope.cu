@@ -147,34 +147,9 @@ qsfi_status validate_rmsnorm_common(
     return validate_eps(ctx, eps);
 }
 
-qsfi_status validate_rmsnorm_weight_bias(qsfi_context* ctx, float weight_bias)
-{
-    if (!std::isfinite(weight_bias)) {
-        return set_invalid_arg(ctx, "rmsnorm weight_bias must be finite");
-    }
-    if (weight_bias != 0.0f && weight_bias != 1.0f) {
-        return set_unsupported(ctx, "rmsnorm weight_bias must be 0.0 or 1.0");
-    }
-    return QSFI_STATUS_OK;
-}
-
 template <typename T> cudaError_t launch_rmsnorm(qsfi_context* ctx, const qsfi_rmsnorm_desc* desc)
 {
-    if (desc->weight_bias == 1.0f) {
-        return flashinfer::norm::GemmaRMSNorm<T>(
-            static_cast<T*>(desc->x.data),
-            static_cast<T*>(desc->weight.data),
-            static_cast<T*>(desc->out.data),
-            static_cast<uint32_t>(desc->x.shape[0]),
-            desc->hidden_size,
-            static_cast<uint32_t>(desc->x.stride[0]),
-            static_cast<uint32_t>(desc->out.stride[0]),
-            desc->eps,
-            false,
-            ctx->stream
-        );
-    }
-    return flashinfer::norm::RMSNorm<T>(
+    return flashinfer::norm::GemmaRMSNorm<T>(
         static_cast<T*>(desc->x.data),
         static_cast<T*>(desc->weight.data),
         static_cast<T*>(desc->out.data),
@@ -191,21 +166,7 @@ template <typename T> cudaError_t launch_rmsnorm(qsfi_context* ctx, const qsfi_r
 template <typename T>
 cudaError_t launch_fused_add_rmsnorm(qsfi_context* ctx, const qsfi_fused_add_rmsnorm_desc* desc)
 {
-    if (desc->weight_bias == 1.0f) {
-        return flashinfer::norm::GemmaFusedAddRMSNorm<T>(
-            static_cast<T*>(desc->x.data),
-            static_cast<T*>(desc->residual_inout.data),
-            static_cast<T*>(desc->weight.data),
-            static_cast<uint32_t>(desc->x.shape[0]),
-            desc->hidden_size,
-            static_cast<uint32_t>(desc->x.stride[0]),
-            static_cast<uint32_t>(desc->residual_inout.stride[0]),
-            desc->eps,
-            false,
-            ctx->stream
-        );
-    }
-    return flashinfer::norm::FusedAddRMSNorm<T>(
+    return flashinfer::norm::GemmaFusedAddRMSNorm<T>(
         static_cast<T*>(desc->x.data),
         static_cast<T*>(desc->residual_inout.data),
         static_cast<T*>(desc->weight.data),
@@ -251,7 +212,7 @@ qsfi_status validate_fused_add_rmsnorm(qsfi_context* ctx, const qsfi_fused_add_r
     status = require_u32(ctx, desc->residual_inout.stride[0], "residual_inout.stride[0]");
     if (status != QSFI_STATUS_OK)
         return status;
-    return validate_rmsnorm_weight_bias(ctx, desc->weight_bias);
+    return QSFI_STATUS_OK;
 }
 
 qsfi_status validate_rope_apply(qsfi_context* ctx, const qsfi_rope_apply_desc* desc)
@@ -439,10 +400,6 @@ qsfi_status qsfi_rmsnorm(qsfi_context* ctx, const qsfi_rmsnorm_desc* desc)
     );
     if (status != QSFI_STATUS_OK)
         return status;
-    status = validate_rmsnorm_weight_bias(ctx, desc->weight_bias);
-    if (status != QSFI_STATUS_OK)
-        return status;
-
     try {
         cudaError_t err = desc->x.dtype == QSFI_DTYPE_BF16
             ? launch_rmsnorm<__nv_bfloat16>(ctx, desc)

@@ -1,9 +1,9 @@
 {
   "files": [
     {
-      "bytes": 128,
-      "path": "A_log.f32",
-      "sha256": "cc49fd81d86b33e0e77980d3e8947524ba9c25b8c9197c7c93a7bf03c41a8fea"
+      "bytes": 64,
+      "path": "A_log.bf16",
+      "sha256": "d189625c15e2368aa232b33ac5cf4d048527cb7d4d7dc4040d09a36722fd545d"
     },
     {
       "bytes": 4992,
@@ -231,9 +231,9 @@
       "sha256": "b6025b38c7a0c5f04fe06214d8ba64da6fd9aba4491db76e1a76b030f0614408"
     },
     {
-      "bytes": 128,
-      "path": "dt_bias.f32",
-      "sha256": "9f27fd72af4b6d7631200776c881ce85bb0b8713712eb60a3e8c1de0247e4a41"
+      "bytes": 64,
+      "path": "dt_bias.bf16",
+      "sha256": "d33a528df209b19544787d364680eb4ab8f90578267363a1159b6a6b8cce10c7"
     },
     {
       "bytes": 9984,
@@ -271,9 +271,9 @@
       "sha256": "6f41692113d5959350329686ab2eabb0ea6f2fa1bb4537d523cf3825195e1f57"
     },
     {
-      "bytes": 26143,
+      "bytes": 26157,
       "path": "manifest.json",
-      "sha256": "355f34e82bbc00764002a8aeb3b483cf8e66580eaa6b389f0ba776e476339514"
+      "sha256": "f7291b1cdbd0d93b43c2e6abab5a9b13de320e5796955bbd030d894a9cd4b055"
     },
     {
       "bytes": 9984,

@@ -155,8 +155,8 @@ typedef struct {
     qsfi_tensor3 v; /* bf16 [num_tokens, num_v_heads, value_dim]. */
     qsfi_tensor2 a; /* bf16 [num_tokens, num_v_heads]. */
     qsfi_tensor2 b; /* bf16 [num_tokens, num_v_heads]. */
-    qsfi_tensor1 a_log; /* f32 [num_v_heads]. */
-    qsfi_tensor1 dt_bias; /* f32 [num_v_heads]. */
+    qsfi_tensor1 a_log; /* bf16 [num_v_heads]. */
+    qsfi_tensor1 dt_bias; /* bf16 [num_v_heads]. */
     qsfi_tensor4 state; /* bf16/f32 [state_pool, num_v_heads, value_dim, key_dim]. */
     qsfi_tensor1 state_indices; /* i32 [num_tokens]. */
     qsfi_tensor1 state_out_indices; /* optional i32 [num_tokens]. */
@@ -179,8 +179,8 @@ typedef struct {
     qsfi_tensor3 v; /* bf16 [total_tokens, num_v_heads, value_dim]. */
     qsfi_tensor2 a; /* bf16 [total_tokens, num_v_heads]. */
     qsfi_tensor2 b; /* bf16 [total_tokens, num_v_heads]. */
-    qsfi_tensor1 a_log; /* f32 [num_v_heads]. */
-    qsfi_tensor1 dt_bias; /* f32 [num_v_heads]. */
+    qsfi_tensor1 a_log; /* bf16 [num_v_heads]. */
+    qsfi_tensor1 dt_bias; /* bf16 [num_v_heads]. */
     qsfi_tensor4 state; /* bf16/f32 [state_pool, num_v_heads, value_dim, key_dim]. */
     qsfi_device_ptr seq_indptr; /* i32 [batch_size + 1], device pointer. */
     qsfi_tensor1 state_indices; /* i32 [batch_size]. */
@@ -220,8 +220,8 @@ typedef struct {
     qsfi_tensor2 conv_out; /* bf16 [num_tokens, 8192]. */
     qsfi_tensor2 a; /* bf16 [num_tokens, 32]. */
     qsfi_tensor2 b; /* bf16 [num_tokens, 32]. */
-    qsfi_tensor1 a_log; /* f32 [32]. */
-    qsfi_tensor1 dt_bias; /* f32 [32]. */
+    qsfi_tensor1 a_log; /* bf16 [32]. */
+    qsfi_tensor1 dt_bias; /* bf16 [32]. */
     qsfi_tensor3 q; /* bf16 [num_tokens, 16, 128]. */
     qsfi_tensor3 k; /* bf16 [num_tokens, 16, 128]. */
     qsfi_tensor3 v; /* bf16 [num_tokens, 32, 128]. */
