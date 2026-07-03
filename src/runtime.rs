@@ -4,9 +4,9 @@ pub(crate) mod kernels;
 
 use crate::engine::{
     AppendBatch, Commit, DecodeBatch, DynDType, EngineConfig, EngineCore, EngineLayer, KvLayout,
-    Status, try_clone_slice, validate_supported_attention_grouping,
-    validate_supported_attention_head_dim,
+    Status, validate_supported_attention_grouping, validate_supported_attention_head_dim,
 };
+use crate::ext::{SafeVec, try_clone_slice};
 use crate::ffi::qscb;
 use crate::ffi::qsfi::{Context, Plan};
 use crate::ffi::{
@@ -249,9 +249,7 @@ impl EngineInner {
             .and_then(|v| v.checked_mul(config.head_dim as usize))
             .ok_or(Status::InvalidArgument)?;
         let bytes = config.kv_dtype.storage_bytes_for(elems)?;
-        self.layer_caches
-            .try_reserve(config.num_layers as usize)
-            .map_err(|_| Status::OutOfMemory)?;
+        self.layer_caches.safe_reserve(config.num_layers as usize)?;
         activate_device(config.device_ordinal)?;
         for _ in 0..config.num_layers {
             let mut k = ptr::null_mut();

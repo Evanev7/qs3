@@ -3,6 +3,7 @@ use crate::engine::{
     KvLayout, RequestId, Status, validate_supported_attention_grouping,
     validate_supported_attention_head_dim,
 };
+use crate::ext::{SafeVec, try_clone_slice};
 use crate::ffi::{self, cuda};
 use crate::runtime::device_tensor::{DMat, DTensor3, DVec};
 use crate::runtime::kernels::{
@@ -601,7 +602,7 @@ impl QwenWeights {
             &random_bf16_values(&mut rng, checked_usize_product(&[vocab, hidden])?, 0.04)?,
         )?;
 
-        let mut layers = try_vec_with_capacity(config.num_layers as usize)?;
+        let mut layers = Vec::safe_new(config.num_layers as usize)?;
         for layer_idx in 0..config.num_layers {
             let mlp_norm = DeviceBuffer::from_slice(
                 device,
@@ -1269,10 +1270,9 @@ impl ModelRunner {
             return Err(Status::InvalidArgument);
         }
 
-        let mut generated_tokens = try_vec_with_capacity(request.max_new_tokens as usize)?;
+        let mut generated_tokens = Vec::safe_new(request.max_new_tokens as usize)?;
         self.live_tokens
-            .try_reserve((total_tokens as usize).saturating_sub(self.live_tokens.len()))
-            .map_err(|_| Status::OutOfMemory)?;
+            .safe_reserve((total_tokens as usize).saturating_sub(self.live_tokens.len()))?;
 
         self.sync_prefix(request.request_id, request.tokens, total_tokens)?;
         for _ in 0..request.max_new_tokens {
@@ -1328,9 +1328,7 @@ impl ModelRunner {
         self.scratch.ensure(&self.config, rows)?;
 
         let mut rebuilt_live_tokens = Vec::new();
-        rebuilt_live_tokens
-            .try_reserve(total_tokens as usize)
-            .map_err(|_| Status::OutOfMemory)?;
+        rebuilt_live_tokens.safe_reserve(total_tokens as usize)?;
 
         let fresh_engine = Engine::new(self.config.engine_config())?;
         let fresh_gdn_state = if self.config.has_gdn_layers() {
@@ -1378,9 +1376,7 @@ impl ModelRunner {
         if end_pos > self.config.max_seq_len {
             return Err(Status::InvalidArgument);
         }
-        self.live_tokens
-            .try_reserve(tokens.len())
-            .map_err(|_| Status::OutOfMemory)?;
+        self.live_tokens.safe_reserve(tokens.len())?;
 
         self.engine.begin_append(AppendBatch {
             request_ids: &[request_id],
@@ -1419,9 +1415,7 @@ impl ModelRunner {
         if start_pos >= self.config.max_seq_len {
             return Err(Status::InvalidArgument);
         }
-        self.live_tokens
-            .try_reserve(1)
-            .map_err(|_| Status::OutOfMemory)?;
+        self.live_tokens.safe_reserve(1)?;
         self.engine.begin_decode(DecodeBatch {
             request_ids: &[request_id],
             tokens: &[token],
@@ -2195,7 +2189,7 @@ impl ModelRunner {
 
     fn upload_batch_inputs(&mut self, tokens: &[i32], start_pos: u32) -> Result<(), Status> {
         self.scratch.token_ids.upload(self.config.stream, tokens)?;
-        let mut positions = try_vec_with_capacity(tokens.len())?;
+        let mut positions = Vec::safe_new(tokens.len())?;
         for idx in 0..tokens.len() {
             let pos = start_pos
                 .checked_add(u32::try_from(idx).map_err(|_| Status::InvalidArgument)?)
@@ -2410,7 +2404,7 @@ impl ModelRunner {
         }
 
         let row_count = rows as usize;
-        let mut sampled = try_vec_with_capacity(row_count)?;
+        let mut sampled = Vec::safe_new(row_count)?;
         sampled.resize(row_count, 0_i32);
         self.scratch
             .next_token_ids
@@ -2460,8 +2454,8 @@ impl GdnSlotMap {
         let state_pool = gdn_layer_count
             .checked_mul(QWEN36_GDN_STATE_SLOTS_PER_LAYER)
             .ok_or(Status::InvalidArgument)?;
-        let mut live_slots = try_vec_with_capacity(gdn_layer_count as usize)?;
-        let mut staged_slots = try_vec_with_capacity(gdn_layer_count as usize)?;
+        let mut live_slots = Vec::safe_new(gdn_layer_count as usize)?;
+        let mut staged_slots = Vec::safe_new(gdn_layer_count as usize)?;
         Self::reset_slots(gdn_layer_count, &mut live_slots, &mut staged_slots)?;
         Ok(Self {
             live_slots,
@@ -2878,7 +2872,7 @@ fn random_bf16_values(
     count: usize,
     scale: f32,
 ) -> Result<Vec<u16>, Status> {
-    let mut out = try_vec_with_capacity(count)?;
+    let mut out = Vec::safe_new(count)?;
     for _ in 0..count {
         let value = (rng.next_unit_f32() * 2.0 - 1.0) * scale;
         out.push(f32_to_bf16_bits(value));
@@ -2887,7 +2881,7 @@ fn random_bf16_values(
 }
 
 fn constant_bf16_values(count: usize, value: f32) -> Result<Vec<u16>, Status> {
-    let mut out = try_vec_with_capacity(count)?;
+    let mut out = Vec::safe_new(count)?;
     out.resize(count, f32_to_bf16_bits(value));
     Ok(out)
 }
@@ -3003,18 +2997,6 @@ fn device_copy_2d_on_stream(
             stream,
         )
     })
-}
-
-fn try_vec_with_capacity<T>(capacity: usize) -> Result<Vec<T>, Status> {
-    let mut vec = Vec::new();
-    vec.try_reserve(capacity).map_err(|_| Status::OutOfMemory)?;
-    Ok(vec)
-}
-
-fn try_clone_slice<T: Copy>(slice: &[T]) -> Result<Vec<T>, Status> {
-    let mut out = try_vec_with_capacity(slice.len())?;
-    out.extend_from_slice(slice);
-    Ok(out)
 }
 
 fn activate_device(device_ordinal: i32) -> Result<(), Status> {

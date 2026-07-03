@@ -1,5 +1,7 @@
 use crate::{
-    QWEN36_FULL_ATTN_HEAD_DIM, QWEN36_FULL_ATTN_KV_HEADS, QWEN36_FULL_ATTN_Q_HEADS, ffi, runtime,
+    QWEN36_FULL_ATTN_HEAD_DIM, QWEN36_FULL_ATTN_KV_HEADS, QWEN36_FULL_ATTN_Q_HEADS,
+    ext::{SafeHashSet, SafeVec, try_clone_slice},
+    ffi, runtime,
 };
 use std::collections::HashSet;
 
@@ -471,22 +473,6 @@ pub struct CoreState<'a> {
     pub batch_append_positions: &'a [i32],
 }
 
-fn try_reserve<T>(vec: &mut Vec<T>, additional: usize) -> Result<(), Status> {
-    vec.try_reserve(additional).map_err(|_| Status::OutOfMemory)
-}
-
-fn try_vec_with_capacity<T>(capacity: usize) -> Result<Vec<T>, Status> {
-    let mut vec = Vec::new();
-    try_reserve(&mut vec, capacity)?;
-    Ok(vec)
-}
-
-pub(crate) fn try_clone_slice<T: Copy>(slice: &[T]) -> Result<Vec<T>, Status> {
-    let mut out = try_vec_with_capacity(slice.len())?;
-    out.extend_from_slice(slice);
-    Ok(out)
-}
-
 fn ceil_div_u32(a: u32, b: u32) -> Result<u32, Status> {
     a.checked_add(b.checked_sub(1).ok_or(Status::InvalidArgument)?)
         .ok_or(Status::InvalidArgument)?
@@ -572,7 +558,7 @@ impl EngineCore {
     pub fn new(config: EngineConfig) -> Result<Self, Status> {
         validate_config(&config)?;
 
-        let mut free_pages = try_vec_with_capacity(config.max_pages as usize)?;
+        let mut free_pages = Vec::safe_new(config.max_pages as usize)?;
         for page in (0..config.max_pages).rev() {
             free_pages.push(u32_to_i32(page)?);
         }
@@ -647,7 +633,7 @@ impl EngineCore {
     }
 
     pub fn reset(&mut self) -> Result<(), Status> {
-        let mut next_free_pages = try_vec_with_capacity(self.config.max_pages as usize)?;
+        let mut next_free_pages = Vec::safe_new(self.config.max_pages as usize)?;
         for page in (0..self.config.max_pages).rev() {
             next_free_pages.push(u32_to_i32(page)?);
         }
@@ -667,10 +653,8 @@ impl EngineCore {
         if self.active_batch.is_some() {
             return Err(Status::InvalidArgument);
         }
-        let mut seen = HashSet::new();
-        seen.try_reserve(request_ids.len())
-            .map_err(|_| Status::OutOfMemory)?;
-        let mut release_indices = try_vec_with_capacity(request_ids.len())?;
+        let mut seen = HashSet::safe_new(request_ids.len())?;
+        let mut release_indices = Vec::safe_new(request_ids.len())?;
         for id in request_ids {
             if !seen.insert(*id) {
                 return Err(Status::InvalidArgument);
@@ -682,15 +666,13 @@ impl EngineCore {
         }
 
         let mut release_set = HashSet::new();
-        release_set
-            .try_reserve(release_indices.len())
-            .map_err(|_| Status::OutOfMemory)?;
+        release_set.safe_reserve(release_indices.len())?;
         for idx in &release_indices {
             release_set.insert(*idx);
         }
 
         let mut next_requests =
-            try_vec_with_capacity(self.requests.len().saturating_sub(release_set.len()))?;
+            Vec::safe_new(self.requests.len().saturating_sub(release_set.len()))?;
         let mut next_free_pages = try_clone_slice(&self.free_pages)?;
         let released_page_count = release_indices
             .iter()
@@ -698,7 +680,7 @@ impl EngineCore {
                 acc.checked_add(self.requests[*idx].pages.len())
             })
             .ok_or(Status::InvalidArgument)?;
-        try_reserve(&mut next_free_pages, released_page_count)?;
+        next_free_pages.safe_reserve(released_page_count)?;
 
         for (idx, req) in self.requests.iter().enumerate() {
             if release_set.contains(&idx) {
@@ -744,8 +726,7 @@ impl EngineCore {
         }
 
         let mut seen = HashSet::new();
-        seen.try_reserve(request_ids.len())
-            .map_err(|_| Status::OutOfMemory)?;
+        seen.safe_reserve(request_ids.len())?;
         for i in 0..request_ids.len() {
             if token_indptr[i] < 0 || token_indptr[i + 1] < token_indptr[i] {
                 return Err(Status::InvalidArgument);
@@ -758,7 +739,7 @@ impl EngineCore {
             return Err(Status::InvalidArgument);
         }
 
-        let mut staged_rows = try_vec_with_capacity(request_ids.len())?;
+        let mut staged_rows = Vec::safe_new(request_ids.len())?;
         let mut new_request_count = 0usize;
         let mut extra_pages = 0usize;
 
@@ -825,9 +806,9 @@ impl EngineCore {
         let batch_request_ids = try_clone_slice(request_ids)?;
         let batch_tokens = try_clone_slice(tokens)?;
         let batch_qo_indptr = try_clone_slice(token_indptr)?;
-        let mut batch_kv_indptr = try_vec_with_capacity(request_ids.len() + 1)?;
+        let mut batch_kv_indptr = Vec::safe_new(request_ids.len() + 1)?;
         let mut batch_kv_indices =
-            try_vec_with_capacity(staged_rows.iter().try_fold(0usize, |acc, row| {
+            Vec::safe_new(staged_rows.iter().try_fold(0usize, |acc, row| {
                 let new_seq_len = row
                     .old_seq_len
                     .checked_add(row.token_count)
@@ -835,10 +816,10 @@ impl EngineCore {
                 acc.checked_add(page_count_for_len(new_seq_len, self.config.page_size)? as usize)
                     .ok_or(Status::InvalidArgument)
             })?)?;
-        let mut batch_last_page_len = try_vec_with_capacity(request_ids.len())?;
-        let mut batch_rope_pos_offset = try_vec_with_capacity(request_ids.len())?;
-        let mut batch_append_batch_indices = try_vec_with_capacity(tokens.len())?;
-        let mut batch_append_positions = try_vec_with_capacity(tokens.len())?;
+        let mut batch_last_page_len = Vec::safe_new(request_ids.len())?;
+        let mut batch_rope_pos_offset = Vec::safe_new(request_ids.len())?;
+        let mut batch_append_batch_indices = Vec::safe_new(tokens.len())?;
+        let mut batch_append_positions = Vec::safe_new(tokens.len())?;
         batch_kv_indptr.push(0);
 
         for (idx, row) in staged_rows.iter_mut().enumerate() {
@@ -904,15 +885,14 @@ impl EngineCore {
         }
 
         let mut seen = HashSet::new();
-        seen.try_reserve(request_ids.len())
-            .map_err(|_| Status::OutOfMemory)?;
+        seen.safe_reserve(request_ids.len())?;
         for id in request_ids {
             if !seen.insert(*id) {
                 return Err(Status::InvalidArgument);
             }
         }
 
-        let mut staged_rows = try_vec_with_capacity(request_ids.len())?;
+        let mut staged_rows = Vec::safe_new(request_ids.len())?;
         let mut extra_pages = 0usize;
 
         for (row_idx, id) in request_ids.iter().enumerate() {
@@ -939,7 +919,7 @@ impl EngineCore {
                 old_page_count: req.pages.len(),
                 token_count: 1,
                 tokens: {
-                    let mut row_tokens = try_vec_with_capacity(1)?;
+                    let mut row_tokens = Vec::safe_new(1)?;
                     row_tokens.push(tokens[row_idx]);
                     row_tokens
                 },
@@ -954,9 +934,9 @@ impl EngineCore {
         let mut next_free_pages = try_clone_slice(&self.free_pages)?;
         let batch_request_ids = try_clone_slice(request_ids)?;
         let batch_tokens = try_clone_slice(tokens)?;
-        let mut batch_kv_indptr = try_vec_with_capacity(request_ids.len() + 1)?;
+        let mut batch_kv_indptr = Vec::safe_new(request_ids.len() + 1)?;
         let mut batch_kv_indices =
-            try_vec_with_capacity(staged_rows.iter().try_fold(0usize, |acc, row| {
+            Vec::safe_new(staged_rows.iter().try_fold(0usize, |acc, row| {
                 let new_seq_len = row
                     .old_seq_len
                     .checked_add(1)
@@ -964,8 +944,8 @@ impl EngineCore {
                 acc.checked_add(page_count_for_len(new_seq_len, self.config.page_size)? as usize)
                     .ok_or(Status::InvalidArgument)
             })?)?;
-        let mut batch_last_page_len = try_vec_with_capacity(request_ids.len())?;
-        let mut batch_rope_pos_offset = try_vec_with_capacity(request_ids.len())?;
+        let mut batch_last_page_len = Vec::safe_new(request_ids.len())?;
+        let mut batch_rope_pos_offset = Vec::safe_new(request_ids.len())?;
         batch_kv_indptr.push(0);
 
         for row in staged_rows.iter_mut() {
@@ -1017,7 +997,7 @@ impl EngineCore {
             return Err(Status::InvalidArgument);
         }
 
-        let mut accepted = try_vec_with_capacity(active_state.rows.len())?;
+        let mut accepted = Vec::safe_new(active_state.rows.len())?;
         for (i, row) in active_state.rows.iter().enumerate() {
             let count = accepted_token_counts.map_or(row.token_count, |counts| counts[i]);
             if count > row.token_count {
@@ -1057,7 +1037,7 @@ impl EngineCore {
                     if req.tokens.len() != old_token_len {
                         return Err(Status::InternalError);
                     }
-                    try_reserve(&mut req.tokens, accepted_len)?;
+                    req.tokens.safe_reserve(accepted_len)?;
                     req.tokens.extend_from_slice(&row.tokens[..accepted_len]);
                     req.pages = try_clone_slice(&row.pages[..needed_pages])?;
                 }
@@ -1072,7 +1052,7 @@ impl EngineCore {
                     }
                 }
             }
-            try_reserve(&mut next_free_pages, row.pages.len() - needed_pages)?;
+            next_free_pages.safe_reserve(row.pages.len() - needed_pages)?;
             next_free_pages.extend_from_slice(&row.pages[needed_pages..]);
         }
 
@@ -1191,7 +1171,7 @@ impl EngineCore {
     }
 
     fn clone_requests(&self) -> Result<Vec<Request>, Status> {
-        let mut out = try_vec_with_capacity(self.requests.len())?;
+        let mut out = Vec::safe_new(self.requests.len())?;
         for req in &self.requests {
             out.push(Request {
                 id: req.id,
@@ -1216,7 +1196,7 @@ impl EngineCore {
             .iter()
             .map(|row| row.pages.len().saturating_sub(row.old_page_count))
             .sum();
-        try_reserve(free_pages, return_count)?;
+        free_pages.safe_reserve(return_count)?;
         for row in rows {
             free_pages.extend_from_slice(&row.pages[row.old_page_count..]);
         }
@@ -1255,13 +1235,13 @@ impl EngineCore {
             .iter()
             .try_fold(0usize, |acc, req| acc.checked_add(req.tokens.len()))
             .ok_or(Status::InvalidArgument)?;
-        let mut live_request_ids = try_vec_with_capacity(requests.len())?;
-        let mut live_seq_lens = try_vec_with_capacity(requests.len())?;
-        let mut live_token_indptr = try_vec_with_capacity(requests.len() + 1)?;
-        let mut live_tokens = try_vec_with_capacity(total_tokens)?;
-        let mut live_kv_indptr = try_vec_with_capacity(requests.len() + 1)?;
-        let mut live_kv_indices = try_vec_with_capacity(total_pages)?;
-        let mut live_last_page_len = try_vec_with_capacity(requests.len())?;
+        let mut live_request_ids = Vec::safe_new(requests.len())?;
+        let mut live_seq_lens = Vec::safe_new(requests.len())?;
+        let mut live_token_indptr = Vec::safe_new(requests.len() + 1)?;
+        let mut live_tokens = Vec::safe_new(total_tokens)?;
+        let mut live_kv_indptr = Vec::safe_new(requests.len() + 1)?;
+        let mut live_kv_indices = Vec::safe_new(total_pages)?;
+        let mut live_last_page_len = Vec::safe_new(requests.len())?;
 
         live_token_indptr.push(0);
         live_kv_indptr.push(0);

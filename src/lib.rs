@@ -48,6 +48,7 @@ const _: () = assert!(QWEN36_FULL_ATTN_KV_HIDDEN == 512);
 const _: () = assert!(QWEN36_FULL_ATTN_Q_PROJ_OUT == 8192);
 
 pub mod engine;
+pub(crate) mod ext;
 pub mod ffi;
 pub mod model;
 mod runtime;
