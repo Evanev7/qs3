@@ -85,7 +85,7 @@ pub enum Status {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum DType {
+pub enum DynDType {
     F32,
     F16,
     BF16,
@@ -100,13 +100,17 @@ pub enum DType {
     U8,
 }
 
-impl DType {
+impl DynDType {
     pub fn bits(self) -> usize {
         match self {
-            DType::F32 | DType::I32 | DType::U32 => 32,
-            DType::F16 | DType::BF16 => 16,
-            DType::FP8E4M3 | DType::FP8E5M2 | DType::MXFP8E4M3 | DType::I8 | DType::U8 => 8,
-            DType::NVFP4E2M1 | DType::MXFP4E2M1 => 4,
+            DynDType::F32 | DynDType::I32 | DynDType::U32 => 32,
+            DynDType::F16 | DynDType::BF16 => 16,
+            DynDType::FP8E4M3
+            | DynDType::FP8E5M2
+            | DynDType::MXFP8E4M3
+            | DynDType::I8
+            | DynDType::U8 => 8,
+            DynDType::NVFP4E2M1 | DynDType::MXFP4E2M1 => 4,
         }
     }
 
@@ -120,23 +124,23 @@ impl DType {
     }
 
     fn is_runtime_supported(self) -> bool {
-        matches!(self, DType::F16 | DType::BF16)
+        matches!(self, DynDType::F16 | DynDType::BF16)
     }
 
     pub(crate) fn to_raw(self) -> ffi::DTypeRaw {
         match self {
-            DType::F32 => ffi::DTYPE_F32,
-            DType::F16 => ffi::DTYPE_F16,
-            DType::BF16 => ffi::DTYPE_BF16,
-            DType::FP8E4M3 => ffi::DTYPE_FP8_E4M3,
-            DType::FP8E5M2 => ffi::DTYPE_FP8_E5M2,
-            DType::NVFP4E2M1 => ffi::DTYPE_NVFP4_E2M1,
-            DType::MXFP4E2M1 => ffi::DTYPE_MXFP4_E2M1,
-            DType::MXFP8E4M3 => ffi::DTYPE_MXFP8_E4M3,
-            DType::I32 => ffi::DTYPE_I32,
-            DType::U32 => ffi::DTYPE_U32,
-            DType::I8 => ffi::DTYPE_I8,
-            DType::U8 => ffi::DTYPE_U8,
+            DynDType::F32 => ffi::DTYPE_F32,
+            DynDType::F16 => ffi::DTYPE_F16,
+            DynDType::BF16 => ffi::DTYPE_BF16,
+            DynDType::FP8E4M3 => ffi::DTYPE_FP8_E4M3,
+            DynDType::FP8E5M2 => ffi::DTYPE_FP8_E5M2,
+            DynDType::NVFP4E2M1 => ffi::DTYPE_NVFP4_E2M1,
+            DynDType::MXFP4E2M1 => ffi::DTYPE_MXFP4_E2M1,
+            DynDType::MXFP8E4M3 => ffi::DTYPE_MXFP8_E4M3,
+            DynDType::I32 => ffi::DTYPE_I32,
+            DynDType::U32 => ffi::DTYPE_U32,
+            DynDType::I8 => ffi::DTYPE_I8,
+            DynDType::U8 => ffi::DTYPE_U8,
         }
     }
 }
@@ -201,8 +205,8 @@ pub struct EngineConfig {
     pub num_q_heads: u32,
     pub num_kv_heads: u32,
     pub head_dim: u32,
-    pub activation_dtype: DType,
-    pub kv_dtype: DType,
+    pub activation_dtype: DynDType,
+    pub kv_dtype: DynDType,
     pub kv_layout: KvLayout,
     pub rope_theta: f32,
     pub rope_scale: f32,
@@ -1379,8 +1383,8 @@ mod tests {
             num_q_heads: QWEN36_FULL_ATTN_Q_HEADS,
             num_kv_heads: QWEN36_FULL_ATTN_KV_HEADS,
             head_dim: QWEN36_FULL_ATTN_HEAD_DIM,
-            activation_dtype: DType::F16,
-            kv_dtype: DType::F16,
+            activation_dtype: DynDType::F16,
+            kv_dtype: DynDType::F16,
             kv_layout: KvLayout::NHD,
             rope_theta: 10000.0,
             rope_scale: 1.0,
@@ -1423,39 +1427,39 @@ mod tests {
 
     #[test]
     fn dtype_bits_and_storage_bytes_are_total() {
-        assert_eq!(DType::F32.bits(), 32);
-        assert_eq!(DType::F16.bits(), 16);
-        assert_eq!(DType::BF16.bits(), 16);
-        assert_eq!(DType::FP8E4M3.bits(), 8);
-        assert_eq!(DType::FP8E5M2.bits(), 8);
-        assert_eq!(DType::NVFP4E2M1.bits(), 4);
-        assert_eq!(DType::MXFP4E2M1.bits(), 4);
-        assert_eq!(DType::MXFP8E4M3.bits(), 8);
-        assert_eq!(DType::I32.bits(), 32);
-        assert_eq!(DType::U32.bits(), 32);
-        assert_eq!(DType::I8.bits(), 8);
-        assert_eq!(DType::U8.bits(), 8);
-        assert_eq!(DType::F16.storage_bytes_for(3), Ok(6));
-        assert_eq!(DType::FP8E4M3.storage_bytes_for(3), Ok(3));
-        assert_eq!(DType::NVFP4E2M1.storage_bytes_for(1), Ok(1));
-        assert_eq!(DType::NVFP4E2M1.storage_bytes_for(2), Ok(1));
-        assert_eq!(DType::NVFP4E2M1.storage_bytes_for(3), Ok(2));
+        assert_eq!(DynDType::F32.bits(), 32);
+        assert_eq!(DynDType::F16.bits(), 16);
+        assert_eq!(DynDType::BF16.bits(), 16);
+        assert_eq!(DynDType::FP8E4M3.bits(), 8);
+        assert_eq!(DynDType::FP8E5M2.bits(), 8);
+        assert_eq!(DynDType::NVFP4E2M1.bits(), 4);
+        assert_eq!(DynDType::MXFP4E2M1.bits(), 4);
+        assert_eq!(DynDType::MXFP8E4M3.bits(), 8);
+        assert_eq!(DynDType::I32.bits(), 32);
+        assert_eq!(DynDType::U32.bits(), 32);
+        assert_eq!(DynDType::I8.bits(), 8);
+        assert_eq!(DynDType::U8.bits(), 8);
+        assert_eq!(DynDType::F16.storage_bytes_for(3), Ok(6));
+        assert_eq!(DynDType::FP8E4M3.storage_bytes_for(3), Ok(3));
+        assert_eq!(DynDType::NVFP4E2M1.storage_bytes_for(1), Ok(1));
+        assert_eq!(DynDType::NVFP4E2M1.storage_bytes_for(2), Ok(1));
+        assert_eq!(DynDType::NVFP4E2M1.storage_bytes_for(3), Ok(2));
     }
 
     #[test]
     fn dtype_and_layout_raw_values_match_qsfi() {
-        assert_eq!(DType::F32.to_raw(), ffi::DTYPE_F32);
-        assert_eq!(DType::F16.to_raw(), ffi::DTYPE_F16);
-        assert_eq!(DType::BF16.to_raw(), ffi::DTYPE_BF16);
-        assert_eq!(DType::FP8E4M3.to_raw(), ffi::DTYPE_FP8_E4M3);
-        assert_eq!(DType::FP8E5M2.to_raw(), ffi::DTYPE_FP8_E5M2);
-        assert_eq!(DType::NVFP4E2M1.to_raw(), ffi::DTYPE_NVFP4_E2M1);
-        assert_eq!(DType::MXFP4E2M1.to_raw(), ffi::DTYPE_MXFP4_E2M1);
-        assert_eq!(DType::MXFP8E4M3.to_raw(), ffi::DTYPE_MXFP8_E4M3);
-        assert_eq!(DType::I32.to_raw(), ffi::DTYPE_I32);
-        assert_eq!(DType::U32.to_raw(), ffi::DTYPE_U32);
-        assert_eq!(DType::I8.to_raw(), ffi::DTYPE_I8);
-        assert_eq!(DType::U8.to_raw(), ffi::DTYPE_U8);
+        assert_eq!(DynDType::F32.to_raw(), ffi::DTYPE_F32);
+        assert_eq!(DynDType::F16.to_raw(), ffi::DTYPE_F16);
+        assert_eq!(DynDType::BF16.to_raw(), ffi::DTYPE_BF16);
+        assert_eq!(DynDType::FP8E4M3.to_raw(), ffi::DTYPE_FP8_E4M3);
+        assert_eq!(DynDType::FP8E5M2.to_raw(), ffi::DTYPE_FP8_E5M2);
+        assert_eq!(DynDType::NVFP4E2M1.to_raw(), ffi::DTYPE_NVFP4_E2M1);
+        assert_eq!(DynDType::MXFP4E2M1.to_raw(), ffi::DTYPE_MXFP4_E2M1);
+        assert_eq!(DynDType::MXFP8E4M3.to_raw(), ffi::DTYPE_MXFP8_E4M3);
+        assert_eq!(DynDType::I32.to_raw(), ffi::DTYPE_I32);
+        assert_eq!(DynDType::U32.to_raw(), ffi::DTYPE_U32);
+        assert_eq!(DynDType::I8.to_raw(), ffi::DTYPE_I8);
+        assert_eq!(DynDType::U8.to_raw(), ffi::DTYPE_U8);
         assert_eq!(KvLayout::NHD.to_raw(), ffi::KV_LAYOUT_NHD);
         assert_eq!(KvLayout::HND.to_raw(), ffi::KV_LAYOUT_HND);
     }

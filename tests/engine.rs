@@ -1,5 +1,5 @@
 use qs3::{
-    AppendBatch, Commit, DType, DecodeBatch, Engine, EngineConfig, EngineLayer, EngineTrait,
+    AppendBatch, Commit, DynDType, DecodeBatch, Engine, EngineConfig, EngineLayer, EngineTrait,
     KvLayout, ffi,
 };
 use std::ffi::{CStr, c_char, c_void};
@@ -246,8 +246,8 @@ fn tiny_config() -> EngineConfig {
         num_q_heads: 16,
         num_kv_heads: 2,
         head_dim: 256,
-        activation_dtype: DType::F16,
-        kv_dtype: DType::F16,
+        activation_dtype: DynDType::F16,
+        kv_dtype: DynDType::F16,
         kv_layout: KvLayout::NHD,
         rope_theta: 10000.0,
         rope_scale: 1.0,

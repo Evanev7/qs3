@@ -6,6 +6,7 @@ use crate::{
     QWEN36_GDN_NUM_Q_HEADS, QWEN36_GDN_NUM_V_HEADS, QWEN36_GDN_PACKED_DIM, QWEN36_GDN_VALUE_DIM,
     QWEN36_MOE_MAX_EXPERTS, QWEN36_MOE_MAX_TOP_K, Status,
     ffi::{self, qscb, qscu, qsfi},
+    runtime::dtype::{BF16, F32, I32},
 };
 
 use super::device_tensor::{DMat, DTensor3, DVec};
@@ -136,8 +137,8 @@ impl Bf16Heads {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Bf16OrF32Mat {
-    Bf16(DMat<{ ffi::DTYPE_BF16 }>),
-    F32(DMat<{ ffi::DTYPE_F32 }>),
+    Bf16(DMat<BF16>),
+    F32(DMat<F32>),
 }
 
 impl Bf16OrF32Mat {
@@ -172,8 +173,8 @@ impl Bf16OrF32Mat {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Bf16OrF32Vec {
-    Bf16(DVec<{ ffi::DTYPE_BF16 }>),
-    F32(DVec<{ ffi::DTYPE_F32 }>),
+    Bf16(DVec<BF16>),
+    F32(DVec<F32>),
 }
 
 impl Bf16OrF32Vec {
@@ -514,17 +515,17 @@ pub(crate) struct EmbeddingGatherBf16 {
 
 impl EmbeddingGatherBf16 {
     pub(crate) fn new(
-        token_ids: DVec<{ ffi::DTYPE_I32 }>,
-        embedding: DMat<{ ffi::DTYPE_BF16 }>,
-        out: DMat<{ ffi::DTYPE_BF16 }>,
+        token_ids: DVec<I32>,
+        embedding: DMat<BF16>,
+        out: DMat<BF16>,
     ) -> Result<Self, Status> {
         Self::with_options(token_ids, embedding, out, None, false)
     }
 
     pub(crate) fn with_options(
-        token_ids: DVec<{ ffi::DTYPE_I32 }>,
-        embedding: DMat<{ ffi::DTYPE_BF16 }>,
-        out: DMat<{ ffi::DTYPE_BF16 }>,
+        token_ids: DVec<I32>,
+        embedding: DMat<BF16>,
+        out: DMat<BF16>,
         padding_token_id: Option<i32>,
         validate_token_ids: bool,
     ) -> Result<Self, Status> {
@@ -552,11 +553,7 @@ pub(crate) struct SiluAndMulBf16 {
 }
 
 impl SiluAndMulBf16 {
-    pub(crate) fn new(
-        gate: DMat<{ ffi::DTYPE_BF16 }>,
-        up: DMat<{ ffi::DTYPE_BF16 }>,
-        out: DMat<{ ffi::DTYPE_BF16 }>,
-    ) -> Result<Self, Status> {
+    pub(crate) fn new(gate: DMat<BF16>, up: DMat<BF16>, out: DMat<BF16>) -> Result<Self, Status> {
         gate.require_contiguous()?;
         up.require_contiguous()?;
         out.require_contiguous()?;
@@ -583,8 +580,8 @@ pub(crate) struct Qwen36SharedExpertGateAddBf16 {
 impl Qwen36SharedExpertGateAddBf16 {
     pub(crate) fn new(
         gate_logits: Bf16OrF32Mat,
-        shared: DMat<{ ffi::DTYPE_BF16 }>,
-        out: DMat<{ ffi::DTYPE_BF16 }>,
+        shared: DMat<BF16>,
+        out: DMat<BF16>,
     ) -> Result<Self, Status> {
         if !gate_logits.is_contiguous() || !shared.is_contiguous() || !out.is_contiguous() {
             return Err(Status::InvalidArgument);
@@ -612,10 +609,7 @@ pub(crate) struct Qwen36FullAttentionOutputGateBf16 {
 impl Qwen36FullAttentionOutputGateBf16 {
     // `gate` is already extracted from q_proj's interleaved per-head [q, gate]
     // output. q_norm/RoPE are upstream of this in-place attention-output gate.
-    pub(crate) fn new(
-        gate: DMat<{ ffi::DTYPE_BF16 }>,
-        out: DMat<{ ffi::DTYPE_BF16 }>,
-    ) -> Result<Self, Status> {
+    pub(crate) fn new(gate: DMat<BF16>, out: DMat<BF16>) -> Result<Self, Status> {
         gate.require_contiguous()?;
         out.require_contiguous()?;
         if !gate.same_shape(out) || gate.cols != QWEN36_FULL_ATTN_Q_HIDDEN {
@@ -641,7 +635,7 @@ pub(crate) struct LogitsSoftCapF32 {
 }
 
 impl LogitsSoftCapF32 {
-    pub(crate) fn new(logits: DMat<{ ffi::DTYPE_F32 }>, soft_cap: f32) -> Result<Self, Status> {
+    pub(crate) fn new(logits: DMat<F32>, soft_cap: f32) -> Result<Self, Status> {
         logits.require_contiguous()?;
         validate_soft_cap(soft_cap)?;
         Ok(Self {
@@ -659,10 +653,7 @@ pub(crate) struct GreedyArgmaxF32 {
 }
 
 impl GreedyArgmaxF32 {
-    pub(crate) fn new(
-        logits: DMat<{ ffi::DTYPE_F32 }>,
-        next_token_ids: DVec<{ ffi::DTYPE_I32 }>,
-    ) -> Result<Self, Status> {
+    pub(crate) fn new(logits: DMat<F32>, next_token_ids: DVec<I32>) -> Result<Self, Status> {
         logits.require_contiguous()?;
         next_token_ids.require_contiguous()?;
         if next_token_ids.len != logits.rows {
@@ -697,8 +688,8 @@ pub(crate) struct RouterTopK {
 impl RouterTopK {
     pub(crate) fn new(
         logits: Bf16OrF32Mat,
-        topk_ids: DMat<{ ffi::DTYPE_I32 }>,
-        topk_weights: DMat<{ ffi::DTYPE_F32 }>,
+        topk_ids: DMat<I32>,
+        topk_weights: DMat<F32>,
         score: RouterScore,
         renormalize: bool,
         routed_scaling_factor: f32,
@@ -781,12 +772,12 @@ impl MoeBf16PlanConfig {
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct MoeBf16ExecuteArgs {
-    pub(crate) hidden: DMat<{ ffi::DTYPE_BF16 }>,
-    pub(crate) topk_ids: DMat<{ ffi::DTYPE_I32 }>,
-    pub(crate) topk_weights: DMat<{ ffi::DTYPE_F32 }>,
-    pub(crate) gate_up_weight: DTensor3<{ ffi::DTYPE_BF16 }>,
-    pub(crate) down_weight: DTensor3<{ ffi::DTYPE_BF16 }>,
-    pub(crate) out: DMat<{ ffi::DTYPE_BF16 }>,
+    pub(crate) hidden: DMat<BF16>,
+    pub(crate) topk_ids: DMat<I32>,
+    pub(crate) topk_weights: DMat<F32>,
+    pub(crate) gate_up_weight: DTensor3<BF16>,
+    pub(crate) down_weight: DTensor3<BF16>,
+    pub(crate) out: DMat<BF16>,
     pub(crate) workspace: Workspace,
 }
 
@@ -834,8 +825,8 @@ pub(crate) struct Bf16Gemm {
 
 impl Bf16Gemm {
     pub(crate) fn new(
-        x: DMat<{ ffi::DTYPE_BF16 }>,
-        weight: DMat<{ ffi::DTYPE_BF16 }>,
+        x: DMat<BF16>,
+        weight: DMat<BF16>,
         out: Bf16OrF32Mat,
         workspace: Workspace,
     ) -> Result<Self, Status> {
@@ -843,8 +834,8 @@ impl Bf16Gemm {
     }
 
     pub(crate) fn with_alpha_beta(
-        x: DMat<{ ffi::DTYPE_BF16 }>,
-        weight: DMat<{ ffi::DTYPE_BF16 }>,
+        x: DMat<BF16>,
+        weight: DMat<BF16>,
         out: Bf16OrF32Mat,
         workspace: Workspace,
         alpha: f32,
@@ -881,27 +872,27 @@ pub(crate) struct RmsNormBf16 {
 
 impl RmsNormBf16 {
     pub(crate) fn new(
-        x: DMat<{ ffi::DTYPE_BF16 }>,
-        weight: DVec<{ ffi::DTYPE_BF16 }>,
-        out: DMat<{ ffi::DTYPE_BF16 }>,
+        x: DMat<BF16>,
+        weight: DVec<BF16>,
+        out: DMat<BF16>,
         eps: f32,
     ) -> Result<Self, Status> {
         Self::qwen_decoder_norm(x, weight, out, eps)
     }
 
     pub(crate) fn qwen_qk_norm(
-        x: DMat<{ ffi::DTYPE_BF16 }>,
-        weight: DVec<{ ffi::DTYPE_BF16 }>,
-        out: DMat<{ ffi::DTYPE_BF16 }>,
+        x: DMat<BF16>,
+        weight: DVec<BF16>,
+        out: DMat<BF16>,
         eps: f32,
     ) -> Result<Self, Status> {
         Self::qwen_decoder_norm(x, weight, out, eps)
     }
 
     pub(crate) fn qwen_decoder_norm(
-        x: DMat<{ ffi::DTYPE_BF16 }>,
-        weight: DVec<{ ffi::DTYPE_BF16 }>,
-        out: DMat<{ ffi::DTYPE_BF16 }>,
+        x: DMat<BF16>,
+        weight: DVec<BF16>,
+        out: DMat<BF16>,
         eps: f32,
     ) -> Result<Self, Status> {
         validate_eps(eps)?;
@@ -928,18 +919,18 @@ pub(crate) struct FusedAddRmsNormBf16 {
 
 impl FusedAddRmsNormBf16 {
     pub(crate) fn new(
-        x: DMat<{ ffi::DTYPE_BF16 }>,
-        residual_inout: DMat<{ ffi::DTYPE_BF16 }>,
-        weight: DVec<{ ffi::DTYPE_BF16 }>,
+        x: DMat<BF16>,
+        residual_inout: DMat<BF16>,
+        weight: DVec<BF16>,
         eps: f32,
     ) -> Result<Self, Status> {
         Self::qwen_decoder_norm(x, residual_inout, weight, eps)
     }
 
     pub(crate) fn qwen_decoder_norm(
-        x: DMat<{ ffi::DTYPE_BF16 }>,
-        residual_inout: DMat<{ ffi::DTYPE_BF16 }>,
-        weight: DVec<{ ffi::DTYPE_BF16 }>,
+        x: DMat<BF16>,
+        residual_inout: DMat<BF16>,
+        weight: DVec<BF16>,
         eps: f32,
     ) -> Result<Self, Status> {
         validate_eps(eps)?;
@@ -971,7 +962,7 @@ impl RopeApplyBf16 {
         k: Bf16Heads,
         q_out: Bf16Heads,
         k_out: Bf16Heads,
-        positions: DVec<{ ffi::DTYPE_I32 }>,
+        positions: DVec<I32>,
         rotary_dim: u32,
     ) -> Result<Self, Status> {
         Self::with_params(q, k, q_out, k_out, positions, rotary_dim, 0.0, 0.0)
@@ -982,7 +973,7 @@ impl RopeApplyBf16 {
         k: Bf16Heads,
         q_out: Bf16Heads,
         k_out: Bf16Heads,
-        positions: DVec<{ ffi::DTYPE_I32 }>,
+        positions: DVec<I32>,
         rotary_dim: u32,
         rope_scale: f32,
         rope_theta: f32,
@@ -1031,14 +1022,14 @@ impl RopeApplyBf16 {
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct GdnCausalConv1dBf16Args {
-    pub(crate) x: DMat<{ ffi::DTYPE_BF16 }>,
-    pub(crate) weight: DMat<{ ffi::DTYPE_BF16 }>,
+    pub(crate) x: DMat<BF16>,
+    pub(crate) weight: DMat<BF16>,
     pub(crate) bias: Option<Bf16OrF32Vec>,
     pub(crate) state: GdnConvState,
-    pub(crate) state_read_indices: Option<DVec<{ ffi::DTYPE_I32 }>>,
-    pub(crate) state_write_indices: Option<DVec<{ ffi::DTYPE_I32 }>>,
-    pub(crate) seq_indptr: Option<DVec<{ ffi::DTYPE_I32 }>>,
-    pub(crate) out: DMat<{ ffi::DTYPE_BF16 }>,
+    pub(crate) state_read_indices: Option<DVec<I32>>,
+    pub(crate) state_write_indices: Option<DVec<I32>>,
+    pub(crate) seq_indptr: Option<DVec<I32>>,
+    pub(crate) out: DMat<BF16>,
     pub(crate) batch_size: u32,
     pub(crate) activation: Activation,
     pub(crate) update_state: bool,
@@ -1120,16 +1111,16 @@ impl GdnCausalConv1dBf16 {
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct GdnPostConvPrepareBf16Args {
-    pub(crate) conv_out: DMat<{ ffi::DTYPE_BF16 }>,
-    pub(crate) a: DMat<{ ffi::DTYPE_BF16 }>,
-    pub(crate) b: DMat<{ ffi::DTYPE_BF16 }>,
-    pub(crate) a_log: DVec<{ ffi::DTYPE_BF16 }>,
-    pub(crate) dt_bias: DVec<{ ffi::DTYPE_BF16 }>,
+    pub(crate) conv_out: DMat<BF16>,
+    pub(crate) a: DMat<BF16>,
+    pub(crate) b: DMat<BF16>,
+    pub(crate) a_log: DVec<BF16>,
+    pub(crate) dt_bias: DVec<BF16>,
     pub(crate) q: Bf16Heads,
     pub(crate) k: Bf16Heads,
     pub(crate) v: Bf16Heads,
-    pub(crate) g_out: Option<DMat<{ ffi::DTYPE_F32 }>>,
-    pub(crate) beta_out: Option<DMat<{ ffi::DTYPE_F32 }>>,
+    pub(crate) g_out: Option<DMat<F32>>,
+    pub(crate) beta_out: Option<DMat<F32>>,
     pub(crate) apply_qk_l2norm: bool,
     pub(crate) l2norm_eps: f32,
     pub(crate) forget_gate_output: GdnForgetGateOutput,
@@ -1251,13 +1242,13 @@ pub(crate) struct GdnDecodeBf16Args {
     pub(crate) q: Bf16Heads,
     pub(crate) k: Bf16Heads,
     pub(crate) v: Bf16Heads,
-    pub(crate) a: DMat<{ ffi::DTYPE_BF16 }>,
-    pub(crate) b: DMat<{ ffi::DTYPE_BF16 }>,
-    pub(crate) a_log: DVec<{ ffi::DTYPE_BF16 }>,
-    pub(crate) dt_bias: DVec<{ ffi::DTYPE_BF16 }>,
+    pub(crate) a: DMat<BF16>,
+    pub(crate) b: DMat<BF16>,
+    pub(crate) a_log: DVec<BF16>,
+    pub(crate) dt_bias: DVec<BF16>,
     pub(crate) state: GdnRecurrentState,
-    pub(crate) state_indices: DVec<{ ffi::DTYPE_I32 }>,
-    pub(crate) state_out_indices: Option<DVec<{ ffi::DTYPE_I32 }>>,
+    pub(crate) state_indices: DVec<I32>,
+    pub(crate) state_out_indices: Option<DVec<I32>>,
     pub(crate) out: Bf16Heads,
     pub(crate) scale: f32,
     pub(crate) use_qk_l2norm: bool,
@@ -1327,14 +1318,14 @@ pub(crate) struct GdnPrefillBf16Args {
     pub(crate) q: Bf16Heads,
     pub(crate) k: Bf16Heads,
     pub(crate) v: Bf16Heads,
-    pub(crate) a: DMat<{ ffi::DTYPE_BF16 }>,
-    pub(crate) b: DMat<{ ffi::DTYPE_BF16 }>,
-    pub(crate) a_log: DVec<{ ffi::DTYPE_BF16 }>,
-    pub(crate) dt_bias: DVec<{ ffi::DTYPE_BF16 }>,
+    pub(crate) a: DMat<BF16>,
+    pub(crate) b: DMat<BF16>,
+    pub(crate) a_log: DVec<BF16>,
+    pub(crate) dt_bias: DVec<BF16>,
     pub(crate) state: GdnRecurrentState,
-    pub(crate) seq_indptr: DVec<{ ffi::DTYPE_I32 }>,
-    pub(crate) state_indices: DVec<{ ffi::DTYPE_I32 }>,
-    pub(crate) state_out_indices: Option<DVec<{ ffi::DTYPE_I32 }>>,
+    pub(crate) seq_indptr: DVec<I32>,
+    pub(crate) state_indices: DVec<I32>,
+    pub(crate) state_out_indices: Option<DVec<I32>>,
     pub(crate) out: Bf16Heads,
     pub(crate) batch_size: u32,
     pub(crate) scale: f32,
@@ -1474,7 +1465,7 @@ fn require_float_vec(vec: Bf16OrF32Vec, expected_len: u32) -> Result<(), Status>
     Ok(())
 }
 
-fn require_i32_vec(vec: DVec<{ ffi::DTYPE_I32 }>, expected_len: u32) -> Result<(), Status> {
+fn require_i32_vec(vec: DVec<I32>, expected_len: u32) -> Result<(), Status> {
     if vec.len != expected_len || !vec.is_contiguous() {
         return Err(Status::InvalidArgument);
     }
@@ -1482,7 +1473,7 @@ fn require_i32_vec(vec: DVec<{ ffi::DTYPE_I32 }>, expected_len: u32) -> Result<(
 }
 
 fn require_gdn_state_index_vec(
-    vec: DVec<{ ffi::DTYPE_I32 }>,
+    vec: DVec<I32>,
     expected_len: u32,
     _policy: GdnStateIndexPolicy,
 ) -> Result<(), Status> {
@@ -1507,10 +1498,10 @@ fn validate_gdn_recurrent_tensors(
     q: Bf16Heads,
     k: Bf16Heads,
     v: Bf16Heads,
-    a: DMat<{ ffi::DTYPE_BF16 }>,
-    b: DMat<{ ffi::DTYPE_BF16 }>,
-    a_log: DVec<{ ffi::DTYPE_BF16 }>,
-    dt_bias: DVec<{ ffi::DTYPE_BF16 }>,
+    a: DMat<BF16>,
+    b: DMat<BF16>,
+    a_log: DVec<BF16>,
+    dt_bias: DVec<BF16>,
     out: Bf16Heads,
     total_tokens: u32,
 ) -> Result<(), Status> {
@@ -1559,23 +1550,23 @@ mod tests {
         (0x1000usize + offset) as *mut c_void
     }
 
-    fn bf16_mat(offset: usize, rows: u32, cols: u32) -> DMat<{ ffi::DTYPE_BF16 }> {
+    fn bf16_mat(offset: usize, rows: u32, cols: u32) -> DMat<BF16> {
         DMat::contiguous(device_ptr(offset), rows, cols).unwrap()
     }
 
-    fn f32_mat(offset: usize, rows: u32, cols: u32) -> DMat<{ ffi::DTYPE_F32 }> {
+    fn f32_mat(offset: usize, rows: u32, cols: u32) -> DMat<F32> {
         DMat::contiguous(device_ptr(offset), rows, cols).unwrap()
     }
 
-    fn bf16_vec(offset: usize, len: u32) -> DVec<{ ffi::DTYPE_BF16 }> {
+    fn bf16_vec(offset: usize, len: u32) -> DVec<BF16> {
         DVec::contiguous(device_ptr(offset), len).unwrap()
     }
 
-    fn f32_vec(offset: usize, len: u32) -> DVec<{ ffi::DTYPE_F32 }> {
+    fn f32_vec(offset: usize, len: u32) -> DVec<F32> {
         DVec::contiguous(device_ptr(offset), len).unwrap()
     }
 
-    fn i32_vec(offset: usize, len: u32) -> DVec<{ ffi::DTYPE_I32 }> {
+    fn i32_vec(offset: usize, len: u32) -> DVec<I32> {
         DVec::contiguous(device_ptr(offset), len).unwrap()
     }
 
@@ -1613,7 +1604,7 @@ mod tests {
         assert_eq!(i32_vec.dtype, ffi::DTYPE_I32);
 
         let bf16_mat = bf16_mat(4, 2, 3);
-        let f32_mat = DMat::<{ ffi::DTYPE_F32 }>::new(device_ptr(5), 2, 3, 8).unwrap();
+        let f32_mat = DMat::<F32>::new(device_ptr(5), 2, 3, 8).unwrap();
         assert!(bf16_mat.same_shape(f32_mat));
 
         let f32_tensor = f32_mat.tensor();
@@ -1621,7 +1612,7 @@ mod tests {
         assert_eq!(f32_tensor.shape, [2, 3]);
         assert_eq!(f32_tensor.stride, [8, 1]);
 
-        let i32_tensor = DMat::<{ ffi::DTYPE_I32 }>::contiguous(device_ptr(6), 3, 2)
+        let i32_tensor = DMat::<I32>::contiguous(device_ptr(6), 3, 2)
             .unwrap()
             .tensor();
         assert_eq!(i32_tensor.dtype, ffi::DTYPE_I32);
@@ -1630,15 +1621,15 @@ mod tests {
     #[test]
     fn handles_reject_null_zero_and_bad_strides() {
         assert!(matches!(
-            DMat::<{ ffi::DTYPE_BF16 }>::contiguous(ptr::null_mut(), 1, 1),
+            DMat::<BF16>::contiguous(ptr::null_mut(), 1, 1),
             Err(Status::InvalidArgument)
         ));
         assert!(matches!(
-            DMat::<{ ffi::DTYPE_BF16 }>::contiguous(device_ptr(1), 0, 1),
+            DMat::<BF16>::contiguous(device_ptr(1), 0, 1),
             Err(Status::InvalidArgument)
         ));
         assert!(matches!(
-            DMat::<{ ffi::DTYPE_BF16 }>::new(device_ptr(2), 2, 4, 3),
+            DMat::<BF16>::new(device_ptr(2), 2, 4, 3),
             Err(Status::InvalidArgument)
         ));
         assert!(matches!(
@@ -1729,7 +1720,7 @@ mod tests {
         ));
         assert!(matches!(
             Qwen36FullAttentionOutputGateBf16::new(
-                DMat::<{ ffi::DTYPE_BF16 }>::new(
+                DMat::<BF16>::new(
                     device_ptr(123),
                     2,
                     QWEN36_FULL_ATTN_Q_HIDDEN,
@@ -1778,7 +1769,7 @@ mod tests {
         assert!(
             RouterTopK::new(
                 Bf16OrF32Mat::F32(logits),
-                DMat::<{ ffi::DTYPE_I32 }>::contiguous(device_ptr(21), 2, 4).unwrap(),
+                DMat::<I32>::contiguous(device_ptr(21), 2, 4).unwrap(),
                 f32_mat(22, 2, 4),
                 RouterScore::Softmax,
                 true,
@@ -1789,7 +1780,7 @@ mod tests {
         assert!(
             RouterTopK::new(
                 Bf16OrF32Mat::Bf16(bf16_mat(23, 2, 128)),
-                DMat::<{ ffi::DTYPE_I32 }>::contiguous(device_ptr(24), 2, 4).unwrap(),
+                DMat::<I32>::contiguous(device_ptr(24), 2, 4).unwrap(),
                 f32_mat(25, 2, 4),
                 RouterScore::Sigmoid,
                 false,
@@ -1800,12 +1791,7 @@ mod tests {
         assert!(matches!(
             RouterTopK::new(
                 Bf16OrF32Mat::F32(logits),
-                DMat::<{ ffi::DTYPE_I32 }>::contiguous(
-                    device_ptr(26),
-                    2,
-                    QWEN36_MOE_MAX_TOP_K + 1,
-                )
-                .unwrap(),
+                DMat::<I32>::contiguous(device_ptr(26), 2, QWEN36_MOE_MAX_TOP_K + 1,).unwrap(),
                 f32_mat(27, 2, QWEN36_MOE_MAX_TOP_K + 1),
                 RouterScore::Softmax,
                 true,
@@ -1816,7 +1802,7 @@ mod tests {
         assert!(matches!(
             RouterTopK::new(
                 Bf16OrF32Mat::F32(logits),
-                DMat::<{ ffi::DTYPE_I32 }>::contiguous(device_ptr(28), 2, 4).unwrap(),
+                DMat::<I32>::contiguous(device_ptr(28), 2, 4).unwrap(),
                 f32_mat(29, 2, 4),
                 RouterScore::Softmax,
                 true,

@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use crate::engine::{DType, Status};
+use crate::engine::{DynDType, Status};
 use crate::ffi;
 use crate::{
     QWEN36_FULL_ATTN_HEAD_DIM, QWEN36_FULL_ATTN_KV_HEADS, QWEN36_FULL_ATTN_KV_HIDDEN,
@@ -118,7 +118,7 @@ pub(crate) trait WeightLoadBackend {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct WeightTensorDesc<'a> {
     name: &'a str,
-    dtype: DType,
+    dtype: DynDType,
     shape: &'a [u32],
     bytes: usize,
 }
@@ -1057,10 +1057,10 @@ impl WeightTensorDType {
         }
     }
 
-    fn to_runtime_dtype(self) -> DType {
+    fn to_runtime_dtype(self) -> DynDType {
         match self {
-            Self::Bf16 => DType::BF16,
-            Self::F32 => DType::F32,
+            Self::Bf16 => DynDType::BF16,
+            Self::F32 => DynDType::F32,
         }
     }
 }
@@ -2245,7 +2245,7 @@ mod tests {
     #[derive(Default)]
     struct RecordingBackend {
         next_addr: usize,
-        allocs: Vec<(String, DType, Vec<u32>, usize)>,
+        allocs: Vec<(String, DynDType, Vec<u32>, usize)>,
         reads: Vec<(u64, usize)>,
         zeros: Vec<usize>,
         sealed: bool,

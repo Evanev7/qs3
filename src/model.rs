@@ -1,5 +1,5 @@
 use crate::engine::{
-    AppendBatch, Commit, DType, DecodeBatch, Engine, EngineConfig, EngineLayer, EngineTrait,
+    AppendBatch, Commit, DecodeBatch, DynDType, Engine, EngineConfig, EngineLayer, EngineTrait,
     KvLayout, RequestId, Status, validate_supported_attention_grouping,
     validate_supported_attention_head_dim,
 };
@@ -544,8 +544,8 @@ impl QwenConfig {
             num_q_heads: self.num_q_heads,
             num_kv_heads: self.num_kv_heads,
             head_dim: self.head_dim,
-            activation_dtype: DType::BF16,
-            kv_dtype: DType::BF16,
+            activation_dtype: DynDType::BF16,
+            kv_dtype: DynDType::BF16,
             kv_layout: KvLayout::NHD,
             rope_theta: self.rope_theta,
             rope_scale: self.rope_scale,
@@ -1666,9 +1666,9 @@ impl ModelRunner {
         }
         let norm_rows = rows.checked_mul(heads).ok_or(Status::InvalidArgument)?;
         let desc = RmsNormBf16::qwen_qk_norm(
-            DMat::<{ ffi::DTYPE_BF16 }>::contiguous(x, norm_rows, self.config.head_dim)?,
-            DVec::<{ ffi::DTYPE_BF16 }>::contiguous(weight, self.config.head_dim)?,
-            DMat::<{ ffi::DTYPE_BF16 }>::contiguous(out, norm_rows, self.config.head_dim)?,
+            DMat::contiguous(x, norm_rows, self.config.head_dim)?,
+            DVec::contiguous(weight, self.config.head_dim)?,
+            DMat::contiguous(out, norm_rows, self.config.head_dim)?,
             self.config.rms_norm_eps,
         )?;
         let mut ops = self.engine.kernel_ops();
@@ -1691,7 +1691,7 @@ impl ModelRunner {
             k,
             q,
             k,
-            DVec::<{ ffi::DTYPE_I32 }>::contiguous(self.scratch.positions.as_device_ptr(), rows)?,
+            DVec::contiguous(self.scratch.positions.as_device_ptr(), rows)?,
             QWEN36_FULL_ATTN_ROTARY_DIM,
             self.config.rope_scale,
             self.config.rope_theta,
@@ -1705,16 +1705,8 @@ impl ModelRunner {
             return Err(Status::Unsupported);
         }
         let desc = Qwen36FullAttentionOutputGateBf16::new(
-            DMat::<{ ffi::DTYPE_BF16 }>::contiguous(
-                self.scratch.attn_gate.as_device_ptr(),
-                rows,
-                q_hidden,
-            )?,
-            DMat::<{ ffi::DTYPE_BF16 }>::contiguous(
-                self.scratch.attn_out.as_device_ptr(),
-                rows,
-                q_hidden,
-            )?,
+            DMat::contiguous(self.scratch.attn_gate.as_device_ptr(), rows, q_hidden)?,
+            DMat::contiguous(self.scratch.attn_out.as_device_ptr(), rows, q_hidden)?,
         )?;
         let mut ops = self.engine.kernel_ops();
         unsafe { ops.qwen36_full_attention_output_gate_bf16(&desc) }
@@ -1785,7 +1777,7 @@ impl ModelRunner {
             self.scratch
                 .gdn_seq_indptr
                 .upload(self.config.stream, &[0, rows_i32])?;
-            Some(DVec::<{ ffi::DTYPE_I32 }>::contiguous(
+            Some(DVec::contiguous(
                 self.scratch.gdn_seq_indptr.as_device_ptr(),
                 2,
             )?)
@@ -1794,31 +1786,31 @@ impl ModelRunner {
         };
 
         let conv = GdnCausalConv1dBf16::new(GdnCausalConv1dBf16Args {
-            x: DMat::<{ ffi::DTYPE_BF16 }>::contiguous(
+            x: DMat::contiguous(
                 self.scratch.gdn_packed.as_device_ptr(),
                 rows,
                 QWEN36_GDN_PACKED_DIM,
             )?,
-            weight: DMat::<{ ffi::DTYPE_BF16 }>::contiguous(
+            weight: DMat::contiguous(
                 layer.conv_weight,
                 QWEN36_GDN_PACKED_DIM,
                 QWEN36_GDN_CONV_WIDTH,
             )?,
-            bias: Some(Bf16OrF32Vec::Bf16(DVec::<{ ffi::DTYPE_BF16 }>::contiguous(
+            bias: Some(Bf16OrF32Vec::Bf16(DVec::contiguous(
                 layer.conv_bias,
                 QWEN36_GDN_PACKED_DIM,
             )?)),
             state: conv_state,
-            state_read_indices: Some(DVec::<{ ffi::DTYPE_I32 }>::contiguous(
+            state_read_indices: Some(DVec::contiguous(
                 self.scratch.gdn_state_indices.as_device_ptr(),
                 1,
             )?),
-            state_write_indices: Some(DVec::<{ ffi::DTYPE_I32 }>::contiguous(
+            state_write_indices: Some(DVec::contiguous(
                 self.scratch.gdn_state_out_indices.as_device_ptr(),
                 1,
             )?),
             seq_indptr,
-            out: DMat::<{ ffi::DTYPE_BF16 }>::contiguous(
+            out: DMat::contiguous(
                 self.scratch.gdn_conv_out.as_device_ptr(),
                 rows,
                 QWEN36_GDN_PACKED_DIM,
@@ -1833,26 +1825,23 @@ impl ModelRunner {
         }
 
         let post = GdnPostConvPrepareBf16::new(GdnPostConvPrepareBf16Args {
-            conv_out: DMat::<{ ffi::DTYPE_BF16 }>::contiguous(
+            conv_out: DMat::contiguous(
                 self.scratch.gdn_conv_out.as_device_ptr(),
                 rows,
                 QWEN36_GDN_PACKED_DIM,
             )?,
-            a: DMat::<{ ffi::DTYPE_BF16 }>::contiguous(
+            a: DMat::contiguous(
                 self.scratch.gdn_a.as_device_ptr(),
                 rows,
                 QWEN36_GDN_NUM_V_HEADS,
             )?,
-            b: DMat::<{ ffi::DTYPE_BF16 }>::contiguous(
+            b: DMat::contiguous(
                 self.scratch.gdn_b.as_device_ptr(),
                 rows,
                 QWEN36_GDN_NUM_V_HEADS,
             )?,
-            a_log: DVec::<{ ffi::DTYPE_BF16 }>::contiguous(layer.a_log, QWEN36_GDN_NUM_V_HEADS)?,
-            dt_bias: DVec::<{ ffi::DTYPE_BF16 }>::contiguous(
-                layer.dt_bias,
-                QWEN36_GDN_NUM_V_HEADS,
-            )?,
+            a_log: DVec::contiguous(layer.a_log, QWEN36_GDN_NUM_V_HEADS)?,
+            dt_bias: DVec::contiguous(layer.dt_bias, QWEN36_GDN_NUM_V_HEADS)?,
             q: self.gdn_q_heads(self.scratch.gdn_q.as_device_ptr(), rows)?,
             k: self.gdn_k_heads(self.scratch.gdn_k.as_device_ptr(), rows)?,
             v: self.gdn_v_heads(self.scratch.gdn_v.as_device_ptr(), rows)?,
@@ -1877,34 +1866,25 @@ impl ModelRunner {
                     q: self.gdn_q_heads(self.scratch.gdn_q.as_device_ptr(), rows)?,
                     k: self.gdn_k_heads(self.scratch.gdn_k.as_device_ptr(), rows)?,
                     v: self.gdn_v_heads(self.scratch.gdn_v.as_device_ptr(), rows)?,
-                    a: DMat::<{ ffi::DTYPE_BF16 }>::contiguous(
+                    a: DMat::contiguous(
                         self.scratch.gdn_a.as_device_ptr(),
                         rows,
                         QWEN36_GDN_NUM_V_HEADS,
                     )?,
-                    b: DMat::<{ ffi::DTYPE_BF16 }>::contiguous(
+                    b: DMat::contiguous(
                         self.scratch.gdn_b.as_device_ptr(),
                         rows,
                         QWEN36_GDN_NUM_V_HEADS,
                     )?,
-                    a_log: DVec::<{ ffi::DTYPE_BF16 }>::contiguous(
-                        layer.a_log,
-                        QWEN36_GDN_NUM_V_HEADS,
-                    )?,
-                    dt_bias: DVec::<{ ffi::DTYPE_BF16 }>::contiguous(
-                        layer.dt_bias,
-                        QWEN36_GDN_NUM_V_HEADS,
-                    )?,
+                    a_log: DVec::contiguous(layer.a_log, QWEN36_GDN_NUM_V_HEADS)?,
+                    dt_bias: DVec::contiguous(layer.dt_bias, QWEN36_GDN_NUM_V_HEADS)?,
                     state: recurrent_state,
-                    seq_indptr: DVec::<{ ffi::DTYPE_I32 }>::contiguous(
-                        self.scratch.gdn_seq_indptr.as_device_ptr(),
-                        2,
-                    )?,
-                    state_indices: DVec::<{ ffi::DTYPE_I32 }>::contiguous(
+                    seq_indptr: DVec::contiguous(self.scratch.gdn_seq_indptr.as_device_ptr(), 2)?,
+                    state_indices: DVec::contiguous(
                         self.scratch.gdn_state_indices.as_device_ptr(),
                         1,
                     )?,
-                    state_out_indices: Some(DVec::<{ ffi::DTYPE_I32 }>::contiguous(
+                    state_out_indices: Some(DVec::contiguous(
                         self.scratch.gdn_state_out_indices.as_device_ptr(),
                         1,
                     )?),
@@ -1922,30 +1902,24 @@ impl ModelRunner {
                     q: self.gdn_q_heads(self.scratch.gdn_q.as_device_ptr(), rows)?,
                     k: self.gdn_k_heads(self.scratch.gdn_k.as_device_ptr(), rows)?,
                     v: self.gdn_v_heads(self.scratch.gdn_v.as_device_ptr(), rows)?,
-                    a: DMat::<{ ffi::DTYPE_BF16 }>::contiguous(
+                    a: DMat::contiguous(
                         self.scratch.gdn_a.as_device_ptr(),
                         rows,
                         QWEN36_GDN_NUM_V_HEADS,
                     )?,
-                    b: DMat::<{ ffi::DTYPE_BF16 }>::contiguous(
+                    b: DMat::contiguous(
                         self.scratch.gdn_b.as_device_ptr(),
                         rows,
                         QWEN36_GDN_NUM_V_HEADS,
                     )?,
-                    a_log: DVec::<{ ffi::DTYPE_BF16 }>::contiguous(
-                        layer.a_log,
-                        QWEN36_GDN_NUM_V_HEADS,
-                    )?,
-                    dt_bias: DVec::<{ ffi::DTYPE_BF16 }>::contiguous(
-                        layer.dt_bias,
-                        QWEN36_GDN_NUM_V_HEADS,
-                    )?,
+                    a_log: DVec::contiguous(layer.a_log, QWEN36_GDN_NUM_V_HEADS)?,
+                    dt_bias: DVec::contiguous(layer.dt_bias, QWEN36_GDN_NUM_V_HEADS)?,
                     state: recurrent_state,
-                    state_indices: DVec::<{ ffi::DTYPE_I32 }>::contiguous(
+                    state_indices: DVec::contiguous(
                         self.scratch.gdn_state_indices.as_device_ptr(),
                         rows,
                     )?,
-                    state_out_indices: Some(DVec::<{ ffi::DTYPE_I32 }>::contiguous(
+                    state_out_indices: Some(DVec::contiguous(
                         self.scratch.gdn_state_out_indices.as_device_ptr(),
                         rows,
                     )?),
@@ -1962,10 +1936,7 @@ impl ModelRunner {
         let gated = GdnRmsNormGatedBf16::new(GdnRmsNormGatedBf16Args {
             x: self.gdn_v_heads(self.scratch.gdn_recurrent_out.as_device_ptr(), rows)?,
             gate: self.gdn_v_heads(self.scratch.gdn_gate.as_device_ptr(), rows)?,
-            weight: Bf16OrF32Vec::Bf16(DVec::<{ ffi::DTYPE_BF16 }>::contiguous(
-                layer.rms_weight,
-                QWEN36_GDN_VALUE_DIM,
-            )?),
+            weight: Bf16OrF32Vec::Bf16(DVec::contiguous(layer.rms_weight, QWEN36_GDN_VALUE_DIM)?),
             out: self.gdn_v_heads(self.scratch.gdn_norm_out.as_device_ptr(), rows)?,
             eps: self.config.rms_norm_eps,
             gate_activation: Activation::Silu,
@@ -2093,17 +2064,17 @@ impl ModelRunner {
         )?;
 
         let router = RouterTopK::new(
-            Bf16OrF32Mat::F32(DMat::<{ ffi::DTYPE_F32 }>::contiguous(
+            Bf16OrF32Mat::F32(DMat::contiguous(
                 self.scratch.router_logits.as_device_ptr(),
                 rows,
                 moe.num_experts,
             )?),
-            DMat::<{ ffi::DTYPE_I32 }>::contiguous(
+            DMat::contiguous(
                 self.scratch.topk_ids.as_device_ptr(),
                 rows,
                 moe.num_experts_per_tok,
             )?,
-            DMat::<{ ffi::DTYPE_F32 }>::contiguous(
+            DMat::contiguous(
                 self.scratch.topk_weights.as_device_ptr(),
                 rows,
                 moe.num_experts_per_tok,
@@ -2119,22 +2090,18 @@ impl ModelRunner {
 
         let plan = self.moe_plan.as_ref().ok_or(Status::InternalError)?;
         let execute = MoeBf16Execute::new(MoeBf16ExecuteArgs {
-            hidden: DMat::<{ ffi::DTYPE_BF16 }>::contiguous(
-                self.scratch.attn_proj.as_device_ptr(),
-                rows,
-                hidden,
-            )?,
-            topk_ids: DMat::<{ ffi::DTYPE_I32 }>::contiguous(
+            hidden: DMat::contiguous(self.scratch.attn_proj.as_device_ptr(), rows, hidden)?,
+            topk_ids: DMat::contiguous(
                 self.scratch.topk_ids.as_device_ptr(),
                 rows,
                 moe.num_experts_per_tok,
             )?,
-            topk_weights: DMat::<{ ffi::DTYPE_F32 }>::contiguous(
+            topk_weights: DMat::contiguous(
                 self.scratch.topk_weights.as_device_ptr(),
                 rows,
                 moe.num_experts_per_tok,
             )?,
-            gate_up_weight: DTensor3::<{ ffi::DTYPE_BF16 }>::contiguous(
+            gate_up_weight: DTensor3::contiguous(
                 gate_up_proj,
                 moe.num_experts,
                 moe.moe_intermediate_size
@@ -2142,17 +2109,13 @@ impl ModelRunner {
                     .ok_or(Status::InvalidArgument)?,
                 hidden,
             )?,
-            down_weight: DTensor3::<{ ffi::DTYPE_BF16 }>::contiguous(
+            down_weight: DTensor3::contiguous(
                 down_proj,
                 moe.num_experts,
                 hidden,
                 moe.moe_intermediate_size,
             )?,
-            out: DMat::<{ ffi::DTYPE_BF16 }>::contiguous(
-                self.scratch.mlp_out.as_device_ptr(),
-                rows,
-                hidden,
-            )?,
+            out: DMat::contiguous(self.scratch.mlp_out.as_device_ptr(), rows, hidden)?,
             workspace: Workspace::new(
                 self.scratch.moe_workspace.as_device_ptr(),
                 self.scratch.moe_workspace.cap,
@@ -2311,13 +2274,13 @@ impl ModelRunner {
 
     fn embedding_gather(&mut self, rows: u32) -> Result<(), Status> {
         let desc = EmbeddingGatherBf16::with_options(
-            DVec::<{ ffi::DTYPE_I32 }>::contiguous(self.scratch.token_ids.as_device_ptr(), rows)?,
-            DMat::<{ ffi::DTYPE_BF16 }>::contiguous(
+            DVec::contiguous(self.scratch.token_ids.as_device_ptr(), rows)?,
+            DMat::contiguous(
                 self.weights.token_embedding.as_device_ptr(),
                 self.config.vocab_size,
                 self.config.hidden_size,
             )?,
-            DMat::<{ ffi::DTYPE_BF16 }>::contiguous(
+            DMat::contiguous(
                 self.scratch.residual.as_device_ptr(),
                 rows,
                 self.config.hidden_size,
@@ -2337,9 +2300,9 @@ impl ModelRunner {
         rows: u32,
     ) -> Result<(), Status> {
         let desc = RmsNormBf16::qwen_decoder_norm(
-            DMat::<{ ffi::DTYPE_BF16 }>::contiguous(x, rows, self.config.hidden_size)?,
-            DVec::<{ ffi::DTYPE_BF16 }>::contiguous(weight, self.config.hidden_size)?,
-            DMat::<{ ffi::DTYPE_BF16 }>::contiguous(out, rows, self.config.hidden_size)?,
+            DMat::contiguous(x, rows, self.config.hidden_size)?,
+            DVec::contiguous(weight, self.config.hidden_size)?,
+            DMat::contiguous(out, rows, self.config.hidden_size)?,
             self.config.rms_norm_eps,
         )?;
         let mut ops = self.engine.kernel_ops();
@@ -2354,9 +2317,9 @@ impl ModelRunner {
         rows: u32,
     ) -> Result<(), Status> {
         let desc = FusedAddRmsNormBf16::qwen_decoder_norm(
-            DMat::<{ ffi::DTYPE_BF16 }>::contiguous(x, rows, self.config.hidden_size)?,
-            DMat::<{ ffi::DTYPE_BF16 }>::contiguous(residual, rows, self.config.hidden_size)?,
-            DVec::<{ ffi::DTYPE_BF16 }>::contiguous(weight, self.config.hidden_size)?,
+            DMat::contiguous(x, rows, self.config.hidden_size)?,
+            DMat::contiguous(residual, rows, self.config.hidden_size)?,
+            DVec::contiguous(weight, self.config.hidden_size)?,
             self.config.rms_norm_eps,
         )?;
         let mut ops = self.engine.kernel_ops();
@@ -2374,16 +2337,8 @@ impl ModelRunner {
         out_kind: GemmOut,
     ) -> Result<(), Status> {
         let out = match out_kind {
-            GemmOut::Bf16 => Bf16OrF32Mat::Bf16(DMat::<{ ffi::DTYPE_BF16 }>::contiguous(
-                out,
-                rows,
-                out_features,
-            )?),
-            GemmOut::F32 => Bf16OrF32Mat::F32(DMat::<{ ffi::DTYPE_F32 }>::contiguous(
-                out,
-                rows,
-                out_features,
-            )?),
+            GemmOut::Bf16 => Bf16OrF32Mat::Bf16(DMat::contiguous(out, rows, out_features)?),
+            GemmOut::F32 => Bf16OrF32Mat::F32(DMat::contiguous(out, rows, out_features)?),
         };
         let workspace = if self.config.qscb_workspace_bytes == 0 {
             Workspace::none()
@@ -2394,8 +2349,8 @@ impl ModelRunner {
             )?
         };
         let desc = Bf16Gemm::new(
-            DMat::<{ ffi::DTYPE_BF16 }>::contiguous(x, rows, in_features)?,
-            DMat::<{ ffi::DTYPE_BF16 }>::contiguous(weight, out_features, in_features)?,
+            DMat::contiguous(x, rows, in_features)?,
+            DMat::contiguous(weight, out_features, in_features)?,
             out,
             workspace,
         )?;
@@ -2412,9 +2367,9 @@ impl ModelRunner {
         out: ffi::DevicePtr,
     ) -> Result<(), Status> {
         let desc = SiluAndMulBf16::new(
-            DMat::<{ ffi::DTYPE_BF16 }>::contiguous(gate, rows, intermediate)?,
-            DMat::<{ ffi::DTYPE_BF16 }>::contiguous(up, rows, intermediate)?,
-            DMat::<{ ffi::DTYPE_BF16 }>::contiguous(out, rows, intermediate)?,
+            DMat::contiguous(gate, rows, intermediate)?,
+            DMat::contiguous(up, rows, intermediate)?,
+            DMat::contiguous(out, rows, intermediate)?,
         )?;
         let mut ops = self.engine.kernel_ops();
         unsafe { ops.silu_and_mul_bf16(&desc) }
@@ -2422,28 +2377,20 @@ impl ModelRunner {
 
     fn shared_expert_gate_add(&mut self, rows: u32, hidden: u32) -> Result<(), Status> {
         let desc = Qwen36SharedExpertGateAddBf16::new(
-            Bf16OrF32Mat::F32(DMat::<{ ffi::DTYPE_F32 }>::contiguous(
+            Bf16OrF32Mat::F32(DMat::contiguous(
                 self.scratch.shared_gate_logits.as_device_ptr(),
                 rows,
                 1,
             )?),
-            DMat::<{ ffi::DTYPE_BF16 }>::contiguous(
-                self.scratch.shared_out.as_device_ptr(),
-                rows,
-                hidden,
-            )?,
-            DMat::<{ ffi::DTYPE_BF16 }>::contiguous(
-                self.scratch.mlp_out.as_device_ptr(),
-                rows,
-                hidden,
-            )?,
+            DMat::contiguous(self.scratch.shared_out.as_device_ptr(), rows, hidden)?,
+            DMat::contiguous(self.scratch.mlp_out.as_device_ptr(), rows, hidden)?,
         )?;
         let mut ops = self.engine.kernel_ops();
         unsafe { ops.qwen36_shared_expert_gate_add_bf16(&desc) }
     }
 
     fn sample_logits(&mut self, rows: u32) -> Result<Vec<i32>, Status> {
-        let logits = DMat::<{ ffi::DTYPE_F32 }>::contiguous(
+        let logits = DMat::contiguous(
             self.scratch.logits.as_device_ptr(),
             rows,
             self.config.vocab_size,
@@ -2455,10 +2402,7 @@ impl ModelRunner {
         }
         let desc = GreedyArgmaxF32::new(
             logits,
-            DVec::<{ ffi::DTYPE_I32 }>::contiguous(
-                self.scratch.next_token_ids.as_device_ptr(),
-                rows,
-            )?,
+            DVec::contiguous(self.scratch.next_token_ids.as_device_ptr(), rows)?,
         )?;
         {
             let mut ops = self.engine.kernel_ops();
@@ -3575,20 +3519,20 @@ mod tests {
         let moe = runner.config.moe_config().unwrap();
         let router = RouterTopK::new(
             Bf16OrF32Mat::F32(
-                DMat::<{ ffi::DTYPE_F32 }>::contiguous(
+                DMat::contiguous(
                     runner.scratch.router_logits.as_device_ptr(),
                     MOE_VECTOR_ROWS,
                     moe.num_experts,
                 )
                 .unwrap(),
             ),
-            DMat::<{ ffi::DTYPE_I32 }>::contiguous(
+            DMat::contiguous(
                 runner.scratch.topk_ids.as_device_ptr(),
                 MOE_VECTOR_ROWS,
                 moe.num_experts_per_tok,
             )
             .unwrap(),
-            DMat::<{ ffi::DTYPE_F32 }>::contiguous(
+            DMat::contiguous(
                 runner.scratch.topk_weights.as_device_ptr(),
                 MOE_VECTOR_ROWS,
                 moe.num_experts_per_tok,
@@ -3624,39 +3568,39 @@ mod tests {
         )
         .unwrap();
         let execute = MoeBf16Execute::new(MoeBf16ExecuteArgs {
-            hidden: DMat::<{ ffi::DTYPE_BF16 }>::contiguous(
+            hidden: DMat::contiguous(
                 runner.scratch.attn_proj.as_device_ptr(),
                 MOE_VECTOR_ROWS,
                 MOE_VECTOR_HIDDEN,
             )
             .unwrap(),
-            topk_ids: DMat::<{ ffi::DTYPE_I32 }>::contiguous(
+            topk_ids: DMat::contiguous(
                 runner.scratch.topk_ids.as_device_ptr(),
                 MOE_VECTOR_ROWS,
                 moe.num_experts_per_tok,
             )
             .unwrap(),
-            topk_weights: DMat::<{ ffi::DTYPE_F32 }>::contiguous(
+            topk_weights: DMat::contiguous(
                 runner.scratch.topk_weights.as_device_ptr(),
                 MOE_VECTOR_ROWS,
                 moe.num_experts_per_tok,
             )
             .unwrap(),
-            gate_up_weight: DTensor3::<{ ffi::DTYPE_BF16 }>::contiguous(
+            gate_up_weight: DTensor3::contiguous(
                 gate_up_weight.as_device_ptr(),
                 moe.num_experts,
                 2 * MOE_VECTOR_INTERMEDIATE,
                 MOE_VECTOR_HIDDEN,
             )
             .unwrap(),
-            down_weight: DTensor3::<{ ffi::DTYPE_BF16 }>::contiguous(
+            down_weight: DTensor3::contiguous(
                 down_weight.as_device_ptr(),
                 moe.num_experts,
                 MOE_VECTOR_HIDDEN,
                 MOE_VECTOR_INTERMEDIATE,
             )
             .unwrap(),
-            out: DMat::<{ ffi::DTYPE_BF16 }>::contiguous(
+            out: DMat::contiguous(
                 runner.scratch.mlp_out.as_device_ptr(),
                 MOE_VECTOR_ROWS,
                 MOE_VECTOR_HIDDEN,

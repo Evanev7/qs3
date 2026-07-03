@@ -1,8 +1,9 @@
 pub(crate) mod device_tensor;
+pub(crate) mod dtype;
 pub(crate) mod kernels;
 
 use crate::engine::{
-    AppendBatch, Commit, DType, DecodeBatch, EngineConfig, EngineCore, EngineLayer, KvLayout,
+    AppendBatch, Commit, DecodeBatch, DynDType, EngineConfig, EngineCore, EngineLayer, KvLayout,
     Status, try_clone_slice, validate_supported_attention_grouping,
     validate_supported_attention_head_dim,
 };
@@ -705,8 +706,8 @@ fn activate_device(device_ordinal: i32) -> Result<(), Status> {
 }
 
 fn validate_runtime_config(config: &EngineConfig) -> Result<(), Status> {
-    if !matches!(config.activation_dtype, DType::F16 | DType::BF16)
-        || !matches!(config.kv_dtype, DType::F16 | DType::BF16)
+    if !matches!(config.activation_dtype, DynDType::F16 | DynDType::BF16)
+        || !matches!(config.kv_dtype, DynDType::F16 | DynDType::BF16)
     {
         return Err(Status::Unsupported);
     }
@@ -834,8 +835,8 @@ mod tests {
             num_q_heads: QWEN36_FULL_ATTN_Q_HEADS,
             num_kv_heads: QWEN36_FULL_ATTN_KV_HEADS,
             head_dim: QWEN36_FULL_ATTN_HEAD_DIM,
-            activation_dtype: DType::F16,
-            kv_dtype: DType::F16,
+            activation_dtype: DynDType::F16,
+            kv_dtype: DynDType::F16,
             kv_layout: KvLayout::NHD,
             rope_theta: 10000.0,
             rope_scale: 1.0,

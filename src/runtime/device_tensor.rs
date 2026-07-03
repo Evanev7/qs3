@@ -1,13 +1,26 @@
-use crate::{Status, ffi};
+use std::marker::PhantomData;
+
+use crate::{Status, ffi, runtime::dtype::DType};
+
+/*
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct DTensor<const Dim: usize, DT: dtype::DType> {
+    pub(super) data: ffi::DevicePtr,
+    pub(super) shape: [i32; Dim],
+    stride: [i32; Dim],
+    _p: PhantomData<DT>,
+}
+*/
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct DVec<const DTYPE: ffi::DTypeRaw> {
+pub(crate) struct DVec<DT: DType> {
     pub(super) data: ffi::DevicePtr,
     pub(super) len: u32,
     stride: u32,
+    _p: PhantomData<DT>,
 }
 
-impl<const DT: ffi::DTypeRaw> DVec<DT> {
+impl<DT: DType> DVec<DT> {
     pub(crate) fn contiguous(data: ffi::DevicePtr, len: u32) -> Result<Self, Status> {
         Self::new(data, len, 1)
     }
@@ -15,19 +28,24 @@ impl<const DT: ffi::DTypeRaw> DVec<DT> {
     pub(crate) fn new(data: ffi::DevicePtr, len: u32, stride: u32) -> Result<Self, Status> {
         validate_ptr(data)?;
         validate_nonzero(&[len, stride])?;
-        Ok(Self { data, len, stride })
+        Ok(Self {
+            data,
+            len,
+            stride,
+            _p: PhantomData,
+        })
     }
 
     pub(super) fn tensor(self) -> ffi::Tensor1 {
         ffi::Tensor1 {
             data: self.data,
-            dtype: DT,
+            dtype: DT::RAW,
             shape: [self.len.into()],
             stride: [self.stride.into()],
         }
     }
 
-    pub(super) fn is_contiguous(self) -> bool {
+    pub(super) fn is_contiguous(&self) -> bool {
         self.stride == 1
     }
 
@@ -41,14 +59,15 @@ impl<const DT: ffi::DTypeRaw> DVec<DT> {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct DMat<const DTYPE: ffi::DTypeRaw> {
+pub(crate) struct DMat<DT: DType> {
     data: ffi::DevicePtr,
     pub(super) rows: u32,
     pub(super) cols: u32,
     row_stride: u32,
+    _p: PhantomData<DT>,
 }
 
-impl<const DT: ffi::DTypeRaw> DMat<DT> {
+impl<DT: DType> DMat<DT> {
     pub(crate) fn contiguous(data: ffi::DevicePtr, rows: u32, cols: u32) -> Result<Self, Status> {
         Self::new(data, rows, cols, cols)
     }
@@ -69,23 +88,24 @@ impl<const DT: ffi::DTypeRaw> DMat<DT> {
             rows,
             cols,
             row_stride,
+            _p: PhantomData,
         })
     }
 
     pub(super) fn tensor(self) -> ffi::Tensor2 {
         ffi::Tensor2 {
             data: self.data,
-            dtype: DT,
+            dtype: DT::RAW,
             shape: [self.rows.into(), self.cols.into()],
             stride: [self.row_stride.into(), 1],
         }
     }
 
-    pub(super) fn same_shape<const T: ffi::DTypeRaw>(self, other: DMat<T>) -> bool {
+    pub(super) fn same_shape<T: DType>(self, other: DMat<T>) -> bool {
         self.rows == other.rows && self.cols == other.cols
     }
 
-    pub(super) fn is_contiguous(self) -> bool {
+    pub(super) fn is_contiguous(&self) -> bool {
         self.row_stride == self.cols
     }
 
@@ -99,7 +119,7 @@ impl<const DT: ffi::DTypeRaw> DMat<DT> {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct DTensor3<const DTYPE: ffi::DTypeRaw> {
+pub(crate) struct DTensor3<DT: DType> {
     data: ffi::DevicePtr,
     dim0: u32,
     dim1: u32,
@@ -107,9 +127,10 @@ pub(crate) struct DTensor3<const DTYPE: ffi::DTypeRaw> {
     stride0: u32,
     stride1: u32,
     stride2: u32,
+    _p: PhantomData<DT>,
 }
 
-impl<const DT: ffi::DTypeRaw> DTensor3<DT> {
+impl<DT: DType> DTensor3<DT> {
     pub(crate) fn contiguous(
         data: ffi::DevicePtr,
         dim0: u32,
@@ -146,13 +167,14 @@ impl<const DT: ffi::DTypeRaw> DTensor3<DT> {
             stride0,
             stride1,
             stride2,
+            _p: PhantomData,
         })
     }
 
     pub(super) fn tensor(self) -> ffi::Tensor3 {
         ffi::Tensor3 {
             data: self.data,
-            dtype: DT,
+            dtype: DT::RAW,
             shape: [self.dim0.into(), self.dim1.into(), self.dim2.into()],
             stride: [
                 self.stride0.into(),
