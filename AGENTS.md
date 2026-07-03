@@ -74,6 +74,11 @@ GDN direction:
   FlashInfer GDN headers/JIT plumbing through local `qscu` files
 
 near-term todos:
+- resume weight-load speed testing after spark-1565 recovers: rerun the
+  managed baseline and pinned staging comparison, including the interrupted
+  `4 x 1 GiB` pinned-ring run
+- track down intermittent `prompt_rewrite_behind_live_tail_rebuilds_like_fresh_runner`
+  CUDA invalid-argument failures from the FlashInfer norm launch
 - implement BF16 config+safetensors loading through the qwen-specific manifest
   validator and `WeightLoadBackend`. build the complete tensor plan and reject
   invalid config/index/header state before CUDA allocation
