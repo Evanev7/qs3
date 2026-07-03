@@ -292,7 +292,8 @@ pub struct QwenConfig {
     pub stream: *mut c_void,
     pub num_layers: u32,
     pub max_live_requests: u32,
-    pub max_batch_size: u32,
+    pub max_batch_rows: u32,
+    pub max_batch_tokens: u32,
     pub max_seq_len: u32,
     pub max_pages: u32,
     pub page_size: u32,
@@ -321,7 +322,8 @@ impl QwenConfig {
             stream: ptr::null_mut(),
             num_layers: 2,
             max_live_requests: 1,
-            max_batch_size: 1,
+            max_batch_rows: 1,
+            max_batch_tokens: 16,
             max_seq_len: 16,
             max_pages: 8,
             page_size: 4,
@@ -368,7 +370,8 @@ impl QwenConfig {
             stream: ptr::null_mut(),
             num_layers: 4,
             max_live_requests: 1,
-            max_batch_size: 1,
+            max_batch_rows: 1,
+            max_batch_tokens: 8,
             max_seq_len: 8,
             max_pages: 2,
             page_size: 4,
@@ -394,7 +397,8 @@ impl QwenConfig {
     pub fn validate(&self) -> Result<(), Status> {
         if self.num_layers == 0
             || self.max_live_requests == 0
-            || self.max_batch_size == 0
+            || self.max_batch_rows == 0
+            || self.max_batch_tokens == 0
             || self.max_seq_len == 0
             || self.max_pages == 0
             || self.page_size == 0
@@ -411,8 +415,11 @@ impl QwenConfig {
         {
             return Err(Status::InvalidArgument);
         }
-        if self.max_live_requests != 1 || self.max_batch_size != 1 {
+        if self.max_live_requests != 1 || self.max_batch_rows != 1 {
             return Err(Status::Unsupported);
+        }
+        if self.max_batch_tokens < self.max_batch_rows {
+            return Err(Status::InvalidArgument);
         }
         if self.vocab_size > i32::MAX as u32 {
             return Err(Status::Unsupported);
@@ -535,7 +542,8 @@ impl QwenConfig {
             stream: self.stream,
             num_layers: attention_layers,
             max_live_requests: self.max_live_requests,
-            max_batch_size: self.max_batch_size,
+            max_batch_rows: self.max_batch_rows,
+            max_batch_tokens: self.max_batch_tokens,
             max_seq_len: self.max_seq_len,
             max_pages: self.max_pages,
             page_size: self.page_size,

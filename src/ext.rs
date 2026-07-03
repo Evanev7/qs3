@@ -1,4 +1,4 @@
-use std::{collections::HashSet, hash::Hash};
+use std::{collections::HashSet, error::Error, hash::Hash};
 
 use crate::Status;
 
@@ -50,5 +50,28 @@ impl<T: Eq + Hash> SafeHashSet for HashSet<T> {
         let mut s = Self::default();
         s.safe_reserve(capacity)?;
         Ok(s)
+    }
+}
+
+pub(crate) trait Cast: Sized {
+    fn cast<T>(self) -> T
+    where
+        T: TryFrom<Self>,
+        T::Error: Error;
+}
+impl<U: std::fmt::Debug> Cast for U {
+    #[inline]
+    fn cast<T>(self) -> T
+    where
+        T: TryFrom<Self>,
+        T::Error: Error,
+    {
+        T::try_from(self).unwrap_or_else(|e| {
+            panic!(
+                "trivial cast {e} failed, {} -> {}",
+                std::any::type_name::<U>(),
+                std::any::type_name::<T>(),
+            )
+        })
     }
 }

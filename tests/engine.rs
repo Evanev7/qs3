@@ -1,5 +1,5 @@
 use qs3::{
-    AppendBatch, Commit, DynDType, DecodeBatch, Engine, EngineConfig, EngineLayer, EngineTrait,
+    AppendBatch, Commit, DecodeBatch, DynDType, Engine, EngineConfig, EngineLayer, EngineTrait,
     KvLayout, ffi,
 };
 use std::ffi::{CStr, c_char, c_void};
@@ -236,7 +236,8 @@ fn tiny_config() -> EngineConfig {
         stream: std::ptr::null_mut(),
         num_layers: 1,
         max_live_requests: 4,
-        max_batch_size: 3,
+        max_batch_rows: 3,
+        max_batch_tokens: 8,
         max_seq_len: 8,
         max_pages: 8,
         page_size: 4,

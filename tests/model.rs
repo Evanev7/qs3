@@ -538,7 +538,7 @@ fn qwen_config_rejects_unsupported_dense_runner_shapes() {
     assert_eq!(config.validate(), Err(Status::InvalidArgument));
 
     let mut config = QwenConfig::randomized_dense_tiny_fixture(-1);
-    config.max_batch_size = 2;
+    config.max_batch_rows = 2;
     assert_eq!(config.validate(), Err(Status::Unsupported));
 
     let mut config = QwenConfig::randomized_dense_tiny_fixture(-1);
