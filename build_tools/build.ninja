@@ -97,7 +97,7 @@ build qsfi_test_release: link_test $src/test.cu qsfi.o qscu_gdn.o qscu.o qscb.o 
     $src/qscu.h $
     $src/qscb.h $
     $src/tests_cuda_flashinfer_norm_rope.inc $
-    $src/tests_cuda_qscb_gemm.inc $
+    $src/tests_cuda_qscb_linear.inc $
     $src/tests_cuda_qscu_utils.inc $
     $src/tests_cuda_qscu_gdn_router.inc
   libs = -lcublas -lcublasLt
@@ -109,7 +109,7 @@ build qsfi_test_checked: link_test_checked $src/test.cu qsfi_checked.o qscu_gdn_
     $src/qscu.h $
     $src/qscb.h $
     $src/tests_cuda_flashinfer_norm_rope.inc $
-    $src/tests_cuda_qscb_gemm.inc $
+    $src/tests_cuda_qscb_linear.inc $
     $src/tests_cuda_qscu_utils.inc $
     $src/tests_cuda_qscu_gdn_router.inc
   libs = -lcublas -lcublasLt

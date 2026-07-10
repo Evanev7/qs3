@@ -5,7 +5,15 @@ use crate::{
     QWEN36_FULL_ATTN_ROTARY_DIM, engine::Status, ffi,
 };
 
-use super::sys;
+use crate::backend::result_from_raw;
+use crate::ffi::sys;
+
+mod ops;
+pub(crate) use crate::backend::Workspace;
+pub(crate) use ops::{
+    FusedAddRmsNormBf16, MoeBf16Execute, MoeBf16ExecuteArgs, MoeBf16PlanConfig, RmsNormBf16,
+    RopeApplyBf16,
+};
 
 use std::{
     mem::MaybeUninit,
@@ -20,8 +28,7 @@ use crate::ffi::{
     DevicePtr, FusedAddRmsnormDesc, KV_LAYOUT_HND, KV_LAYOUT_NHD, MASK_MODE_CAUSAL, MASK_MODE_NONE,
     MOE_BACKEND_FLASHINFER_NVFP4, MOE_BACKEND_FLASHINFER_STAGED_BF16, MOE_ROUTE_PRECOMPUTED_TOPK,
     MoeBf16ExecuteDesc, MoeNvfp4ExecuteDesc, MoePlanDesc, PagedKvCache, PagedKvPlan, PagedKvTable,
-    QoPlan, RmsnormDesc, RopeApplyDesc, StatusRaw, Tensor1, Tensor2, Tensor3, Tensor4, Tensor5,
-    Tensor6,
+    QoPlan, RmsnormDesc, RopeApplyDesc, Tensor1, Tensor2, Tensor3, Tensor4, Tensor5, Tensor6,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -35,10 +42,6 @@ struct PlanShape {
     batch_size: u32,
     num_indices: u32,
     total_tokens: u32,
-}
-
-fn result_from_raw(status: StatusRaw) -> Result<(), Status> {
-    ffi::result_from_raw(status)
 }
 
 fn default_one(value: f32) -> f32 {
@@ -1000,11 +1003,11 @@ fn validate_prefill_plan_execute(
     validate_prefill_execute_desc(attention, plan_shape, desc)
 }
 
-pub(crate) struct Context {
+pub(crate) struct Qsfi {
     raw: NonNull<ffi::ContextRaw>,
 }
 
-impl Context {
+impl Qsfi {
     pub(crate) fn new(device_ordinal: i32, stream: CudaStream) -> Result<Self, Status> {
         let desc = sys::qsfi_context_desc {
             device_ordinal,
@@ -1173,7 +1176,7 @@ impl Context {
         self.result_with_last_error(unsafe { sys::qsfi_rope_apply(self.raw.as_ptr(), desc) })
     }
 
-    pub(crate) unsafe fn create_moe_plan(&mut self, desc: &MoePlanDesc) -> Result<MoePlan, Status> {
+    unsafe fn create_moe_plan_raw(&mut self, desc: &MoePlanDesc) -> Result<MoePlan, Status> {
         validate_moe_plan_desc(desc)?;
         let mut raw = ptr::null_mut();
         self.result_with_last_error(unsafe {
@@ -1200,7 +1203,7 @@ impl Context {
         Ok(device_bytes)
     }
 
-    pub(crate) unsafe fn moe_execute_bf16(
+    unsafe fn moe_execute_bf16_raw(
         &mut self,
         plan: &MoePlan,
         desc: &MoeBf16ExecuteDesc,
@@ -1223,7 +1226,7 @@ impl Context {
     }
 }
 
-impl Drop for Context {
+impl Drop for Qsfi {
     fn drop(&mut self) {
         unsafe {
             sys::qsfi_context_destroy(self.raw.as_ptr());
@@ -1307,11 +1310,29 @@ impl Drop for MoePlan {
 
 #[cfg(test)]
 mod tests {
-    use crate::ffi::{KvLayoutRaw, MOE_ROUTE_ROUTER_LOGITS};
-    use crate::{QWEN36_FULL_ATTN_KV_HIDDEN, QWEN36_FULL_ATTN_Q_HIDDEN};
-
-    use super::*;
+    use super::{
+        AppendDecode, AppendPrefill, AttentionDesc, BatchDecodeExecuteDesc,
+        BatchPrefillExecuteDesc, DTYPE_BF16, DTYPE_F16, DTYPE_F32, DTYPE_FP8_E4M3, DTYPE_I32,
+        DTYPE_NVFP4_E2M1, DTYPE_U8, DTYPE_U32, DTypeRaw, DevicePtr, FusedAddRmsnormDesc,
+        KV_LAYOUT_HND, KV_LAYOUT_NHD, MASK_MODE_NONE, MOE_BACKEND_FLASHINFER_NVFP4,
+        MOE_BACKEND_FLASHINFER_STAGED_BF16, MOE_ROUTE_PRECOMPUTED_TOPK, MoeBf16ExecuteDesc,
+        MoeNvfp4ExecuteDesc, MoePlanDesc, PagedKvCache, PagedKvPlan, PagedKvPlanHost, PagedKvTable,
+        PlanKind, PlanShape, QoPlan, QoPlanHost, RmsnormDesc, RopeApplyDesc, Tensor1, Tensor2,
+        Tensor3, Tensor4, moe_workspace_bytes, result_from_raw, validate_append_decode_desc,
+        validate_append_prefill_desc, validate_attention_desc, validate_decode_execute_desc,
+        validate_decode_plan_execute, validate_fused_add_rmsnorm_desc, validate_kv_cache_desc,
+        validate_moe_bf16_execute_desc, validate_moe_nvfp4_execute_desc, validate_moe_plan_desc,
+        validate_paged_kv_plan_desc, validate_paged_kv_plan_slices, validate_prefill_execute_desc,
+        validate_prefill_plan_execute, validate_qo_plan_desc, validate_qo_plan_slices,
+        validate_rmsnorm_desc, validate_rope_apply_desc, validate_tensor,
+    };
+    use crate::ffi::{KvLayoutRaw, MOE_ROUTE_ROUTER_LOGITS, StatusRaw};
+    use crate::{
+        QWEN36_FULL_ATTN_HEAD_DIM, QWEN36_FULL_ATTN_KV_HEADS, QWEN36_FULL_ATTN_KV_HIDDEN,
+        QWEN36_FULL_ATTN_Q_HEADS, QWEN36_FULL_ATTN_Q_HIDDEN, QWEN36_FULL_ATTN_ROTARY_DIM, Status,
+    };
     use std::ffi::c_void;
+    use std::ptr;
 
     fn device_ptr(offset: usize) -> DevicePtr {
         (0x1000usize + offset) as *mut c_void

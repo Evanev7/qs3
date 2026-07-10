@@ -1,16 +1,11 @@
 pub(crate) mod cuda;
-pub(crate) mod qscb;
-pub(crate) mod qscu;
-pub(crate) mod qsfi;
-mod sys {
+pub(crate) mod sys {
     #![allow(non_camel_case_types)]
     #![allow(non_snake_case)]
     #![allow(non_upper_case_globals)]
     #![allow(dead_code)]
     include!(concat!(env!("OUT_DIR"), "/ffi_bindings.rs"));
 }
-
-use crate::engine::Status;
 
 pub type StatusRaw = sys::qsfi_status;
 pub type ErrorInfo = sys::qsfi_error_info;
@@ -83,16 +78,3 @@ pub const MOE_BACKEND_FLASHINFER_FUSED_BF16: MoeBackendRaw =
 pub const MOE_BACKEND_FLASHINFER_NVFP4: MoeBackendRaw = sys::QSFI_MOE_BACKEND_FLASHINFER_NVFP4;
 pub const MOE_ROUTE_PRECOMPUTED_TOPK: MoeRouteModeRaw = sys::QSFI_MOE_ROUTE_PRECOMPUTED_TOPK;
 pub const MOE_ROUTE_ROUTER_LOGITS: MoeRouteModeRaw = sys::QSFI_MOE_ROUTE_ROUTER_LOGITS;
-
-pub(crate) fn result_from_raw(status: StatusRaw) -> Result<(), Status> {
-    match status {
-        sys::QSFI_STATUS_OK => Ok(()),
-        sys::QSFI_STATUS_INVALID_ARGUMENT => Err(Status::InvalidArgument),
-        sys::QSFI_STATUS_UNSUPPORTED => Err(Status::Unsupported),
-        sys::QSFI_STATUS_OUT_OF_MEMORY => Err(Status::OutOfMemory),
-        sys::QSFI_STATUS_CUDA_ERROR => Err(Status::CudaError),
-        sys::QSFI_STATUS_BACKEND_ERROR => Err(Status::BackendError),
-        sys::QSFI_STATUS_INTERNAL_ERROR => Err(Status::InternalError),
-        _ => Err(Status::InternalError),
-    }
-}

@@ -1,5 +1,5 @@
 #ifndef QSCB_H
-#error "Include qscb.h before including tests_cuda_qscb_gemm.inc inside test.cu."
+#error "Include qscb.h before including tests_cuda_qscb_linear.inc inside test.cu."
 #endif
 
 static uint16_t qscb_test_f32_to_bf16(float value)
@@ -302,7 +302,7 @@ static void qscb_test_run_negative_descriptor_validation(qscb_context* ctx)
         return;
     }
 
-    qscb_bf16_gemm_desc desc {};
+    qscb_linear_desc desc {};
     desc.x = qscb_test_tensor2_bf16(d_bf16, 1, 1, 1);
     desc.weight = qscb_test_tensor2_bf16(d_bf16, 1, 1, 1);
     desc.out = qscb_test_tensor2_f32(d_f32, 1, 1, 1);
@@ -311,34 +311,34 @@ static void qscb_test_run_negative_descriptor_validation(qscb_context* ctx)
     desc.out_features = 1;
 
     check_status(
-        qscb_gemm_bf16(ctx, nullptr),
+        qscb_linear(ctx, nullptr),
         QSFI_STATUS_INVALID_ARGUMENT,
-        "qscb gemm rejects null desc"
+        "qscb linear rejects null desc"
     );
 
-    qscb_bf16_gemm_desc bad_stride = desc;
+    qscb_linear_desc bad_stride = desc;
     bad_stride.x.stride[1] = 2;
     check_status(
-        qscb_gemm_bf16(ctx, &bad_stride),
+        qscb_linear(ctx, &bad_stride),
         QSFI_STATUS_INVALID_ARGUMENT,
-        "qscb gemm rejects non-row-major x stride"
+        "qscb linear rejects non-row-major x stride"
     );
 
-    qscb_bf16_gemm_desc bad_dtype = desc;
+    qscb_linear_desc bad_dtype = desc;
     bad_dtype.out.dtype = QSFI_DTYPE_F16;
     check_status(
-        qscb_gemm_bf16(ctx, &bad_dtype),
+        qscb_linear(ctx, &bad_dtype),
         QSFI_STATUS_INVALID_ARGUMENT,
-        "qscb gemm rejects unsupported out dtype"
+        "qscb linear rejects unsupported out dtype"
     );
 
-    qscb_bf16_gemm_desc bad_workspace = desc;
+    qscb_linear_desc bad_workspace = desc;
     bad_workspace.workspace = nullptr;
     bad_workspace.workspace_bytes = 1;
     check_status(
-        qscb_gemm_bf16(ctx, &bad_workspace),
+        qscb_linear(ctx, &bad_workspace),
         QSFI_STATUS_INVALID_ARGUMENT,
-        "qscb gemm rejects null workspace with nonzero bytes"
+        "qscb linear rejects null workspace with nonzero bytes"
     );
 
     cudaFree(d_bf16);
@@ -365,9 +365,9 @@ static void test_qscb_context_lifecycle()
     );
 
     check_status(
-        qscb_gemm_bf16(nullptr, nullptr),
+        qscb_linear(nullptr, nullptr),
         QSFI_STATUS_INVALID_ARGUMENT,
-        "qscb gemm rejects null context"
+        "qscb linear rejects null context"
     );
 
     qscb_context* ctx = nullptr;
@@ -378,7 +378,7 @@ static void test_qscb_context_lifecycle()
     qscb_context_destroy(nullptr);
 }
 
-static void qscb_test_run_gemm_bf16_stream_workspace()
+static void qscb_test_run_linear_bf16_stream_workspace()
 {
     cudaStream_t stream = nullptr;
     if (!check_cuda(
@@ -445,7 +445,7 @@ static void qscb_test_run_gemm_bf16_stream_workspace()
         && alloc_device(&d_workspace, workspace_bytes, "alloc qscb stream workspace");
 
     if (copied) {
-        qscb_bf16_gemm_desc desc {};
+        qscb_linear_desc desc {};
         desc.x = qscb_test_tensor2_bf16(d_x, rows, in_features, x_stride);
         desc.weight = qscb_test_tensor2_bf16(d_weight, out_features, in_features, weight_stride);
         desc.out = qscb_test_tensor2_bf16(d_out, rows, out_features, out_stride);
@@ -457,9 +457,9 @@ static void qscb_test_run_gemm_bf16_stream_workspace()
         desc.workspace_bytes = workspace_bytes;
 
         const bool ran = check_status(
-                             qscb_gemm_bf16(ctx, &desc),
+                             qscb_linear(ctx, &desc),
                              QSFI_STATUS_OK,
-                             "qscb bf16 gemm stream workspace"
+                             "qscb bf16 linear stream workspace"
                          )
             && check_cuda(cudaMemcpyAsync(
                               h_out.data(),
@@ -469,7 +469,7 @@ static void qscb_test_run_gemm_bf16_stream_workspace()
                               stream
                           ),
                           "copy qscb stream workspace out back")
-            && check_cuda(cudaStreamSynchronize(stream), "sync qscb stream workspace gemm");
+            && check_cuda(cudaStreamSynchronize(stream), "sync qscb stream workspace linear");
         if (ran) {
             qscb_test_check_bf16_output_scaled(
                 h_out,
@@ -504,7 +504,7 @@ static void qscb_test_run_gemm_bf16_stream_workspace()
     check_cuda(cudaStreamDestroy(stream), "destroy qscb stream workspace stream");
 }
 
-static void test_qscb_gemm_bf16_hidden_output_strided()
+static void test_qscb_linear_bf16_hidden_output_strided()
 {
     qscb_context* ctx = nullptr;
     if (!qscb_test_make_context(&ctx, "qscb hidden context create"))
@@ -553,7 +553,7 @@ static void test_qscb_gemm_bf16_hidden_output_strided()
         && copy_to_device(&d_out, h_out.data(), h_out.size(), "copy qscb hidden out");
 
     if (copied) {
-        qscb_bf16_gemm_desc desc {};
+        qscb_linear_desc desc {};
         desc.x = qscb_test_tensor2_bf16(d_x, rows, in_features, x_stride);
         desc.weight = qscb_test_tensor2_bf16(d_weight, out_features, in_features, weight_stride);
         desc.out = qscb_test_tensor2_bf16(d_out, rows, out_features, out_stride);
@@ -562,8 +562,8 @@ static void test_qscb_gemm_bf16_hidden_output_strided()
         desc.out_features = out_features;
 
         const bool ran
-            = check_status(qscb_gemm_bf16(ctx, &desc), QSFI_STATUS_OK, "qscb hidden bf16 gemm")
-            && check_cuda(cudaDeviceSynchronize(), "sync qscb hidden bf16 gemm")
+            = check_status(qscb_linear(ctx, &desc), QSFI_STATUS_OK, "qscb hidden bf16 linear")
+            && check_cuda(cudaDeviceSynchronize(), "sync qscb hidden bf16 linear")
             && check_cuda(
                   cudaMemcpy(
                       h_out.data(),
@@ -602,10 +602,10 @@ static void test_qscb_gemm_bf16_hidden_output_strided()
     cudaFree(d_weight);
     cudaFree(d_out);
     qscb_context_destroy(ctx);
-    qscb_test_run_gemm_bf16_stream_workspace();
+    qscb_test_run_linear_bf16_stream_workspace();
 }
 
-static void test_qscb_gemm_bf16_output_beta()
+static void test_qscb_linear_bf16_output_beta()
 {
     qscb_context* ctx = nullptr;
     if (!qscb_test_make_context(&ctx, "qscb bf16 beta context create"))
@@ -662,7 +662,7 @@ static void test_qscb_gemm_bf16_output_beta()
         && copy_to_device(&d_out, h_out.data(), h_out.size(), "copy qscb bf16 beta out");
 
     if (copied) {
-        qscb_bf16_gemm_desc desc {};
+        qscb_linear_desc desc {};
         desc.x = qscb_test_tensor2_bf16(d_x, rows, in_features, x_stride);
         desc.weight = qscb_test_tensor2_bf16(d_weight, out_features, in_features, weight_stride);
         desc.out = qscb_test_tensor2_bf16(d_out, rows, out_features, out_stride);
@@ -672,8 +672,8 @@ static void test_qscb_gemm_bf16_output_beta()
         desc.beta = beta;
 
         const bool ran
-            = check_status(qscb_gemm_bf16(ctx, &desc), QSFI_STATUS_OK, "qscb bf16 gemm beta")
-            && check_cuda(cudaDeviceSynchronize(), "sync qscb bf16 gemm beta")
+            = check_status(qscb_linear(ctx, &desc), QSFI_STATUS_OK, "qscb bf16 linear beta")
+            && check_cuda(cudaDeviceSynchronize(), "sync qscb bf16 linear beta")
             && check_cuda(
                   cudaMemcpy(
                       h_out.data(),
@@ -755,7 +755,7 @@ static void qscb_test_run_f32_accumulation_sensitive(qscb_context* ctx)
         && copy_to_device(&d_out, h_out.data(), h_out.size(), "copy qscb sensitive out");
 
     if (copied) {
-        qscb_bf16_gemm_desc desc {};
+        qscb_linear_desc desc {};
         desc.x = qscb_test_tensor2_bf16(d_x, rows, in_features, x_stride);
         desc.weight = qscb_test_tensor2_bf16(d_weight, out_features, in_features, weight_stride);
         desc.out = qscb_test_tensor2_f32(d_out, rows, out_features, out_stride);
@@ -764,11 +764,11 @@ static void qscb_test_run_f32_accumulation_sensitive(qscb_context* ctx)
         desc.out_features = out_features;
 
         const bool ran = check_status(
-                             qscb_gemm_bf16(ctx, &desc),
+                             qscb_linear(ctx, &desc),
                              QSFI_STATUS_OK,
-                             "qscb sensitive f32 accumulation gemm"
+                             "qscb sensitive f32 accumulation linear"
                          )
-            && check_cuda(cudaDeviceSynchronize(), "sync qscb sensitive f32 accumulation gemm")
+            && check_cuda(cudaDeviceSynchronize(), "sync qscb sensitive f32 accumulation linear")
             && check_cuda(cudaMemcpy(
                               h_out.data(),
                               d_out,
@@ -808,7 +808,7 @@ static void qscb_test_run_f32_accumulation_sensitive(qscb_context* ctx)
     cudaFree(d_out);
 }
 
-static void test_qscb_gemm_bf16_logits_f32_output_beta()
+static void test_qscb_linear_bf16_logits_f32_output_beta()
 {
     qscb_context* ctx = nullptr;
     if (!qscb_test_make_context(&ctx, "qscb logits context create"))
@@ -866,7 +866,7 @@ static void test_qscb_gemm_bf16_logits_f32_output_beta()
         && copy_to_device(&d_out, h_out.data(), h_out.size(), "copy qscb logits out");
 
     if (copied) {
-        qscb_bf16_gemm_desc desc {};
+        qscb_linear_desc desc {};
         desc.x = qscb_test_tensor2_bf16(d_x, rows, in_features, x_stride);
         desc.weight = qscb_test_tensor2_bf16(d_weight, out_features, in_features, weight_stride);
         desc.out = qscb_test_tensor2_f32(d_out, rows, out_features, out_stride);
@@ -876,8 +876,8 @@ static void test_qscb_gemm_bf16_logits_f32_output_beta()
         desc.beta = beta;
 
         const bool ran
-            = check_status(qscb_gemm_bf16(ctx, &desc), QSFI_STATUS_OK, "qscb logits f32 gemm beta")
-            && check_cuda(cudaDeviceSynchronize(), "sync qscb logits f32 gemm")
+            = check_status(qscb_linear(ctx, &desc), QSFI_STATUS_OK, "qscb logits f32 linear beta")
+            && check_cuda(cudaDeviceSynchronize(), "sync qscb logits f32 linear")
             && check_cuda(
                   cudaMemcpy(
                       h_out.data(),

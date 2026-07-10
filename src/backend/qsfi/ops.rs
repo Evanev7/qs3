@@ -1,30 +1,27 @@
-use super::*;
+use crate::backend::{
+    BF16, Bf16Heads, DMat, DTensor3, DVec, F32, I32, require_supported_rope_dims, validate_eps,
+    validate_nonzero,
+};
+use crate::{Status, ffi};
 
-pub(crate) use super::{MoePlan, Workspace};
+use super::{MoePlan, Qsfi};
+use crate::backend::Workspace;
 
-/// Thin typed access to qsfi's FlashInfer-owned operations.
-pub(crate) struct FlashInfer<'a> {
-    context: &'a mut qsfi::Context,
-}
-
-impl<'a> FlashInfer<'a> {
-    pub(super) fn new(context: &'a mut qsfi::Context) -> Self {
-        Self { context }
-    }
-
+/// Typed access to qsfi's FlashInfer-owned operations.
+impl Qsfi {
     pub(crate) unsafe fn rmsnorm_bf16(&mut self, desc: &RmsNormBf16) -> Result<(), Status> {
-        unsafe { self.context.rmsnorm(&desc.raw) }
+        unsafe { self.rmsnorm(&desc.raw) }
     }
 
     pub(crate) unsafe fn fused_add_rmsnorm_bf16(
         &mut self,
         desc: &FusedAddRmsNormBf16,
     ) -> Result<(), Status> {
-        unsafe { self.context.fused_add_rmsnorm(&desc.raw) }
+        unsafe { self.fused_add_rmsnorm(&desc.raw) }
     }
 
     pub(crate) unsafe fn rope_apply_bf16(&mut self, desc: &RopeApplyBf16) -> Result<(), Status> {
-        unsafe { self.context.rope_apply(&desc.raw) }
+        unsafe { self.rope_apply(&desc.raw) }
     }
 
     pub(crate) unsafe fn create_moe_bf16_plan(
@@ -32,15 +29,7 @@ impl<'a> FlashInfer<'a> {
         config: MoeBf16PlanConfig,
     ) -> Result<MoePlan, Status> {
         let desc = config.desc()?;
-        unsafe { self.context.create_moe_plan(&desc) }
-    }
-
-    pub(crate) unsafe fn moe_workspace_size(
-        &mut self,
-        plan: &MoePlan,
-        num_tokens: u32,
-    ) -> Result<usize, Status> {
-        unsafe { self.context.moe_workspace_size(plan, num_tokens) }
+        unsafe { self.create_moe_plan_raw(&desc) }
     }
 
     pub(crate) unsafe fn moe_execute_bf16(
@@ -48,7 +37,7 @@ impl<'a> FlashInfer<'a> {
         plan: &MoePlan,
         desc: &MoeBf16Execute,
     ) -> Result<(), Status> {
-        unsafe { self.context.moe_execute_bf16(plan, &desc.raw) }
+        unsafe { self.moe_execute_bf16_raw(plan, &desc.raw) }
     }
 }
 
@@ -104,7 +93,7 @@ pub(crate) struct MoeBf16ExecuteArgs {
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct MoeBf16Execute {
-    pub(super) raw: ffi::MoeBf16ExecuteDesc,
+    raw: ffi::MoeBf16ExecuteDesc,
 }
 
 impl MoeBf16Execute {
@@ -141,7 +130,7 @@ impl MoeBf16Execute {
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct RmsNormBf16 {
-    pub(super) raw: ffi::RmsnormDesc,
+    raw: ffi::RmsnormDesc,
 }
 
 impl RmsNormBf16 {
@@ -188,7 +177,7 @@ impl RmsNormBf16 {
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct FusedAddRmsNormBf16 {
-    pub(super) raw: ffi::FusedAddRmsnormDesc,
+    raw: ffi::FusedAddRmsnormDesc,
 }
 
 impl FusedAddRmsNormBf16 {
@@ -227,7 +216,7 @@ impl FusedAddRmsNormBf16 {
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct RopeApplyBf16 {
-    pub(super) raw: ffi::RopeApplyDesc,
+    raw: ffi::RopeApplyDesc,
 }
 
 impl RopeApplyBf16 {
@@ -291,5 +280,62 @@ impl RopeApplyBf16 {
                 interleave: 0,
             },
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{FusedAddRmsNormBf16, RmsNormBf16};
+    use crate::backend::{BF16, DMat, DVec};
+    use std::ffi::c_void;
+
+    fn device_ptr(offset: usize) -> *mut c_void {
+        (0x1000usize + offset) as *mut c_void
+    }
+
+    fn bf16_mat(offset: usize, rows: u32, cols: u32) -> DMat<BF16> {
+        DMat::contiguous(device_ptr(offset), rows, cols).unwrap()
+    }
+
+    fn bf16_vec(offset: usize, len: u32) -> DVec<BF16> {
+        DVec::contiguous(device_ptr(offset), len).unwrap()
+    }
+
+    #[test]
+    fn rmsnorm_lowering_preserves_per_head_shape_and_in_place_alias() {
+        let rows = 2;
+        let heads = 16;
+        let head_dim = 256;
+        let flat_rows = rows * heads;
+        let x = bf16_mat(130, flat_rows, head_dim);
+        let weight = bf16_vec(131, head_dim);
+        let out = bf16_mat(132, flat_rows, head_dim);
+
+        let default_qwen = RmsNormBf16::new(x, weight, out, 1.0e-6).unwrap();
+        assert_eq!(default_qwen.raw.hidden_size, head_dim);
+
+        let qk = RmsNormBf16::qwen_qk_norm(x, weight, out, 1.0e-6).unwrap();
+        assert_eq!(qk.raw.x.shape, [i64::from(flat_rows), i64::from(head_dim)]);
+        assert_eq!(qk.raw.weight.shape, [i64::from(head_dim)]);
+
+        let decoder = RmsNormBf16::qwen_decoder_norm(x, weight, out, 1.0e-6).unwrap();
+        assert_eq!(decoder.raw.hidden_size, head_dim);
+
+        let inplace = RmsNormBf16::qwen_qk_norm(x, weight, x, 1.0e-6).unwrap();
+        assert_eq!(inplace.raw.out.data, inplace.raw.x.data);
+        assert_eq!(inplace.raw.out.stride, inplace.raw.x.stride);
+    }
+
+    #[test]
+    fn fused_rmsnorm_lowering_aliases_output_to_input() {
+        let x = DMat::new(device_ptr(140), 4, 128, 160).unwrap();
+        let residual = DMat::new(device_ptr(141), 4, 128, 192).unwrap();
+        let weight = bf16_vec(142, 128);
+
+        let fused = FusedAddRmsNormBf16::new(x, residual, weight, 1.0e-6).unwrap();
+        assert_eq!(fused.raw.out.data, fused.raw.x.data);
+
+        let qwen = FusedAddRmsNormBf16::qwen_decoder_norm(x, residual, weight, 1.0e-6).unwrap();
+        assert_eq!(qwen.raw.out.data, qwen.raw.x.data);
     }
 }

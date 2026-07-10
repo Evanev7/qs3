@@ -1,4 +1,28 @@
-use super::*;
+use super::{
+    DEFAULT_MAX_HEADER_BYTES, DEFAULT_MAX_JSON_BYTES, PINNED_UPLOAD_BUFFER_BYTES,
+    PINNED_UPLOAD_BUFFER_COUNT,
+    format::{
+        Qwen36TextConfig, SafetensorsHeader, TensorFileMeta, TensorMeta, WeightLoadError,
+        WeightTensorDType, WeightTensorSource, WeightTensorSpec, WeightTensorTarget,
+        expected_qwen36_bf16_specs, parse_json_object, validate_qwen36_bf16_dir,
+        validate_qwen36_bf16_tensor_table,
+    },
+    plan::{
+        LoadedWeightPlan, LoadedWeightTensor, QwenBf16LoadPlan, QwenLoadPlanEntry, QwenLoadSource,
+        execute_qwen36_bf16_load_plan,
+    },
+    transfer::{
+        ManagedUmaBackend, PinnedUploadBackend, WeightFileRange, WeightLoadBackend,
+        WeightLoadMemory, WeightLoadSpan, WeightTensorDesc, result_from_cuda,
+    },
+};
+use crate::{
+    QWEN36_FULL_ATTN_HEAD_DIM, QWEN36_GDN_PACKED_DIM, QWEN36_HIDDEN_SIZE,
+    engine::{DynDType, Status},
+    ffi,
+};
+use std::collections::BTreeMap;
+use std::ffi::c_void;
 use std::{env, path::PathBuf, ptr, time::Instant};
 
 const DEFAULT_REAL_QWEN36_BF16_DIR: &str = "/home/exo/.cache/huggingface/hub/models--Qwen--Qwen3.6-35B-A3B/snapshots/995ad96eacd98c81ed38be0c5b274b04031597b0";

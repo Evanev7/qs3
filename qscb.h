@@ -42,14 +42,14 @@ typedef struct {
     float beta;
     qsfi_device_ptr workspace;
     size_t workspace_bytes;
-} qscb_bf16_gemm_desc;
+} qscb_linear_desc;
 
 qsfi_status qscb_context_create(const qscb_context_desc* desc, qscb_context** out);
 void qscb_context_destroy(qscb_context* ctx);
 qsfi_status qscb_context_get_last_error(const qscb_context* ctx, qsfi_error_info* out);
 void qscb_context_clear_last_error(qscb_context* ctx);
 
-qsfi_status qscb_gemm_bf16(qscb_context* ctx, const qscb_bf16_gemm_desc* desc);
+qsfi_status qscb_linear(qscb_context* ctx, const qscb_linear_desc* desc);
 
 #ifdef __cplusplus
 }

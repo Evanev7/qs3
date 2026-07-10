@@ -1,5 +1,34 @@
-use super::*;
-use std::path::PathBuf;
+use super::{ModelRunner, QwenRequest};
+use crate::{
+    QWEN36_FULL_ATTN_HEAD_DIM, QWEN36_FULL_ATTN_KV_HEADS, QWEN36_FULL_ATTN_KV_HIDDEN,
+    QWEN36_FULL_ATTN_Q_HEADS, QWEN36_FULL_ATTN_Q_HIDDEN, QWEN36_FULL_ATTN_Q_PROJ_OUT,
+    QWEN36_GDN_CONV_WIDTH, QWEN36_GDN_NUM_V_HEADS, QWEN36_GDN_OUTPUT_DIM, QWEN36_GDN_PACKED_DIM,
+    QWEN36_GDN_VALUE_DIM, QWEN36_HIDDEN_SIZE, QWEN36_MOE_INTERMEDIATE_SIZE, QWEN36_MOE_NUM_EXPERTS,
+    QWEN36_MOE_ROUTER_SCALING_FACTOR, QWEN36_MOE_ROUTER_SCORE,
+    QWEN36_MOE_SHARED_EXPERT_INTERMEDIATE_SIZE, QWEN36_MOE_TOP_K,
+    backend::{
+        DMat, DTensor3,
+        qsfi::{MoeBf16Execute, MoeBf16ExecuteArgs, MoeBf16PlanConfig, Workspace},
+    },
+    engine::{AppendBatch, AttentionLayer, Commit, Engine, Status},
+    ffi::{self, cuda},
+    model::{
+        ActiveRunKind, QwenBlockKind, QwenConfig, QwenMoeConfig, QwenWeights,
+        checked_usize_product,
+        config::{QwenGdnShape, QwenLayerPattern, QwenModelShape},
+        constant_bf16_values, device_ptr_byte_offset,
+        extract_qwen36_packed_attention_q_and_gate_bf16,
+        scratch::{DeviceBuffer, RunnerScratch},
+        state::{GdnSlotMap, GdnState},
+        synchronize_stream,
+        weights::{
+            QwenAttentionMlpPtrs, QwenAttentionMlpWeights, QwenGdnPtrs, QwenGdnWeights,
+            QwenLayerPtrs, QwenLayerWeights, QwenMlpPtrs, QwenMlpWeights, QwenSharedExpertPtrs,
+            QwenSharedExpertWeights,
+        },
+    },
+};
+use std::{ffi::c_void, mem, path::PathBuf, ptr};
 
 const DEFAULT_VECTOR_ROOT: &str = "build/vectors/qwen36_semantics";
 const FULL_ATTN_VECTOR_ROWS: u32 = 6;
@@ -65,6 +94,20 @@ fn empty_qwen36_moe_mlp_weights() -> QwenMlpWeights {
 
 fn test_device_ptr(addr: usize) -> ffi::DevicePtr {
     addr as *mut c_void
+}
+
+fn model_runner_has_f32_linear_output(
+    runner: &mut ModelRunner,
+    input: ffi::DevicePtr,
+    weight: ffi::DevicePtr,
+    output: ffi::DevicePtr,
+) -> Result<(), Status> {
+    runner.linear_f32(input, 2, 8, weight, output, 16)
+}
+
+#[test]
+fn model_linear_helpers_name_the_output_type() {
+    let _ = model_runner_has_f32_linear_output;
 }
 
 unsafe extern "C" {
@@ -404,7 +447,7 @@ fn moe_vector_runner() -> ModelRunner {
     let (moe_plan, workspace_bytes) = {
         let mut ops = engine.operators();
         let plan = unsafe {
-            ops.flashinfer()
+            ops.qsfi()
                 .create_moe_bf16_plan(MoeBf16PlanConfig {
                     max_num_tokens: config.max_seq_len,
                     hidden_size: config.hidden_size,
@@ -414,11 +457,8 @@ fn moe_vector_runner() -> ModelRunner {
                 })
                 .unwrap()
         };
-        let workspace_bytes = unsafe {
-            ops.flashinfer()
-                .moe_workspace_size(&plan, config.max_seq_len)
-        }
-        .unwrap();
+        let workspace_bytes =
+            unsafe { ops.qsfi().moe_workspace_size(&plan, config.max_seq_len) }.unwrap();
         (plan, workspace_bytes)
     };
     let mut scratch = RunnerScratch::new(config.device_ordinal);
@@ -470,34 +510,36 @@ fn upload_moe_vector_inputs(runner: &mut ModelRunner) {
 
 fn run_moe_vector_router(runner: &mut ModelRunner, renormalize: bool) {
     let moe = runner.config.moe_config().unwrap();
-    let router = RouterTopK::new(
-        Bf16OrF32Mat::F32(
-            DMat::contiguous(
-                runner.scratch.router_logits.as_device_ptr(),
-                MOE_VECTOR_ROWS,
-                moe.num_experts,
-            )
-            .unwrap(),
-        ),
-        DMat::contiguous(
-            runner.scratch.topk_ids.as_device_ptr(),
-            MOE_VECTOR_ROWS,
-            moe.num_experts_per_tok,
-        )
-        .unwrap(),
-        DMat::contiguous(
-            runner.scratch.topk_weights.as_device_ptr(),
-            MOE_VECTOR_ROWS,
-            moe.num_experts_per_tok,
-        )
-        .unwrap(),
-        QWEN36_MOE_ROUTER_SCORE,
-        renormalize,
-        QWEN36_MOE_ROUTER_SCALING_FACTOR,
+    let router_logits = DMat::contiguous(
+        runner.scratch.router_logits.as_device_ptr(),
+        MOE_VECTOR_ROWS,
+        moe.num_experts,
+    )
+    .unwrap();
+    let topk_ids = DMat::contiguous(
+        runner.scratch.topk_ids.as_device_ptr(),
+        MOE_VECTOR_ROWS,
+        moe.num_experts_per_tok,
+    )
+    .unwrap();
+    let topk_weights = DMat::contiguous(
+        runner.scratch.topk_weights.as_device_ptr(),
+        MOE_VECTOR_ROWS,
+        moe.num_experts_per_tok,
     )
     .unwrap();
     let mut ops = runner.engine.operators();
-    unsafe { ops.cuda().router_topk(&router) }.unwrap();
+    unsafe {
+        ops.qscu().router_topk(
+            router_logits,
+            topk_ids,
+            topk_weights,
+            QWEN36_MOE_ROUTER_SCORE,
+            renormalize,
+            QWEN36_MOE_ROUTER_SCALING_FACTOR,
+        )
+    }
+    .unwrap();
 }
 
 fn execute_moe_vector_routed_output(runner: &mut ModelRunner) {
@@ -568,7 +610,7 @@ fn execute_moe_vector_routed_output(runner: &mut ModelRunner) {
     .unwrap();
     let mut ops = runner.engine.operators();
     unsafe {
-        ops.flashinfer()
+        ops.qsfi()
             .moe_execute_bf16(runner.moe_plan.as_ref().unwrap(), &execute)
     }
     .unwrap();
@@ -601,25 +643,23 @@ fn execute_moe_vector_shared_gate_add(runner: &mut ModelRunner) {
     .unwrap();
 
     runner
-        .gemm_bf16(
+        .linear_bf16(
             runner.scratch.attn_proj.as_device_ptr(),
             MOE_VECTOR_ROWS,
             MOE_VECTOR_HIDDEN,
             shared_gate_up_weight.as_device_ptr(),
             runner.scratch.shared_gate.as_device_ptr(),
             MOE_VECTOR_INTERMEDIATE,
-            GemmOut::Bf16,
         )
         .unwrap();
     runner
-        .gemm_bf16(
+        .linear_bf16(
             runner.scratch.attn_proj.as_device_ptr(),
             MOE_VECTOR_ROWS,
             MOE_VECTOR_HIDDEN,
             shared_up_proj,
             runner.scratch.shared_up.as_device_ptr(),
             MOE_VECTOR_INTERMEDIATE,
-            GemmOut::Bf16,
         )
         .unwrap();
     runner
@@ -632,14 +672,13 @@ fn execute_moe_vector_shared_gate_add(runner: &mut ModelRunner) {
         )
         .unwrap();
     runner
-        .gemm_bf16(
+        .linear_bf16(
             runner.scratch.shared_mlp.as_device_ptr(),
             MOE_VECTOR_ROWS,
             MOE_VECTOR_INTERMEDIATE,
             shared_down_weight.as_device_ptr(),
             runner.scratch.shared_out.as_device_ptr(),
             MOE_VECTOR_HIDDEN,
-            GemmOut::Bf16,
         )
         .unwrap();
     runner
@@ -718,7 +757,7 @@ fn full_attention_block_moe_vector_runner() -> ModelRunner {
     let (moe_plan, workspace_bytes) = {
         let mut ops = engine.operators();
         let plan = unsafe {
-            ops.flashinfer()
+            ops.qsfi()
                 .create_moe_bf16_plan(MoeBf16PlanConfig {
                     max_num_tokens: config.max_seq_len,
                     hidden_size: config.hidden_size,
@@ -728,11 +767,8 @@ fn full_attention_block_moe_vector_runner() -> ModelRunner {
                 })
                 .unwrap()
         };
-        let workspace_bytes = unsafe {
-            ops.flashinfer()
-                .moe_workspace_size(&plan, config.max_seq_len)
-        }
-        .unwrap();
+        let workspace_bytes =
+            unsafe { ops.qsfi().moe_workspace_size(&plan, config.max_seq_len) }.unwrap();
         (plan, workspace_bytes)
     };
     let mut scratch = RunnerScratch::new(config.device_ordinal);
@@ -942,7 +978,7 @@ fn gdn_decoder_layer_vector_runner() -> ModelRunner {
     let (moe_plan, workspace_bytes) = {
         let mut ops = engine.operators();
         let plan = unsafe {
-            ops.flashinfer()
+            ops.qsfi()
                 .create_moe_bf16_plan(MoeBf16PlanConfig {
                     max_num_tokens: config.max_seq_len,
                     hidden_size: config.hidden_size,
@@ -952,11 +988,8 @@ fn gdn_decoder_layer_vector_runner() -> ModelRunner {
                 })
                 .unwrap()
         };
-        let workspace_bytes = unsafe {
-            ops.flashinfer()
-                .moe_workspace_size(&plan, config.max_seq_len)
-        }
-        .unwrap();
+        let workspace_bytes =
+            unsafe { ops.qsfi().moe_workspace_size(&plan, config.max_seq_len) }.unwrap();
         (plan, workspace_bytes)
     };
     let mut scratch = RunnerScratch::new(config.device_ordinal);
@@ -1788,37 +1821,34 @@ fn qwen36_full_attention_block_vector_validates_attention_residual_norm_composit
     );
 
     runner
-        .gemm_bf16(
+        .linear_bf16(
             norm_ptr,
             rows,
             hidden,
             q_proj_weight.as_device_ptr(),
             runner.scratch.q_proj_out.as_device_ptr(),
             QWEN36_FULL_ATTN_Q_PROJ_OUT,
-            GemmOut::Bf16,
         )
         .unwrap();
     runner.extract_attention_q_and_gate(rows).unwrap();
     runner
-        .gemm_bf16(
+        .linear_bf16(
             norm_ptr,
             rows,
             hidden,
             k_proj_weight.as_device_ptr(),
             runner.scratch.k.as_device_ptr(),
             kv_hidden,
-            GemmOut::Bf16,
         )
         .unwrap();
     runner
-        .gemm_bf16(
+        .linear_bf16(
             norm_ptr,
             rows,
             hidden,
             v_proj_weight.as_device_ptr(),
             runner.scratch.v.as_device_ptr(),
             kv_hidden,
-            GemmOut::Bf16,
         )
         .unwrap();
     synchronize_stream(stream).unwrap();
@@ -1974,14 +2004,13 @@ fn qwen36_full_attention_block_vector_validates_attention_residual_norm_composit
     );
 
     runner
-        .gemm_bf16(
+        .linear_bf16(
             runner.scratch.attn_out.as_device_ptr(),
             rows,
             q_hidden,
             o_proj_weight.as_device_ptr(),
             runner.scratch.attn_proj.as_device_ptr(),
             hidden,
-            GemmOut::Bf16,
         )
         .unwrap();
     synchronize_stream(stream).unwrap();

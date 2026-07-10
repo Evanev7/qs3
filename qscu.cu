@@ -1081,8 +1081,9 @@ qsfi_status validate_post_conv_desc(const qscu_qwen36_gdn_post_conv_prepare_desc
 {
     if (desc == nullptr || desc->num_tokens == 0)
         return QSFI_STATUS_INVALID_ARGUMENT;
-    // Host descriptor scalar: invalid eps would poison every normalization denominator.
-    if (desc->l2norm_eps <= 0.0f || !std::isfinite(desc->l2norm_eps))
+    // Epsilon is inactive when Q/K normalization is disabled.
+    if (desc->apply_qk_l2norm != 0
+        && (desc->l2norm_eps <= 0.0f || !std::isfinite(desc->l2norm_eps)))
         return QSFI_STATUS_INVALID_ARGUMENT;
     if (desc->forget_gate_output != QSCU_GDN_FORGET_LOG_DECAY
         && desc->forget_gate_output != QSCU_GDN_FORGET_LINEAR_ALPHA)

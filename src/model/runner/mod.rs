@@ -1,8 +1,30 @@
 mod attention;
 mod gdn;
 mod mlp;
+#[cfg(test)]
+mod tests;
 
-use crate::model::*;
+use crate::{
+    QWEN36_GDN_KEY_DIM, QWEN36_GDN_NUM_K_HEADS, QWEN36_GDN_NUM_Q_HEADS, QWEN36_GDN_NUM_V_HEADS,
+    QWEN36_GDN_VALUE_DIM,
+    backend::{
+        Bf16Heads, DMat, DVec, FloatStorage,
+        qscu::{GdnConvState, GdnRecurrentState},
+        qsfi::{FusedAddRmsNormBf16, MoeBf16PlanConfig, MoePlan, RmsNormBf16, Workspace},
+    },
+    engine::{AppendBatch, Commit, DecodeBatch, Engine, RequestId, Status},
+    ext::{SafeVec, try_clone_slice},
+    ffi,
+    model::{
+        ActiveRunKind, BatchRun, QwenConfig, QwenWeights,
+        scratch::{DeviceBuffer, RunnerScratch},
+        state::GdnState,
+        validate_token_ids,
+        weights::QwenLayerPtrs,
+    },
+};
+
+use std::mem;
 
 #[derive(Clone, Copy, Debug)]
 pub struct QwenRequest<'a> {
@@ -22,18 +44,18 @@ pub struct QwenResult {
 }
 
 pub struct ModelRunner {
-    pub(in crate::model) config: QwenConfig,
-    pub(in crate::model) weights: QwenWeights,
-    pub(in crate::model) engine: Engine,
-    pub(in crate::model) moe_plan: Option<MoePlan>,
-    pub(in crate::model) gdn_state: Option<GdnState>,
-    pub(in crate::model) scratch: RunnerScratch,
-    pub(in crate::model) qscb_workspace: DeviceBuffer<u8>,
-    pub(in crate::model) live_request_id: Option<RequestId>,
-    pub(in crate::model) live_tokens: Vec<i32>,
-    pub(in crate::model) last_next_tokens: Vec<i32>,
-    pub(in crate::model) last_logits_rows: u32,
-    pub(in crate::model) last_logits_vocab_size: u32,
+    config: QwenConfig,
+    weights: QwenWeights,
+    engine: Engine,
+    moe_plan: Option<MoePlan>,
+    gdn_state: Option<GdnState>,
+    scratch: RunnerScratch,
+    qscb_workspace: DeviceBuffer<u8>,
+    live_request_id: Option<RequestId>,
+    live_tokens: Vec<i32>,
+    last_next_tokens: Vec<i32>,
+    last_logits_rows: u32,
+    last_logits_vocab_size: u32,
 }
 
 impl ModelRunner {
@@ -47,7 +69,7 @@ impl ModelRunner {
             let (plan, workspace_bytes) = {
                 let mut ops = engine.operators();
                 let plan = unsafe {
-                    ops.flashinfer().create_moe_bf16_plan(MoeBf16PlanConfig {
+                    ops.qsfi().create_moe_bf16_plan(MoeBf16PlanConfig {
                         max_num_tokens: config.max_seq_len,
                         hidden_size: config.hidden_size,
                         intermediate_size: moe.moe_intermediate_size,
@@ -55,10 +77,8 @@ impl ModelRunner {
                         top_k: moe.num_experts_per_tok,
                     })?
                 };
-                let workspace_bytes = unsafe {
-                    ops.flashinfer()
-                        .moe_workspace_size(&plan, config.max_seq_len)?
-                };
+                let workspace_bytes =
+                    unsafe { ops.qsfi().moe_workspace_size(&plan, config.max_seq_len)? };
                 (plan, workspace_bytes)
             };
             scratch.ensure_moe_workspace(workspace_bytes)?;
@@ -184,7 +204,7 @@ impl ModelRunner {
         })
     }
 
-    pub(in crate::model) fn sync_prefix(
+    fn sync_prefix(
         &mut self,
         request_id: RequestId,
         tokens: &[i32],
@@ -207,7 +227,7 @@ impl ModelRunner {
         self.rebuild_prefix(request_id, tokens, total_tokens)
     }
 
-    pub(in crate::model) fn rebuild_prefix(
+    fn rebuild_prefix(
         &mut self,
         request_id: RequestId,
         tokens: &[i32],
@@ -253,11 +273,7 @@ impl ModelRunner {
         }
     }
 
-    pub(in crate::model) fn append_tokens(
-        &mut self,
-        request_id: RequestId,
-        tokens: &[i32],
-    ) -> Result<(), Status> {
+    fn append_tokens(&mut self, request_id: RequestId, tokens: &[i32]) -> Result<(), Status> {
         if tokens.is_empty() {
             return Err(Status::InvalidArgument);
         }
@@ -303,11 +319,7 @@ impl ModelRunner {
         }
     }
 
-    pub(in crate::model) fn decode_one(
-        &mut self,
-        request_id: RequestId,
-        token: i32,
-    ) -> Result<(), Status> {
+    fn decode_one(&mut self, request_id: RequestId, token: i32) -> Result<(), Status> {
         let start_pos =
             u32::try_from(self.live_tokens.len()).map_err(|_| Status::InvalidArgument)?;
         if start_pos >= self.config.max_seq_len {
@@ -341,10 +353,7 @@ impl ModelRunner {
         }
     }
 
-    pub(in crate::model) fn execute_active_batch(
-        &mut self,
-        run: BatchRun<'_>,
-    ) -> Result<Vec<i32>, Status> {
+    fn execute_active_batch(&mut self, run: BatchRun<'_>) -> Result<Vec<i32>, Status> {
         let rows = u32::try_from(run.tokens.len()).map_err(|_| Status::InvalidArgument)?;
         if rows == 0 {
             return Err(Status::InvalidArgument);
@@ -420,23 +429,18 @@ impl ModelRunner {
             layer_input = self.scratch.mlp_out.as_device_ptr();
         }
 
-        self.gemm_bf16(
+        self.linear_f32(
             layer_input,
             rows,
             hidden,
             self.weights.lm_head.as_device_ptr(),
             self.scratch.logits.as_device_ptr(),
             self.config.vocab_size,
-            GemmOut::F32,
         )?;
         self.sample_logits(rows)
     }
 
-    pub(in crate::model) fn upload_batch_inputs(
-        &mut self,
-        tokens: &[i32],
-        start_pos: u32,
-    ) -> Result<(), Status> {
+    fn upload_batch_inputs(&mut self, tokens: &[i32], start_pos: u32) -> Result<(), Status> {
         self.scratch.token_ids.upload(self.config.stream, tokens)?;
         let mut positions = Vec::safe_new(tokens.len())?;
         for idx in 0..tokens.len() {
@@ -450,7 +454,7 @@ impl ModelRunner {
             .upload(self.config.stream, &positions)
     }
 
-    pub(in crate::model) fn attention_heads(
+    fn attention_heads(
         &self,
         data: ffi::DevicePtr,
         rows: u32,
@@ -459,31 +463,19 @@ impl ModelRunner {
         Bf16Heads::contiguous(data, rows, heads, self.config.head_dim)
     }
 
-    pub(in crate::model) fn gdn_q_heads(
-        &self,
-        data: ffi::DevicePtr,
-        rows: u32,
-    ) -> Result<Bf16Heads, Status> {
+    fn gdn_q_heads(&self, data: ffi::DevicePtr, rows: u32) -> Result<Bf16Heads, Status> {
         Bf16Heads::contiguous(data, rows, QWEN36_GDN_NUM_Q_HEADS, QWEN36_GDN_KEY_DIM)
     }
 
-    pub(in crate::model) fn gdn_k_heads(
-        &self,
-        data: ffi::DevicePtr,
-        rows: u32,
-    ) -> Result<Bf16Heads, Status> {
+    fn gdn_k_heads(&self, data: ffi::DevicePtr, rows: u32) -> Result<Bf16Heads, Status> {
         Bf16Heads::contiguous(data, rows, QWEN36_GDN_NUM_K_HEADS, QWEN36_GDN_KEY_DIM)
     }
 
-    pub(in crate::model) fn gdn_v_heads(
-        &self,
-        data: ffi::DevicePtr,
-        rows: u32,
-    ) -> Result<Bf16Heads, Status> {
+    fn gdn_v_heads(&self, data: ffi::DevicePtr, rows: u32) -> Result<Bf16Heads, Status> {
         Bf16Heads::contiguous(data, rows, QWEN36_GDN_NUM_V_HEADS, QWEN36_GDN_VALUE_DIM)
     }
 
-    pub(in crate::model) fn gdn_state_views(
+    fn gdn_state_views(
         &self,
         gdn_layer_idx: u32,
     ) -> Result<(u32, u32, u32, GdnConvState, GdnRecurrentState), Status> {
@@ -508,16 +500,13 @@ impl ModelRunner {
         ))
     }
 
-    pub(in crate::model) fn commit_gdn_state(&mut self) {
+    fn commit_gdn_state(&mut self) {
         if let Some(state) = self.gdn_state.as_mut() {
             state.commit();
         }
     }
 
-    pub(in crate::model) fn commit_attention_then_gdn(
-        &mut self,
-        commit: Commit<'_>,
-    ) -> Result<(), Status> {
+    fn commit_attention_then_gdn(&mut self, commit: Commit<'_>) -> Result<(), Status> {
         if let Err(status) = self.engine.commit_batch(commit) {
             self.abort_attention_batch();
             return Err(status);
@@ -526,31 +515,30 @@ impl ModelRunner {
         Ok(())
     }
 
-    pub(in crate::model) fn abort_attention_batch(&mut self) {
+    fn abort_attention_batch(&mut self) {
         let _ = self.engine.abort_batch();
     }
 
-    pub(in crate::model) fn embedding_gather(&mut self, rows: u32) -> Result<(), Status> {
-        let desc = EmbeddingGatherBf16::with_options(
-            DVec::contiguous(self.scratch.token_ids.as_device_ptr(), rows)?,
-            DMat::contiguous(
-                self.weights.token_embedding.as_device_ptr(),
-                self.config.vocab_size,
-                self.config.hidden_size,
-            )?,
-            DMat::contiguous(
-                self.scratch.residual.as_device_ptr(),
-                rows,
-                self.config.hidden_size,
-            )?,
-            None,
-            true,
+    fn embedding_gather(&mut self, rows: u32) -> Result<(), Status> {
+        let token_ids = DVec::contiguous(self.scratch.token_ids.as_device_ptr(), rows)?;
+        let embedding = DMat::contiguous(
+            self.weights.token_embedding.as_device_ptr(),
+            self.config.vocab_size,
+            self.config.hidden_size,
+        )?;
+        let out = DMat::contiguous(
+            self.scratch.residual.as_device_ptr(),
+            rows,
+            self.config.hidden_size,
         )?;
         let mut ops = self.engine.operators();
-        unsafe { ops.cuda().embedding_gather_bf16(&desc) }
+        unsafe {
+            ops.qscu()
+                .embedding_gather_bf16(token_ids, embedding, out, None, true)
+        }
     }
 
-    pub(in crate::model) fn rmsnorm(
+    fn rmsnorm(
         &mut self,
         x: ffi::DevicePtr,
         weight: ffi::DevicePtr,
@@ -564,10 +552,10 @@ impl ModelRunner {
             self.config.rms_norm_eps,
         )?;
         let mut ops = self.engine.operators();
-        unsafe { ops.flashinfer().rmsnorm_bf16(&desc) }
+        unsafe { ops.qsfi().rmsnorm_bf16(&desc) }
     }
 
-    pub(in crate::model) fn fused_add_rmsnorm(
+    fn fused_add_rmsnorm(
         &mut self,
         x: ffi::DevicePtr,
         residual: ffi::DevicePtr,
@@ -581,23 +569,18 @@ impl ModelRunner {
             self.config.rms_norm_eps,
         )?;
         let mut ops = self.engine.operators();
-        unsafe { ops.flashinfer().fused_add_rmsnorm_bf16(&desc) }
+        unsafe { ops.qsfi().fused_add_rmsnorm_bf16(&desc) }
     }
 
-    pub(in crate::model) fn gemm_bf16(
+    fn linear_bf16(
         &mut self,
-        x: ffi::DevicePtr,
+        input: ffi::DevicePtr,
         rows: u32,
         in_features: u32,
         weight: ffi::DevicePtr,
-        out: ffi::DevicePtr,
+        output: ffi::DevicePtr,
         out_features: u32,
-        out_kind: GemmOut,
     ) -> Result<(), Status> {
-        let out = match out_kind {
-            GemmOut::Bf16 => Bf16OrF32Mat::Bf16(DMat::contiguous(out, rows, out_features)?),
-            GemmOut::F32 => Bf16OrF32Mat::F32(DMat::contiguous(out, rows, out_features)?),
-        };
         let workspace = if self.config.qscb_workspace_bytes == 0 {
             Workspace::none()
         } else {
@@ -606,17 +589,46 @@ impl ModelRunner {
                 self.config.qscb_workspace_bytes,
             )?
         };
-        let desc = Bf16Gemm::new(
-            DMat::contiguous(x, rows, in_features)?,
-            DMat::contiguous(weight, out_features, in_features)?,
-            out,
-            workspace,
-        )?;
         let mut ops = self.engine.operators();
-        unsafe { ops.cublas().gemm_bf16(&desc) }
+        unsafe {
+            ops.qscb().linear_bf16(
+                DMat::contiguous(input, rows, in_features)?,
+                DMat::contiguous(weight, out_features, in_features)?,
+                DMat::contiguous(output, rows, out_features)?,
+                workspace,
+            )
+        }
     }
 
-    pub(in crate::model) fn silu_and_mul(
+    fn linear_f32(
+        &mut self,
+        input: ffi::DevicePtr,
+        rows: u32,
+        in_features: u32,
+        weight: ffi::DevicePtr,
+        output: ffi::DevicePtr,
+        out_features: u32,
+    ) -> Result<(), Status> {
+        let workspace = if self.config.qscb_workspace_bytes == 0 {
+            Workspace::none()
+        } else {
+            Workspace::new(
+                self.qscb_workspace.as_device_ptr(),
+                self.config.qscb_workspace_bytes,
+            )?
+        };
+        let mut ops = self.engine.operators();
+        unsafe {
+            ops.qscb().linear_f32(
+                DMat::contiguous(input, rows, in_features)?,
+                DMat::contiguous(weight, out_features, in_features)?,
+                DMat::contiguous(output, rows, out_features)?,
+                workspace,
+            )
+        }
+    }
+
+    fn silu_and_mul(
         &mut self,
         rows: u32,
         intermediate: u32,
@@ -624,51 +636,42 @@ impl ModelRunner {
         up: ffi::DevicePtr,
         out: ffi::DevicePtr,
     ) -> Result<(), Status> {
-        let desc = SiluAndMulBf16::new(
-            DMat::contiguous(gate, rows, intermediate)?,
-            DMat::contiguous(up, rows, intermediate)?,
-            DMat::contiguous(out, rows, intermediate)?,
-        )?;
+        let gate = DMat::contiguous(gate, rows, intermediate)?;
+        let up = DMat::contiguous(up, rows, intermediate)?;
+        let out = DMat::contiguous(out, rows, intermediate)?;
         let mut ops = self.engine.operators();
-        unsafe { ops.cuda().silu_and_mul_bf16(&desc) }
+        unsafe { ops.qscu().silu_and_mul_bf16(gate, up, out) }
     }
 
-    pub(in crate::model) fn shared_expert_gate_add(
-        &mut self,
-        rows: u32,
-        hidden: u32,
-    ) -> Result<(), Status> {
-        let desc = Qwen36SharedExpertGateAddBf16::new(
-            Bf16OrF32Mat::F32(DMat::contiguous(
-                self.scratch.shared_gate_logits.as_device_ptr(),
-                rows,
-                1,
-            )?),
-            DMat::contiguous(self.scratch.shared_out.as_device_ptr(), rows, hidden)?,
-            DMat::contiguous(self.scratch.mlp_out.as_device_ptr(), rows, hidden)?,
-        )?;
+    fn shared_expert_gate_add(&mut self, rows: u32, hidden: u32) -> Result<(), Status> {
+        let gate_logits =
+            DMat::contiguous(self.scratch.shared_gate_logits.as_device_ptr(), rows, 1)?;
+        let shared = DMat::contiguous(self.scratch.shared_out.as_device_ptr(), rows, hidden)?;
+        let out = DMat::contiguous(self.scratch.mlp_out.as_device_ptr(), rows, hidden)?;
         let mut ops = self.engine.operators();
-        unsafe { ops.cuda().qwen36_shared_expert_gate_add_bf16(&desc) }
+        unsafe {
+            ops.qscu()
+                .qwen36_shared_expert_gate_add_bf16(gate_logits, shared, out)
+        }
     }
 
-    pub(in crate::model) fn sample_logits(&mut self, rows: u32) -> Result<Vec<i32>, Status> {
+    fn sample_logits(&mut self, rows: u32) -> Result<Vec<i32>, Status> {
         let logits = DMat::contiguous(
             self.scratch.logits.as_device_ptr(),
             rows,
             self.config.vocab_size,
         )?;
         if self.config.logits_soft_cap > 0.0 {
-            let desc = LogitsSoftCapF32::new(logits, self.config.logits_soft_cap)?;
             let mut ops = self.engine.operators();
-            unsafe { ops.cuda().logits_soft_cap_f32(&desc)? };
+            unsafe {
+                ops.qscu()
+                    .logits_soft_cap_f32(logits, self.config.logits_soft_cap)?
+            };
         }
-        let desc = GreedyArgmaxF32::new(
-            logits,
-            DVec::contiguous(self.scratch.next_token_ids.as_device_ptr(), rows)?,
-        )?;
+        let next_token_ids = DVec::contiguous(self.scratch.next_token_ids.as_device_ptr(), rows)?;
         {
             let mut ops = self.engine.operators();
-            unsafe { ops.cuda().greedy_argmax_f32(&desc)? };
+            unsafe { ops.qscu().greedy_argmax_f32(logits, next_token_ids)? };
         }
 
         let row_count = rows as usize;

@@ -39,7 +39,7 @@ constexpr uint32_t kGdnConvWidth = 4;
 constexpr uint32_t kGdnConvState = kGdnConvWidth - 1;
 constexpr uint32_t kGdnPackedDim = 2 * kGdnKHeads * kGdnKeyDim + kGdnVHeads * kGdnValueDim;
 constexpr float kGdnRecurrenceScale = 0.08838834764831845f; // 1/sqrt(128).
-constexpr size_t kGemmWorkspaceBytes = 64ull << 20;
+constexpr size_t kLinearWorkspaceBytes = 64ull << 20;
 
 struct Options {
     int warmups = 5;
@@ -574,7 +574,7 @@ bool sync_setup(cudaStream_t stream)
     return check_cuda(cudaStreamSynchronize(stream), "cudaStreamSynchronize setup");
 }
 
-bool bench_gemm(
+bool bench_linear_bf16(
     BenchState& state,
     const Options& options,
     const char* name,
@@ -587,16 +587,16 @@ bool bench_gemm(
     DeviceBuffer<uint16_t> weight;
     DeviceBuffer<uint16_t> out;
     DeviceBuffer<uint8_t> workspace;
-    if (!x.alloc(static_cast<size_t>(tokens) * k, "gemm x")
-        || !weight.alloc(static_cast<size_t>(n) * k, "gemm weight")
-        || !out.alloc(static_cast<size_t>(tokens) * n, "gemm out")
-        || !workspace.alloc(kGemmWorkspaceBytes, "gemm workspace")
-        || !x.zero(state.stream, "gemm x") || !weight.zero(state.stream, "gemm weight")
-        || !out.zero(state.stream, "gemm out") || !sync_setup(state.stream)) {
+    if (!x.alloc(static_cast<size_t>(tokens) * k, "linear x")
+        || !weight.alloc(static_cast<size_t>(n) * k, "linear weight")
+        || !out.alloc(static_cast<size_t>(tokens) * n, "linear out")
+        || !workspace.alloc(kLinearWorkspaceBytes, "linear workspace")
+        || !x.zero(state.stream, "linear x") || !weight.zero(state.stream, "linear weight")
+        || !out.zero(state.stream, "linear out") || !sync_setup(state.stream)) {
         return false;
     }
 
-    qscb_bf16_gemm_desc desc {};
+    qscb_linear_desc desc {};
     desc.x = tensor2(x.ptr, QSFI_DTYPE_BF16, tokens, k);
     desc.weight = tensor2(weight.ptr, QSFI_DTYPE_BF16, n, k);
     desc.out = tensor2(out.ptr, QSFI_DTYPE_BF16, tokens, n);
@@ -606,17 +606,17 @@ bool bench_gemm(
     desc.workspace = workspace.ptr;
     desc.workspace_bytes = workspace.count;
 
-    BenchRow row { name, "qscb_gemm_bf16", tokens, tokens, n, k, 0, 0, 0, 0, 0 };
+    BenchRow row { name, "qscb_linear", tokens, tokens, n, k, 0, 0, 0, 0, 0 };
     return run_timed(
         state,
         options,
         row,
-        [&]() { return qscb_gemm_bf16(state.qscb, &desc); },
+        [&]() { return qscb_linear(state.qscb, &desc); },
         [&]() { report_qscb_error(state.qscb); }
     );
 }
 
-bool bench_gemm_f32_out(
+bool bench_linear_f32(
     BenchState& state,
     const Options& options,
     const char* name,
@@ -631,16 +631,17 @@ bool bench_gemm_f32_out(
     DeviceBuffer<uint16_t> weight;
     DeviceBuffer<float> out;
     DeviceBuffer<uint8_t> workspace;
-    if (!x.alloc(static_cast<size_t>(tokens) * k, "gemm_f32 x")
-        || !weight.alloc(static_cast<size_t>(n) * k, "gemm_f32 weight")
-        || !out.alloc(static_cast<size_t>(tokens) * n, "gemm_f32 out")
-        || !workspace.alloc(kGemmWorkspaceBytes, "gemm_f32 workspace")
-        || !x.zero(state.stream, "gemm_f32 x") || !weight.zero(state.stream, "gemm_f32 weight")
-        || !out.zero(state.stream, "gemm_f32 out") || !sync_setup(state.stream)) {
+    if (!x.alloc(static_cast<size_t>(tokens) * k, "linear_f32 x")
+        || !weight.alloc(static_cast<size_t>(n) * k, "linear_f32 weight")
+        || !out.alloc(static_cast<size_t>(tokens) * n, "linear_f32 out")
+        || !workspace.alloc(kLinearWorkspaceBytes, "linear_f32 workspace")
+        || !x.zero(state.stream, "linear_f32 x")
+        || !weight.zero(state.stream, "linear_f32 weight")
+        || !out.zero(state.stream, "linear_f32 out") || !sync_setup(state.stream)) {
         return false;
     }
 
-    qscb_bf16_gemm_desc desc {};
+    qscb_linear_desc desc {};
     desc.x = tensor2(x.ptr, QSFI_DTYPE_BF16, tokens, k);
     desc.weight = tensor2(weight.ptr, QSFI_DTYPE_BF16, n, k);
     desc.out = tensor2(out.ptr, QSFI_DTYPE_F32, tokens, n);
@@ -650,12 +651,12 @@ bool bench_gemm_f32_out(
     desc.workspace = workspace.ptr;
     desc.workspace_bytes = workspace.count;
 
-    BenchRow row { name, "qscb_gemm_bf16", tokens, tokens, n, k, hidden, 0, 0, experts, 0 };
+    BenchRow row { name, "qscb_linear", tokens, tokens, n, k, hidden, 0, 0, experts, 0 };
     return run_timed(
         state,
         options,
         row,
-        [&]() { return qscb_gemm_bf16(state.qscb, &desc); },
+        [&]() { return qscb_linear(state.qscb, &desc); },
         [&]() { report_qscb_error(state.qscb); }
     );
 }
@@ -1957,33 +1958,54 @@ bool run_all(BenchState& state, const Options& options)
         "case\tapi\ttokens\tm\tn\tk\thidden\theads\tdim\texperts\ttop_k\twarmups\titers\tavg_us\n"
     );
     for (uint32_t tokens : options.tokens) {
-        if (!bench_gemm(state, options, "gemm_q_proj_gate_n8192_k2048", tokens, 8192, 2048)
-            || !bench_gemm(state, options, "gemm_kv_proj_n512_k2048", tokens, 512, 2048)
-            || !bench_gemm(state, options, "gemm_o_proj_n2048_k4096", tokens, 2048, 4096)
-            || !bench_gemm_f32_out(
+        if (!bench_linear_bf16(
                 state,
                 options,
-                "router_logits_gemm_f32_n256_k2048",
+                "linear_q_proj_gate_n8192_k2048",
+                tokens,
+                8192,
+                2048
+            )
+            || !bench_linear_bf16(
+                state,
+                options,
+                "linear_kv_proj_n512_k2048",
+                tokens,
+                512,
+                2048
+            )
+            || !bench_linear_bf16(
+                state,
+                options,
+                "linear_o_proj_n2048_k4096",
+                tokens,
+                2048,
+                4096
+            )
+            || !bench_linear_f32(
+                state,
+                options,
+                "router_logits_linear_f32_n256_k2048",
                 tokens,
                 kMoeExperts,
                 kHidden,
                 kHidden,
                 kMoeExperts
             )
-            || !bench_gemm_f32_out(
+            || !bench_linear_f32(
                 state,
                 options,
-                "shared_expert_gate_logits_gemm_f32_n1_k2048",
+                "shared_expert_gate_logits_linear_f32_n1_k2048",
                 tokens,
                 1,
                 kHidden,
                 kHidden,
                 0
             )
-            || !bench_gemm_f32_out(
+            || !bench_linear_f32(
                 state,
                 options,
-                "lm_head_logits_gemm_f32_small_vocab16_k2048",
+                "lm_head_logits_linear_f32_small_vocab16_k2048",
                 tokens,
                 kLogitsSmokeVocab,
                 kHidden,

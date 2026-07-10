@@ -19,14 +19,14 @@ struct qscb_context {
 
 namespace {
 
-struct gemm_descriptors {
+struct linear_descriptors {
     cublasLtMatmulDesc_t matmul;
     cublasLtMatrixLayout_t a;
     cublasLtMatrixLayout_t b;
     cublasLtMatrixLayout_t d;
     cublasLtMatmulPreference_t preference;
 
-    gemm_descriptors()
+    linear_descriptors()
         : matmul(nullptr)
         , a(nullptr)
         , b(nullptr)
@@ -35,7 +35,7 @@ struct gemm_descriptors {
     {
     }
 
-    ~gemm_descriptors()
+    ~linear_descriptors()
     {
         if (preference != nullptr)
             cublasLtMatmulPreferenceDestroy(preference);
@@ -214,18 +214,18 @@ qsfi_status validate_shape(
     return QSFI_STATUS_OK;
 }
 
-qsfi_status validate_gemm_desc(qscb_context* ctx, const qscb_bf16_gemm_desc* desc)
+qsfi_status validate_linear_desc(qscb_context* ctx, const qscb_linear_desc* desc)
 {
     if (desc == nullptr) {
-        return set_qscb_invalid_arg(ctx, "qscb BF16 GEMM desc is null");
+        return set_qscb_invalid_arg(ctx, "qscb linear desc is null");
     }
     if (desc->rows == 0 || desc->in_features == 0 || desc->out_features == 0) {
-        return set_qscb_invalid_arg(ctx, "qscb BF16 GEMM dimensions must be non-zero");
+        return set_qscb_invalid_arg(ctx, "qscb linear dimensions must be non-zero");
     }
     if (desc->workspace == nullptr && desc->workspace_bytes != 0) {
         return set_qscb_invalid_arg(
             ctx,
-            "qscb BF16 GEMM workspace is null but workspace_bytes is set"
+            "qscb linear workspace is null but workspace_bytes is set"
         );
     }
 
@@ -262,7 +262,7 @@ qsfi_status activate_qscb_context(qscb_context* ctx)
     return set_qscb_cuda_error(ctx, err, "cudaSetDevice");
 }
 
-cublasStatus_t create_descriptors(const qscb_bf16_gemm_desc* desc, gemm_descriptors* out)
+cublasStatus_t create_descriptors(const qscb_linear_desc* desc, linear_descriptors* out)
 {
     cublasStatus_t status = cublasLtMatmulDescCreate(&out->matmul, CUBLAS_COMPUTE_32F, CUDA_R_32F);
     if (status != CUBLAS_STATUS_SUCCESS)
@@ -326,9 +326,9 @@ cublasStatus_t create_descriptors(const qscb_bf16_gemm_desc* desc, gemm_descript
     );
 }
 
-qsfi_status run_gemm(qscb_context* ctx, const qscb_bf16_gemm_desc* desc)
+qsfi_status run_linear(qscb_context* ctx, const qscb_linear_desc* desc)
 {
-    gemm_descriptors descriptors;
+    linear_descriptors descriptors;
     cublasStatus_t status = create_descriptors(desc, &descriptors);
     if (status != CUBLAS_STATUS_SUCCESS)
         return set_qscb_cublaslt_error(ctx, status, "cublasLt descriptor create");
@@ -355,7 +355,7 @@ qsfi_status run_gemm(qscb_context* ctx, const qscb_bf16_gemm_desc* desc)
             QSFI_STATUS_BACKEND_ERROR,
             QSFI_ERROR_SOURCE_CUBLASLT,
             0,
-            "cublasLtMatmulAlgoGetHeuristic returned no BF16 GEMM algorithms"
+            "cublasLtMatmulAlgoGetHeuristic returned no qscb linear algorithms"
         );
     }
 
@@ -380,7 +380,7 @@ qsfi_status run_gemm(qscb_context* ctx, const qscb_bf16_gemm_desc* desc)
         desc->workspace_bytes,
         ctx->stream
     );
-    return set_qscb_cublaslt_error(ctx, status, "cublasLtMatmul BF16 GEMM");
+    return set_qscb_cublaslt_error(ctx, status, "cublasLtMatmul qscb linear");
 }
 
 } // namespace
@@ -454,7 +454,7 @@ void qscb_context_clear_last_error(qscb_context* ctx)
         qsfi_clear_error_info(&ctx->last_error);
 }
 
-qsfi_status qscb_gemm_bf16(qscb_context* ctx, const qscb_bf16_gemm_desc* desc)
+qsfi_status qscb_linear(qscb_context* ctx, const qscb_linear_desc* desc)
 {
     if (ctx == nullptr)
         return QSFI_STATUS_INVALID_ARGUMENT;
@@ -463,10 +463,10 @@ qsfi_status qscb_gemm_bf16(qscb_context* ctx, const qscb_bf16_gemm_desc* desc)
     qsfi_status status = activate_qscb_context(ctx);
     if (status != QSFI_STATUS_OK)
         return status;
-    status = validate_gemm_desc(ctx, desc);
+    status = validate_linear_desc(ctx, desc);
     if (status != QSFI_STATUS_OK)
         return status;
-    return run_gemm(ctx, desc);
+    return run_linear(ctx, desc);
 }
 
 } // extern "C"

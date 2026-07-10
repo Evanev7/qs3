@@ -2295,7 +2295,7 @@ void test_checked_moe_rejects_non_finite_route_weight()
 #endif
 
 #include "tests_cuda_flashinfer_norm_rope.inc"
-#include "tests_cuda_qscb_gemm.inc"
+#include "tests_cuda_qscb_linear.inc"
 #include "tests_cuda_qscu_gdn_router.inc"
 #include "tests_cuda_qscu_utils.inc"
 
@@ -2336,9 +2336,9 @@ int main()
     test_qsfi_fused_add_rmsnorm_rejects_non_alias_out();
     test_qsfi_rope_apply_bf16_neox_full_head_matches_cpu();
     test_qscb_context_lifecycle();
-    test_qscb_gemm_bf16_hidden_output_strided();
-    test_qscb_gemm_bf16_output_beta();
-    test_qscb_gemm_bf16_logits_f32_output_beta();
+    test_qscb_linear_bf16_hidden_output_strided();
+    test_qscb_linear_bf16_output_beta();
+    test_qscb_linear_bf16_logits_f32_output_beta();
     test_qscu_utils_silu_and_mul_bf16();
     test_qscu_utils_qwen36_shared_expert_gate_add_bf16();
     test_qscu_utils_qwen36_full_attention_output_gate_bf16();

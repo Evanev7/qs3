@@ -1,4 +1,18 @@
-use super::*;
+use crate::{
+    QWEN36_FULL_ATTN_GROUP_SIZE, QWEN36_FULL_ATTN_HEAD_DIM, QWEN36_FULL_ATTN_KV_HEADS,
+    QWEN36_FULL_ATTN_KV_HIDDEN, QWEN36_FULL_ATTN_Q_HEADS, QWEN36_FULL_ATTN_Q_HIDDEN,
+    QWEN36_GDN_CONV_WIDTH, QWEN36_GDN_KEY_DIM, QWEN36_GDN_NUM_K_HEADS, QWEN36_GDN_NUM_V_HEADS,
+    QWEN36_GDN_OUTPUT_DIM, QWEN36_GDN_PACKED_DIM, QWEN36_GDN_VALUE_DIM, QWEN36_HIDDEN_SIZE,
+    QWEN36_MOE_INTERMEDIATE_SIZE, QWEN36_MOE_MAX_EXPERTS, QWEN36_MOE_MAX_TOP_K,
+    QWEN36_MOE_NUM_EXPERTS, QWEN36_MOE_SHARED_EXPERT_INTERMEDIATE_SIZE, QWEN36_MOE_TOP_K,
+    engine::{
+        DynDType, EngineConfig, KvLayout, Status, validate_supported_attention_grouping,
+        validate_supported_attention_head_dim,
+    },
+    model::resolve_device_ordinal,
+};
+
+use std::{ffi::c_void, ptr};
 
 /// Inference-relevant Qwen3.6 MoE fields from HF config.json.
 /// `output_router_logits` and `router_aux_loss_coef` are omitted because they

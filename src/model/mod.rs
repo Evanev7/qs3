@@ -1,57 +1,20 @@
-use crate::backend::cublas::Bf16Gemm;
-use crate::backend::cuda::{
-    Activation, EmbeddingGatherBf16, GdnCausalConv1dBf16, GdnCausalConv1dBf16Args, GdnConvState,
-    GdnDecodeBf16, GdnDecodeBf16Args, GdnForgetGateOutput, GdnPostConvPrepareBf16,
-    GdnPostConvPrepareBf16Args, GdnPrefillBf16, GdnPrefillBf16Args, GdnRecurrentState,
-    GdnRmsNormGatedBf16, GdnRmsNormGatedBf16Args, GreedyArgmaxF32, LogitsSoftCapF32,
-    Qwen36FullAttentionOutputGateBf16, Qwen36SharedExpertGateAddBf16, RouterTopK, SiluAndMulBf16,
-};
-use crate::backend::flashinfer::{
-    FusedAddRmsNormBf16, MoeBf16Execute, MoeBf16ExecuteArgs, MoeBf16PlanConfig, MoePlan,
-    RmsNormBf16, RopeApplyBf16, Workspace,
-};
-use crate::backend::{Bf16Heads, Bf16OrF32Mat, Bf16OrF32Vec, DMat, DTensor3, DVec, FloatStorage};
-use crate::engine::{
-    AppendBatch, AttentionLayer, Commit, DecodeBatch, DynDType, Engine, EngineConfig, KvLayout,
-    RequestId, Status, validate_supported_attention_grouping,
-    validate_supported_attention_head_dim,
-};
-use crate::ext::{SafeVec, try_clone_slice};
+use crate::engine::Status;
+use crate::ext::SafeVec;
 use crate::ffi::{self, cuda};
-use crate::{
-    QWEN36_FULL_ATTN_GROUP_SIZE, QWEN36_FULL_ATTN_HEAD_DIM, QWEN36_FULL_ATTN_KV_HEADS,
-    QWEN36_FULL_ATTN_KV_HIDDEN, QWEN36_FULL_ATTN_Q_HEADS, QWEN36_FULL_ATTN_Q_HIDDEN,
-    QWEN36_FULL_ATTN_Q_PROJ_OUT, QWEN36_FULL_ATTN_ROTARY_DIM, QWEN36_GDN_CONV_STATE,
-    QWEN36_GDN_CONV_WIDTH, QWEN36_GDN_KEY_DIM, QWEN36_GDN_NUM_K_HEADS, QWEN36_GDN_NUM_Q_HEADS,
-    QWEN36_GDN_NUM_V_HEADS, QWEN36_GDN_OUTPUT_DIM, QWEN36_GDN_PACKED_DIM,
-    QWEN36_GDN_STATE_SLOTS_PER_LAYER, QWEN36_GDN_VALUE_DIM, QWEN36_HIDDEN_SIZE,
-    QWEN36_MOE_INTERMEDIATE_SIZE, QWEN36_MOE_MAX_EXPERTS, QWEN36_MOE_MAX_TOP_K,
-    QWEN36_MOE_NUM_EXPERTS, QWEN36_MOE_ROUTER_RENORMALIZE, QWEN36_MOE_ROUTER_SCALING_FACTOR,
-    QWEN36_MOE_ROUTER_SCORE, QWEN36_MOE_SHARED_EXPERT_INTERMEDIATE_SIZE, QWEN36_MOE_TOP_K,
-};
+use crate::{QWEN36_FULL_ATTN_HEAD_DIM, QWEN36_FULL_ATTN_Q_HEADS};
 
 use std::ffi::c_void;
-use std::{mem, ptr};
+use std::mem;
 
 mod config;
 mod runner;
 
 use config::QwenBlockKind;
 pub use config::{QwenConfig, QwenMoeConfig};
-#[cfg(test)]
-use config::{QwenGdnShape, QwenLayerPattern, QwenModelShape};
 pub use runner::{ModelRunner, QwenRequest, QwenResult};
 mod weights;
 
 pub use weights::QwenWeights;
-use weights::{
-    QwenAttentionMlpPtrs, QwenGdnPtrs, QwenLayerPtrs, QwenMlpPtrs, QwenSharedExpertPtrs,
-};
-#[cfg(test)]
-use weights::{
-    QwenAttentionMlpWeights, QwenGdnWeights, QwenLayerWeights, QwenMlpWeights,
-    QwenSharedExpertWeights,
-};
 #[derive(Clone, Copy)]
 struct BatchRun<'a> {
     tokens: &'a [i32],
@@ -65,21 +28,11 @@ enum ActiveRunKind {
     Decode,
 }
 
-#[derive(Clone, Copy)]
-enum GemmOut {
-    Bf16,
-    F32,
-}
-
 mod state;
 
-#[cfg(test)]
-use state::GdnSlotMap;
-use state::GdnState;
 mod scratch;
 
 pub(crate) use scratch::DeviceBuffer;
-use scratch::RunnerScratch;
 struct DeterministicRng {
     state: u64,
 }
@@ -123,10 +76,6 @@ fn constant_bf16_values(count: usize, value: f32) -> Result<Vec<u16>, Status> {
     let mut out = Vec::safe_new(count)?;
     out.resize(count, f32_to_bf16_bits(value));
     Ok(out)
-}
-
-fn qwen36_gdn_scale() -> f32 {
-    1.0 / (QWEN36_GDN_KEY_DIM as f32).sqrt()
 }
 
 /// Extract Qwen3.6 full-attention Q and output-gate heads from packed BF16
@@ -267,6 +216,3 @@ fn result_from_cuda(err: i32) -> Result<(), Status> {
         Err(Status::CudaError)
     }
 }
-
-#[cfg(test)]
-mod tests;

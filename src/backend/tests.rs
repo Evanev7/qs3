@@ -1,7 +1,19 @@
-use super::*;
-use crate::{QWEN36_FULL_ATTN_KV_HEADS, QWEN36_FULL_ATTN_KV_HIDDEN, QWEN36_FULL_ATTN_Q_HEADS};
+use super::{
+    BF16, Bf16Heads, DMat, DVec, F32, FloatStorage, GdnConvState, GdnRecurrentState,
+    GdnStateIndexPolicy, I32, RouterScore, Workspace, qscb, qscu,
+    qsfi::{FusedAddRmsNormBf16, RmsNormBf16, RopeApplyBf16},
+};
+use crate::{
+    QWEN36_FULL_ATTN_HEAD_DIM, QWEN36_FULL_ATTN_KV_HEADS, QWEN36_FULL_ATTN_KV_HIDDEN,
+    QWEN36_FULL_ATTN_Q_HEADS, QWEN36_FULL_ATTN_Q_HIDDEN, QWEN36_FULL_ATTN_ROTARY_DIM,
+    QWEN36_GDN_CONV_WIDTH, QWEN36_GDN_KEY_DIM, QWEN36_GDN_NUM_K_HEADS, QWEN36_GDN_NUM_Q_HEADS,
+    QWEN36_GDN_NUM_V_HEADS, QWEN36_GDN_PACKED_DIM, QWEN36_GDN_VALUE_DIM, QWEN36_MOE_MAX_TOP_K,
+    Status,
+    ffi::{self, sys},
+};
 
 use std::ffi::c_void;
+use std::ptr;
 
 fn device_ptr(offset: usize) -> ffi::DevicePtr {
     (0x1000usize + offset) as *mut c_void
@@ -100,61 +112,28 @@ fn handles_reject_null_zero_and_bad_strides() {
 }
 
 #[test]
-fn rmsnorm_builder_supports_qwen_qk_flattened_per_head_norm() {
-    let rows = 2;
-    let heads = 16;
-    let head_dim = 256;
-    let flat_rows = rows * heads;
-    let x = bf16_mat(130, flat_rows, head_dim);
-    let weight = bf16_vec(131, head_dim);
-    let out = bf16_mat(132, flat_rows, head_dim);
-
-    let default_qwen = RmsNormBf16::new(x, weight, out, 1.0e-6).unwrap();
-    assert_eq!(default_qwen.raw.hidden_size, head_dim);
-
-    let qk = RmsNormBf16::qwen_qk_norm(x, weight, out, 1.0e-6).unwrap();
-    assert_eq!(qk.raw.x.shape, [i64::from(flat_rows), i64::from(head_dim)]);
-    assert_eq!(qk.raw.weight.shape, [i64::from(head_dim)]);
-
-    let decoder = RmsNormBf16::qwen_decoder_norm(x, weight, out, 1.0e-6).unwrap();
-    assert_eq!(decoder.raw.hidden_size, head_dim);
-
-    let inplace = RmsNormBf16::qwen_qk_norm(x, weight, x, 1.0e-6).unwrap();
-    assert_eq!(inplace.raw.out.data, inplace.raw.x.data);
-    assert_eq!(inplace.raw.out.stride, inplace.raw.x.stride);
-}
-
-#[test]
 fn qscu_descriptor_builders_validate_shapes_and_modes() {
     let gate = bf16_mat(10, 2, 8);
     let up = bf16_mat(11, 2, 8);
     let out = bf16_mat(12, 2, 8);
-    assert!(SiluAndMulBf16::new(gate, up, out).is_ok());
+    assert!(qscu::silu_and_mul_desc(gate, up, out).is_ok());
     let padded_gate = DMat::new(device_ptr(13), 2, 8, 16).unwrap();
     assert!(matches!(
-        SiluAndMulBf16::new(padded_gate, up, out),
+        qscu::silu_and_mul_desc(padded_gate, up, out),
         Err(Status::InvalidArgument)
     ));
 
     assert!(
-        Qwen36SharedExpertGateAddBf16::new(
-            Bf16OrF32Mat::F32(f32_mat(110, 2, 1)),
+        qscu::qwen36_shared_expert_gate_add_desc(
+            f32_mat(110, 2, 1),
             bf16_mat(111, 2, 8),
             bf16_mat(112, 2, 8),
         )
         .is_ok()
     );
-    assert!(
-        Qwen36SharedExpertGateAddBf16::new(
-            Bf16OrF32Mat::Bf16(bf16_mat(113, 2, 1)),
-            bf16_mat(114, 2, 8),
-            bf16_mat(115, 2, 8),
-        )
-        .is_ok()
-    );
     assert!(matches!(
-        Qwen36SharedExpertGateAddBf16::new(
-            Bf16OrF32Mat::F32(f32_mat(116, 2, 2)),
+        qscu::qwen36_shared_expert_gate_add_desc(
+            f32_mat(116, 2, 2),
             bf16_mat(117, 2, 8),
             bf16_mat(118, 2, 8),
         ),
@@ -162,21 +141,21 @@ fn qscu_descriptor_builders_validate_shapes_and_modes() {
     ));
 
     assert!(
-        Qwen36FullAttentionOutputGateBf16::new(
+        qscu::qwen36_full_attention_output_gate_desc(
             bf16_mat(119, 2, QWEN36_FULL_ATTN_Q_HIDDEN),
             bf16_mat(120, 2, QWEN36_FULL_ATTN_Q_HIDDEN),
         )
         .is_ok()
     );
     assert!(matches!(
-        Qwen36FullAttentionOutputGateBf16::new(
+        qscu::qwen36_full_attention_output_gate_desc(
             bf16_mat(121, 2, QWEN36_FULL_ATTN_Q_HIDDEN - 1),
             bf16_mat(122, 2, QWEN36_FULL_ATTN_Q_HIDDEN - 1),
         ),
         Err(Status::InvalidArgument)
     ));
     assert!(matches!(
-        Qwen36FullAttentionOutputGateBf16::new(
+        qscu::qwen36_full_attention_output_gate_desc(
             DMat::<BF16>::new(
                 device_ptr(123),
                 2,
@@ -189,7 +168,7 @@ fn qscu_descriptor_builders_validate_shapes_and_modes() {
         Err(Status::InvalidArgument)
     ));
     assert!(matches!(
-        Qwen36FullAttentionOutputGateBf16::new(
+        qscu::qwen36_full_attention_output_gate_desc(
             bf16_mat(125, 2, QWEN36_FULL_ATTN_Q_HIDDEN),
             bf16_mat(126, 1, QWEN36_FULL_ATTN_Q_HIDDEN),
         ),
@@ -198,34 +177,34 @@ fn qscu_descriptor_builders_validate_shapes_and_modes() {
 
     let token_ids = i32_vec(14, 2);
     let embedding = bf16_mat(15, 128, 8);
-    assert!(EmbeddingGatherBf16::new(token_ids, embedding, out).is_ok());
+    assert!(qscu::embedding_gather_desc(token_ids, embedding, out, None, false).is_ok());
     assert!(matches!(
-        EmbeddingGatherBf16::new(token_ids, embedding, bf16_mat(16, 2, 7)),
+        qscu::embedding_gather_desc(token_ids, embedding, bf16_mat(16, 2, 7), None, false,),
         Err(Status::InvalidArgument)
     ));
 
     let logits = f32_mat(17, 2, 128);
-    assert!(LogitsSoftCapF32::new(logits, 30.0).is_ok());
-    assert!(LogitsSoftCapF32::new(logits, f32::NEG_INFINITY).is_ok());
+    assert!(qscu::validate_logits_soft_cap(logits, 30.0).is_ok());
+    assert!(qscu::validate_logits_soft_cap(logits, f32::NEG_INFINITY).is_ok());
     assert!(matches!(
-        LogitsSoftCapF32::new(logits, f32::NAN),
+        qscu::validate_logits_soft_cap(logits, f32::NAN),
         Err(Status::InvalidArgument)
     ));
 
-    assert!(GreedyArgmaxF32::new(logits, token_ids).is_ok());
+    assert!(qscu::greedy_argmax_desc(logits, token_ids).is_ok());
     assert!(matches!(
-        GreedyArgmaxF32::new(logits, i32_vec(18, 1)),
+        qscu::greedy_argmax_desc(logits, i32_vec(18, 1)),
         Err(Status::InvalidArgument)
     ));
     let huge_vocab = DMat::contiguous(device_ptr(19), 1, i32::MAX as u32 + 1).unwrap();
     assert!(matches!(
-        GreedyArgmaxF32::new(huge_vocab, i32_vec(20, 1)),
+        qscu::greedy_argmax_desc(huge_vocab, i32_vec(20, 1)),
         Err(Status::Unsupported)
     ));
 
     assert!(
-        RouterTopK::new(
-            Bf16OrF32Mat::F32(logits),
+        qscu::router_topk_desc(
+            logits,
             DMat::<I32>::contiguous(device_ptr(21), 2, 4).unwrap(),
             f32_mat(22, 2, 4),
             RouterScore::Softmax,
@@ -234,20 +213,9 @@ fn qscu_descriptor_builders_validate_shapes_and_modes() {
         )
         .is_ok()
     );
-    assert!(
-        RouterTopK::new(
-            Bf16OrF32Mat::Bf16(bf16_mat(23, 2, 128)),
-            DMat::<I32>::contiguous(device_ptr(24), 2, 4).unwrap(),
-            f32_mat(25, 2, 4),
-            RouterScore::Sigmoid,
-            false,
-            0.5,
-        )
-        .is_ok()
-    );
     assert!(matches!(
-        RouterTopK::new(
-            Bf16OrF32Mat::F32(logits),
+        qscu::router_topk_desc(
+            logits,
             DMat::<I32>::contiguous(device_ptr(26), 2, QWEN36_MOE_MAX_TOP_K + 1,).unwrap(),
             f32_mat(27, 2, QWEN36_MOE_MAX_TOP_K + 1),
             RouterScore::Softmax,
@@ -257,8 +225,8 @@ fn qscu_descriptor_builders_validate_shapes_and_modes() {
         Err(Status::Unsupported)
     ));
     assert!(matches!(
-        RouterTopK::new(
-            Bf16OrF32Mat::F32(logits),
+        qscu::router_topk_desc(
+            logits,
             DMat::<I32>::contiguous(device_ptr(28), 2, 4).unwrap(),
             f32_mat(29, 2, 4),
             RouterScore::Softmax,
@@ -270,21 +238,34 @@ fn qscu_descriptor_builders_validate_shapes_and_modes() {
 }
 
 #[test]
-fn qscb_and_qsfi_descriptor_builders_accept_padded_rows() {
+fn qscb_linear_specializations_encode_the_output_type() {
     let x = DMat::new(device_ptr(30), 4, 128, 160).unwrap();
     let weight = DMat::new(device_ptr(31), 256, 128, 128).unwrap();
-    let out = DMat::new(device_ptr(32), 4, 256, 320).unwrap();
-    assert!(Bf16Gemm::new(x, weight, Bf16OrF32Mat::F32(out), Workspace::none()).is_ok());
+    let bf16_out = DMat::new(device_ptr(32), 4, 256, 320).unwrap();
+    let f32_out = DMat::new(device_ptr(33), 4, 256, 320).unwrap();
+
+    let bf16 = qscb::linear_bf16_desc(x, weight, bf16_out, Workspace::none()).unwrap();
+    assert_eq!(bf16.out.dtype, ffi::DTYPE_BF16);
+    assert_eq!(bf16.out.shape, [4, 256]);
+
+    let f32 = qscb::linear_f32_desc(x, weight, f32_out, Workspace::none()).unwrap();
+    assert_eq!(f32.out.dtype, ffi::DTYPE_F32);
+    assert_eq!(f32.out.shape, [4, 256]);
+
     assert!(matches!(
-        Bf16Gemm::new(
+        qscb::linear_f32_desc(
             x,
             weight,
-            Bf16OrF32Mat::F32(DMat::new(device_ptr(33), 4, 128, 128).unwrap()),
+            DMat::new(device_ptr(34), 4, 128, 128).unwrap(),
             Workspace::none(),
         ),
         Err(Status::InvalidArgument)
     ));
+}
 
+#[test]
+fn qsfi_descriptor_builders_accept_padded_rows() {
+    let x = DMat::new(device_ptr(30), 4, 128, 160).unwrap();
     let norm_out = DMat::new(device_ptr(34), 4, 128, 160).unwrap();
     assert!(RmsNormBf16::new(x, bf16_vec(35, 128), norm_out, 1.0e-6).is_ok());
     assert!(matches!(
@@ -297,11 +278,10 @@ fn qscb_and_qsfi_descriptor_builders_accept_padded_rows() {
     ));
 
     let residual = DMat::new(device_ptr(38), 4, 128, 192).unwrap();
-    let fused = FusedAddRmsNormBf16::new(x, residual, bf16_vec(39, 128), 1.0e-6).unwrap();
-    assert_eq!(fused.raw.out.data, fused.raw.x.data);
-    let qwen_fused =
-        FusedAddRmsNormBf16::qwen_decoder_norm(x, residual, bf16_vec(140, 128), 1.0e-6).unwrap();
-    assert_eq!(qwen_fused.raw.out.data, qwen_fused.raw.x.data);
+    assert!(FusedAddRmsNormBf16::new(x, residual, bf16_vec(39, 128), 1.0e-6).is_ok());
+    assert!(
+        FusedAddRmsNormBf16::qwen_decoder_norm(x, residual, bf16_vec(140, 128), 1.0e-6,).is_ok()
+    );
 
     let q = Bf16Heads::new(device_ptr(40), 2, 4, 128, 1024, 128).unwrap();
     let k = Bf16Heads::new(device_ptr(41), 2, 2, 128, 512, 128).unwrap();
@@ -399,125 +379,150 @@ fn qscb_and_qsfi_descriptor_builders_accept_padded_rows() {
 #[test]
 fn gdn_prep_descriptors_enforce_qwen36_shapes() {
     let tokens = 2;
-    let post = GdnPostConvPrepareBf16Args {
-        conv_out: bf16_mat(60, tokens, QWEN36_GDN_PACKED_DIM),
-        a: bf16_mat(61, tokens, QWEN36_GDN_NUM_V_HEADS),
-        b: bf16_mat(62, tokens, QWEN36_GDN_NUM_V_HEADS),
-        a_log: bf16_vec(63, QWEN36_GDN_NUM_V_HEADS),
-        dt_bias: bf16_vec(64, QWEN36_GDN_NUM_V_HEADS),
-        q: q_heads(65, tokens),
-        k: k_heads(66, tokens),
-        v: v_heads(67, tokens),
-        g_out: Some(f32_mat(68, tokens, QWEN36_GDN_NUM_V_HEADS)),
-        beta_out: None,
-        apply_qk_l2norm: true,
-        l2norm_eps: 1.0e-6,
-        forget_gate_output: GdnForgetGateOutput::LinearAlpha,
-    };
-    assert!(GdnPostConvPrepareBf16::new(post).is_ok());
-
-    let mut bad_post = post;
-    bad_post.q = heads(69, tokens, 8, QWEN36_GDN_KEY_DIM);
+    let post = qscu::qwen36_gdn_post_conv_prepare_desc(
+        bf16_mat(60, tokens, QWEN36_GDN_PACKED_DIM),
+        bf16_mat(61, tokens, QWEN36_GDN_NUM_V_HEADS),
+        bf16_mat(62, tokens, QWEN36_GDN_NUM_V_HEADS),
+        bf16_vec(63, QWEN36_GDN_NUM_V_HEADS),
+        bf16_vec(64, QWEN36_GDN_NUM_V_HEADS),
+        q_heads(65, tokens),
+        k_heads(66, tokens),
+        v_heads(67, tokens),
+    )
+    .unwrap();
+    assert_eq!(post.apply_qk_l2norm, 0);
+    assert_eq!(post.forget_gate_output, sys::QSCU_GDN_FORGET_LOG_DECAY);
     assert!(matches!(
-        GdnPostConvPrepareBf16::new(bad_post),
+        qscu::qwen36_gdn_post_conv_prepare_desc(
+            bf16_mat(60, tokens, QWEN36_GDN_PACKED_DIM),
+            bf16_mat(61, tokens, QWEN36_GDN_NUM_V_HEADS),
+            bf16_mat(62, tokens, QWEN36_GDN_NUM_V_HEADS),
+            bf16_vec(63, QWEN36_GDN_NUM_V_HEADS),
+            bf16_vec(64, QWEN36_GDN_NUM_V_HEADS),
+            heads(69, tokens, 8, QWEN36_GDN_KEY_DIM),
+            k_heads(66, tokens),
+            v_heads(67, tokens),
+        ),
         Err(Status::InvalidArgument)
     ));
 
-    let gated = GdnRmsNormGatedBf16Args {
-        x: v_heads(70, tokens),
-        gate: v_heads(71, tokens),
-        weight: Bf16OrF32Vec::F32(f32_vec(72, QWEN36_GDN_VALUE_DIM)),
-        out: v_heads(73, tokens),
-        eps: 1.0e-6,
-        gate_activation: Activation::Silu,
-    };
-    assert!(GdnRmsNormGatedBf16::new(gated).is_ok());
-    let mut bad_gated = gated;
-    bad_gated.gate_activation = Activation::None;
+    let gated = qscu::qwen36_gdn_gated_rmsnorm_desc(
+        v_heads(70, tokens),
+        v_heads(71, tokens),
+        bf16_vec(72, QWEN36_GDN_VALUE_DIM),
+        v_heads(73, tokens),
+        1.0e-6,
+    )
+    .unwrap();
+    assert_eq!(gated.gate_activation, sys::QSCU_ACTIVATION_SILU);
     assert!(matches!(
-        GdnRmsNormGatedBf16::new(bad_gated),
-        Err(Status::Unsupported)
+        qscu::qwen36_gdn_gated_rmsnorm_desc(
+            v_heads(70, tokens),
+            heads(71, tokens, QWEN36_GDN_NUM_V_HEADS - 1, QWEN36_GDN_VALUE_DIM),
+            bf16_vec(72, QWEN36_GDN_VALUE_DIM),
+            v_heads(73, tokens),
+            1.0e-6,
+        ),
+        Err(Status::InvalidArgument)
     ));
 
-    let conv = GdnCausalConv1dBf16Args {
-        x: bf16_mat(74, tokens, QWEN36_GDN_PACKED_DIM),
-        weight: bf16_mat(75, QWEN36_GDN_PACKED_DIM, QWEN36_GDN_CONV_WIDTH),
-        bias: Some(Bf16OrF32Vec::Bf16(bf16_vec(76, QWEN36_GDN_PACKED_DIM))),
-        state: GdnConvState::contiguous(device_ptr(77), FloatStorage::F32, 3).unwrap(),
-        state_read_indices: Some(i32_vec(78, tokens)),
-        state_write_indices: None,
-        seq_indptr: None,
-        out: bf16_mat(79, tokens, QWEN36_GDN_PACKED_DIM),
-        batch_size: tokens,
-        activation: Activation::Silu,
-        update_state: true,
-    };
-    assert!(GdnCausalConv1dBf16::new(conv).is_ok());
-    let mut bad_conv = conv;
-    bad_conv.activation = Activation::Sigmoid;
-    assert!(matches!(
-        GdnCausalConv1dBf16::new(bad_conv),
-        Err(Status::Unsupported)
-    ));
+    let conv = qscu::qwen36_gdn_causal_conv1d_desc(
+        bf16_mat(74, tokens, QWEN36_GDN_PACKED_DIM),
+        bf16_mat(75, QWEN36_GDN_PACKED_DIM, QWEN36_GDN_CONV_WIDTH),
+        bf16_vec(76, QWEN36_GDN_PACKED_DIM),
+        GdnConvState::contiguous(device_ptr(77), FloatStorage::F32, 3).unwrap(),
+        Some(i32_vec(78, tokens)),
+        None,
+        None,
+        bf16_mat(79, tokens, QWEN36_GDN_PACKED_DIM),
+        tokens,
+    )
+    .unwrap();
+    assert_eq!(conv.activation, sys::QSCU_ACTIVATION_SILU);
+    assert_eq!(conv.update_state, 1);
 }
 
 #[test]
 fn gdn_recurrent_descriptors_validate_decode_and_prefill_shapes() {
     let tokens = 3;
-    let decode = GdnDecodeBf16Args {
-        q: q_heads(90, tokens),
-        k: k_heads(91, tokens),
-        v: v_heads(92, tokens),
-        a: bf16_mat(93, tokens, QWEN36_GDN_NUM_V_HEADS),
-        b: bf16_mat(94, tokens, QWEN36_GDN_NUM_V_HEADS),
-        a_log: bf16_vec(95, QWEN36_GDN_NUM_V_HEADS),
-        dt_bias: bf16_vec(96, QWEN36_GDN_NUM_V_HEADS),
-        state: recurrent_state(97),
-        state_indices: i32_vec(98, tokens),
-        state_out_indices: None,
-        out: v_heads(99, tokens),
-        scale: 0.08838835,
-        use_qk_l2norm: true,
-        disable_state_update: false,
-    };
-    assert!(GdnDecodeBf16::new(decode).is_ok());
+    let q = q_heads(90, tokens);
+    let k = k_heads(91, tokens);
+    let v = v_heads(92, tokens);
+    let a = bf16_mat(93, tokens, QWEN36_GDN_NUM_V_HEADS);
+    let b = bf16_mat(94, tokens, QWEN36_GDN_NUM_V_HEADS);
+    let a_log = bf16_vec(95, QWEN36_GDN_NUM_V_HEADS);
+    let dt_bias = bf16_vec(96, QWEN36_GDN_NUM_V_HEADS);
+    let state = recurrent_state(97);
+    let out = v_heads(99, tokens);
+    let decode = qscu::qwen36_gdn_decode_desc(
+        q,
+        k,
+        v,
+        a,
+        b,
+        a_log,
+        dt_bias,
+        state,
+        i32_vec(98, tokens),
+        None,
+        out,
+    )
+    .unwrap();
+    assert_eq!(decode.use_qk_l2norm, 1);
+    assert_eq!(decode.disable_state_update, 0);
+    assert_eq!(decode.scale, 1.0 / (QWEN36_GDN_KEY_DIM as f32).sqrt());
 
-    let mut bad_decode = decode;
-    bad_decode.scale = 0.0;
     assert!(matches!(
-        GdnDecodeBf16::new(bad_decode),
+        qscu::qwen36_gdn_decode_desc(
+            q,
+            k,
+            v,
+            a,
+            b,
+            a_log,
+            dt_bias,
+            state,
+            i32_vec(100, 2),
+            None,
+            out,
+        ),
         Err(Status::InvalidArgument)
     ));
-    let mut bad_indices = decode;
-    bad_indices.state_indices = i32_vec(100, 2);
-    assert!(matches!(
-        GdnDecodeBf16::new(bad_indices),
-        Err(Status::InvalidArgument)
-    ));
 
-    let prefill = GdnPrefillBf16Args {
-        q: decode.q,
-        k: decode.k,
-        v: decode.v,
-        a: decode.a,
-        b: decode.b,
-        a_log: decode.a_log,
-        dt_bias: decode.dt_bias,
-        state: decode.state,
-        seq_indptr: i32_vec(101, 3),
-        state_indices: i32_vec(102, 2),
-        state_out_indices: Some(i32_vec(103, 2)),
-        out: decode.out,
-        batch_size: 2,
-        scale: decode.scale,
-        use_qk_l2norm: decode.use_qk_l2norm,
-        disable_state_update: decode.disable_state_update,
-    };
-    assert!(GdnPrefillBf16::new(prefill).is_ok());
-    let mut bad_prefill = prefill;
-    bad_prefill.seq_indptr = i32_vec(104, 2);
+    assert!(
+        qscu::qwen36_gdn_prefill_desc(
+            q,
+            k,
+            v,
+            a,
+            b,
+            a_log,
+            dt_bias,
+            state,
+            i32_vec(101, 3),
+            i32_vec(102, 2),
+            Some(i32_vec(103, 2)),
+            out,
+            2,
+        )
+        .is_ok()
+    );
     assert!(matches!(
-        GdnPrefillBf16::new(bad_prefill),
+        qscu::qwen36_gdn_prefill_desc(
+            q,
+            k,
+            v,
+            a,
+            b,
+            a_log,
+            dt_bias,
+            state,
+            i32_vec(104, 2),
+            i32_vec(102, 2),
+            Some(i32_vec(103, 2)),
+            out,
+            2,
+        ),
         Err(Status::InvalidArgument)
     ));
 }

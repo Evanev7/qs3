@@ -1,40 +1,25 @@
 #![allow(dead_code)]
 
 use crate::{
-    QWEN36_FULL_ATTN_HEAD_DIM, QWEN36_FULL_ATTN_Q_HIDDEN, QWEN36_FULL_ATTN_ROTARY_DIM,
-    QWEN36_GDN_CONV_STATE, QWEN36_GDN_CONV_WIDTH, QWEN36_GDN_KEY_DIM, QWEN36_GDN_NUM_K_HEADS,
-    QWEN36_GDN_NUM_Q_HEADS, QWEN36_GDN_NUM_V_HEADS, QWEN36_GDN_PACKED_DIM, QWEN36_GDN_VALUE_DIM,
-    QWEN36_MOE_MAX_EXPERTS, QWEN36_MOE_MAX_TOP_K, Status,
-    ffi::{self, qscb, qscu, qsfi},
+    QWEN36_FULL_ATTN_HEAD_DIM, QWEN36_FULL_ATTN_ROTARY_DIM, QWEN36_GDN_CONV_STATE,
+    QWEN36_GDN_KEY_DIM, QWEN36_GDN_NUM_K_HEADS, QWEN36_GDN_NUM_Q_HEADS, QWEN36_GDN_NUM_V_HEADS,
+    QWEN36_GDN_PACKED_DIM, QWEN36_GDN_VALUE_DIM, Status,
+    ffi::{self, sys},
 };
 
-pub(crate) mod cublas;
-pub(crate) mod cuda;
 mod dtype;
-pub(crate) mod flashinfer;
+pub(crate) mod qscb;
+pub(crate) mod qscu;
+pub(crate) mod qsfi;
 mod tensor;
 
-#[cfg(test)]
-pub(crate) use cublas::Bf16Gemm;
-pub(crate) use cublas::Cublas;
-pub(crate) use cuda::Cuda;
-#[cfg(test)]
-pub(crate) use cuda::{
-    EmbeddingGatherBf16, GdnCausalConv1dBf16, GdnCausalConv1dBf16Args, GdnDecodeBf16,
-    GdnDecodeBf16Args, GdnPostConvPrepareBf16, GdnPostConvPrepareBf16Args, GdnPrefillBf16,
-    GdnPrefillBf16Args, GdnRmsNormGatedBf16, GdnRmsNormGatedBf16Args, GreedyArgmaxF32,
-    LogitsSoftCapF32, Qwen36FullAttentionOutputGateBf16, Qwen36SharedExpertGateAddBf16, RouterTopK,
-    SiluAndMulBf16,
-};
 pub(crate) use dtype::{BF16, F32, I32};
-pub(crate) use flashinfer::FlashInfer;
-#[cfg(test)]
-pub(crate) use flashinfer::{FusedAddRmsNormBf16, RmsNormBf16, RopeApplyBf16};
+pub(crate) use qscb::Qscb;
+pub(crate) use qscu::Qscu;
+pub(crate) use qsfi::Qsfi;
 pub(crate) use tensor::{DMat, DTensor3, DVec};
 
 use std::ptr;
-
-pub(crate) type MoePlan = qsfi::MoePlan;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct Workspace {
@@ -157,71 +142,6 @@ impl Bf16Heads {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum Bf16OrF32Mat {
-    Bf16(DMat<BF16>),
-    F32(DMat<F32>),
-}
-
-impl Bf16OrF32Mat {
-    fn rows(self) -> u32 {
-        match self {
-            Self::Bf16(mat) => mat.rows,
-            Self::F32(mat) => mat.rows,
-        }
-    }
-
-    fn cols(self) -> u32 {
-        match self {
-            Self::Bf16(mat) => mat.cols,
-            Self::F32(mat) => mat.cols,
-        }
-    }
-
-    fn tensor(self) -> ffi::Tensor2 {
-        match self {
-            Self::Bf16(mat) => mat.tensor(),
-            Self::F32(mat) => mat.tensor(),
-        }
-    }
-
-    fn is_contiguous(self) -> bool {
-        match self {
-            Self::Bf16(mat) => mat.is_contiguous(),
-            Self::F32(mat) => mat.is_contiguous(),
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum Bf16OrF32Vec {
-    Bf16(DVec<BF16>),
-    F32(DVec<F32>),
-}
-
-impl Bf16OrF32Vec {
-    fn len(self) -> u32 {
-        match self {
-            Self::Bf16(vec) => vec.len,
-            Self::F32(vec) => vec.len,
-        }
-    }
-
-    fn tensor(self) -> ffi::Tensor1 {
-        match self {
-            Self::Bf16(vec) => vec.tensor(),
-            Self::F32(vec) => vec.tensor(),
-        }
-    }
-
-    fn is_contiguous(self) -> bool {
-        match self {
-            Self::Bf16(vec) => vec.is_contiguous(),
-            Self::F32(vec) => vec.is_contiguous(),
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum FloatStorage {
     Bf16,
     F32,
@@ -237,48 +157,16 @@ impl FloatStorage {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum Activation {
-    None,
-    Silu,
-    Sigmoid,
-}
-
-impl Activation {
-    fn raw(self) -> qscu::ActivationRaw {
-        match self {
-            Self::None => qscu::ACTIVATION_NONE,
-            Self::Silu => qscu::ACTIVATION_SILU,
-            Self::Sigmoid => qscu::ACTIVATION_SIGMOID,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum GdnForgetGateOutput {
-    LogDecay,
-    LinearAlpha,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum RouterScore {
     Softmax,
     Sigmoid,
 }
 
 impl RouterScore {
-    fn raw(self) -> qscu::RouterScoreRaw {
+    fn raw(self) -> sys::qscu_router_score {
         match self {
-            Self::Softmax => qscu::ROUTER_SCORE_SOFTMAX,
-            Self::Sigmoid => qscu::ROUTER_SCORE_SIGMOID,
-        }
-    }
-}
-
-impl GdnForgetGateOutput {
-    fn raw(self) -> qscu::GdnForgetGateOutputRaw {
-        match self {
-            Self::LogDecay => qscu::GDN_FORGET_LOG_DECAY,
-            Self::LinearAlpha => qscu::GDN_FORGET_LINEAR_ALPHA,
+            Self::Softmax => sys::QSCU_ROUTER_SCORE_SOFTMAX,
+            Self::Sigmoid => sys::QSCU_ROUTER_SCORE_SIGMOID,
         }
     }
 }
@@ -392,33 +280,25 @@ impl GdnStateIndexPolicy {
 
 pub(crate) struct Operators<'a> {
     stream: &'a ffi::CudaStream,
-    flashinfer: &'a mut qsfi::Context,
-    cublas: &'a mut qscb::Context,
+    qsfi: &'a mut Qsfi,
+    qscb: &'a mut Qscb,
 }
 
 impl<'a> Operators<'a> {
-    pub(crate) fn new(
-        stream: &'a ffi::CudaStream,
-        flashinfer: &'a mut qsfi::Context,
-        cublas: &'a mut qscb::Context,
-    ) -> Self {
-        Self {
-            stream,
-            flashinfer,
-            cublas,
-        }
+    pub(crate) fn new(stream: &'a ffi::CudaStream, qsfi: &'a mut Qsfi, qscb: &'a mut Qscb) -> Self {
+        Self { stream, qsfi, qscb }
     }
 
-    pub(crate) fn cuda(&mut self) -> Cuda<'_> {
-        Cuda::new(self.stream, self.flashinfer)
+    pub(crate) fn qscu(&mut self) -> Qscu<'_> {
+        Qscu::new(self.stream, self.qsfi)
     }
 
-    pub(crate) fn cublas(&mut self) -> Cublas<'_> {
-        Cublas::new(self.cublas)
+    pub(crate) fn qscb(&mut self) -> &mut Qscb {
+        self.qscb
     }
 
-    pub(crate) fn flashinfer(&mut self) -> FlashInfer<'_> {
-        FlashInfer::new(self.flashinfer)
+    pub(crate) fn qsfi(&mut self) -> &mut Qsfi {
+        self.qsfi
     }
 }
 
@@ -427,6 +307,19 @@ fn validate_ptr(data: ffi::DevicePtr) -> Result<(), Status> {
         return Err(Status::InvalidArgument);
     }
     Ok(())
+}
+
+fn result_from_raw(status: ffi::StatusRaw) -> Result<(), Status> {
+    match status {
+        ffi::sys::QSFI_STATUS_OK => Ok(()),
+        ffi::sys::QSFI_STATUS_INVALID_ARGUMENT => Err(Status::InvalidArgument),
+        ffi::sys::QSFI_STATUS_UNSUPPORTED => Err(Status::Unsupported),
+        ffi::sys::QSFI_STATUS_OUT_OF_MEMORY => Err(Status::OutOfMemory),
+        ffi::sys::QSFI_STATUS_CUDA_ERROR => Err(Status::CudaError),
+        ffi::sys::QSFI_STATUS_BACKEND_ERROR => Err(Status::BackendError),
+        ffi::sys::QSFI_STATUS_INTERNAL_ERROR => Err(Status::InternalError),
+        _ => Err(Status::InternalError),
+    }
 }
 
 fn validate_nonzero(values: &[u32]) -> Result<(), Status> {
@@ -466,20 +359,6 @@ fn require_supported_rope_dims(head_dim: u32, rotary_dim: u32) -> Result<(), Sta
     }
     if head_dim == QWEN36_FULL_ATTN_HEAD_DIM && rotary_dim != QWEN36_FULL_ATTN_ROTARY_DIM {
         return Err(Status::Unsupported);
-    }
-    Ok(())
-}
-
-fn validate_gdn_scale(scale: f32) -> Result<(), Status> {
-    if !scale.is_finite() || scale == 0.0 {
-        return Err(Status::InvalidArgument);
-    }
-    Ok(())
-}
-
-fn require_float_vec(vec: Bf16OrF32Vec, expected_len: u32) -> Result<(), Status> {
-    if vec.len() != expected_len || !vec.is_contiguous() {
-        return Err(Status::InvalidArgument);
     }
     Ok(())
 }

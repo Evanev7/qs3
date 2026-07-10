@@ -1,10 +1,10 @@
-use crate::{
-    QWEN36_FULL_ATTN_HEAD_DIM, QWEN36_FULL_ATTN_KV_HEADS, QWEN36_FULL_ATTN_Q_HEADS,
-    ext::{Cast, SafeHashSet, SafeVec, try_clone_slice},
-    ffi,
-};
-use std::collections::HashSet;
+use crate::{QWEN36_FULL_ATTN_HEAD_DIM, QWEN36_FULL_ATTN_KV_HEADS, QWEN36_FULL_ATTN_Q_HEADS, ffi};
 
+mod attention;
+mod core;
+
+pub use core::CoreState;
+pub(crate) use core::EngineCore;
 pub struct Engine {
     inner: Box<attention::AttentionSession>,
 }
@@ -258,9 +258,3 @@ impl AttentionLayer {
         }
     }
 }
-
-mod attention;
-mod core;
-
-pub use core::CoreState;
-pub(crate) use core::EngineCore;

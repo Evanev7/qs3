@@ -1,4 +1,7 @@
-use super::*;
+use super::{BatchKind, EngineConfig, KvLayout, RequestId, Status};
+use crate::ext::{Cast, SafeHashSet, SafeVec, try_clone_slice};
+
+use std::collections::HashSet;
 
 #[derive(Clone, Debug)]
 struct Request {
@@ -1088,8 +1091,13 @@ impl EngineCore {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::QWEN36_HIDDEN_SIZE;
+    use super::EngineCore;
+    use crate::{
+        QWEN36_FULL_ATTN_HEAD_DIM, QWEN36_FULL_ATTN_KV_HEADS, QWEN36_FULL_ATTN_Q_HEADS,
+        QWEN36_HIDDEN_SIZE,
+        engine::{BatchKind, DynDType, EngineConfig, KvLayout, Status},
+        ffi,
+    };
 
     fn tiny_config() -> EngineConfig {
         EngineConfig {

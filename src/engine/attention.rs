@@ -1,11 +1,13 @@
-use crate::backend::Operators;
+use crate::backend::{
+    Operators,
+    qscb::Qscb,
+    qsfi::{Plan, Qsfi},
+};
 use crate::engine::{
     AppendBatch, AttentionLayer, Commit, DecodeBatch, DynDType, EngineConfig, EngineCore, KvLayout,
     Status, validate_supported_attention_grouping, validate_supported_attention_head_dim,
 };
 use crate::ext::{SafeVec, try_clone_slice};
-use crate::ffi::qscb;
-use crate::ffi::qsfi::{Context, Plan};
 use crate::ffi::{
     AppendDecode, AppendPrefill, AttentionDesc, BatchDecodeExecuteDesc, BatchPrefillExecuteDesc,
     DTYPE_F16, MASK_MODE_CAUSAL, MASK_MODE_NONE, MaskModeRaw, PagedKvCache, PagedKvPlan,
@@ -164,9 +166,9 @@ impl PlanCache {
 pub(crate) struct AttentionSession {
     pub(crate) core: EngineCore,
     stream: *mut c_void,
-    ctx: Context,
+    qsfi: Qsfi,
     #[allow(dead_code)]
-    qscb_ctx: qscb::Context,
+    qscb: Qscb,
     append_attention: AttentionDesc,
     decode_attention: AttentionDesc,
     layer_caches: Vec<LayerCache>,
@@ -186,20 +188,20 @@ impl AttentionSession {
     pub(crate) fn new(config: EngineConfig) -> Result<Box<Self>, Status> {
         validate_runtime_config(&config)?;
         let core = EngineCore::new(config)?;
-        let mut ctx = Context::new(config.device_ordinal, config.stream)?;
-        ctx.reserve_workspace(
+        let mut qsfi = Qsfi::new(config.device_ordinal, config.stream)?;
+        qsfi.reserve_workspace(
             config.qsfi_float_workspace_bytes,
             config.qsfi_int_workspace_bytes,
             config.qsfi_host_int_workspace_bytes,
         )?;
-        let qscb_ctx = qscb::Context::new(config.device_ordinal, config.stream)?;
+        let qscb = Qscb::new(config.device_ordinal, config.stream)?;
         let mut session = Box::new(Self {
             append_attention: make_attention(&config, MASK_MODE_CAUSAL),
             decode_attention: make_attention(&config, MASK_MODE_NONE),
             core,
             stream: config.stream,
-            ctx,
-            qscb_ctx,
+            qsfi,
+            qscb,
             layer_caches: Vec::new(),
             d_batch_tokens: DeviceI32Buffer::new(),
             d_batch_qo_indptr: DeviceI32Buffer::new(),
@@ -218,7 +220,7 @@ impl AttentionSession {
 
     #[allow(dead_code)]
     pub(crate) fn operators(&mut self) -> Operators<'_> {
-        Operators::new(&self.stream, &mut self.ctx, &mut self.qscb_ctx)
+        Operators::new(&self.stream, &mut self.qsfi, &mut self.qscb)
     }
 
     fn allocate_layer_caches(&mut self) -> Result<(), Status> {
@@ -322,7 +324,7 @@ impl AttentionSession {
             num_indices,
         };
         let plan = unsafe {
-            self.ctx
+            self.qsfi
                 .create_prefill_plan(&self.append_attention, &qo, &page_table)
         }?;
         self.append_plan.plan = Some(plan);
@@ -366,7 +368,7 @@ impl AttentionSession {
             num_indices,
         };
         let plan = unsafe {
-            self.ctx
+            self.qsfi
                 .create_decode_plan(&self.decode_attention, &page_table)
         }?;
         self.decode_plan.plan = Some(plan);
@@ -486,7 +488,7 @@ impl AttentionSession {
         // rolled back: the active batch remains uncommitted, and callers must
         // abort it or overwrite/rebuild the same request prefix before reuse.
         unsafe {
-            self.ctx
+            self.qsfi
                 .append_paged_kv_prefill(&self.append_attention, &append)?;
         }
         let execute = BatchPrefillExecuteDesc {
@@ -503,7 +505,7 @@ impl AttentionSession {
             k_scale: layer.k_scale,
             v_scale: layer.v_scale,
         };
-        unsafe { self.ctx.execute_prefill(plan, &execute) }?;
+        unsafe { self.qsfi.execute_prefill(plan, &execute) }?;
         self.core.complete_append_layer(pending_layer)
     }
 
@@ -540,7 +542,7 @@ impl AttentionSession {
         // launch; backend failures after it are non-rollbackable without
         // synchronizing and replaying cache contents.
         unsafe {
-            self.ctx
+            self.qsfi
                 .append_paged_kv_decode(&self.decode_attention, &append)?
         }
         let execute = BatchDecodeExecuteDesc {
@@ -554,7 +556,7 @@ impl AttentionSession {
             k_scale: layer.k_scale,
             v_scale: layer.v_scale,
         };
-        unsafe { self.ctx.execute_decode(plan, &execute) }?;
+        unsafe { self.qsfi.execute_decode(plan, &execute) }?;
         self.core.complete_decode_layer(pending_layer)
     }
 
@@ -799,11 +801,17 @@ fn ptr_or_null<T>(slice: &[T]) -> *const T {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{
+        PlanCache, PlanKey, make_attention, validate_runtime_config, validate_tensor3_shape,
+    };
     use crate::{
         QWEN36_FULL_ATTN_HEAD_DIM, QWEN36_FULL_ATTN_KV_HEADS, QWEN36_FULL_ATTN_Q_HEADS,
         QWEN36_HIDDEN_SIZE,
+        engine::{DynDType, EngineConfig, KvLayout, Status},
+        ffi::{DTYPE_F16, MASK_MODE_CAUSAL, MASK_MODE_NONE, Tensor3},
     };
+
+    use std::{ffi::c_void, ptr};
 
     fn tiny_config() -> EngineConfig {
         EngineConfig {

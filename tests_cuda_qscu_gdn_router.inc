@@ -732,6 +732,7 @@ void test_qscu_qwen36_gdn_post_conv_prepare_bf16_cpu_reference()
             }
 
             desc.apply_qk_l2norm = 0;
+            desc.l2norm_eps = 0.0f;
             desc.g_out = qsfi_tensor2 {};
             desc.beta_out = qsfi_tensor2 {};
             desc.forget_gate_output = QSCU_GDN_FORGET_LINEAR_ALPHA;
