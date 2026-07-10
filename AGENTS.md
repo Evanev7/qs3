@@ -52,10 +52,18 @@ real qwen3.6-35b-a3b findings:
   extraction, output gate extraction, q/k norm, and `rotary_dim=64` RoPE. keep
   paged KV append separate first; only fuse K prep into append if launch/memory
   pass overhead proves worth coupling model prep to cache transaction details
+- BF16 snapshot 995ad96eacd98c81ed38be0c5b274b04031597b0 generates
+  greedy ids [5, 6, 24218, 10] for prompt ids [1, 2, 3, 4], matching the
+  external BF16 reference at prefill and first decode within the existing
+  logit tolerances
 
 loader direction:
 - `src/weight_loader.rs` has the backend trait. keep qwen-specific manifest
   parsing/validation above it
+- a loaded BF16 plan owns its backend until consuming materialization drains
+  the backend's final allocation list into DeviceBuffers. backend Drop frees
+  pre-handoff failures and still cleans pinned staging resources; do not forget
+  the whole backend
 - validate full config + safetensors indexes/headers before CUDA allocation:
   duplicate, missing, unexpected, wrong dtype/shape, overlapping, or out-of-range
   tensors must fail before device addressing
@@ -79,11 +87,4 @@ near-term todos:
   `4 x 1 GiB` pinned-ring run
 - track down intermittent `prompt_rewrite_behind_live_tail_rebuilds_like_fresh_runner`
   CUDA invalid-argument failures from the FlashInfer norm launch
-- implement BF16 config+safetensors loading through the qwen-specific manifest
-  validator and `WeightLoadBackend`. build the complete tensor plan and reject
-  invalid config/index/header state before CUDA allocation
-- add a real-model smoke path that constructs `QwenConfig`/`QwenWeights` from the
-  loader and runs token-id generation against the BF16 text-only weights
-- add the first user CLI that accepts/prints token ids. tokenizer/chat template
-  can follow after model token generation works
 - after BF16 real-model correctness, add the first optimized NVFP4 path

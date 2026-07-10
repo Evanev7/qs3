@@ -2775,9 +2775,10 @@ mod tests {
             .err()
             .expect("duplicate pointer must fail materialization");
 
-        assert!(err
-            .to_string()
-            .contains("duplicate loaded allocation pointer"));
+        assert!(
+            err.to_string()
+                .contains("duplicate loaded allocation pointer")
+        );
         assert_eq!(state.take_calls.get(), 0);
         assert_eq!(state.drop_calls.get(), 1);
         assert_eq!(state.remaining_at_drop.get(), 2);
@@ -2806,9 +2807,10 @@ mod tests {
             .err()
             .expect("changed allocation list must fail materialization");
 
-        assert!(err
-            .to_string()
-            .contains("returned allocation list does not match validated allocations"));
+        assert!(
+            err.to_string()
+                .contains("returned allocation list does not match validated allocations")
+        );
         assert_eq!(state.take_calls.get(), 1);
         assert_eq!(state.drop_calls.get(), 1);
         assert_eq!(state.remaining_at_drop.get(), 0);
@@ -2831,9 +2833,10 @@ mod tests {
             .err()
             .expect("retained allocation list must fail materialization");
 
-        assert!(err
-            .to_string()
-            .contains("backend retained allocations after transfer"));
+        assert!(
+            err.to_string()
+                .contains("backend retained allocations after transfer")
+        );
         assert_eq!(state.take_calls.get(), 1);
         assert_eq!(state.drop_calls.get(), 1);
         assert_eq!(state.remaining_at_drop.get(), 1);
