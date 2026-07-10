@@ -16,7 +16,6 @@ use std::ffi::c_void;
 use std::fmt;
 use std::fs::File;
 use std::io::{self, Read};
-use std::marker::PhantomData;
 use std::os::fd::AsRawFd;
 use std::path::{Component, Path, PathBuf};
 use std::ptr;
@@ -104,6 +103,9 @@ fn read_exact_at_raw(file: &File, dst: *mut u8, bytes: usize, offset: u64) -> io
 /// `QwenWeights` will wrap after load completion. `seal` is the only load-time
 /// synchronization point required before the runner uses the weights.
 pub(crate) trait WeightLoadBackend {
+    fn device_ordinal(&self) -> i32;
+    fn allocations(&self) -> &[WeightLoadSpan];
+    fn take_allocations(&mut self) -> Vec<WeightLoadSpan>;
     fn alloc_tensor(&mut self, desc: WeightTensorDesc<'_>) -> Result<WeightLoadSpan, Status>;
     fn read_exact(
         &mut self,
@@ -129,7 +131,7 @@ pub(crate) enum WeightLoadMemory {
     Device,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct WeightLoadSpan {
     ptr: ffi::DevicePtr,
     bytes: usize,
@@ -155,17 +157,11 @@ pub(crate) struct ManagedUmaLoadStats {
     seal_us: u128,
 }
 
-#[derive(Debug)]
-struct ManagedUmaAllocation {
-    ptr: ffi::DevicePtr,
-    bytes: usize,
-}
-
 /// GB10/UMA loader backend: final weights live in CUDA managed memory and file
 /// payloads are read directly into those committed allocations.
 pub(crate) struct ManagedUmaBackend {
     device_ordinal: i32,
-    allocations: Vec<ManagedUmaAllocation>,
+    allocations: Vec<WeightLoadSpan>,
     stats: ManagedUmaLoadStats,
 }
 
@@ -214,6 +210,18 @@ impl ManagedUmaBackend {
 }
 
 impl WeightLoadBackend for ManagedUmaBackend {
+    fn device_ordinal(&self) -> i32 {
+        self.device_ordinal
+    }
+
+    fn allocations(&self) -> &[WeightLoadSpan] {
+        &self.allocations
+    }
+
+    fn take_allocations(&mut self) -> Vec<WeightLoadSpan> {
+        std::mem::take(&mut self.allocations)
+    }
+
     fn alloc_tensor(&mut self, desc: WeightTensorDesc<'_>) -> Result<WeightLoadSpan, Status> {
         if desc.bytes == 0 {
             return Err(Status::InvalidArgument);
@@ -227,10 +235,12 @@ impl WeightLoadBackend for ManagedUmaBackend {
         if ptr.is_null() {
             return Err(Status::InternalError);
         }
-        self.allocations.push(ManagedUmaAllocation {
+        let span = WeightLoadSpan {
             ptr,
             bytes: desc.bytes,
-        });
+            memory: WeightLoadMemory::ManagedUma,
+        };
+        self.allocations.push(span);
         self.stats.tensors = self
             .stats
             .tensors
@@ -238,11 +248,7 @@ impl WeightLoadBackend for ManagedUmaBackend {
             .ok_or(Status::InvalidArgument)?;
         Self::add_stat(&mut self.stats.allocated_bytes, desc.bytes)?;
         Self::add_elapsed_us(&mut self.stats.alloc_us, started)?;
-        Ok(WeightLoadSpan {
-            ptr,
-            bytes: desc.bytes,
-            memory: WeightLoadMemory::ManagedUma,
-        })
+        Ok(span)
     }
 
     fn read_exact(
@@ -304,12 +310,6 @@ pub(crate) struct PinnedUploadLoadStats {
 }
 
 #[derive(Debug)]
-struct DeviceAllocation {
-    ptr: ffi::DevicePtr,
-    bytes: usize,
-}
-
-#[derive(Debug)]
 struct PinnedUploadSlot {
     ptr: *mut c_void,
     event: *mut c_void,
@@ -322,7 +322,7 @@ struct PinnedUploadSlot {
 /// payloads pass through a fixed pinned host ring.
 pub(crate) struct PinnedUploadBackend {
     device_ordinal: i32,
-    allocations: Vec<DeviceAllocation>,
+    allocations: Vec<WeightLoadSpan>,
     slots: Vec<PinnedUploadSlot>,
     next_slot: usize,
     stats: PinnedUploadLoadStats,
@@ -442,6 +442,18 @@ impl PinnedUploadBackend {
 }
 
 impl WeightLoadBackend for PinnedUploadBackend {
+    fn device_ordinal(&self) -> i32 {
+        self.device_ordinal
+    }
+
+    fn allocations(&self) -> &[WeightLoadSpan] {
+        &self.allocations
+    }
+
+    fn take_allocations(&mut self) -> Vec<WeightLoadSpan> {
+        std::mem::take(&mut self.allocations)
+    }
+
     fn alloc_tensor(&mut self, desc: WeightTensorDesc<'_>) -> Result<WeightLoadSpan, Status> {
         if desc.bytes == 0 {
             return Err(Status::InvalidArgument);
@@ -453,10 +465,12 @@ impl WeightLoadBackend for PinnedUploadBackend {
         if ptr.is_null() {
             return Err(Status::InternalError);
         }
-        self.allocations.push(DeviceAllocation {
+        let span = WeightLoadSpan {
             ptr,
             bytes: desc.bytes,
-        });
+            memory: WeightLoadMemory::Device,
+        };
+        self.allocations.push(span);
         self.stats.tensors = self
             .stats
             .tensors
@@ -464,11 +478,7 @@ impl WeightLoadBackend for PinnedUploadBackend {
             .ok_or(Status::InvalidArgument)?;
         Self::add_stat(&mut self.stats.allocated_bytes, desc.bytes)?;
         Self::add_elapsed_us(&mut self.stats.alloc_us, started)?;
-        Ok(WeightLoadSpan {
-            ptr,
-            bytes: desc.bytes,
-            memory: WeightLoadMemory::Device,
-        })
+        Ok(span)
     }
 
     fn read_exact(
@@ -1915,16 +1925,17 @@ pub(crate) struct LoadedWeightTensor {
 }
 
 #[derive(Debug)]
-pub(crate) struct LoadedWeightPlan<'backend> {
+pub(crate) struct LoadedWeightPlan<B: WeightLoadBackend> {
+    config: Qwen36TextConfig,
     tensors: Vec<LoadedWeightTensor>,
-    _backend: PhantomData<&'backend mut ()>,
+    backend: B,
 }
 
-pub(crate) fn execute_qwen36_bf16_load_plan<'backend, B: WeightLoadBackend>(
+pub(crate) fn execute_qwen36_bf16_load_plan<B: WeightLoadBackend>(
     plan: &QwenBf16LoadPlan,
-    backend: &'backend mut B,
+    mut backend: B,
     stream: *mut c_void,
-) -> LoadResult<LoadedWeightPlan<'backend>> {
+) -> LoadResult<LoadedWeightPlan<B>> {
     let files = open_plan_files(plan)?;
     let mut tensors = Vec::with_capacity(plan.entries.len());
     for entry in &plan.entries {
@@ -2009,8 +2020,9 @@ pub(crate) fn execute_qwen36_bf16_load_plan<'backend, B: WeightLoadBackend>(
 
     backend.seal(stream).map_err(WeightLoadError::Backend)?;
     Ok(LoadedWeightPlan {
+        config: plan.config.clone(),
         tensors,
-        _backend: PhantomData,
+        backend,
     })
 }
 
@@ -2245,13 +2257,35 @@ mod tests {
     #[derive(Default)]
     struct RecordingBackend {
         next_addr: usize,
+        allocations: Vec<WeightLoadSpan>,
         allocs: Vec<(String, DynDType, Vec<u32>, usize)>,
         reads: Vec<(u64, usize)>,
         zeros: Vec<usize>,
         sealed: bool,
+        dropped: Option<std::rc::Rc<std::cell::Cell<bool>>>,
+    }
+
+    impl Drop for RecordingBackend {
+        fn drop(&mut self) {
+            if let Some(dropped) = &self.dropped {
+                dropped.set(true);
+            }
+        }
     }
 
     impl WeightLoadBackend for RecordingBackend {
+        fn device_ordinal(&self) -> i32 {
+            0
+        }
+
+        fn allocations(&self) -> &[WeightLoadSpan] {
+            &self.allocations
+        }
+
+        fn take_allocations(&mut self) -> Vec<WeightLoadSpan> {
+            std::mem::take(&mut self.allocations)
+        }
+
         fn alloc_tensor(&mut self, desc: WeightTensorDesc<'_>) -> Result<WeightLoadSpan, Status> {
             self.next_addr += 0x1000;
             self.allocs.push((
@@ -2260,11 +2294,13 @@ mod tests {
                 desc.shape.to_vec(),
                 desc.bytes,
             ));
-            Ok(WeightLoadSpan {
+            let span = WeightLoadSpan {
                 ptr: self.next_addr as ffi::DevicePtr,
                 bytes: desc.bytes,
                 memory: WeightLoadMemory::ManagedUma,
-            })
+            };
+            self.allocations.push(span);
+            Ok(span)
         }
 
         fn read_exact(
@@ -2332,16 +2368,19 @@ mod tests {
                 },
             ],
         };
+        let dropped = std::rc::Rc::new(std::cell::Cell::new(false));
         let mut backend = RecordingBackend::default();
-        let loaded = execute_qwen36_bf16_load_plan(&plan, &mut backend, ptr::null_mut()).unwrap();
-        let loaded_tensors = loaded.tensors.len();
-        drop(loaded);
+        backend.dropped = Some(dropped.clone());
+        let loaded = execute_qwen36_bf16_load_plan(&plan, backend, ptr::null_mut()).unwrap();
 
-        assert_eq!(loaded_tensors, 2);
-        assert_eq!(backend.allocs.len(), 2);
-        assert_eq!(backend.reads, vec![(8, 4)]);
-        assert_eq!(backend.zeros, vec![8]);
-        assert!(backend.sealed);
+        assert_eq!(loaded.tensors.len(), 2);
+        assert_eq!(loaded.backend.allocs.len(), 2);
+        assert_eq!(loaded.backend.reads, vec![(8, 4)]);
+        assert_eq!(loaded.backend.zeros, vec![8]);
+        assert!(loaded.backend.sealed);
+        assert!(!dropped.get());
+        drop(loaded);
+        assert!(dropped.get());
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
@@ -2389,15 +2428,13 @@ mod tests {
             model_dir.display()
         );
 
-        let mut backend = ManagedUmaBackend::new(cuda_device_from_env()).unwrap();
+        let backend = ManagedUmaBackend::new(cuda_device_from_env()).unwrap();
 
         let load_started = Instant::now();
-        let loaded = execute_qwen36_bf16_load_plan(&plan, &mut backend, ptr::null_mut()).unwrap();
+        let loaded = execute_qwen36_bf16_load_plan(&plan, backend, ptr::null_mut()).unwrap();
         let elapsed = load_started.elapsed();
         let loaded_tensors = loaded.tensors.len();
-        drop(loaded);
-
-        let stats = backend.stats();
+        let stats = loaded.backend.stats();
         let read_gib = stats.read_bytes as f64 / (1u64 << 30) as f64;
         println!(
             "loaded {} tensors: {:.3} GiB read, {:.3} MiB zero-fill, {:.3}s, {:.3} GiB/s",
@@ -2421,6 +2458,7 @@ mod tests {
         assert_eq!(stats.read_bytes, plan.file_bytes().unwrap());
         assert_eq!(stats.zero_fill_bytes, plan.zero_fill_bytes().unwrap());
         assert_eq!(stats.allocated_bytes, plan.total_bytes().unwrap());
+        drop(loaded);
     }
 
     #[test]
@@ -2437,15 +2475,13 @@ mod tests {
             model_dir.display()
         );
 
-        let mut backend = PinnedUploadBackend::new(cuda_device_from_env()).unwrap();
+        let backend = PinnedUploadBackend::new(cuda_device_from_env()).unwrap();
 
         let load_started = Instant::now();
-        let loaded = execute_qwen36_bf16_load_plan(&plan, &mut backend, ptr::null_mut()).unwrap();
+        let loaded = execute_qwen36_bf16_load_plan(&plan, backend, ptr::null_mut()).unwrap();
         let elapsed = load_started.elapsed();
         let loaded_tensors = loaded.tensors.len();
-        drop(loaded);
-
-        let stats = backend.stats();
+        let stats = loaded.backend.stats();
         let read_gib = stats.read_bytes as f64 / (1u64 << 30) as f64;
         println!(
             "loaded {} tensors: {:.3} GiB read, {:.3} MiB zero-fill, {:.3}s, {:.3} GiB/s",
@@ -2474,5 +2510,6 @@ mod tests {
         assert_eq!(stats.read_bytes, plan.file_bytes().unwrap());
         assert_eq!(stats.zero_fill_bytes, plan.zero_fill_bytes().unwrap());
         assert_eq!(stats.allocated_bytes, plan.total_bytes().unwrap());
+        drop(loaded);
     }
 }
