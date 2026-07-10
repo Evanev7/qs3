@@ -1,5 +1,7 @@
 #![allow(dead_code)]
 
+mod materialize;
+
 use crate::engine::{DynDType, Status};
 use crate::ffi;
 use crate::{
@@ -105,6 +107,8 @@ fn read_exact_at_raw(file: &File, dst: *mut u8, bytes: usize, offset: u64) -> io
 pub(crate) trait WeightLoadBackend {
     fn device_ordinal(&self) -> i32;
     fn allocations(&self) -> &[WeightLoadSpan];
+    /// Returns exactly the spans currently exposed by `allocations`, in the
+    /// same order, and leaves `allocations()` empty.
     fn take_allocations(&mut self) -> Vec<WeightLoadSpan>;
     fn alloc_tensor(&mut self, desc: WeightTensorDesc<'_>) -> Result<WeightLoadSpan, Status>;
     fn read_exact(
@@ -2110,6 +2114,201 @@ mod tests {
         Qwen36TextConfig::from_config_object(&root).unwrap()
     }
 
+    #[derive(Default)]
+    struct TinyBackendState {
+        take_calls: std::cell::Cell<usize>,
+        drop_calls: std::cell::Cell<usize>,
+        remaining_at_drop: std::cell::Cell<usize>,
+    }
+
+    struct TinyCudaBackend {
+        device_ordinal: i32,
+        allocations: Vec<WeightLoadSpan>,
+        state: std::rc::Rc<TinyBackendState>,
+    }
+
+    impl TinyCudaBackend {
+        fn new(device_ordinal: i32, state: std::rc::Rc<TinyBackendState>) -> Self {
+            Self {
+                device_ordinal,
+                allocations: Vec::new(),
+                state,
+            }
+        }
+    }
+
+    impl WeightLoadBackend for TinyCudaBackend {
+        fn device_ordinal(&self) -> i32 {
+            self.device_ordinal
+        }
+
+        fn allocations(&self) -> &[WeightLoadSpan] {
+            &self.allocations
+        }
+
+        fn take_allocations(&mut self) -> Vec<WeightLoadSpan> {
+            self.state.take_calls.set(self.state.take_calls.get() + 1);
+            std::mem::take(&mut self.allocations)
+        }
+
+        fn alloc_tensor(&mut self, desc: WeightTensorDesc<'_>) -> Result<WeightLoadSpan, Status> {
+            let mut ptr = ptr::null_mut();
+            // This drop-only fixture never dereferences model weights, so it
+            // allocates one BF16 element while retaining the logical span size.
+            result_from_cuda(unsafe { ffi::cuda::cudaMalloc(&mut ptr, 2) })?;
+            let span = WeightLoadSpan {
+                ptr,
+                bytes: desc.bytes,
+                memory: WeightLoadMemory::Device,
+            };
+            self.allocations.push(span);
+            Ok(span)
+        }
+
+        fn read_exact(
+            &mut self,
+            _src: WeightFileRange<'_>,
+            _dst: &WeightLoadSpan,
+            _stream: *mut c_void,
+        ) -> Result<(), Status> {
+            Ok(())
+        }
+
+        fn zero_fill(&mut self, _dst: &WeightLoadSpan, _stream: *mut c_void) -> Result<(), Status> {
+            Ok(())
+        }
+
+        fn seal(&mut self, _stream: *mut c_void) -> Result<(), Status> {
+            Ok(())
+        }
+    }
+
+    impl Drop for TinyCudaBackend {
+        fn drop(&mut self) {
+            self.state.drop_calls.set(self.state.drop_calls.get() + 1);
+            self.state.remaining_at_drop.set(self.allocations.len());
+            for allocation in self.allocations.drain(..) {
+                unsafe {
+                    ffi::cuda::cudaFree(allocation.ptr);
+                }
+            }
+        }
+    }
+
+    #[derive(Default)]
+    struct AdversarialBackendState {
+        take_calls: std::cell::Cell<usize>,
+        drop_calls: std::cell::Cell<usize>,
+        remaining_at_drop: std::cell::Cell<usize>,
+    }
+
+    #[derive(Clone, Copy)]
+    enum AdversarialTake {
+        ReturnEmptyAndKeep,
+        ReturnEmptyAndClear,
+        ReturnEmptyThenRetain(WeightLoadSpan),
+    }
+
+    struct AdversarialBackend {
+        allocations: Vec<WeightLoadSpan>,
+        take: AdversarialTake,
+        state: std::rc::Rc<AdversarialBackendState>,
+    }
+
+    impl WeightLoadBackend for AdversarialBackend {
+        fn device_ordinal(&self) -> i32 {
+            0
+        }
+
+        fn allocations(&self) -> &[WeightLoadSpan] {
+            &self.allocations
+        }
+
+        fn take_allocations(&mut self) -> Vec<WeightLoadSpan> {
+            self.state.take_calls.set(self.state.take_calls.get() + 1);
+            match self.take {
+                AdversarialTake::ReturnEmptyAndKeep => Vec::new(),
+                AdversarialTake::ReturnEmptyAndClear => {
+                    self.allocations.clear();
+                    Vec::new()
+                }
+                AdversarialTake::ReturnEmptyThenRetain(allocation) => {
+                    self.allocations.push(allocation);
+                    Vec::new()
+                }
+            }
+        }
+
+        fn alloc_tensor(&mut self, _desc: WeightTensorDesc<'_>) -> Result<WeightLoadSpan, Status> {
+            Err(Status::InternalError)
+        }
+
+        fn read_exact(
+            &mut self,
+            _src: WeightFileRange<'_>,
+            _dst: &WeightLoadSpan,
+            _stream: *mut c_void,
+        ) -> Result<(), Status> {
+            Err(Status::InternalError)
+        }
+
+        fn zero_fill(&mut self, _dst: &WeightLoadSpan, _stream: *mut c_void) -> Result<(), Status> {
+            Err(Status::InternalError)
+        }
+
+        fn seal(&mut self, _stream: *mut c_void) -> Result<(), Status> {
+            Err(Status::InternalError)
+        }
+    }
+
+    impl Drop for AdversarialBackend {
+        fn drop(&mut self) {
+            self.state.drop_calls.set(self.state.drop_calls.get() + 1);
+            self.state.remaining_at_drop.set(self.allocations.len());
+        }
+    }
+
+    fn fake_span(address: usize, bytes: usize) -> WeightLoadSpan {
+        WeightLoadSpan {
+            ptr: address as ffi::DevicePtr,
+            bytes,
+            memory: WeightLoadMemory::Device,
+        }
+    }
+
+    fn adversarial_loaded_plan(
+        config: Qwen36TextConfig,
+        specs: Vec<WeightTensorSpec>,
+        spans: Vec<WeightLoadSpan>,
+        take: AdversarialTake,
+        state: std::rc::Rc<AdversarialBackendState>,
+    ) -> LoadedWeightPlan<AdversarialBackend> {
+        assert_eq!(specs.len(), spans.len());
+        let tensors = specs
+            .into_iter()
+            .zip(spans.iter().copied())
+            .map(|(spec, span)| LoadedWeightTensor { spec, span })
+            .collect();
+        LoadedWeightPlan {
+            config,
+            tensors,
+            backend: AdversarialBackend {
+                allocations: spans,
+                take,
+                state,
+            },
+        }
+    }
+
+    unsafe extern "C" {
+        fn cudaGetDeviceCount(count: *mut i32) -> i32;
+    }
+
+    fn cuda_device_available_for_loader_test() -> bool {
+        let mut count = 0;
+        unsafe { cudaGetDeviceCount(&mut count) == ffi::cuda::CUDA_SUCCESS && count > 0 }
+    }
+
     fn real_qwen36_bf16_model_dir() -> Option<PathBuf> {
         let path = PathBuf::from(DEFAULT_REAL_QWEN36_BF16_DIR);
         path.exists().then_some(path)
@@ -2383,6 +2582,166 @@ mod tests {
         assert!(dropped.get());
 
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn loaded_plan_transfers_allocations_into_qwen_weights_once() {
+        if !cuda_device_available_for_loader_test() {
+            return;
+        }
+        let text = qwen_text_config(4, 32);
+        let entries = expected_qwen36_bf16_specs(&text)
+            .unwrap()
+            .into_iter()
+            .map(|spec| {
+                let bytes = spec.byte_len().unwrap();
+                QwenLoadPlanEntry {
+                    spec,
+                    source: QwenLoadSource::ZeroFill { bytes },
+                }
+            })
+            .collect::<Vec<_>>();
+        let plan = QwenBf16LoadPlan {
+            config: text,
+            entries,
+        };
+        let count = plan.tensor_count();
+        let state = std::rc::Rc::new(TinyBackendState::default());
+        let backend = TinyCudaBackend::new(0, state.clone());
+
+        let loaded = execute_qwen36_bf16_load_plan(&plan, backend, ptr::null_mut()).unwrap();
+        let (config, weights) = loaded.into_qwen_model(ptr::null_mut(), 8).unwrap();
+
+        assert_eq!(count, 75);
+        assert_eq!(state.take_calls.get(), 1);
+        assert_eq!(state.drop_calls.get(), 1);
+        assert_eq!(state.remaining_at_drop.get(), 0);
+        weights.validate_for(&config).unwrap();
+        drop(weights);
+    }
+
+    #[test]
+    fn materialization_rejects_duplicate_targets_before_transfer() {
+        let text = qwen_text_config(4, 32);
+        let mut specs = expected_qwen36_bf16_specs(&text)
+            .unwrap()
+            .into_iter()
+            .take(2)
+            .collect::<Vec<_>>();
+        specs[1].target = specs[0].target.clone();
+        let spans = specs
+            .iter()
+            .enumerate()
+            .map(|(idx, spec)| fake_span(0x1000 + idx * 0x1000, spec.byte_len().unwrap()))
+            .collect();
+        let state = std::rc::Rc::new(AdversarialBackendState::default());
+        let loaded = adversarial_loaded_plan(
+            text,
+            specs,
+            spans,
+            AdversarialTake::ReturnEmptyAndKeep,
+            state.clone(),
+        );
+
+        let err = loaded
+            .into_qwen_model(ptr::null_mut(), 8)
+            .err()
+            .expect("duplicate target must fail materialization");
+
+        assert!(err.to_string().contains("duplicate loaded target"));
+        assert_eq!(state.take_calls.get(), 0);
+        assert_eq!(state.drop_calls.get(), 1);
+        assert_eq!(state.remaining_at_drop.get(), 2);
+    }
+
+    #[test]
+    fn materialization_rejects_duplicate_pointers_before_transfer() {
+        let text = qwen_text_config(4, 32);
+        let specs = expected_qwen36_bf16_specs(&text)
+            .unwrap()
+            .into_iter()
+            .take(2)
+            .collect::<Vec<_>>();
+        let spans = specs
+            .iter()
+            .map(|spec| fake_span(0x1000, spec.byte_len().unwrap()))
+            .collect();
+        let state = std::rc::Rc::new(AdversarialBackendState::default());
+        let loaded = adversarial_loaded_plan(
+            text,
+            specs,
+            spans,
+            AdversarialTake::ReturnEmptyAndKeep,
+            state.clone(),
+        );
+
+        let err = loaded
+            .into_qwen_model(ptr::null_mut(), 8)
+            .err()
+            .expect("duplicate pointer must fail materialization");
+
+        assert!(err
+            .to_string()
+            .contains("duplicate loaded allocation pointer"));
+        assert_eq!(state.take_calls.get(), 0);
+        assert_eq!(state.drop_calls.get(), 1);
+        assert_eq!(state.remaining_at_drop.get(), 2);
+    }
+
+    #[test]
+    fn materialization_rejects_changed_taken_allocations_before_adoption() {
+        let text = qwen_text_config(4, 32);
+        let specs = expected_qwen36_bf16_specs(&text)
+            .unwrap()
+            .into_iter()
+            .take(1)
+            .collect::<Vec<_>>();
+        let spans = vec![fake_span(0x1000, specs[0].byte_len().unwrap())];
+        let state = std::rc::Rc::new(AdversarialBackendState::default());
+        let loaded = adversarial_loaded_plan(
+            text,
+            specs,
+            spans,
+            AdversarialTake::ReturnEmptyAndClear,
+            state.clone(),
+        );
+
+        let err = loaded
+            .into_qwen_model(ptr::null_mut(), 8)
+            .err()
+            .expect("changed allocation list must fail materialization");
+
+        assert!(err
+            .to_string()
+            .contains("returned allocation list does not match validated allocations"));
+        assert_eq!(state.take_calls.get(), 1);
+        assert_eq!(state.drop_calls.get(), 1);
+        assert_eq!(state.remaining_at_drop.get(), 0);
+    }
+
+    #[test]
+    fn materialization_rejects_backend_that_retains_allocations_after_take() {
+        let text = qwen_text_config(4, 32);
+        let state = std::rc::Rc::new(AdversarialBackendState::default());
+        let loaded = adversarial_loaded_plan(
+            text,
+            Vec::new(),
+            Vec::new(),
+            AdversarialTake::ReturnEmptyThenRetain(fake_span(0x1000, 2)),
+            state.clone(),
+        );
+
+        let err = loaded
+            .into_qwen_model(ptr::null_mut(), 8)
+            .err()
+            .expect("retained allocation list must fail materialization");
+
+        assert!(err
+            .to_string()
+            .contains("backend retained allocations after transfer"));
+        assert_eq!(state.take_calls.get(), 1);
+        assert_eq!(state.drop_calls.get(), 1);
+        assert_eq!(state.remaining_at_drop.get(), 1);
     }
 
     #[test]

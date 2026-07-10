@@ -1009,7 +1009,7 @@ impl QwenWeights {
         }
     }
 
-    fn validate_for(&self, config: &QwenConfig) -> Result<(), Status> {
+    pub(crate) fn validate_for(&self, config: &QwenConfig) -> Result<(), Status> {
         if !self.config.same_model_shape(config) {
             return Err(Status::InvalidArgument);
         }
