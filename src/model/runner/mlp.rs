@@ -128,7 +128,7 @@ impl ModelRunner {
         )?;
         {
             let mut ops = self.engine.operators();
-            unsafe { ops.cuda.router_topk(&router)? };
+            unsafe { ops.cuda().router_topk(&router)? };
         }
 
         let plan = self.moe_plan.as_ref().ok_or(Status::InternalError)?;
@@ -166,7 +166,7 @@ impl ModelRunner {
         })?;
         {
             let mut ops = self.engine.operators();
-            unsafe { ops.flashinfer.moe_execute_bf16(plan, &execute)? };
+            unsafe { ops.flashinfer().moe_execute_bf16(plan, &execute)? };
         }
 
         if let Some(shared) = shared {

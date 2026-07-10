@@ -1,18 +1,18 @@
 use crate::backend::cublas::Bf16Gemm;
 use crate::backend::cuda::{
     Activation, EmbeddingGatherBf16, GdnCausalConv1dBf16, GdnCausalConv1dBf16Args, GdnConvState,
-    GdnForgetGateOutput, GdnPostConvPrepareBf16, GdnPostConvPrepareBf16Args, GdnRecurrentState,
+    GdnDecodeBf16, GdnDecodeBf16Args, GdnForgetGateOutput, GdnPostConvPrepareBf16,
+    GdnPostConvPrepareBf16Args, GdnPrefillBf16, GdnPrefillBf16Args, GdnRecurrentState,
     GdnRmsNormGatedBf16, GdnRmsNormGatedBf16Args, GreedyArgmaxF32, LogitsSoftCapF32,
     Qwen36FullAttentionOutputGateBf16, Qwen36SharedExpertGateAddBf16, RouterTopK, SiluAndMulBf16,
 };
 use crate::backend::flashinfer::{
-    FusedAddRmsNormBf16, GdnDecodeBf16, GdnDecodeBf16Args, GdnPrefillBf16, GdnPrefillBf16Args,
-    MoeBf16Execute, MoeBf16ExecuteArgs, MoeBf16PlanConfig, MoePlan, RmsNormBf16, RopeApplyBf16,
-    Workspace,
+    FusedAddRmsNormBf16, MoeBf16Execute, MoeBf16ExecuteArgs, MoeBf16PlanConfig, MoePlan,
+    RmsNormBf16, RopeApplyBf16, Workspace,
 };
 use crate::backend::{Bf16Heads, Bf16OrF32Mat, Bf16OrF32Vec, DMat, DTensor3, DVec, FloatStorage};
 use crate::engine::{
-    AppendBatch, Commit, DecodeBatch, DynDType, Engine, EngineConfig, EngineLayer, KvLayout,
+    AppendBatch, AttentionLayer, Commit, DecodeBatch, DynDType, Engine, EngineConfig, KvLayout,
     RequestId, Status, validate_supported_attention_grouping,
     validate_supported_attention_head_dim,
 };

@@ -1,5 +1,5 @@
 use qs3::{
-    AppendBatch, Commit, DecodeBatch, DynDType, Engine, EngineConfig, EngineLayer, KvLayout, ffi,
+    AppendBatch, AttentionLayer, Commit, DecodeBatch, DynDType, Engine, EngineConfig, KvLayout, ffi,
 };
 use std::ffi::{CStr, c_char, c_void};
 use std::{mem, ptr};
@@ -327,7 +327,7 @@ fn append_and_decode_layer_execute() {
         })
         .unwrap();
 
-    let append_layer = EngineLayer {
+    let append_layer = AttentionLayer {
         layer_idx: 0,
         q: tensor3(
             append_q.as_device_ptr(),
@@ -364,7 +364,7 @@ fn append_and_decode_layer_execute() {
         v_scale: 0.0,
     };
     unsafe {
-        session.append_layer(&append_layer).unwrap();
+        session.append_attention(&append_layer).unwrap();
     }
     assert_cuda(unsafe { cudaDeviceSynchronize() }, "sync append layer");
     append_o.assert_all_close_f16(1.0, 1.0e-3, "append layer unit-v output");
@@ -383,7 +383,7 @@ fn append_and_decode_layer_execute() {
             tokens: &[13],
         })
         .unwrap();
-    let decode_layer = EngineLayer {
+    let decode_layer = AttentionLayer {
         layer_idx: 0,
         q: tensor3(
             decode_q.as_device_ptr(),
@@ -420,7 +420,7 @@ fn append_and_decode_layer_execute() {
         v_scale: 0.0,
     };
     unsafe {
-        session.decode_layer(&decode_layer).unwrap();
+        session.decode_attention(&decode_layer).unwrap();
     }
     assert_cuda(unsafe { cudaDeviceSynchronize() }, "sync decode layer");
     decode_o.assert_all_close_f16(1.0, 1.0e-3, "decode layer unit-v output");
@@ -468,7 +468,7 @@ fn run_attention_with_q_rope_offsets(
         })
         .unwrap();
 
-    let append_layer = EngineLayer {
+    let append_layer = AttentionLayer {
         layer_idx: 0,
         q: tensor3(
             append_q.as_device_ptr(),
@@ -507,7 +507,7 @@ fn run_attention_with_q_rope_offsets(
         v_scale: 0.0,
     };
     unsafe {
-        session.append_layer(&append_layer).unwrap();
+        session.append_attention(&append_layer).unwrap();
     }
     assert_cuda(unsafe { cudaDeviceSynchronize() }, "sync append rope test");
     let append_output = append_o.to_f32_vec("copy append rope test output");
@@ -523,7 +523,7 @@ fn run_attention_with_q_rope_offsets(
             tokens: &[23],
         })
         .unwrap();
-    let decode_layer = EngineLayer {
+    let decode_layer = AttentionLayer {
         layer_idx: 0,
         q: tensor3(
             decode_q.as_device_ptr(),
@@ -562,7 +562,7 @@ fn run_attention_with_q_rope_offsets(
         v_scale: 0.0,
     };
     unsafe {
-        session.decode_layer(&decode_layer).unwrap();
+        session.decode_attention(&decode_layer).unwrap();
     }
     assert_cuda(unsafe { cudaDeviceSynchronize() }, "sync decode rope test");
     let decode_output = decode_o.to_f32_vec("copy decode rope test output");

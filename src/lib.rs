@@ -53,11 +53,10 @@ pub(crate) mod ext;
 pub mod ffi;
 mod loader;
 pub mod model;
-mod runtime;
 
 pub use engine::{
-    AppendBatch, BatchKind, Commit, CoreState, DecodeBatch, DynDType, Engine, EngineConfig,
-    EngineLayer, KvLayout, RequestId, Status,
+    AppendBatch, AttentionLayer, BatchKind, Commit, CoreState, DecodeBatch, DynDType, Engine,
+    EngineConfig, KvLayout, RequestId, Status,
 };
 pub use model::{ModelRunner, QwenConfig, QwenMoeConfig, QwenRequest, QwenResult, QwenWeights};
 

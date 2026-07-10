@@ -47,7 +47,7 @@ impl ModelRunner {
             let (plan, workspace_bytes) = {
                 let mut ops = engine.operators();
                 let plan = unsafe {
-                    ops.flashinfer.create_moe_bf16_plan(MoeBf16PlanConfig {
+                    ops.flashinfer().create_moe_bf16_plan(MoeBf16PlanConfig {
                         max_num_tokens: config.max_seq_len,
                         hidden_size: config.hidden_size,
                         intermediate_size: moe.moe_intermediate_size,
@@ -56,7 +56,7 @@ impl ModelRunner {
                     })?
                 };
                 let workspace_bytes = unsafe {
-                    ops.flashinfer
+                    ops.flashinfer()
                         .moe_workspace_size(&plan, config.max_seq_len)?
                 };
                 (plan, workspace_bytes)
@@ -547,7 +547,7 @@ impl ModelRunner {
             true,
         )?;
         let mut ops = self.engine.operators();
-        unsafe { ops.cuda.embedding_gather_bf16(&desc) }
+        unsafe { ops.cuda().embedding_gather_bf16(&desc) }
     }
 
     pub(in crate::model) fn rmsnorm(
@@ -564,7 +564,7 @@ impl ModelRunner {
             self.config.rms_norm_eps,
         )?;
         let mut ops = self.engine.operators();
-        unsafe { ops.flashinfer.rmsnorm_bf16(&desc) }
+        unsafe { ops.flashinfer().rmsnorm_bf16(&desc) }
     }
 
     pub(in crate::model) fn fused_add_rmsnorm(
@@ -581,7 +581,7 @@ impl ModelRunner {
             self.config.rms_norm_eps,
         )?;
         let mut ops = self.engine.operators();
-        unsafe { ops.flashinfer.fused_add_rmsnorm_bf16(&desc) }
+        unsafe { ops.flashinfer().fused_add_rmsnorm_bf16(&desc) }
     }
 
     pub(in crate::model) fn gemm_bf16(
@@ -613,7 +613,7 @@ impl ModelRunner {
             workspace,
         )?;
         let mut ops = self.engine.operators();
-        unsafe { ops.cublas.gemm_bf16(&desc) }
+        unsafe { ops.cublas().gemm_bf16(&desc) }
     }
 
     pub(in crate::model) fn silu_and_mul(
@@ -630,7 +630,7 @@ impl ModelRunner {
             DMat::contiguous(out, rows, intermediate)?,
         )?;
         let mut ops = self.engine.operators();
-        unsafe { ops.cuda.silu_and_mul_bf16(&desc) }
+        unsafe { ops.cuda().silu_and_mul_bf16(&desc) }
     }
 
     pub(in crate::model) fn shared_expert_gate_add(
@@ -648,7 +648,7 @@ impl ModelRunner {
             DMat::contiguous(self.scratch.mlp_out.as_device_ptr(), rows, hidden)?,
         )?;
         let mut ops = self.engine.operators();
-        unsafe { ops.cuda.qwen36_shared_expert_gate_add_bf16(&desc) }
+        unsafe { ops.cuda().qwen36_shared_expert_gate_add_bf16(&desc) }
     }
 
     pub(in crate::model) fn sample_logits(&mut self, rows: u32) -> Result<Vec<i32>, Status> {
@@ -660,7 +660,7 @@ impl ModelRunner {
         if self.config.logits_soft_cap > 0.0 {
             let desc = LogitsSoftCapF32::new(logits, self.config.logits_soft_cap)?;
             let mut ops = self.engine.operators();
-            unsafe { ops.cuda.logits_soft_cap_f32(&desc)? };
+            unsafe { ops.cuda().logits_soft_cap_f32(&desc)? };
         }
         let desc = GreedyArgmaxF32::new(
             logits,
@@ -668,7 +668,7 @@ impl ModelRunner {
         )?;
         {
             let mut ops = self.engine.operators();
-            unsafe { ops.cuda.greedy_argmax_f32(&desc)? };
+            unsafe { ops.cuda().greedy_argmax_f32(&desc)? };
         }
 
         let row_count = rows as usize;

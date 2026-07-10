@@ -1,6 +1,6 @@
 use crate::backend::Operators;
 use crate::engine::{
-    AppendBatch, Commit, DecodeBatch, DynDType, EngineConfig, EngineCore, EngineLayer, KvLayout,
+    AppendBatch, AttentionLayer, Commit, DecodeBatch, DynDType, EngineConfig, EngineCore, KvLayout,
     Status, validate_supported_attention_grouping, validate_supported_attention_head_dim,
 };
 use crate::ext::{SafeVec, try_clone_slice};
@@ -111,6 +111,17 @@ struct PlanCache {
     valid: bool,
 }
 
+#[derive(Clone, Copy)]
+struct PlanKey<'a> {
+    batch_size: u32,
+    num_indices: u32,
+    total_tokens: u32,
+    qo_indptr: &'a [i32],
+    kv_indptr: &'a [i32],
+    kv_indices: &'a [i32],
+    last_page_len: &'a [i32],
+}
+
 impl PlanCache {
     fn new() -> Self {
         Self {
@@ -126,46 +137,18 @@ impl PlanCache {
         }
     }
 
-    fn matches(
-        &self,
-        batch_size: u32,
-        num_indices: u32,
-        total_tokens: u32,
-        qo_indptr: &[i32],
-        kv_indptr: &[i32],
-        kv_indices: &[i32],
-        last_page_len: &[i32],
-    ) -> bool {
-        self.valid
-            && self.plan.is_some()
-            && self.key_matches(
-                batch_size,
-                num_indices,
-                total_tokens,
-                qo_indptr,
-                kv_indptr,
-                kv_indices,
-                last_page_len,
-            )
+    fn matches(&self, key: PlanKey<'_>) -> bool {
+        self.valid && self.plan.is_some() && self.key_matches(key)
     }
 
-    fn key_matches(
-        &self,
-        batch_size: u32,
-        num_indices: u32,
-        total_tokens: u32,
-        qo_indptr: &[i32],
-        kv_indptr: &[i32],
-        kv_indices: &[i32],
-        last_page_len: &[i32],
-    ) -> bool {
-        self.batch_size == batch_size
-            && self.num_indices == num_indices
-            && self.total_tokens == total_tokens
-            && self.qo_indptr == qo_indptr
-            && self.kv_indptr == kv_indptr
-            && self.kv_indices == kv_indices
-            && self.last_page_len == last_page_len
+    fn key_matches(&self, key: PlanKey<'_>) -> bool {
+        self.batch_size == key.batch_size
+            && self.num_indices == key.num_indices
+            && self.total_tokens == key.total_tokens
+            && self.qo_indptr == key.qo_indptr
+            && self.kv_indptr == key.kv_indptr
+            && self.kv_indices == key.kv_indices
+            && self.last_page_len == key.last_page_len
     }
 
     fn destroy(&mut self) {
@@ -178,7 +161,7 @@ impl PlanCache {
     }
 }
 
-pub(crate) struct EngineInner {
+pub(crate) struct AttentionSession {
     pub(crate) core: EngineCore,
     stream: *mut c_void,
     ctx: Context,
@@ -199,7 +182,7 @@ pub(crate) struct EngineInner {
     decode_plan: PlanCache,
 }
 
-impl EngineInner {
+impl AttentionSession {
     pub(crate) fn new(config: EngineConfig) -> Result<Box<Self>, Status> {
         validate_runtime_config(&config)?;
         let core = EngineCore::new(config)?;
@@ -271,7 +254,7 @@ impl EngineInner {
         if batch.request_ids.len() != batch.size as usize {
             return Err(Status::InternalError);
         }
-        // The copied metadata lives in EngineInner-owned device buffers. All
+        // The copied metadata lives in AttentionSession-owned device buffers. All
         // launches that consume these pointers are enqueued on self.stream, and
         // the buffers are overwritten only by a later prepare on the same
         // stream, so stream order preserves their lifetime without events.
@@ -312,15 +295,16 @@ impl EngineInner {
         }
         let num_indices =
             u32::try_from(batch.kv_indices.len()).map_err(|_| Status::InvalidArgument)?;
-        if self.append_plan.matches(
-            batch.size,
+        let key = PlanKey {
+            batch_size: batch.size,
             num_indices,
-            batch.token_count,
-            batch.qo_indptr,
-            batch.kv_indptr,
-            batch.kv_indices,
-            batch.last_page_len,
-        ) {
+            total_tokens: batch.token_count,
+            qo_indptr: batch.qo_indptr,
+            kv_indptr: batch.kv_indptr,
+            kv_indices: batch.kv_indices,
+            last_page_len: batch.last_page_len,
+        };
+        if self.append_plan.matches(key) {
             return Ok(());
         }
 
@@ -360,15 +344,16 @@ impl EngineInner {
         }
         let num_indices =
             u32::try_from(batch.kv_indices.len()).map_err(|_| Status::InvalidArgument)?;
-        if self.decode_plan.matches(
-            batch.size,
+        let key = PlanKey {
+            batch_size: batch.size,
             num_indices,
-            batch.size,
-            &[],
-            batch.kv_indptr,
-            batch.kv_indices,
-            batch.last_page_len,
-        ) {
+            total_tokens: batch.size,
+            qo_indptr: &[],
+            kv_indptr: batch.kv_indptr,
+            kv_indices: batch.kv_indices,
+            last_page_len: batch.last_page_len,
+        };
+        if self.decode_plan.matches(key) {
             return Ok(());
         }
 
@@ -471,9 +456,9 @@ impl EngineInner {
         Ok(())
     }
 
-    pub(crate) unsafe fn execute_append_layer(
+    pub(crate) unsafe fn execute_append_attention(
         &mut self,
-        layer: &EngineLayer,
+        layer: &AttentionLayer,
     ) -> Result<(), Status> {
         let pending_layer = self.core.pending_append_layer(layer.layer_idx)?;
         self.validate_append_layer(layer)?;
@@ -534,9 +519,9 @@ impl EngineInner {
         Ok(())
     }
 
-    pub(crate) unsafe fn execute_decode_layer(
+    pub(crate) unsafe fn execute_decode_attention(
         &mut self,
-        layer: &EngineLayer,
+        layer: &AttentionLayer,
     ) -> Result<(), Status> {
         let pending_layer = self.core.pending_decode_layer(layer.layer_idx)?;
         self.validate_decode_layer(layer)?;
@@ -551,7 +536,7 @@ impl EngineInner {
             kv_cache,
             page_table,
         };
-        // See execute_append_layer: validation failures happen before this
+        // See execute_append_attention: validation failures happen before this
         // launch; backend failures after it are non-rollbackable without
         // synchronizing and replaying cache contents.
         unsafe {
@@ -573,7 +558,7 @@ impl EngineInner {
         self.core.complete_decode_layer(pending_layer)
     }
 
-    fn validate_append_layer(&self, layer: &EngineLayer) -> Result<(), Status> {
+    fn validate_append_layer(&self, layer: &AttentionLayer) -> Result<(), Status> {
         let config = self.core.config();
         let tokens = i64::from(self.core.active_batch()?.token_count);
         self.validate_attention_layer_common(layer, tokens)?;
@@ -593,7 +578,7 @@ impl EngineInner {
         )
     }
 
-    fn validate_decode_layer(&self, layer: &EngineLayer) -> Result<(), Status> {
+    fn validate_decode_layer(&self, layer: &AttentionLayer) -> Result<(), Status> {
         let config = self.core.config();
         let tokens = i64::from(self.core.active_batch()?.size);
         self.validate_attention_layer_common(layer, tokens)?;
@@ -615,7 +600,7 @@ impl EngineInner {
 
     fn validate_attention_layer_common(
         &self,
-        layer: &EngineLayer,
+        layer: &AttentionLayer,
         tokens: i64,
     ) -> Result<(), Status> {
         let config = self.core.config();
@@ -658,7 +643,7 @@ impl EngineInner {
     }
 }
 
-impl Drop for EngineInner {
+impl Drop for AttentionSession {
     fn drop(&mut self) {
         self.append_plan.destroy();
         self.decode_plan.destroy();
@@ -861,10 +846,25 @@ mod tests {
         cache.last_page_len = vec![1, 4];
         cache.valid = true;
 
-        assert!(!cache.matches(2, 3, 5, &[0, 2, 5], &[0, 1, 3], &[7, 8, 9], &[1, 4],));
-        assert!(cache.key_matches(2, 3, 5, &[0, 2, 5], &[0, 1, 3], &[7, 8, 9], &[1, 4],));
-        assert!(!cache.key_matches(2, 3, 5, &[0, 2, 5], &[0, 1, 3], &[7, 99, 9], &[1, 4],));
-        assert!(!cache.key_matches(2, 3, 5, &[0, 2, 5], &[0, 1, 3], &[7, 8, 9], &[1, 3],));
+        let key = PlanKey {
+            batch_size: 2,
+            num_indices: 3,
+            total_tokens: 5,
+            qo_indptr: &[0, 2, 5],
+            kv_indptr: &[0, 1, 3],
+            kv_indices: &[7, 8, 9],
+            last_page_len: &[1, 4],
+        };
+        assert!(!cache.matches(key));
+        assert!(cache.key_matches(key));
+        assert!(!cache.key_matches(PlanKey {
+            kv_indices: &[7, 99, 9],
+            ..key
+        }));
+        assert!(!cache.key_matches(PlanKey {
+            last_page_len: &[1, 3],
+            ..key
+        }));
     }
 
     #[test]

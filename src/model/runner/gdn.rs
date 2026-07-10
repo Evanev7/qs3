@@ -110,7 +110,7 @@ impl ModelRunner {
         })?;
         {
             let mut ops = self.engine.operators();
-            unsafe { ops.cuda.qwen36_gdn_causal_conv1d_bf16(&conv)? };
+            unsafe { ops.cuda().qwen36_gdn_causal_conv1d_bf16(&conv)? };
         }
 
         let post = GdnPostConvPrepareBf16::new(GdnPostConvPrepareBf16Args {
@@ -142,7 +142,7 @@ impl ModelRunner {
         })?;
         {
             let mut ops = self.engine.operators();
-            unsafe { ops.cuda.qwen36_gdn_post_conv_prepare_bf16(&post)? };
+            unsafe { ops.cuda().qwen36_gdn_post_conv_prepare_bf16(&post)? };
         }
 
         match kind {
@@ -184,7 +184,7 @@ impl ModelRunner {
                     disable_state_update: false,
                 })?;
                 let mut ops = self.engine.operators();
-                unsafe { ops.flashinfer.gdn_prefill_bf16(&prefill)? };
+                unsafe { ops.cuda().gdn_prefill_bf16(&prefill)? };
             }
             ActiveRunKind::Decode => {
                 let decode = GdnDecodeBf16::new(GdnDecodeBf16Args {
@@ -218,7 +218,7 @@ impl ModelRunner {
                     disable_state_update: false,
                 })?;
                 let mut ops = self.engine.operators();
-                unsafe { ops.flashinfer.gdn_decode_bf16(&decode)? };
+                unsafe { ops.cuda().gdn_decode_bf16(&decode)? };
             }
         }
 
@@ -232,7 +232,7 @@ impl ModelRunner {
         })?;
         {
             let mut ops = self.engine.operators();
-            unsafe { ops.cuda.qwen36_gdn_rmsnorm_gated_bf16(&gated)? };
+            unsafe { ops.cuda().qwen36_gdn_rmsnorm_gated_bf16(&gated)? };
         }
 
         self.gemm_bf16(

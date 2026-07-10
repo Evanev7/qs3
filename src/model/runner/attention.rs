@@ -56,7 +56,7 @@ impl ModelRunner {
         )?;
         self.apply_attention_rope(rows)?;
 
-        let engine_layer = EngineLayer::bf16_attention(
+        let engine_layer = AttentionLayer::bf16_attention(
             attention_layer_idx,
             self.attention_heads(
                 self.scratch.q.as_device_ptr(),
@@ -82,8 +82,8 @@ impl ModelRunner {
         );
         unsafe {
             match kind {
-                ActiveRunKind::Append => self.engine.append_layer(&engine_layer)?,
-                ActiveRunKind::Decode => self.engine.decode_layer(&engine_layer)?,
+                ActiveRunKind::Append => self.engine.append_attention(&engine_layer)?,
+                ActiveRunKind::Decode => self.engine.decode_attention(&engine_layer)?,
             }
         }
         self.apply_attention_output_gate(rows, q_hidden)?;
@@ -139,7 +139,7 @@ impl ModelRunner {
             self.config.rms_norm_eps,
         )?;
         let mut ops = self.engine.operators();
-        unsafe { ops.flashinfer.rmsnorm_bf16(&desc) }
+        unsafe { ops.flashinfer().rmsnorm_bf16(&desc) }
     }
 
     pub(in crate::model) fn apply_attention_rope(&mut self, rows: u32) -> Result<(), Status> {
@@ -164,7 +164,7 @@ impl ModelRunner {
             self.config.rope_theta,
         )?;
         let mut ops = self.engine.operators();
-        unsafe { ops.flashinfer.rope_apply_bf16(&desc) }
+        unsafe { ops.flashinfer().rope_apply_bf16(&desc) }
     }
 
     pub(in crate::model) fn apply_attention_output_gate(
@@ -180,6 +180,6 @@ impl ModelRunner {
             DMat::contiguous(self.scratch.attn_out.as_device_ptr(), rows, q_hidden)?,
         )?;
         let mut ops = self.engine.operators();
-        unsafe { ops.cuda.qwen36_full_attention_output_gate_bf16(&desc) }
+        unsafe { ops.cuda().qwen36_full_attention_output_gate_bf16(&desc) }
     }
 }

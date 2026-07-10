@@ -404,7 +404,7 @@ fn moe_vector_runner() -> ModelRunner {
     let (moe_plan, workspace_bytes) = {
         let mut ops = engine.operators();
         let plan = unsafe {
-            ops.flashinfer
+            ops.flashinfer()
                 .create_moe_bf16_plan(MoeBf16PlanConfig {
                     max_num_tokens: config.max_seq_len,
                     hidden_size: config.hidden_size,
@@ -414,8 +414,11 @@ fn moe_vector_runner() -> ModelRunner {
                 })
                 .unwrap()
         };
-        let workspace_bytes =
-            unsafe { ops.flashinfer.moe_workspace_size(&plan, config.max_seq_len) }.unwrap();
+        let workspace_bytes = unsafe {
+            ops.flashinfer()
+                .moe_workspace_size(&plan, config.max_seq_len)
+        }
+        .unwrap();
         (plan, workspace_bytes)
     };
     let mut scratch = RunnerScratch::new(config.device_ordinal);
@@ -494,7 +497,7 @@ fn run_moe_vector_router(runner: &mut ModelRunner, renormalize: bool) {
     )
     .unwrap();
     let mut ops = runner.engine.operators();
-    unsafe { ops.cuda.router_topk(&router) }.unwrap();
+    unsafe { ops.cuda().router_topk(&router) }.unwrap();
 }
 
 fn execute_moe_vector_routed_output(runner: &mut ModelRunner) {
@@ -565,7 +568,7 @@ fn execute_moe_vector_routed_output(runner: &mut ModelRunner) {
     .unwrap();
     let mut ops = runner.engine.operators();
     unsafe {
-        ops.flashinfer
+        ops.flashinfer()
             .moe_execute_bf16(runner.moe_plan.as_ref().unwrap(), &execute)
     }
     .unwrap();
@@ -715,7 +718,7 @@ fn full_attention_block_moe_vector_runner() -> ModelRunner {
     let (moe_plan, workspace_bytes) = {
         let mut ops = engine.operators();
         let plan = unsafe {
-            ops.flashinfer
+            ops.flashinfer()
                 .create_moe_bf16_plan(MoeBf16PlanConfig {
                     max_num_tokens: config.max_seq_len,
                     hidden_size: config.hidden_size,
@@ -725,8 +728,11 @@ fn full_attention_block_moe_vector_runner() -> ModelRunner {
                 })
                 .unwrap()
         };
-        let workspace_bytes =
-            unsafe { ops.flashinfer.moe_workspace_size(&plan, config.max_seq_len) }.unwrap();
+        let workspace_bytes = unsafe {
+            ops.flashinfer()
+                .moe_workspace_size(&plan, config.max_seq_len)
+        }
+        .unwrap();
         (plan, workspace_bytes)
     };
     let mut scratch = RunnerScratch::new(config.device_ordinal);
@@ -936,7 +942,7 @@ fn gdn_decoder_layer_vector_runner() -> ModelRunner {
     let (moe_plan, workspace_bytes) = {
         let mut ops = engine.operators();
         let plan = unsafe {
-            ops.flashinfer
+            ops.flashinfer()
                 .create_moe_bf16_plan(MoeBf16PlanConfig {
                     max_num_tokens: config.max_seq_len,
                     hidden_size: config.hidden_size,
@@ -946,8 +952,11 @@ fn gdn_decoder_layer_vector_runner() -> ModelRunner {
                 })
                 .unwrap()
         };
-        let workspace_bytes =
-            unsafe { ops.flashinfer.moe_workspace_size(&plan, config.max_seq_len) }.unwrap();
+        let workspace_bytes = unsafe {
+            ops.flashinfer()
+                .moe_workspace_size(&plan, config.max_seq_len)
+        }
+        .unwrap();
         (plan, workspace_bytes)
     };
     let mut scratch = RunnerScratch::new(config.device_ordinal);
@@ -1910,7 +1919,7 @@ fn qwen36_full_attention_block_vector_validates_attention_residual_norm_composit
             tokens: &tokens,
         })
         .unwrap();
-    let engine_layer = EngineLayer::bf16_attention(
+    let engine_layer = AttentionLayer::bf16_attention(
         0,
         runner
             .attention_heads(
@@ -1942,7 +1951,7 @@ fn qwen36_full_attention_block_vector_validates_attention_residual_norm_composit
             .unwrap(),
         runner.scratch.positions.as_device_ptr(),
     );
-    unsafe { runner.engine.append_layer(&engine_layer) }.unwrap();
+    unsafe { runner.engine.append_attention(&engine_layer) }.unwrap();
     synchronize_stream(stream).unwrap();
     assert_bf16_close_to_f32_oracle(
         "full-attention block raw causal GQA attention",
