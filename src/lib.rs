@@ -51,9 +51,9 @@ mod backend;
 pub mod engine;
 pub(crate) mod ext;
 pub mod ffi;
+mod loader;
 pub mod model;
 mod runtime;
-mod weight_loader;
 
 pub use engine::{
     AppendBatch, BatchKind, Commit, CoreState, DecodeBatch, DynDType, Engine, EngineConfig,
