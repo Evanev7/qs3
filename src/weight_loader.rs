@@ -2050,6 +2050,101 @@ mod tests {
     use std::{env, path::PathBuf, ptr, time::Instant};
 
     const DEFAULT_REAL_QWEN36_BF16_DIR: &str = "/home/exo/.cache/huggingface/hub/models--Qwen--Qwen3.6-35B-A3B/snapshots/995ad96eacd98c81ed38be0c5b274b04031597b0";
+    const REAL_PROMPT: [i32; 4] = [1, 2, 3, 4];
+    const REAL_GENERATED: [i32; 4] = [5, 6, 24_218, 10];
+    const REAL_PREFILL_TOP_IDS: [i32; 8] = [5, 3, 2, 220, 61, 198, 26_972, 271];
+    const REAL_PREFILL_TOP_VALUES: [f32; 8] = [
+        13.9375, 12.0625, 10.875, 10.75, 10.4375, 10.3125, 9.9375, 9.875,
+    ];
+    const REAL_DECODE_TOP_IDS: [i32; 8] = [6, 9, 9_867, 61, 41_813, 1, 3, 14_482];
+    const REAL_DECODE_TOP_VALUES: [f32; 8] = [
+        14.875, 11.25, 11.1875, 11.125, 10.8125, 10.5625, 10.5625, 10.5625,
+    ];
+    const REAL_PREFILL_STABLE_PREFIX_LEN: usize = REAL_PREFILL_TOP_IDS.len();
+    // Reference decode ranks 5-7 are BF16-tied at 10.5625 with no cutoff
+    // margin, so exact cross-runtime ID membership is stable only through 5.
+    const REAL_DECODE_STABLE_PREFIX_LEN: usize = 5;
+    const REAL_LOGIT_ABS_TOL: f32 = 0.35;
+    const REAL_LOGIT_REL_TOL: f32 = 0.03;
+
+    fn assert_real_top_logits(
+        label: &str,
+        logits: &[f32],
+        expected_ids: &[i32; 8],
+        expected_values: &[f32; 8],
+        expected_margin: f32,
+        stable_prefix_len: usize,
+    ) {
+        assert!((1..=expected_ids.len()).contains(&stable_prefix_len));
+        assert!(logits.iter().all(|value| value.is_finite()));
+        let mut ids = (0..logits.len()).collect::<Vec<_>>();
+        ids.sort_unstable_by(|lhs, rhs| {
+            logits[*rhs]
+                .total_cmp(&logits[*lhs])
+                .then_with(|| lhs.cmp(rhs))
+        });
+        let got_ids = ids[..8]
+            .iter()
+            .map(|id| i32::try_from(*id).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            &got_ids[..stable_prefix_len],
+            &expected_ids[..stable_prefix_len],
+            "{label} stable top-id prefix changed"
+        );
+
+        for (&id, &expected) in expected_ids.iter().zip(expected_values) {
+            let got = logits[id as usize];
+            let tolerance = REAL_LOGIT_ABS_TOL.max(REAL_LOGIT_REL_TOL * expected.abs());
+            assert!(
+                (got - expected).abs() <= tolerance,
+                "{label} token {id}: got {got}, expected {expected}, tolerance {tolerance}"
+            );
+        }
+        let got_margin = logits[expected_ids[0] as usize] - logits[expected_ids[1] as usize];
+        assert!(expected_margin > 0.1);
+        assert!(
+            got_margin > 0.1,
+            "{label} top margin collapsed to {got_margin}"
+        );
+        assert!(
+            (got_margin - expected_margin).abs() <= 2.0 * REAL_LOGIT_ABS_TOL,
+            "{label} margin: got {got_margin}, expected {expected_margin}"
+        );
+    }
+
+    #[test]
+    fn real_logit_helper_allows_unstable_ids_after_stable_prefix() {
+        let expected_ids = [0, 1, 2, 3, 4, 5, 6, 7];
+        let expected_values = [2.0, 1.5, 1.2, 1.1, 1.0, 0.9, 0.8, 0.7];
+        let logits = [2.0, 1.5, 1.2, 1.1, 1.0, 0.9, 0.8, 0.7, 0.95, 0.85];
+
+        assert_real_top_logits(
+            "stable prefix fixture",
+            &logits,
+            &expected_ids,
+            &expected_values,
+            0.5,
+            5,
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "token 7")]
+    fn real_logit_helper_checks_values_after_stable_prefix() {
+        let expected_ids = [0, 1, 2, 3, 4, 5, 6, 7];
+        let expected_values = [2.0, 1.5, 1.2, 1.1, 1.0, 0.9, 0.8, 0.7];
+        let logits = [2.0, 1.5, 1.2, 1.1, 1.0, 0.9, 0.8, -1.0, 0.95, 0.85];
+
+        assert_real_top_logits(
+            "all values fixture",
+            &logits,
+            &expected_ids,
+            &expected_values,
+            0.5,
+            5,
+        );
+    }
 
     fn synthetic_safetensors(header: &str, data_len: usize) -> Vec<u8> {
         let mut out = Vec::new();
@@ -2771,6 +2866,72 @@ mod tests {
         assert_eq!(plan.tensor_count(), 723);
         assert_eq!(zero_fill_bytes, 30 * QWEN36_GDN_PACKED_DIM as usize * 2);
         assert!(file_bytes > 60usize << 30);
+    }
+
+    #[test]
+    #[ignore = "loads and executes the full real Qwen3.6 BF16 model"]
+    fn real_qwen36_bf16_generates_reference_tokens() {
+        let model_dir =
+            real_qwen36_bf16_model_dir().expect("run on spark-1565 with the pinned BF16 snapshot");
+        let plan = QwenBf16LoadPlan::read(model_dir).unwrap();
+        let backend = ManagedUmaBackend::new(cuda_device_from_env()).unwrap();
+        let loaded = execute_qwen36_bf16_load_plan(&plan, backend, ptr::null_mut()).unwrap();
+        let (config, weights) = loaded.into_qwen_model(ptr::null_mut(), 8).unwrap();
+        let mut runner = crate::model::ModelRunner::new(config, weights).unwrap();
+        let request_id = 0xBF16_0001;
+
+        let prefill = runner
+            .run(crate::model::QwenRequest {
+                request_id,
+                tokens: &REAL_PROMPT,
+                max_new_tokens: 0,
+            })
+            .unwrap();
+        assert!(prefill.generated_tokens.is_empty());
+        assert_real_top_logits(
+            "real prefill",
+            &runner.last_logits_row_for_test().unwrap(),
+            &REAL_PREFILL_TOP_IDS,
+            &REAL_PREFILL_TOP_VALUES,
+            1.875,
+            REAL_PREFILL_STABLE_PREFIX_LEN,
+        );
+
+        let first = runner
+            .run(crate::model::QwenRequest {
+                request_id,
+                tokens: &REAL_PROMPT,
+                max_new_tokens: 1,
+            })
+            .unwrap();
+        assert_eq!(first.generated_tokens, vec![REAL_GENERATED[0]]);
+        assert_real_top_logits(
+            "real first decode",
+            &runner.last_logits_row_for_test().unwrap(),
+            &REAL_DECODE_TOP_IDS,
+            &REAL_DECODE_TOP_VALUES,
+            3.625,
+            REAL_DECODE_STABLE_PREFIX_LEN,
+        );
+
+        let tail = runner
+            .run(crate::model::QwenRequest {
+                request_id,
+                tokens: &first.live_tokens,
+                max_new_tokens: 3,
+            })
+            .unwrap();
+        assert_eq!(tail.generated_tokens, REAL_GENERATED[1..]);
+
+        runner.reset().unwrap();
+        let replay = runner
+            .run(crate::model::QwenRequest {
+                request_id,
+                tokens: &REAL_PROMPT,
+                max_new_tokens: 4,
+            })
+            .unwrap();
+        assert_eq!(replay.generated_tokens, REAL_GENERATED);
     }
 
     #[test]

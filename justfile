@@ -35,6 +35,10 @@ weight-loader-bench: copy-ninja
         ninja -C build
         LIBRARY_PATH="{{cuda_lib_path}}:${LIBRARY_PATH:-}" cargo test --release bench_real_qwen36_bf16_ -- --ignored --nocapture --test-threads=1
 
+real-model-test: copy-ninja
+        ninja -C build
+        LIBRARY_PATH="{{cuda_lib_path}}:${LIBRARY_PATH:-}" cargo test --release weight_loader::tests::real_qwen36_bf16_generates_reference_tokens -- --ignored --exact --nocapture --test-threads=1
+
 copy-ninja:
         mkdir -p build
         cp build_tools/build.ninja build/build.ninja

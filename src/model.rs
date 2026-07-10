@@ -1379,6 +1379,23 @@ impl ModelRunner {
         &self.live_tokens
     }
 
+    #[cfg(test)]
+    pub(crate) fn last_logits_row_for_test(&self) -> Result<Vec<f32>, Status> {
+        if self.last_logits_rows == 0 || self.last_logits_vocab_size != self.config.vocab_size {
+            return Err(Status::InvalidArgument);
+        }
+        let vocab = self.config.vocab_size as usize;
+        let offset = (self.last_logits_rows as usize - 1)
+            .checked_mul(vocab)
+            .ok_or(Status::InvalidArgument)?;
+        let mut logits = Vec::safe_new(vocab)?;
+        logits.resize(vocab, 0.0);
+        self.scratch
+            .logits
+            .download_range(self.config.stream, offset, &mut logits)?;
+        Ok(logits)
+    }
+
     pub fn run(&mut self, request: QwenRequest<'_>) -> Result<QwenResult, Status> {
         self.config.validate()?;
         if request.tokens.is_empty() {
@@ -2933,17 +2950,32 @@ impl<T> DeviceBuffer<T> {
     where
         T: Copy,
     {
+        self.download_range(stream, 0, out)
+    }
+
+    fn download_range(
+        &self,
+        stream: *mut c_void,
+        offset: usize,
+        out: &mut [T],
+    ) -> Result<(), Status>
+    where
+        T: Copy,
+    {
         if out.is_empty() {
             return Ok(());
         }
-        if self.ptr.is_null() || out.len() > self.cap {
+        let end = offset
+            .checked_add(out.len())
+            .ok_or(Status::InvalidArgument)?;
+        if self.ptr.is_null() || end > self.cap {
             return Err(Status::InvalidArgument);
         }
         activate_device(self.device_ordinal)?;
         result_from_cuda(unsafe {
             cuda::cudaMemcpyAsync(
                 out.as_mut_ptr().cast(),
-                self.ptr.cast(),
+                self.ptr.add(offset).cast(),
                 mem::size_of_val(out),
                 cuda::CUDA_MEMCPY_DEVICE_TO_HOST,
                 stream,
