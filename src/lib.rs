@@ -53,12 +53,14 @@ pub(crate) mod ext;
 pub mod ffi;
 mod loader;
 pub mod model;
+pub mod tokenizer;
 
 pub use engine::{
     AppendBatch, AttentionLayer, BatchKind, Commit, CoreState, DecodeBatch, DynDType, Engine,
     EngineConfig, KvLayout, RequestId, Status,
 };
 pub use model::{ModelRunner, QwenConfig, QwenMoeConfig, QwenRequest, QwenResult, QwenWeights};
+pub use tokenizer::{QwenTokenizer, TokenizerError};
 
 #[cfg(test)]
 mod backend_contract_tests {

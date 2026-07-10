@@ -9,6 +9,8 @@ crate-type = ["rlib", "staticlib"]
 [dependencies]
 libc = "0.2"
 tinyjson = "2.5.1"
+unicode-general-category = "1.1.0"
+unicode-normalization = { version = "0.1.25", default-features = false }
 
 [build-dependencies]
 bindgen = "0.72"
