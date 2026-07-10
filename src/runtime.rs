@@ -270,75 +270,74 @@ impl EngineInner {
 
     fn upload_active_batch(&mut self) -> Result<(), Status> {
         let config = self.core.config();
+        let batch = self.core.active_batch()?;
+        if batch.request_ids.len() != batch.size as usize {
+            return Err(Status::InternalError);
+        }
         // The copied metadata lives in EngineInner-owned device buffers. All
         // launches that consume these pointers are enqueued on self.stream, and
         // the buffers are overwritten only by a later prepare on the same
         // stream, so stream order preserves their lifetime without events.
         self.d_batch_tokens
-            .upload(config.device_ordinal, self.stream, self.core.batch_tokens())?;
-        self.d_batch_qo_indptr.upload(
-            config.device_ordinal,
-            self.stream,
-            self.core.batch_qo_indptr(),
-        )?;
-        self.d_batch_kv_indptr.upload(
-            config.device_ordinal,
-            self.stream,
-            self.core.batch_kv_indptr(),
-        )?;
-        self.d_batch_kv_indices.upload(
-            config.device_ordinal,
-            self.stream,
-            self.core.batch_kv_indices(),
-        )?;
+            .upload(config.device_ordinal, self.stream, batch.tokens)?;
+        self.d_batch_qo_indptr
+            .upload(config.device_ordinal, self.stream, batch.qo_indptr)?;
+        self.d_batch_kv_indptr
+            .upload(config.device_ordinal, self.stream, batch.kv_indptr)?;
+        self.d_batch_kv_indices
+            .upload(config.device_ordinal, self.stream, batch.kv_indices)?;
         self.d_batch_last_page_len.upload(
             config.device_ordinal,
             self.stream,
-            self.core.batch_last_page_len(),
+            batch.last_page_len,
         )?;
         self.d_batch_rope_pos_offset.upload(
             config.device_ordinal,
             self.stream,
-            self.core.batch_rope_pos_offset(),
+            batch.rope_pos_offset,
         )?;
         self.d_batch_append_batch_indices.upload(
             config.device_ordinal,
             self.stream,
-            self.core.batch_append_batch_indices(),
+            batch.append_batch_indices,
         )?;
         self.d_batch_append_positions.upload(
             config.device_ordinal,
             self.stream,
-            self.core.batch_append_positions(),
+            batch.append_positions,
         )
     }
 
     fn ensure_append_plan(&mut self) -> Result<(), Status> {
-        let num_indices = u32::try_from(self.core.batch_kv_indices().len())
-            .map_err(|_| Status::InvalidArgument)?;
+        let batch = self.core.active_batch()?;
+        if batch.kind != crate::BatchKind::Append {
+            return Err(Status::InternalError);
+        }
+        let num_indices =
+            u32::try_from(batch.kv_indices.len()).map_err(|_| Status::InvalidArgument)?;
         if self.append_plan.matches(
-            self.core.batch_size(),
+            batch.size,
             num_indices,
-            self.core.batch_token_count(),
-            self.core.batch_qo_indptr(),
-            self.core.batch_kv_indptr(),
-            self.core.batch_kv_indices(),
-            self.core.batch_last_page_len(),
+            batch.token_count,
+            batch.qo_indptr,
+            batch.kv_indptr,
+            batch.kv_indices,
+            batch.last_page_len,
         ) {
             return Ok(());
         }
 
         self.append_plan.destroy();
         let qo = QoPlan {
-            indptr: ptr_or_null(self.core.batch_qo_indptr()),
-            batch_size: self.core.batch_size(),
-            total_tokens: self.core.batch_token_count(),
+            indptr: ptr_or_null(batch.qo_indptr),
+            batch_size: batch.size,
+            total_tokens: batch.token_count,
         };
         let page_table = PagedKvPlan {
-            indptr: ptr_or_null(self.core.batch_kv_indptr()),
-            indices: ptr_or_null(self.core.batch_kv_indices()),
-            last_page_len: ptr_or_null(self.core.batch_last_page_len()),
-            batch_size: self.core.batch_size(),
+            indptr: ptr_or_null(batch.kv_indptr),
+            indices: ptr_or_null(batch.kv_indices),
+            last_page_len: ptr_or_null(batch.last_page_len),
+            batch_size: batch.size,
             num_indices,
         };
         let plan = unsafe {
@@ -346,38 +345,42 @@ impl EngineInner {
                 .create_prefill_plan(&self.append_attention, &qo, &page_table)
         }?;
         self.append_plan.plan = Some(plan);
-        self.append_plan.batch_size = self.core.batch_size();
+        self.append_plan.batch_size = batch.size;
         self.append_plan.num_indices = num_indices;
-        self.append_plan.total_tokens = self.core.batch_token_count();
-        self.append_plan.qo_indptr = try_clone_slice(self.core.batch_qo_indptr())?;
-        self.append_plan.kv_indptr = try_clone_slice(self.core.batch_kv_indptr())?;
-        self.append_plan.kv_indices = try_clone_slice(self.core.batch_kv_indices())?;
-        self.append_plan.last_page_len = try_clone_slice(self.core.batch_last_page_len())?;
+        self.append_plan.total_tokens = batch.token_count;
+        self.append_plan.qo_indptr = try_clone_slice(batch.qo_indptr)?;
+        self.append_plan.kv_indptr = try_clone_slice(batch.kv_indptr)?;
+        self.append_plan.kv_indices = try_clone_slice(batch.kv_indices)?;
+        self.append_plan.last_page_len = try_clone_slice(batch.last_page_len)?;
         self.append_plan.valid = true;
         Ok(())
     }
 
     fn ensure_decode_plan(&mut self) -> Result<(), Status> {
-        let num_indices = u32::try_from(self.core.batch_kv_indices().len())
-            .map_err(|_| Status::InvalidArgument)?;
+        let batch = self.core.active_batch()?;
+        if batch.kind != crate::BatchKind::Decode {
+            return Err(Status::InternalError);
+        }
+        let num_indices =
+            u32::try_from(batch.kv_indices.len()).map_err(|_| Status::InvalidArgument)?;
         if self.decode_plan.matches(
-            self.core.batch_size(),
+            batch.size,
             num_indices,
-            self.core.batch_size(),
+            batch.size,
             &[],
-            self.core.batch_kv_indptr(),
-            self.core.batch_kv_indices(),
-            self.core.batch_last_page_len(),
+            batch.kv_indptr,
+            batch.kv_indices,
+            batch.last_page_len,
         ) {
             return Ok(());
         }
 
         self.decode_plan.destroy();
         let page_table = PagedKvPlan {
-            indptr: ptr_or_null(self.core.batch_kv_indptr()),
-            indices: ptr_or_null(self.core.batch_kv_indices()),
-            last_page_len: ptr_or_null(self.core.batch_last_page_len()),
-            batch_size: self.core.batch_size(),
+            indptr: ptr_or_null(batch.kv_indptr),
+            indices: ptr_or_null(batch.kv_indices),
+            last_page_len: ptr_or_null(batch.last_page_len),
+            batch_size: batch.size,
             num_indices,
         };
         let plan = unsafe {
@@ -385,13 +388,13 @@ impl EngineInner {
                 .create_decode_plan(&self.decode_attention, &page_table)
         }?;
         self.decode_plan.plan = Some(plan);
-        self.decode_plan.batch_size = self.core.batch_size();
+        self.decode_plan.batch_size = batch.size;
         self.decode_plan.num_indices = num_indices;
-        self.decode_plan.total_tokens = self.core.batch_size();
+        self.decode_plan.total_tokens = batch.size;
         self.decode_plan.qo_indptr.clear();
-        self.decode_plan.kv_indptr = try_clone_slice(self.core.batch_kv_indptr())?;
-        self.decode_plan.kv_indices = try_clone_slice(self.core.batch_kv_indices())?;
-        self.decode_plan.last_page_len = try_clone_slice(self.core.batch_last_page_len())?;
+        self.decode_plan.kv_indptr = try_clone_slice(batch.kv_indptr)?;
+        self.decode_plan.kv_indices = try_clone_slice(batch.kv_indices)?;
+        self.decode_plan.last_page_len = try_clone_slice(batch.last_page_len)?;
         self.decode_plan.valid = true;
         Ok(())
     }
@@ -437,23 +440,25 @@ impl EngineInner {
         })
     }
 
-    fn make_active_page_table(&self) -> PagedKvTable {
-        PagedKvTable {
+    fn make_active_page_table(&self) -> Result<PagedKvTable, Status> {
+        let batch = self.core.active_batch()?;
+        Ok(PagedKvTable {
             indptr: self
                 .d_batch_kv_indptr
-                .device_ptr_if(!self.core.batch_kv_indptr().is_empty()),
+                .device_ptr_if(!batch.kv_indptr.is_empty()),
             indices: self
                 .d_batch_kv_indices
-                .device_ptr_if(!self.core.batch_kv_indices().is_empty()),
+                .device_ptr_if(!batch.kv_indices.is_empty()),
             last_page_len: self
                 .d_batch_last_page_len
-                .device_ptr_if(!self.core.batch_last_page_len().is_empty()),
+                .device_ptr_if(!batch.last_page_len.is_empty()),
             rope_pos_offset: self
                 .d_batch_rope_pos_offset
-                .device_ptr_if(!self.core.batch_rope_pos_offset().is_empty()),
-            batch_size: self.core.batch_size(),
-            num_indices: u32::try_from(self.core.batch_kv_indices().len()).unwrap_or(u32::MAX),
-        }
+                .device_ptr_if(!batch.rope_pos_offset.is_empty()),
+            batch_size: batch.size,
+            num_indices: u32::try_from(batch.kv_indices.len())
+                .map_err(|_| Status::InvalidArgument)?,
+        })
     }
 
     pub(crate) fn prepare_append(&mut self, batch: AppendBatch<'_>) -> Result<(), Status> {
@@ -479,19 +484,20 @@ impl EngineInner {
             return Err(Status::InvalidArgument);
         };
         let kv_cache = self.make_kv_cache(pending_layer.layer_idx())?;
-        let page_table = self.make_active_page_table();
+        let page_table = self.make_active_page_table()?;
+        let batch = self.core.active_batch()?;
         let append = AppendPrefill {
             k: layer.k,
             v: layer.v,
             batch_indices: self
                 .d_batch_append_batch_indices
-                .device_ptr_if(!self.core.batch_append_batch_indices().is_empty()),
+                .device_ptr_if(!batch.append_batch_indices.is_empty()),
             positions: self
                 .d_batch_append_positions
-                .device_ptr_if(!self.core.batch_append_positions().is_empty()),
+                .device_ptr_if(!batch.append_positions.is_empty()),
             kv_cache,
             page_table,
-            num_tokens: self.core.batch_token_count(),
+            num_tokens: batch.token_count,
         };
         // Deterministic descriptor failures are checked above, before K/V cache
         // mutation. Once this append launch succeeds, backend failures are not
@@ -508,7 +514,7 @@ impl EngineInner {
             lse: layer.lse,
             qo_indptr: self
                 .d_batch_qo_indptr
-                .device_ptr_if(!self.core.batch_qo_indptr().is_empty()),
+                .device_ptr_if(!batch.qo_indptr.is_empty()),
             kv_cache,
             page_table,
             q_scale: layer.q_scale,
@@ -541,7 +547,7 @@ impl EngineInner {
             return Err(Status::InvalidArgument);
         };
         let kv_cache = self.make_kv_cache(pending_layer.layer_idx())?;
-        let page_table = self.make_active_page_table();
+        let page_table = self.make_active_page_table()?;
         let append = AppendDecode {
             k: layer.k,
             v: layer.v,
@@ -572,7 +578,7 @@ impl EngineInner {
 
     fn validate_append_layer(&self, layer: &EngineLayer) -> Result<(), Status> {
         let config = self.core.config();
-        let tokens = i64::from(self.core.batch_token_count());
+        let tokens = i64::from(self.core.active_batch()?.token_count);
         self.validate_attention_layer_common(layer, tokens)?;
         validate_tensor3_shape(
             &layer.k,
@@ -592,7 +598,7 @@ impl EngineInner {
 
     fn validate_decode_layer(&self, layer: &EngineLayer) -> Result<(), Status> {
         let config = self.core.config();
-        let tokens = i64::from(self.core.batch_size());
+        let tokens = i64::from(self.core.active_batch()?.size);
         self.validate_attention_layer_common(layer, tokens)?;
         validate_tensor3_shape(
             &layer.k,

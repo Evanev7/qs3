@@ -1,6 +1,6 @@
 use crate::{
     QWEN36_FULL_ATTN_HEAD_DIM, QWEN36_FULL_ATTN_KV_HEADS, QWEN36_FULL_ATTN_Q_HEADS,
-    ext::{SafeHashSet, SafeVec, try_clone_slice, Cast},
+    ext::{Cast, SafeHashSet, SafeVec, try_clone_slice},
     ffi, runtime,
 };
 use std::collections::HashSet;
@@ -15,60 +15,44 @@ impl Engine {
     }
 }
 
-pub trait EngineTrait {
-    fn new(config: EngineConfig) -> Result<Self, Status>
-    where
-        Self: Sized;
-
-    fn reset(&mut self) -> Result<(), Status>;
-    fn release_requests(&mut self, request_ids: &[RequestId]) -> Result<(), Status>;
-    fn state(&self) -> Result<CoreState<'_>, Status>;
-    fn begin_append(&mut self, batch: AppendBatch<'_>) -> Result<(), Status>;
-    unsafe fn append_layer(&mut self, layer: &EngineLayer) -> Result<(), Status>;
-    fn begin_decode(&mut self, batch: DecodeBatch<'_>) -> Result<(), Status>;
-    unsafe fn decode_layer(&mut self, layer: &EngineLayer) -> Result<(), Status>;
-    fn commit_batch(&mut self, commit: Commit<'_>) -> Result<(), Status>;
-    fn abort_batch(&mut self) -> Result<(), Status>;
-}
-
-impl EngineTrait for Engine {
-    fn new(config: EngineConfig) -> Result<Self, Status> {
+impl Engine {
+    pub fn new(config: EngineConfig) -> Result<Self, Status> {
         runtime::EngineInner::new(config).map(|inner| Self { inner })
     }
 
-    fn reset(&mut self) -> Result<(), Status> {
+    pub fn reset(&mut self) -> Result<(), Status> {
         self.inner.core.reset()
     }
 
-    fn release_requests(&mut self, request_ids: &[RequestId]) -> Result<(), Status> {
+    pub fn release_requests(&mut self, request_ids: &[RequestId]) -> Result<(), Status> {
         self.inner.core.release_requests(request_ids)
     }
 
-    fn state(&self) -> Result<CoreState<'_>, Status> {
+    pub fn state(&self) -> Result<CoreState<'_>, Status> {
         self.inner.core.state()
     }
 
-    fn begin_append(&mut self, batch: AppendBatch<'_>) -> Result<(), Status> {
+    pub fn begin_append(&mut self, batch: AppendBatch<'_>) -> Result<(), Status> {
         self.inner.prepare_append(batch)
     }
 
-    unsafe fn append_layer(&mut self, layer: &EngineLayer) -> Result<(), Status> {
+    pub unsafe fn append_layer(&mut self, layer: &EngineLayer) -> Result<(), Status> {
         unsafe { self.inner.execute_append_layer(layer) }
     }
 
-    fn begin_decode(&mut self, batch: DecodeBatch<'_>) -> Result<(), Status> {
+    pub fn begin_decode(&mut self, batch: DecodeBatch<'_>) -> Result<(), Status> {
         self.inner.prepare_decode(batch)
     }
 
-    unsafe fn decode_layer(&mut self, layer: &EngineLayer) -> Result<(), Status> {
+    pub unsafe fn decode_layer(&mut self, layer: &EngineLayer) -> Result<(), Status> {
         unsafe { self.inner.execute_decode_layer(layer) }
     }
 
-    fn commit_batch(&mut self, commit: Commit<'_>) -> Result<(), Status> {
+    pub fn commit_batch(&mut self, commit: Commit<'_>) -> Result<(), Status> {
         self.inner.commit_batch(commit)
     }
 
-    fn abort_batch(&mut self) -> Result<(), Status> {
+    pub fn abort_batch(&mut self) -> Result<(), Status> {
         self.inner.core.abort_batch()
     }
 }
@@ -448,15 +432,8 @@ impl<'a> BatchPlanner<'a> {
     ) -> Result<Vec<StagedRow>, Status> {
         let mut staged_rows = Vec::safe_new(request_ids.len())?;
         for (i, &id) in request_ids.iter().enumerate() {
-            let request_index = self
-                .find_request_index(id)
-                .ok_or(Status::InvalidArgument)?;
-            staged_rows.push(self.stage_row(
-                id,
-                Some(request_index),
-                1,
-                &tokens[i..i + 1],
-            )?);
+            let request_index = self.find_request_index(id).ok_or(Status::InvalidArgument)?;
+            staged_rows.push(self.stage_row(id, Some(request_index), 1, &tokens[i..i + 1])?);
         }
         Ok(staged_rows)
     }
@@ -738,6 +715,28 @@ pub struct CoreState<'a> {
     pub batch_append_positions: &'a [i32],
 }
 
+/// A coherent borrowed view of the candidate transaction installed by
+/// `begin_append` or `begin_decode`.
+///
+/// Device metadata upload and attention planning must consume this view as a
+/// unit: mixing fields from different engine states would break the cache
+/// transaction contract.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ActiveBatch<'a> {
+    pub kind: BatchKind,
+    pub size: u32,
+    pub token_count: u32,
+    pub request_ids: &'a [RequestId],
+    pub tokens: &'a [i32],
+    pub qo_indptr: &'a [i32],
+    pub kv_indptr: &'a [i32],
+    pub kv_indices: &'a [i32],
+    pub last_page_len: &'a [i32],
+    pub rope_pos_offset: &'a [i32],
+    pub append_batch_indices: &'a [i32],
+    pub append_positions: &'a [i32],
+}
+
 fn ceil_div_u32(a: u32, b: u32) -> Result<u32, Status> {
     a.checked_add(b.checked_sub(1).ok_or(Status::InvalidArgument)?)
         .ok_or(Status::InvalidArgument)?
@@ -897,6 +896,24 @@ impl EngineCore {
             batch_rope_pos_offset: &self.batch_rope_pos_offset,
             batch_append_batch_indices: &self.batch_append_batch_indices,
             batch_append_positions: &self.batch_append_positions,
+        })
+    }
+
+    pub(crate) fn active_batch(&self) -> Result<ActiveBatch<'_>, Status> {
+        let batch = self.batch.as_ref().ok_or(Status::InvalidArgument)?;
+        Ok(ActiveBatch {
+            kind: batch.kind,
+            size: batch.size,
+            token_count: batch.token_count,
+            request_ids: &self.batch_request_ids,
+            tokens: &self.batch_tokens,
+            qo_indptr: &self.batch_qo_indptr,
+            kv_indptr: &self.batch_kv_indptr,
+            kv_indices: &self.batch_kv_indices,
+            last_page_len: &self.batch_last_page_len,
+            rope_pos_offset: &self.batch_rope_pos_offset,
+            append_batch_indices: &self.batch_append_batch_indices,
+            append_positions: &self.batch_append_positions,
         })
     }
 
@@ -1099,46 +1116,6 @@ impl EngineCore {
         #[cfg(debug_assertions)]
         self.check_allocator_invariants()?;
         Ok(())
-    }
-
-    pub fn batch_size(&self) -> u32 {
-        self.batch.as_ref().map_or(0, |batch| batch.size)
-    }
-
-    pub fn batch_token_count(&self) -> u32 {
-        self.batch.as_ref().map_or(0, |batch| batch.token_count)
-    }
-
-    pub fn batch_tokens(&self) -> &[i32] {
-        &self.batch_tokens
-    }
-
-    pub fn batch_qo_indptr(&self) -> &[i32] {
-        &self.batch_qo_indptr
-    }
-
-    pub fn batch_kv_indptr(&self) -> &[i32] {
-        &self.batch_kv_indptr
-    }
-
-    pub fn batch_kv_indices(&self) -> &[i32] {
-        &self.batch_kv_indices
-    }
-
-    pub fn batch_last_page_len(&self) -> &[i32] {
-        &self.batch_last_page_len
-    }
-
-    pub fn batch_rope_pos_offset(&self) -> &[i32] {
-        &self.batch_rope_pos_offset
-    }
-
-    pub fn batch_append_batch_indices(&self) -> &[i32] {
-        &self.batch_append_batch_indices
-    }
-
-    pub fn batch_append_positions(&self) -> &[i32] {
-        &self.batch_append_positions
     }
 
     pub(crate) fn pending_append_layer(
@@ -1469,6 +1446,24 @@ mod tests {
         assert_eq!(DynDType::U8.to_raw(), ffi::DTYPE_U8);
         assert_eq!(KvLayout::NHD.to_raw(), ffi::KV_LAYOUT_NHD);
         assert_eq!(KvLayout::HND.to_raw(), ffi::KV_LAYOUT_HND);
+    }
+
+    #[test]
+    fn active_batch_is_one_coherent_transaction_view() {
+        let mut core = EngineCore::new(tiny_config()).unwrap();
+        core.begin_append(&[7], &[0, 2], &[10, 11]).unwrap();
+
+        let batch = core.active_batch().unwrap();
+        assert_eq!(batch.kind, BatchKind::Append);
+        assert_eq!(batch.size, 1);
+        assert_eq!(batch.token_count, 2);
+        assert_eq!(batch.request_ids, &[7]);
+        assert_eq!(batch.tokens, &[10, 11]);
+        assert_eq!(batch.qo_indptr, &[0, 2]);
+        assert_eq!(batch.kv_indptr.len(), 2);
+        assert_eq!(batch.last_page_len, &[2]);
+        assert_eq!(batch.append_batch_indices, &[0, 0]);
+        assert_eq!(batch.append_positions, &[0, 1]);
     }
 
     #[test]

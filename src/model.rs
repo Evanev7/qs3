@@ -1,6 +1,6 @@
 use crate::engine::{
-    AppendBatch, Commit, DecodeBatch, DynDType, Engine, EngineConfig, EngineLayer, EngineTrait,
-    KvLayout, RequestId, Status, validate_supported_attention_grouping,
+    AppendBatch, Commit, DecodeBatch, DynDType, Engine, EngineConfig, EngineLayer, KvLayout,
+    RequestId, Status, validate_supported_attention_grouping,
     validate_supported_attention_head_dim,
 };
 use crate::ext::{SafeVec, try_clone_slice};

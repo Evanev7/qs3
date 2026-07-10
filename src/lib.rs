@@ -56,6 +56,6 @@ mod weight_loader;
 
 pub use engine::{
     AppendBatch, BatchKind, Commit, CoreState, DecodeBatch, DynDType, Engine, EngineConfig,
-    EngineLayer, EngineTrait, KvLayout, RequestId, Status,
+    EngineLayer, KvLayout, RequestId, Status,
 };
 pub use model::{ModelRunner, QwenConfig, QwenMoeConfig, QwenRequest, QwenResult, QwenWeights};

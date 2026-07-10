@@ -1,6 +1,5 @@
 use qs3::{
-    AppendBatch, Commit, DecodeBatch, DynDType, Engine, EngineConfig, EngineLayer, EngineTrait,
-    KvLayout, ffi,
+    AppendBatch, Commit, DecodeBatch, DynDType, Engine, EngineConfig, EngineLayer, KvLayout, ffi,
 };
 use std::ffi::{CStr, c_char, c_void};
 use std::{mem, ptr};
