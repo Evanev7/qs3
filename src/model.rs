@@ -316,6 +316,48 @@ pub struct QwenConfig {
 }
 
 impl QwenConfig {
+    pub(crate) fn qwen36_bf16_runtime(
+        device_ordinal: i32,
+        stream: *mut c_void,
+        num_layers: u32,
+        vocab_size: u32,
+        rms_norm_eps: f32,
+        rope_theta: f32,
+        logits_soft_cap: f32,
+        max_seq_len: u32,
+    ) -> Result<Self, Status> {
+        let page_size = 4;
+        let config = Self {
+            device_ordinal,
+            stream,
+            num_layers,
+            max_live_requests: 1,
+            max_batch_rows: 1,
+            max_batch_tokens: max_seq_len,
+            max_seq_len,
+            max_pages: max_seq_len.div_ceil(page_size),
+            page_size,
+            hidden_size: QWEN36_HIDDEN_SIZE,
+            intermediate_size: QWEN36_MOE_INTERMEDIATE_SIZE,
+            moe: Some(QwenMoeConfig::qwen36_35b_a3b()),
+            vocab_size,
+            num_q_heads: QWEN36_FULL_ATTN_Q_HEADS,
+            num_kv_heads: QWEN36_FULL_ATTN_KV_HEADS,
+            head_dim: QWEN36_FULL_ATTN_HEAD_DIM,
+            rms_norm_eps,
+            rope_theta,
+            rope_scale: 1.0,
+            logits_soft_cap,
+            qsfi_float_workspace_bytes: 64 << 20,
+            qsfi_int_workspace_bytes: 64 << 20,
+            qsfi_host_int_workspace_bytes: 64 << 20,
+            qscb_workspace_bytes: 64 << 20,
+            model_shape: QwenModelShape::qwen36_moe_gdn(),
+        };
+        config.validate()?;
+        Ok(config)
+    }
+
     pub fn randomized_dense_tiny_fixture(device_ordinal: i32) -> Self {
         Self {
             device_ordinal,
@@ -586,7 +628,80 @@ pub struct QwenWeights {
     layers: Vec<QwenLayerWeights>,
 }
 
+fn loaded_qwen36_moe_weights<F>(layer: u32, take: &mut F) -> Result<QwenMlpWeights, Status>
+where
+    F: FnMut(Option<u32>, &'static str) -> Result<DeviceBuffer<u16>, Status>,
+{
+    Ok(QwenMlpWeights::Moe {
+        router_proj: take(Some(layer), "mlp.router")?,
+        gate_up_proj: take(Some(layer), "mlp.experts.gate_up")?,
+        down_proj: take(Some(layer), "mlp.experts.down")?,
+        shared: Some(QwenSharedExpertWeights {
+            gate_proj: take(Some(layer), "mlp.shared.gate")?,
+            up_proj: take(Some(layer), "mlp.shared.up")?,
+            down_proj: take(Some(layer), "mlp.shared.down")?,
+            shared_expert_gate: take(Some(layer), "mlp.shared.gate_score")?,
+        }),
+    })
+}
+
 impl QwenWeights {
+    pub(crate) fn from_bf16_buffers<F>(config: QwenConfig, mut take: F) -> Result<Self, Status>
+    where
+        F: FnMut(Option<u32>, &'static str) -> Result<DeviceBuffer<u16>, Status>,
+    {
+        config.validate()?;
+        let token_embedding = take(None, "token_embedding")?;
+        let final_norm = take(None, "final_norm")?;
+        let lm_head = take(None, "lm_head")?;
+        let mut layers = Vec::safe_new(config.num_layers as usize)?;
+
+        for layer_idx in 0..config.num_layers {
+            let input_norm = take(Some(layer_idx), "input_layernorm")?;
+            let mlp_norm = take(Some(layer_idx), "post_attention_layernorm")?;
+            let mlp = loaded_qwen36_moe_weights(layer_idx, &mut take)?;
+            let layer = match config.layer_kind(layer_idx) {
+                QwenBlockKind::FullAttention => {
+                    QwenLayerWeights::AttentionMlp(QwenAttentionMlpWeights {
+                        attn_norm: input_norm,
+                        q_norm: take(Some(layer_idx), "attn.q_norm")?,
+                        k_norm: take(Some(layer_idx), "attn.k_norm")?,
+                        q_proj: take(Some(layer_idx), "attn.q_proj")?,
+                        k_proj: take(Some(layer_idx), "attn.k_proj")?,
+                        v_proj: take(Some(layer_idx), "attn.v_proj")?,
+                        o_proj: take(Some(layer_idx), "attn.o_proj")?,
+                        mlp_norm,
+                        mlp,
+                    })
+                }
+                QwenBlockKind::LinearAttention => QwenLayerWeights::Gdn(QwenGdnWeights {
+                    norm: input_norm,
+                    in_proj: take(Some(layer_idx), "gdn.in_proj_qkv")?,
+                    gate_proj: take(Some(layer_idx), "gdn.gate_proj_z")?,
+                    a_proj: take(Some(layer_idx), "gdn.a_proj")?,
+                    b_proj: take(Some(layer_idx), "gdn.b_proj")?,
+                    conv_weight: take(Some(layer_idx), "gdn.conv_weight")?,
+                    conv_bias: take(Some(layer_idx), "gdn.conv_bias.zero")?,
+                    a_log: take(Some(layer_idx), "gdn.a_log")?,
+                    dt_bias: take(Some(layer_idx), "gdn.dt_bias")?,
+                    rms_weight: take(Some(layer_idx), "gdn.rms_weight")?,
+                    out_proj: take(Some(layer_idx), "gdn.out_proj")?,
+                    mlp_norm,
+                    mlp,
+                }),
+            };
+            layers.push(layer);
+        }
+
+        Ok(Self {
+            config,
+            token_embedding,
+            final_norm,
+            lm_head,
+            layers,
+        })
+    }
+
     pub fn random_bf16(config: &QwenConfig, seed: u64) -> Result<Self, Status> {
         config.validate()?;
         let config = config.resolved_device_config()?;
@@ -2735,13 +2850,28 @@ impl RunnerScratch {
     }
 }
 
-struct DeviceBuffer<T> {
+pub(crate) struct DeviceBuffer<T> {
     ptr: *mut T,
     cap: usize,
     device_ordinal: i32,
 }
 
 impl<T> DeviceBuffer<T> {
+    /// # Safety
+    ///
+    /// `ptr` must be non-null, properly aligned, uniquely owned, cover at
+    /// least `cap` elements, and be releasable with `cudaFree` after activating
+    /// `device_ordinal`.
+    pub(crate) unsafe fn from_raw_parts(device_ordinal: i32, ptr: *mut T, cap: usize) -> Self {
+        debug_assert!(!ptr.is_null());
+        debug_assert!(cap != 0);
+        Self {
+            ptr,
+            cap,
+            device_ordinal,
+        }
+    }
+
     fn empty(device_ordinal: i32) -> Self {
         Self {
             ptr: ptr::null_mut(),
@@ -5862,6 +5992,41 @@ mod tests {
         assert_eq!(engine.num_q_heads, config.num_q_heads);
         assert_eq!(engine.num_kv_heads, config.num_kv_heads);
         assert_eq!(engine.head_dim, config.head_dim);
+    }
+
+    #[test]
+    fn loaded_qwen36_factories_request_every_manifest_target_once() {
+        use std::collections::BTreeSet;
+
+        let config = QwenConfig::qwen36_bf16_runtime(
+            0,
+            ptr::null_mut(),
+            40,
+            248_320,
+            1.0e-6,
+            10_000_000.0,
+            0.0,
+            8,
+        )
+        .unwrap();
+        let mut seen = BTreeSet::new();
+        let weights = QwenWeights::from_bf16_buffers(config, |layer, slot| {
+            assert!(
+                seen.insert((layer, slot)),
+                "duplicate target {layer:?}/{slot}"
+            );
+            Ok(DeviceBuffer::empty(config.device_ordinal))
+        })
+        .unwrap();
+
+        assert_eq!(seen.len(), 723);
+        assert!(seen.contains(&(None, "token_embedding")));
+        assert!(seen.contains(&(None, "final_norm")));
+        assert!(seen.contains(&(None, "lm_head")));
+        assert!(seen.contains(&(Some(0), "gdn.in_proj_qkv")));
+        assert!(seen.contains(&(Some(3), "attn.q_proj")));
+        assert!(seen.contains(&(Some(39), "mlp.shared.gate_score")));
+        weights.validate_for(&config).unwrap();
     }
 
     #[test]
