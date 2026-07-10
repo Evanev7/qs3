@@ -1,3 +1,16 @@
+use crate::backend::cublas::Bf16Gemm;
+use crate::backend::cuda::{
+    Activation, EmbeddingGatherBf16, GdnCausalConv1dBf16, GdnCausalConv1dBf16Args, GdnConvState,
+    GdnForgetGateOutput, GdnPostConvPrepareBf16, GdnPostConvPrepareBf16Args, GdnRecurrentState,
+    GdnRmsNormGatedBf16, GdnRmsNormGatedBf16Args, GreedyArgmaxF32, LogitsSoftCapF32,
+    Qwen36FullAttentionOutputGateBf16, Qwen36SharedExpertGateAddBf16, RouterTopK, SiluAndMulBf16,
+};
+use crate::backend::flashinfer::{
+    FusedAddRmsNormBf16, GdnDecodeBf16, GdnDecodeBf16Args, GdnPrefillBf16, GdnPrefillBf16Args,
+    MoeBf16Execute, MoeBf16ExecuteArgs, MoeBf16PlanConfig, MoePlan, RmsNormBf16, RopeApplyBf16,
+    Workspace,
+};
+use crate::backend::{Bf16Heads, Bf16OrF32Mat, Bf16OrF32Vec, DMat, DTensor3, DVec, FloatStorage};
 use crate::engine::{
     AppendBatch, Commit, DecodeBatch, DynDType, Engine, EngineConfig, EngineLayer, KvLayout,
     RequestId, Status, validate_supported_attention_grouping,
@@ -5,16 +18,6 @@ use crate::engine::{
 };
 use crate::ext::{SafeVec, try_clone_slice};
 use crate::ffi::{self, cuda};
-use crate::runtime::device_tensor::{DMat, DTensor3, DVec};
-use crate::runtime::kernels::{
-    Activation, Bf16Gemm, Bf16Heads, Bf16OrF32Mat, Bf16OrF32Vec, EmbeddingGatherBf16, FloatStorage,
-    FusedAddRmsNormBf16, GdnCausalConv1dBf16, GdnCausalConv1dBf16Args, GdnConvState, GdnDecodeBf16,
-    GdnDecodeBf16Args, GdnForgetGateOutput, GdnPostConvPrepareBf16, GdnPostConvPrepareBf16Args,
-    GdnPrefillBf16, GdnPrefillBf16Args, GdnRecurrentState, GdnRmsNormGatedBf16,
-    GdnRmsNormGatedBf16Args, GreedyArgmaxF32, LogitsSoftCapF32, MoeBf16Execute, MoeBf16ExecuteArgs,
-    MoeBf16PlanConfig, MoePlan, Qwen36FullAttentionOutputGateBf16, Qwen36SharedExpertGateAddBf16,
-    RmsNormBf16, RopeApplyBf16, RouterTopK, SiluAndMulBf16, Workspace,
-};
 use crate::{
     QWEN36_FULL_ATTN_GROUP_SIZE, QWEN36_FULL_ATTN_HEAD_DIM, QWEN36_FULL_ATTN_KV_HEADS,
     QWEN36_FULL_ATTN_KV_HIDDEN, QWEN36_FULL_ATTN_Q_HEADS, QWEN36_FULL_ATTN_Q_HIDDEN,
@@ -1298,9 +1301,9 @@ impl ModelRunner {
         let mut scratch = RunnerScratch::new(config.device_ordinal);
         let moe_plan = if let Some(moe) = config.moe_config() {
             let (plan, workspace_bytes) = {
-                let mut ops = engine.kernel_ops();
+                let mut ops = engine.operators();
                 let plan = unsafe {
-                    ops.create_moe_bf16_plan(MoeBf16PlanConfig {
+                    ops.flashinfer.create_moe_bf16_plan(MoeBf16PlanConfig {
                         max_num_tokens: config.max_seq_len,
                         hidden_size: config.hidden_size,
                         intermediate_size: moe.moe_intermediate_size,
@@ -1308,7 +1311,10 @@ impl ModelRunner {
                         top_k: moe.num_experts_per_tok,
                     })?
                 };
-                let workspace_bytes = unsafe { ops.moe_workspace_size(&plan, config.max_seq_len)? };
+                let workspace_bytes = unsafe {
+                    ops.flashinfer
+                        .moe_workspace_size(&plan, config.max_seq_len)?
+                };
                 (plan, workspace_bytes)
             };
             scratch.ensure_moe_workspace(workspace_bytes)?;
@@ -1805,8 +1811,8 @@ impl ModelRunner {
             DMat::contiguous(out, norm_rows, self.config.head_dim)?,
             self.config.rms_norm_eps,
         )?;
-        let mut ops = self.engine.kernel_ops();
-        unsafe { ops.rmsnorm_bf16(&desc) }
+        let mut ops = self.engine.operators();
+        unsafe { ops.flashinfer.rmsnorm_bf16(&desc) }
     }
 
     fn apply_attention_rope(&mut self, rows: u32) -> Result<(), Status> {
@@ -1830,8 +1836,8 @@ impl ModelRunner {
             self.config.rope_scale,
             self.config.rope_theta,
         )?;
-        let mut ops = self.engine.kernel_ops();
-        unsafe { ops.rope_apply_bf16(&desc) }
+        let mut ops = self.engine.operators();
+        unsafe { ops.flashinfer.rope_apply_bf16(&desc) }
     }
 
     fn apply_attention_output_gate(&mut self, rows: u32, q_hidden: u32) -> Result<(), Status> {
@@ -1842,8 +1848,8 @@ impl ModelRunner {
             DMat::contiguous(self.scratch.attn_gate.as_device_ptr(), rows, q_hidden)?,
             DMat::contiguous(self.scratch.attn_out.as_device_ptr(), rows, q_hidden)?,
         )?;
-        let mut ops = self.engine.kernel_ops();
-        unsafe { ops.qwen36_full_attention_output_gate_bf16(&desc) }
+        let mut ops = self.engine.operators();
+        unsafe { ops.cuda.qwen36_full_attention_output_gate_bf16(&desc) }
     }
 
     fn execute_gdn_layer(
@@ -1954,8 +1960,8 @@ impl ModelRunner {
             update_state: true,
         })?;
         {
-            let mut ops = self.engine.kernel_ops();
-            unsafe { ops.qwen36_gdn_causal_conv1d_bf16(&conv)? };
+            let mut ops = self.engine.operators();
+            unsafe { ops.cuda.qwen36_gdn_causal_conv1d_bf16(&conv)? };
         }
 
         let post = GdnPostConvPrepareBf16::new(GdnPostConvPrepareBf16Args {
@@ -1986,8 +1992,8 @@ impl ModelRunner {
             forget_gate_output: GdnForgetGateOutput::LogDecay,
         })?;
         {
-            let mut ops = self.engine.kernel_ops();
-            unsafe { ops.qwen36_gdn_post_conv_prepare_bf16(&post)? };
+            let mut ops = self.engine.operators();
+            unsafe { ops.cuda.qwen36_gdn_post_conv_prepare_bf16(&post)? };
         }
 
         match kind {
@@ -2028,8 +2034,8 @@ impl ModelRunner {
                     use_qk_l2norm: true,
                     disable_state_update: false,
                 })?;
-                let mut ops = self.engine.kernel_ops();
-                unsafe { ops.gdn_prefill_bf16(&prefill)? };
+                let mut ops = self.engine.operators();
+                unsafe { ops.flashinfer.gdn_prefill_bf16(&prefill)? };
             }
             ActiveRunKind::Decode => {
                 let decode = GdnDecodeBf16::new(GdnDecodeBf16Args {
@@ -2062,8 +2068,8 @@ impl ModelRunner {
                     use_qk_l2norm: true,
                     disable_state_update: false,
                 })?;
-                let mut ops = self.engine.kernel_ops();
-                unsafe { ops.gdn_decode_bf16(&decode)? };
+                let mut ops = self.engine.operators();
+                unsafe { ops.flashinfer.gdn_decode_bf16(&decode)? };
             }
         }
 
@@ -2076,8 +2082,8 @@ impl ModelRunner {
             gate_activation: Activation::Silu,
         })?;
         {
-            let mut ops = self.engine.kernel_ops();
-            unsafe { ops.qwen36_gdn_rmsnorm_gated_bf16(&gated)? };
+            let mut ops = self.engine.operators();
+            unsafe { ops.cuda.qwen36_gdn_rmsnorm_gated_bf16(&gated)? };
         }
 
         self.gemm_bf16(
@@ -2218,8 +2224,8 @@ impl ModelRunner {
             QWEN36_MOE_ROUTER_SCALING_FACTOR,
         )?;
         {
-            let mut ops = self.engine.kernel_ops();
-            unsafe { ops.router_topk(&router)? };
+            let mut ops = self.engine.operators();
+            unsafe { ops.cuda.router_topk(&router)? };
         }
 
         let plan = self.moe_plan.as_ref().ok_or(Status::InternalError)?;
@@ -2256,8 +2262,8 @@ impl ModelRunner {
             )?,
         })?;
         {
-            let mut ops = self.engine.kernel_ops();
-            unsafe { ops.moe_execute_bf16(plan, &execute)? };
+            let mut ops = self.engine.operators();
+            unsafe { ops.flashinfer.moe_execute_bf16(plan, &execute)? };
         }
 
         if let Some(shared) = shared {
@@ -2422,8 +2428,8 @@ impl ModelRunner {
             None,
             true,
         )?;
-        let mut ops = self.engine.kernel_ops();
-        unsafe { ops.embedding_gather_bf16(&desc) }
+        let mut ops = self.engine.operators();
+        unsafe { ops.cuda.embedding_gather_bf16(&desc) }
     }
 
     fn rmsnorm(
@@ -2439,8 +2445,8 @@ impl ModelRunner {
             DMat::contiguous(out, rows, self.config.hidden_size)?,
             self.config.rms_norm_eps,
         )?;
-        let mut ops = self.engine.kernel_ops();
-        unsafe { ops.rmsnorm_bf16(&desc) }
+        let mut ops = self.engine.operators();
+        unsafe { ops.flashinfer.rmsnorm_bf16(&desc) }
     }
 
     fn fused_add_rmsnorm(
@@ -2456,8 +2462,8 @@ impl ModelRunner {
             DVec::contiguous(weight, self.config.hidden_size)?,
             self.config.rms_norm_eps,
         )?;
-        let mut ops = self.engine.kernel_ops();
-        unsafe { ops.fused_add_rmsnorm_bf16(&desc) }
+        let mut ops = self.engine.operators();
+        unsafe { ops.flashinfer.fused_add_rmsnorm_bf16(&desc) }
     }
 
     fn gemm_bf16(
@@ -2488,8 +2494,8 @@ impl ModelRunner {
             out,
             workspace,
         )?;
-        let mut ops = self.engine.kernel_ops();
-        unsafe { ops.gemm_bf16(&desc) }
+        let mut ops = self.engine.operators();
+        unsafe { ops.cublas.gemm_bf16(&desc) }
     }
 
     fn silu_and_mul(
@@ -2505,8 +2511,8 @@ impl ModelRunner {
             DMat::contiguous(up, rows, intermediate)?,
             DMat::contiguous(out, rows, intermediate)?,
         )?;
-        let mut ops = self.engine.kernel_ops();
-        unsafe { ops.silu_and_mul_bf16(&desc) }
+        let mut ops = self.engine.operators();
+        unsafe { ops.cuda.silu_and_mul_bf16(&desc) }
     }
 
     fn shared_expert_gate_add(&mut self, rows: u32, hidden: u32) -> Result<(), Status> {
@@ -2519,8 +2525,8 @@ impl ModelRunner {
             DMat::contiguous(self.scratch.shared_out.as_device_ptr(), rows, hidden)?,
             DMat::contiguous(self.scratch.mlp_out.as_device_ptr(), rows, hidden)?,
         )?;
-        let mut ops = self.engine.kernel_ops();
-        unsafe { ops.qwen36_shared_expert_gate_add_bf16(&desc) }
+        let mut ops = self.engine.operators();
+        unsafe { ops.cuda.qwen36_shared_expert_gate_add_bf16(&desc) }
     }
 
     fn sample_logits(&mut self, rows: u32) -> Result<Vec<i32>, Status> {
@@ -2531,16 +2537,16 @@ impl ModelRunner {
         )?;
         if self.config.logits_soft_cap > 0.0 {
             let desc = LogitsSoftCapF32::new(logits, self.config.logits_soft_cap)?;
-            let mut ops = self.engine.kernel_ops();
-            unsafe { ops.logits_soft_cap_f32(&desc)? };
+            let mut ops = self.engine.operators();
+            unsafe { ops.cuda.logits_soft_cap_f32(&desc)? };
         }
         let desc = GreedyArgmaxF32::new(
             logits,
             DVec::contiguous(self.scratch.next_token_ids.as_device_ptr(), rows)?,
         )?;
         {
-            let mut ops = self.engine.kernel_ops();
-            unsafe { ops.greedy_argmax_f32(&desc)? };
+            let mut ops = self.engine.operators();
+            unsafe { ops.cuda.greedy_argmax_f32(&desc)? };
         }
 
         let row_count = rows as usize;
@@ -3605,19 +3611,20 @@ mod tests {
         let mut engine = Engine::new(config.engine_config()).unwrap();
         let moe = config.moe_config().unwrap();
         let (moe_plan, workspace_bytes) = {
-            let mut ops = engine.kernel_ops();
+            let mut ops = engine.operators();
             let plan = unsafe {
-                ops.create_moe_bf16_plan(MoeBf16PlanConfig {
-                    max_num_tokens: config.max_seq_len,
-                    hidden_size: config.hidden_size,
-                    intermediate_size: moe.moe_intermediate_size,
-                    num_experts: moe.num_experts,
-                    top_k: moe.num_experts_per_tok,
-                })
-                .unwrap()
+                ops.flashinfer
+                    .create_moe_bf16_plan(MoeBf16PlanConfig {
+                        max_num_tokens: config.max_seq_len,
+                        hidden_size: config.hidden_size,
+                        intermediate_size: moe.moe_intermediate_size,
+                        num_experts: moe.num_experts,
+                        top_k: moe.num_experts_per_tok,
+                    })
+                    .unwrap()
             };
             let workspace_bytes =
-                unsafe { ops.moe_workspace_size(&plan, config.max_seq_len) }.unwrap();
+                unsafe { ops.flashinfer.moe_workspace_size(&plan, config.max_seq_len) }.unwrap();
             (plan, workspace_bytes)
         };
         let mut scratch = RunnerScratch::new(config.device_ordinal);
@@ -3695,8 +3702,8 @@ mod tests {
             QWEN36_MOE_ROUTER_SCALING_FACTOR,
         )
         .unwrap();
-        let mut ops = runner.engine.kernel_ops();
-        unsafe { ops.router_topk(&router) }.unwrap();
+        let mut ops = runner.engine.operators();
+        unsafe { ops.cuda.router_topk(&router) }.unwrap();
     }
 
     fn execute_moe_vector_routed_output(runner: &mut ModelRunner) {
@@ -3765,8 +3772,12 @@ mod tests {
             .unwrap(),
         })
         .unwrap();
-        let mut ops = runner.engine.kernel_ops();
-        unsafe { ops.moe_execute_bf16(runner.moe_plan.as_ref().unwrap(), &execute) }.unwrap();
+        let mut ops = runner.engine.operators();
+        unsafe {
+            ops.flashinfer
+                .moe_execute_bf16(runner.moe_plan.as_ref().unwrap(), &execute)
+        }
+        .unwrap();
         synchronize_stream(runner.config.stream).unwrap();
     }
 
@@ -3911,19 +3922,20 @@ mod tests {
         let mut engine = Engine::new(config.engine_config()).unwrap();
         let moe = config.moe_config().unwrap();
         let (moe_plan, workspace_bytes) = {
-            let mut ops = engine.kernel_ops();
+            let mut ops = engine.operators();
             let plan = unsafe {
-                ops.create_moe_bf16_plan(MoeBf16PlanConfig {
-                    max_num_tokens: config.max_seq_len,
-                    hidden_size: config.hidden_size,
-                    intermediate_size: moe.moe_intermediate_size,
-                    num_experts: moe.num_experts,
-                    top_k: moe.num_experts_per_tok,
-                })
-                .unwrap()
+                ops.flashinfer
+                    .create_moe_bf16_plan(MoeBf16PlanConfig {
+                        max_num_tokens: config.max_seq_len,
+                        hidden_size: config.hidden_size,
+                        intermediate_size: moe.moe_intermediate_size,
+                        num_experts: moe.num_experts,
+                        top_k: moe.num_experts_per_tok,
+                    })
+                    .unwrap()
             };
             let workspace_bytes =
-                unsafe { ops.moe_workspace_size(&plan, config.max_seq_len) }.unwrap();
+                unsafe { ops.flashinfer.moe_workspace_size(&plan, config.max_seq_len) }.unwrap();
             (plan, workspace_bytes)
         };
         let mut scratch = RunnerScratch::new(config.device_ordinal);
@@ -4135,19 +4147,20 @@ mod tests {
         let mut engine = Engine::new(config.engine_config()).unwrap();
         let moe = config.moe_config().unwrap();
         let (moe_plan, workspace_bytes) = {
-            let mut ops = engine.kernel_ops();
+            let mut ops = engine.operators();
             let plan = unsafe {
-                ops.create_moe_bf16_plan(MoeBf16PlanConfig {
-                    max_num_tokens: config.max_seq_len,
-                    hidden_size: config.hidden_size,
-                    intermediate_size: moe.moe_intermediate_size,
-                    num_experts: moe.num_experts,
-                    top_k: moe.num_experts_per_tok,
-                })
-                .unwrap()
+                ops.flashinfer
+                    .create_moe_bf16_plan(MoeBf16PlanConfig {
+                        max_num_tokens: config.max_seq_len,
+                        hidden_size: config.hidden_size,
+                        intermediate_size: moe.moe_intermediate_size,
+                        num_experts: moe.num_experts,
+                        top_k: moe.num_experts_per_tok,
+                    })
+                    .unwrap()
             };
             let workspace_bytes =
-                unsafe { ops.moe_workspace_size(&plan, config.max_seq_len) }.unwrap();
+                unsafe { ops.flashinfer.moe_workspace_size(&plan, config.max_seq_len) }.unwrap();
             (plan, workspace_bytes)
         };
         let mut scratch = RunnerScratch::new(config.device_ordinal);

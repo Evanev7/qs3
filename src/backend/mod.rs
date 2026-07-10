@@ -6,10 +6,19 @@ use crate::{
     QWEN36_GDN_NUM_Q_HEADS, QWEN36_GDN_NUM_V_HEADS, QWEN36_GDN_PACKED_DIM, QWEN36_GDN_VALUE_DIM,
     QWEN36_MOE_MAX_EXPERTS, QWEN36_MOE_MAX_TOP_K, Status,
     ffi::{self, qscb, qscu, qsfi},
-    runtime::dtype::{BF16, F32, I32},
 };
 
-use super::device_tensor::{DMat, DTensor3, DVec};
+pub(crate) mod cublas;
+pub(crate) mod cuda;
+mod dtype;
+pub(crate) mod flashinfer;
+mod tensor;
+
+pub(crate) use cublas::Cublas;
+pub(crate) use cuda::Cuda;
+pub(crate) use dtype::{BF16, F32, I32};
+pub(crate) use flashinfer::FlashInfer;
+pub(crate) use tensor::{DMat, DTensor3, DVec};
 
 use std::ptr;
 
@@ -369,142 +378,23 @@ impl GdnStateIndexPolicy {
     }
 }
 
-pub(crate) struct KernelOps<'a> {
-    stream: ffi::CudaStream,
-    qsfi: &'a mut qsfi::Context,
-    qscb: &'a mut qscb::Context,
+pub(crate) struct Operators<'a> {
+    pub cuda: Cuda<'a>,
+    pub cublas: Cublas<'a>,
+    pub flashinfer: FlashInfer<'a>,
 }
 
-impl<'a> KernelOps<'a> {
+impl<'a> Operators<'a> {
     pub(crate) fn new(
-        stream: ffi::CudaStream,
-        qsfi: &'a mut qsfi::Context,
-        qscb: &'a mut qscb::Context,
+        stream: &'a ffi::CudaStream,
+        flashinfer: &'a mut qsfi::Context,
+        cublas: &'a mut qscb::Context,
     ) -> Self {
-        Self { stream, qsfi, qscb }
-    }
-
-    pub(crate) unsafe fn embedding_gather_bf16(
-        &mut self,
-        desc: &EmbeddingGatherBf16,
-    ) -> Result<(), Status> {
-        unsafe { qscu::embedding_gather_bf16(&desc.raw, self.stream) }
-    }
-
-    pub(crate) unsafe fn silu_and_mul_bf16(&mut self, desc: &SiluAndMulBf16) -> Result<(), Status> {
-        unsafe { qscu::silu_and_mul_bf16(&desc.raw, self.stream) }
-    }
-
-    pub(crate) unsafe fn qwen36_shared_expert_gate_add_bf16(
-        &mut self,
-        desc: &Qwen36SharedExpertGateAddBf16,
-    ) -> Result<(), Status> {
-        unsafe { qscu::qwen36_shared_expert_gate_add_bf16(&desc.raw, self.stream) }
-    }
-
-    pub(crate) unsafe fn qwen36_full_attention_output_gate_bf16(
-        &mut self,
-        desc: &Qwen36FullAttentionOutputGateBf16,
-    ) -> Result<(), Status> {
-        unsafe { qscu::qwen36_full_attention_output_gate_bf16(&desc.raw, self.stream) }
-    }
-
-    pub(crate) unsafe fn logits_soft_cap_f32(
-        &mut self,
-        desc: &LogitsSoftCapF32,
-    ) -> Result<(), Status> {
-        unsafe {
-            qscu::logits_soft_cap_f32(
-                &desc.logits,
-                desc.rows,
-                desc.vocab_size,
-                desc.soft_cap,
-                self.stream,
-            )
+        Self {
+            cuda: Cuda::new(stream),
+            cublas: Cublas::new(cublas),
+            flashinfer: FlashInfer::new(flashinfer),
         }
-    }
-
-    pub(crate) unsafe fn greedy_argmax_f32(
-        &mut self,
-        desc: &GreedyArgmaxF32,
-    ) -> Result<(), Status> {
-        unsafe { qscu::greedy_argmax_f32(&desc.raw, self.stream) }
-    }
-
-    pub(crate) unsafe fn router_topk(&mut self, desc: &RouterTopK) -> Result<(), Status> {
-        unsafe { qscu::router_topk(&desc.raw, self.stream) }
-    }
-
-    pub(crate) unsafe fn gemm_bf16(&mut self, desc: &Bf16Gemm) -> Result<(), Status> {
-        unsafe { self.qscb.gemm_bf16(&desc.raw) }
-    }
-
-    pub(crate) unsafe fn rmsnorm_bf16(&mut self, desc: &RmsNormBf16) -> Result<(), Status> {
-        unsafe { self.qsfi.rmsnorm(&desc.raw) }
-    }
-
-    pub(crate) unsafe fn fused_add_rmsnorm_bf16(
-        &mut self,
-        desc: &FusedAddRmsNormBf16,
-    ) -> Result<(), Status> {
-        unsafe { self.qsfi.fused_add_rmsnorm(&desc.raw) }
-    }
-
-    pub(crate) unsafe fn rope_apply_bf16(&mut self, desc: &RopeApplyBf16) -> Result<(), Status> {
-        unsafe { self.qsfi.rope_apply(&desc.raw) }
-    }
-
-    pub(crate) unsafe fn qwen36_gdn_causal_conv1d_bf16(
-        &mut self,
-        desc: &GdnCausalConv1dBf16,
-    ) -> Result<(), Status> {
-        unsafe { qscu::qwen36_gdn_causal_conv1d_bf16(&desc.raw, self.stream) }
-    }
-
-    pub(crate) unsafe fn qwen36_gdn_post_conv_prepare_bf16(
-        &mut self,
-        desc: &GdnPostConvPrepareBf16,
-    ) -> Result<(), Status> {
-        unsafe { qscu::qwen36_gdn_post_conv_prepare_bf16(&desc.raw, self.stream) }
-    }
-
-    pub(crate) unsafe fn qwen36_gdn_rmsnorm_gated_bf16(
-        &mut self,
-        desc: &GdnRmsNormGatedBf16,
-    ) -> Result<(), Status> {
-        unsafe { qscu::qwen36_gdn_rmsnorm_gated_bf16(&desc.raw, self.stream) }
-    }
-
-    pub(crate) unsafe fn gdn_decode_bf16(&mut self, desc: &GdnDecodeBf16) -> Result<(), Status> {
-        unsafe { qscu::gdn_decode(self.qsfi, &desc.raw) }
-    }
-
-    pub(crate) unsafe fn gdn_prefill_bf16(&mut self, desc: &GdnPrefillBf16) -> Result<(), Status> {
-        unsafe { qscu::gdn_prefill(self.qsfi, &desc.raw) }
-    }
-
-    pub(crate) unsafe fn create_moe_bf16_plan(
-        &mut self,
-        config: MoeBf16PlanConfig,
-    ) -> Result<MoePlan, Status> {
-        let desc = config.desc()?;
-        unsafe { self.qsfi.create_moe_plan(&desc) }
-    }
-
-    pub(crate) unsafe fn moe_workspace_size(
-        &mut self,
-        plan: &MoePlan,
-        num_tokens: u32,
-    ) -> Result<usize, Status> {
-        unsafe { self.qsfi.moe_workspace_size(plan, num_tokens) }
-    }
-
-    pub(crate) unsafe fn moe_execute_bf16(
-        &mut self,
-        plan: &MoePlan,
-        desc: &MoeBf16Execute,
-    ) -> Result<(), Status> {
-        unsafe { self.qsfi.moe_execute_bf16(plan, &desc.raw) }
     }
 }
 

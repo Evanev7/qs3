@@ -1,7 +1,4 @@
-pub(crate) mod device_tensor;
-pub(crate) mod dtype;
-pub(crate) mod kernels;
-
+use crate::backend::Operators;
 use crate::engine::{
     AppendBatch, Commit, DecodeBatch, DynDType, EngineConfig, EngineCore, EngineLayer, KvLayout,
     Status, validate_supported_attention_grouping, validate_supported_attention_head_dim,
@@ -237,8 +234,8 @@ impl EngineInner {
     }
 
     #[allow(dead_code)]
-    pub(crate) fn kernel_ops(&mut self) -> kernels::KernelOps<'_> {
-        kernels::KernelOps::new(self.stream, &mut self.ctx, &mut self.qscb_ctx)
+    pub(crate) fn operators(&mut self) -> Operators<'_> {
+        Operators::new(&self.stream, &mut self.ctx, &mut self.qscb_ctx)
     }
 
     fn allocate_layer_caches(&mut self) -> Result<(), Status> {

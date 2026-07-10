@@ -10,8 +10,8 @@ pub struct Engine {
 }
 
 impl Engine {
-    pub(crate) fn kernel_ops(&mut self) -> runtime::kernels::KernelOps<'_> {
-        self.inner.kernel_ops()
+    pub(crate) fn operators(&mut self) -> crate::backend::Operators<'_> {
+        self.inner.operators()
     }
 }
 
@@ -238,10 +238,10 @@ pub struct EngineLayer {
 impl EngineLayer {
     pub(crate) fn bf16_attention(
         layer_idx: u32,
-        q: runtime::kernels::Bf16Heads,
-        k: runtime::kernels::Bf16Heads,
-        v: runtime::kernels::Bf16Heads,
-        o: runtime::kernels::Bf16Heads,
+        q: crate::backend::Bf16Heads,
+        k: crate::backend::Bf16Heads,
+        v: crate::backend::Bf16Heads,
+        o: crate::backend::Bf16Heads,
         q_rope_offset: ffi::DevicePtr,
     ) -> Self {
         Self {

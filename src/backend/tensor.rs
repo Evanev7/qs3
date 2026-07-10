@@ -1,6 +1,8 @@
 use std::marker::PhantomData;
 
-use crate::{Status, ffi, runtime::dtype::DType};
+use crate::{Status, ffi};
+
+use super::dtype::DType;
 
 /*
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
