@@ -27,9 +27,9 @@ bench *args: copy-ninja
         ninja -C build bench
         build/qsfi_bench_native {{args}}
 
-model-bench *args: copy-ninja
+model-tps: copy-ninja
         ninja -C build
-        LIBRARY_PATH="{{cuda_lib_path}}:${LIBRARY_PATH:-}" cargo run --release --bin qs3_model_bench -- {{args}}
+        LIBRARY_PATH="{{cuda_lib_path}}:${LIBRARY_PATH:-}" cargo test --release --lib loader::benchmark::real_qwen36_bf16_tps -- --ignored --exact --nocapture --test-threads=1
 
 weight-loader-bench: copy-ninja
         ninja -C build
