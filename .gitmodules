@@ -10,3 +10,6 @@
 [submodule "3pty/InstantTensor"]
 	path = 3pty/InstantTensor
 	url = https://github.com/scitix/InstantTensor
+[submodule "3pty/tokenizers"]
+	path = 3pty/tokenizers
+	url = https://github.com/huggingface/tokenizers
