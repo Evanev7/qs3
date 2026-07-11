@@ -145,13 +145,21 @@ impl fmt::Display for BenchRow<'_> {
     }
 }
 
+fn fnv1a_update(mut hash: u64, bytes: &[u8]) -> u64 {
+    for &byte in bytes {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    hash
+}
+
+fn byte_fingerprint(bytes: &[u8]) -> u64 {
+    fnv1a_update(FNV_OFFSET, bytes)
+}
+
 fn token_id_fingerprint(tokens: &[i32]) -> u64 {
-    tokens.iter().fold(FNV_OFFSET, |mut hash, token| {
-        for byte in token.to_le_bytes() {
-            hash ^= u64::from(byte);
-            hash = hash.wrapping_mul(FNV_PRIME);
-        }
-        hash
+    tokens.iter().fold(FNV_OFFSET, |hash, token| {
+        fnv1a_update(hash, &token.to_le_bytes())
     })
 }
 
@@ -245,7 +253,7 @@ fn run_real_qwen36_bf16_tps() {
         model_dir.is_dir(),
         "pinned model snapshot is missing: {MODEL_DIR}"
     );
-    println!("{TSV_HEADER}");
+    println!("\n{TSV_HEADER}");
 
     let started = Instant::now();
     let tokenizer =
@@ -467,6 +475,11 @@ mod tests {
     fn fixed_workload_contract_does_not_drift() {
         assert!(FIXED_PROMPT.starts_with("<|im_start|>system\n"));
         assert!(FIXED_PROMPT.ends_with("<|im_start|>assistant\n"));
+        assert_eq!(FIXED_PROMPT.len(), 556);
+        assert_eq!(
+            byte_fingerprint(FIXED_PROMPT.as_bytes()),
+            0x329f_8f7b_8aef_d628
+        );
         assert_eq!(TOKENIZE_SAMPLES, 100);
         assert_eq!(PREFILL_WARMUPS, 2);
         assert_eq!(PREFILL_SAMPLES, 5);
