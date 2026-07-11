@@ -13,6 +13,8 @@ const PINNED_UPLOAD_BUFFER_BYTES: usize = 1 << 30;
 
 mod transfer;
 
+#[cfg(test)]
+mod benchmark;
 mod format;
 #[cfg(test)]
 mod tests;
