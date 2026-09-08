@@ -20,7 +20,15 @@ fn activate_device(device_ordinal: i32) -> Result<(), Status> {
     if device_ordinal < 0 {
         return Ok(());
     }
-    result_from_cuda(unsafe { ffi::cuda::cudaSetDevice(device_ordinal) })
+    let status = unsafe { ffi::cuda::cudaSetDevice(device_ordinal) };
+    if status != ffi::cuda::CUDA_SUCCESS {
+        let message = unsafe { std::ffi::CStr::from_ptr(ffi::cuda::cudaGetErrorString(status)) };
+        eprintln!(
+            "cudaSetDevice({device_ordinal}) failed: {} (CUDA error {status})",
+            message.to_string_lossy(),
+        );
+    }
+    result_from_cuda(status)
 }
 
 fn read_exact_at_raw(file: &File, dst: *mut u8, bytes: usize, offset: u64) -> io::Result<()> {

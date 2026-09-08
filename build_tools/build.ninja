@@ -40,8 +40,14 @@ rule link_test_checked
   command = nvcc $nvcc_checked_flags $in -o $out -lcuda $libs
   description = LINK CHECKED $out
 
+rule ar
+  command = ar -rs $out $in
+  description = ARCHIVE $out
+
 rule qwen36_vectors
-  command = rm -f $out && python3 $src/build_tools/qwen36-vectors/src/qwen36_vectors/__main__.py generate-all --output-root vectors/qwen36_semantics --clean && python3 $src/build_tools/qwen36-vectors/src/qwen36_vectors/__main__.py check-oracles --input-root vectors/qwen36_semantics && touch $out
+  command = rm -f $out && python3 $src/build_tools/qwen36-vectors/src/qwen36_vectors/__main__.py generate-all --output-root vectors/qwen36_semantics --clean && python3 $src/build_tools/qwen36-vectors/src/qwen36_vectors/__main__.py check-oracles --depfile $out.d --depfile-target $out --input-root vectors/qwen36_semantics && touch $out
+  depfile = $out.d
+  deps = gcc
   description = VECTORS qwen36_semantics
 
 build qsfi_macros.h: run $src/build_tools/generate_macros.c
@@ -89,6 +95,7 @@ build qsfi_checked.o: nvcc_checked $src/qsfi.cu | $
     $src/qsfi_norm_rope.cu $
     $src/qsfi_moe.cu
   extraflags = $fi_includes
+build libqs_native.a: ar qsfi.o qscu_gdn.o qscu.o qscb.o
 
 build qsfi_test_release: link_test $src/test.cu qsfi.o qscu_gdn.o qscu.o qscb.o | $
     $src/qs_tensor.h $
@@ -125,6 +132,6 @@ build qsfi_bench_native: link_test $src/bench_native.cu qsfi.o qscu_gdn.o qscu.o
 build qsfi_test: phony qsfi_test_release qsfi_test_checked
 build tests: phony qsfi_test
 build bench: phony qsfi_bench_native
-build all: phony qsfi.o qscu_gdn.o qscu.o qscb.o
+build all: phony libqs_native.a
 
 default all

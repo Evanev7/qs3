@@ -1,5 +1,5 @@
+use crate::test_assets::real_qwen36_model_dir;
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::time::Instant;
 
 use tinyjson::JsonValue;
@@ -489,14 +489,6 @@ fn tokenizer_decode_accumulates_bytes_and_rejects_unknown_ids() {
         tokenizer.decode(&[257]),
         Err(TokenizerError::UnknownTokenId(257))
     );
-}
-
-const DEFAULT_REAL_QWEN36_DIR: &str = "/home/exo/.cache/huggingface/hub/models--Qwen--Qwen3.6-35B-A3B/snapshots/995ad96eacd98c81ed38be0c5b274b04031597b0";
-
-fn real_qwen36_model_dir() -> PathBuf {
-    std::env::var_os("QS3_QWEN36_MODEL_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_REAL_QWEN36_DIR))
 }
 
 #[test]

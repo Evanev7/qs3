@@ -55,10 +55,13 @@ mod loader;
 pub mod model;
 pub mod tokenizer;
 
+mod test_assets;
+
 pub use engine::{
     AppendBatch, AttentionLayer, BatchKind, Commit, CoreState, DecodeBatch, DynDType, Engine,
     EngineConfig, KvLayout, RequestId, Status,
 };
+pub use loader::benchmark::run_core_benchmark;
 pub use model::{ModelRunner, QwenConfig, QwenMoeConfig, QwenRequest, QwenResult, QwenWeights};
 pub use tokenizer::{QwenTokenizer, TokenizerError};
 

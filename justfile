@@ -29,7 +29,7 @@ bench *args: copy-ninja
 
 model-tps: copy-ninja
         ninja -C build
-        LIBRARY_PATH="{{cuda_lib_path}}:${LIBRARY_PATH:-}" cargo test --release --lib loader::benchmark::real_qwen36_bf16_tps -- --ignored --exact --nocapture --test-threads=1
+        LIBRARY_PATH="{{cuda_lib_path}}:${LIBRARY_PATH:-}" cargo run --release --bin qs3-bench
 
 weight-loader-bench: copy-ninja
         ninja -C build
@@ -37,7 +37,7 @@ weight-loader-bench: copy-ninja
 
 real-model-test: copy-ninja
         ninja -C build
-        LIBRARY_PATH="{{cuda_lib_path}}:${LIBRARY_PATH:-}" cargo test --release weight_loader::tests::real_qwen36_bf16_generates_reference_tokens -- --ignored --exact --nocapture --test-threads=1
+        LIBRARY_PATH="{{cuda_lib_path}}:${LIBRARY_PATH:-}" cargo test --release loader::tests::real_qwen36_bf16_generates_reference_tokens -- --ignored --exact --nocapture --test-threads=1
 
 copy-ninja:
         mkdir -p build

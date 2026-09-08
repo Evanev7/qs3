@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import os
 from collections.abc import Sequence
+from pathlib import Path
 
 from . import generate_attention
 from .full_attention_block import DEFAULT_OUTPUT as DEFAULT_FULL_ATTENTION_BLOCK_OUTPUT
@@ -113,6 +115,14 @@ def main(argv: Sequence[str] | None = None) -> None:
         "--oracle-root",
         default=str(DEFAULT_ORACLE_ROOT),
         help=f"oracle input root (default: {DEFAULT_ORACLE_ROOT})",
+    )
+    check_oracles_parser.add_argument(
+        "--depfile",
+        help="write Make-style source/oracle dependencies after successful verification",
+    )
+    check_oracles_parser.add_argument(
+        "--depfile-target",
+        help="build output named by the depfile (for example, the .oracle-ok stamp)",
     )
     generate = subparsers.add_parser(
         "generate",
@@ -229,6 +239,8 @@ def main(argv: Sequence[str] | None = None) -> None:
     )
 
     args = parser.parse_args(argv)
+    if args.command == "check-oracles" and bool(args.depfile) != bool(args.depfile_target):
+        parser.error("--depfile and --depfile-target must be supplied together")
     if args.command == "list-groups":
         if VECTOR_GROUPS:
             for group in VECTOR_GROUPS:
@@ -246,6 +258,8 @@ def main(argv: Sequence[str] | None = None) -> None:
         return
     if args.command == "check-oracles":
         check_oracles(args.input_root, args.oracle_root)
+        if args.depfile:
+            _write_depfile(args.depfile, args.depfile_target, args.oracle_root)
         print(f"oracle hashes verified: input={args.input_root}")
         return
     if args.command == "generate":
@@ -340,6 +354,38 @@ def main(argv: Sequence[str] | None = None) -> None:
         generate_model_logits_main(generate_args)
         return
     parser.print_help()
+
+
+def _write_depfile(output: str, target: str, oracle_root: str) -> None:
+    dependencies: set[Path] = set()
+    for root, suffix in (
+        (Path(__file__).resolve().parent, ".py"),
+        (Path(oracle_root).resolve(), ".json"),
+    ):
+        for directory, subdirs, files in os.walk(root):
+            subdirs[:] = [name for name in subdirs if name != "__pycache__"]
+            # Directory mtimes catch additions/removals; file mtimes catch edits.
+            dependencies.add(Path(directory))
+            dependencies.update(
+                Path(directory) / name for name in files if name.endswith(suffix)
+            )
+
+    def escape(path: str) -> str:
+        if "\n" in path or "\r" in path:
+            raise ValueError("depfile paths cannot contain newlines")
+        return (
+            path.replace("\\", "\\\\")
+            .replace("$", "$$")
+            .replace("#", "\\#")
+            .replace(" ", "\\ ")
+            .replace("\t", "\\\t")
+            .replace(":", "\\:")
+        )
+
+    inputs = " ".join(escape(str(path)) for path in sorted(dependencies))
+    depfile = Path(output)
+    depfile.parent.mkdir(parents=True, exist_ok=True)
+    depfile.write_text(f"{escape(target)}: {inputs}\n", encoding="utf-8")
 
 
 def _print_norm_index(index: dict[str, object], output: object) -> None:

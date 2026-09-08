@@ -10,6 +10,7 @@ pub(crate) const CUDA_HOST_ALLOC_DEFAULT: u32 = 0;
 pub(crate) const CUDA_EVENT_DISABLE_TIMING: u32 = 2;
 
 unsafe extern "C" {
+    pub(crate) fn cudaGetErrorString(error: i32) -> *const libc::c_char;
     pub(crate) fn cudaGetDevice(device: *mut i32) -> i32;
     pub(crate) fn cudaSetDevice(device: i32) -> i32;
     pub(crate) fn cudaMalloc(dev_ptr: *mut *mut c_void, size: usize) -> i32;

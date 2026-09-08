@@ -108,6 +108,22 @@ check the vectors before testing or committing; remove
 `build/vectors/qwen36_semantics/.oracle-ok` first if you need to force a clean
 `just generate-vectors` run without changing oracle metadata.
 
+The `check-oracles` command can emit a Make-style depfile after verification:
+
+```sh
+python3 build_tools/qwen36-vectors/src/qwen36_vectors/__main__.py check-oracles \
+  --input-root build/vectors/qwen36_semantics \
+  --depfile build/vectors/qwen36_semantics/.oracle-ok.d \
+  --depfile-target build/vectors/qwen36_semantics/.oracle-ok
+```
+
+Both depfile options must be supplied together. The target must match the build
+output's path as seen by Ninja, relative to its working directory. Dependencies
+use absolute paths and include generator Python sources, oracle JSON files, and
+their directories to detect additions/removals. Generated vectors and
+`__pycache__` contents are excluded. Ninja consumes this depfile for the
+`.oracle-ok` target.
+
 When a generator change intentionally updates bytes, refresh the oracle metadata
 from a clean generated tree with:
 

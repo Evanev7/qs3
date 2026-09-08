@@ -16,6 +16,7 @@ use super::{
         WeightLoadMemory, WeightLoadSpan, WeightTensorDesc, result_from_cuda,
     },
 };
+use crate::test_assets::{real_qwen36_model_dir, require_real_qwen36_model_dir};
 use crate::{
     QWEN36_FULL_ATTN_HEAD_DIM, QWEN36_GDN_PACKED_DIM, QWEN36_HIDDEN_SIZE,
     engine::{DynDType, Status},
@@ -23,9 +24,8 @@ use crate::{
 };
 use std::collections::BTreeMap;
 use std::ffi::c_void;
-use std::{env, path::PathBuf, ptr, time::Instant};
+use std::{env, ptr, time::Instant};
 
-const DEFAULT_REAL_QWEN36_BF16_DIR: &str = "/home/exo/.cache/huggingface/hub/models--Qwen--Qwen3.6-35B-A3B/snapshots/995ad96eacd98c81ed38be0c5b274b04031597b0";
 const REAL_PROMPT: [i32; 4] = [1, 2, 3, 4];
 const REAL_GENERATED: [i32; 4] = [5, 6, 24_218, 10];
 const REAL_PREFILL_TOP_IDS: [i32; 8] = [5, 3, 2, 220, 61, 198, 26_972, 271];
@@ -378,11 +378,6 @@ unsafe extern "C" {
 fn cuda_device_available_for_loader_test() -> bool {
     let mut count = 0;
     unsafe { cudaGetDeviceCount(&mut count) == ffi::cuda::CUDA_SUCCESS && count > 0 }
-}
-
-fn real_qwen36_bf16_model_dir() -> Option<PathBuf> {
-    let path = PathBuf::from(DEFAULT_REAL_QWEN36_BF16_DIR);
-    path.exists().then_some(path)
 }
 
 fn cuda_device_from_env() -> i32 {
@@ -819,13 +814,14 @@ fn materialization_rejects_backend_that_retains_allocations_after_take() {
 
 #[test]
 fn validates_real_qwen36_bf16_manifest_when_available() {
-    let Some(model_dir) = real_qwen36_bf16_model_dir() else {
+    let model_dir = real_qwen36_model_dir();
+    if !model_dir.is_dir() {
         eprintln!(
             "skipping real Qwen3.6 BF16 manifest smoke; {} does not exist",
-            DEFAULT_REAL_QWEN36_BF16_DIR
+            model_dir.display()
         );
         return;
-    };
+    }
 
     let started = Instant::now();
     let validated =
@@ -853,8 +849,7 @@ fn validates_real_qwen36_bf16_manifest_when_available() {
 #[test]
 #[ignore = "loads and executes the full real Qwen3.6 BF16 model"]
 fn real_qwen36_bf16_generates_reference_tokens() {
-    let model_dir =
-        real_qwen36_bf16_model_dir().expect("run on spark-1565 with the pinned BF16 snapshot");
+    let model_dir = require_real_qwen36_model_dir();
     let plan = QwenBf16LoadPlan::read(model_dir).unwrap();
     let backend = ManagedUmaBackend::new(cuda_device_from_env()).unwrap();
     let loaded = execute_qwen36_bf16_load_plan(&plan, backend, ptr::null_mut()).unwrap();
@@ -919,8 +914,7 @@ fn real_qwen36_bf16_generates_reference_tokens() {
 #[test]
 #[ignore = "reads the full real BF16 model into CUDA managed memory"]
 fn bench_real_qwen36_bf16_managed_uma_load() {
-    let model_dir = real_qwen36_bf16_model_dir()
-        .expect("run on spark-1565 with the hardcoded BF16 snapshot path");
+    let model_dir = require_real_qwen36_model_dir();
     let plan_started = Instant::now();
     let plan = QwenBf16LoadPlan::read(&model_dir).unwrap();
     println!(
@@ -966,8 +960,7 @@ fn bench_real_qwen36_bf16_managed_uma_load() {
 #[test]
 #[ignore = "reads the full real BF16 model through pinned staging into CUDA device memory"]
 fn bench_real_qwen36_bf16_pinned_upload_load() {
-    let model_dir = real_qwen36_bf16_model_dir()
-        .expect("run on spark-1565 with the hardcoded BF16 snapshot path");
+    let model_dir = require_real_qwen36_model_dir();
     let plan_started = Instant::now();
     let plan = QwenBf16LoadPlan::read(&model_dir).unwrap();
     println!(
