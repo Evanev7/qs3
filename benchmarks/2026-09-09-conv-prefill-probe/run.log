@@ -1,0 +1,3 @@
+tokens	batch	state_bytes	serial_ms	parallel_ms
+1024	1	2	14.367512	0.190377
+All outputs and final states match bitwise
