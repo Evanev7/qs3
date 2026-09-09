@@ -375,7 +375,17 @@ boundaries and the full 256 experts, cross-lane ties, softmax/sigmoid, both
 normalization settings, scaling, checked rejection of nonfinite logits, and
 release nonfinite fallback behavior. The full suite and both native builds pass.
 The pinned real BF16 model passes reference logits/greedy IDs/reset with both
-BF16 and FP32 recurrence. Core throughput is measured separately after integration.
+BF16 and FP32 recurrence.
+
+The integrated [short run](benchmarks/2026-09-09T035542.790727701Z-f898d32.json)
+measures 23.208 tok/s and 43.000 ms decode p50; the
+[1024-token/256-step run](benchmarks/2026-09-09T035649.557029218Z-f898d32.json)
+measures 23.204 tok/s and 43.060 ms p50. Throughput rises 12.3–12.4% against the
+corresponding FP32-state `bb36781` runs. All 36 and 260 generated IDs respectively
+remain identical to that baseline. Prefill p50 is 403.116 and 1929.128 ms. The
+27B download was paused throughout both measurements to avoid concurrent I/O.
+This is still about 75% of the matched vLLM decode throughput; kernel and host
+work remain to close the gap.
 
 
 Source audit corrected an earlier prefill endpoint description: `execute_active_batch`
