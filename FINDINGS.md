@@ -504,3 +504,18 @@ The benchmark names the selected `qscu_warp4_row128_bf16` path and independently
 records recurrence dtype. The prescribed full suite and both native builds pass;
 the pinned real 35B reference also passes with BF16 and FP32 state, including
 existing logit tolerances, greedy IDs, reset and replay. Core timing follows.
+
+The integrated [short core run](benchmarks/2026-09-09T044959.830192700Z-27c8c15.json)
+measures 295.488 ms prefill p50 and 23.554 tok/s decode. The
+[1024-token/256-step run](benchmarks/2026-09-09T045052.688328012Z-27c8c15.json)
+measures 605.658 ms prefill and 23.596 tok/s decode (42.345 ms p50). Before the
+warp recurrence, prefill was 379.641/1431.271 ms: reductions of 22.2% and 57.7%.
+The 1024-token prefill is now 68.5% below the 1922.211 ms final-row baseline,
+combining convolution and recurrence improvements. Generated IDs remain identical
+in both comparisons (36 and 260 respectively). The download process had exited,
+so these core runs had no simultaneous asset transfer.
+
+The matched vLLM long-context baseline remains 367.629 ms prefill and 30.769
+tok/s decode. The remaining gap is about 1.65 times prefill latency and 23.3%
+lower decode throughput. Obtain the vLLM GPU trace before choosing the next
+projection/MoE change; retaining resources and graph replay remain open.
