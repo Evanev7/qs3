@@ -16,13 +16,19 @@ namespace {
 
 constexpr uint32_t kQwen36GdnNumQHeads = QSFI_QWEN36_GDN_NUM_Q_HEADS;
 constexpr uint32_t kQwen36GdnNumKHeads = QSFI_QWEN36_GDN_NUM_K_HEADS;
-constexpr uint32_t kQwen36GdnNumVHeads = QSFI_QWEN36_GDN_NUM_V_HEADS;
 constexpr uint32_t kQwen36GdnKeyDim = QSFI_QWEN36_GDN_KEY_DIM;
 constexpr uint32_t kQwen36GdnValueDim = QSFI_QWEN36_GDN_VALUE_DIM;
 constexpr uint32_t kQwen36GdnConvWidth = 4;
 constexpr uint32_t kQwen36GdnConvState = kQwen36GdnConvWidth - 1;
-constexpr uint32_t kQwen36GdnPackedDim
-    = 2 * kQwen36GdnNumKHeads * kQwen36GdnKeyDim + kQwen36GdnNumVHeads * kQwen36GdnValueDim;
+constexpr bool qwen36_gdn_value_heads_supported(int64_t heads)
+{
+    return heads == 32 || heads == 48;
+}
+
+constexpr uint32_t qwen36_gdn_packed_dim(uint32_t value_heads)
+{
+    return 2 * kQwen36GdnNumKHeads * kQwen36GdnKeyDim + value_heads * kQwen36GdnValueDim;
+}
 constexpr uint32_t kQwen36FullAttentionQHidden = 4096;
 constexpr uint32_t kQwen36GdnThreads = QSFI_QWEN36_GDN_THREADS;
 constexpr uint32_t kElementwiseThreads = 256;
@@ -832,10 +838,11 @@ __device__ float block_sum_128(float value)
     return result;
 }
 
+template <uint32_t NumVHeads>
 __global__ void qwen36_gdn_post_conv_prepare_kernel(post_conv_params p)
 {
-    const uint32_t head_slot = blockIdx.x % (kQwen36GdnNumKHeads + kQwen36GdnNumVHeads);
-    const uint32_t token = blockIdx.x / (kQwen36GdnNumKHeads + kQwen36GdnNumVHeads);
+    const uint32_t head_slot = blockIdx.x % (kQwen36GdnNumKHeads + NumVHeads);
+    const uint32_t token = blockIdx.x / (kQwen36GdnNumKHeads + NumVHeads);
     const uint32_t tid = threadIdx.x;
 
     if (head_slot < kQwen36GdnNumKHeads) {
@@ -934,10 +941,11 @@ struct rmsnorm_gated_params {
     qscu_activation gate_activation;
 };
 
+template <uint32_t NumVHeads>
 __global__ void qwen36_gdn_rmsnorm_gated_kernel(rmsnorm_gated_params p)
 {
-    const uint32_t token = blockIdx.x / kQwen36GdnNumVHeads;
-    const uint32_t v_head = blockIdx.x % kQwen36GdnNumVHeads;
+    const uint32_t token = blockIdx.x / NumVHeads;
+    const uint32_t v_head = blockIdx.x % NumVHeads;
     const uint32_t tid = threadIdx.x;
     const float x_value = load_bf16(
         p.x + static_cast<int64_t>(token) * p.x_stride0 + static_cast<int64_t>(v_head) * p.x_stride1
@@ -1125,14 +1133,18 @@ qsfi_status validate_conv_desc(const qscu_qwen36_gdn_causal_conv1d_desc* desc)
     if (!tensor_present(desc->state_read_indices) && !tensor_present(desc->state_write_indices))
         return QSFI_STATUS_INVALID_ARGUMENT;
 
+    const int64_t packed_dim = desc->x.shape[1];
+    if (packed_dim != qwen36_gdn_packed_dim(32) && packed_dim != qwen36_gdn_packed_dim(48))
+        return QSFI_STATUS_INVALID_ARGUMENT;
+
     if (desc->x.shape[0] != static_cast<int64_t>(desc->num_tokens)
-        || desc->x.shape[1] != kQwen36GdnPackedDim || desc->weight.shape[0] != kQwen36GdnPackedDim
+        || desc->weight.shape[0] != packed_dim
         || desc->weight.shape[1] != kQwen36GdnConvWidth
-        || (tensor_present(desc->bias) && desc->bias.shape[0] != kQwen36GdnPackedDim)
-        || desc->state.shape[1] != kQwen36GdnPackedDim
+        || (tensor_present(desc->bias) && desc->bias.shape[0] != packed_dim)
+        || desc->state.shape[1] != packed_dim
         || desc->state.shape[2] != kQwen36GdnConvState
         || desc->out.shape[0] != static_cast<int64_t>(desc->num_tokens)
-        || desc->out.shape[1] != kQwen36GdnPackedDim
+        || desc->out.shape[1] != packed_dim
         || (tensor_present(desc->state_read_indices)
             && desc->state_read_indices.shape[0] != static_cast<int64_t>(desc->batch_size))
         || (tensor_present(desc->state_write_indices)
@@ -1240,25 +1252,30 @@ qsfi_status validate_post_conv_desc(const qscu_qwen36_gdn_post_conv_prepare_desc
     if (tensor_present(desc->beta_out) && !contiguous2(desc->beta_out))
         return QSFI_STATUS_INVALID_ARGUMENT;
 
+    const int64_t value_heads = desc->v.shape[1];
+    if (!qwen36_gdn_value_heads_supported(value_heads))
+        return QSFI_STATUS_INVALID_ARGUMENT;
+    const uint32_t packed_dim = qwen36_gdn_packed_dim(static_cast<uint32_t>(value_heads));
+
     if (desc->conv_out.shape[0] != static_cast<int64_t>(desc->num_tokens)
-        || desc->conv_out.shape[1] != kQwen36GdnPackedDim
+        || desc->conv_out.shape[1] != packed_dim
         || desc->a.shape[0] != static_cast<int64_t>(desc->num_tokens)
-        || desc->a.shape[1] != kQwen36GdnNumVHeads
+        || desc->a.shape[1] != value_heads
         || desc->b.shape[0] != static_cast<int64_t>(desc->num_tokens)
-        || desc->b.shape[1] != kQwen36GdnNumVHeads || desc->a_log.shape[0] != kQwen36GdnNumVHeads
-        || desc->dt_bias.shape[0] != kQwen36GdnNumVHeads
+        || desc->b.shape[1] != value_heads || desc->a_log.shape[0] != value_heads
+        || desc->dt_bias.shape[0] != value_heads
         || desc->q.shape[0] != static_cast<int64_t>(desc->num_tokens)
         || desc->q.shape[1] != kQwen36GdnNumQHeads || desc->q.shape[2] != kQwen36GdnKeyDim
         || desc->k.shape[0] != static_cast<int64_t>(desc->num_tokens)
         || desc->k.shape[1] != kQwen36GdnNumKHeads || desc->k.shape[2] != kQwen36GdnKeyDim
         || desc->v.shape[0] != static_cast<int64_t>(desc->num_tokens)
-        || desc->v.shape[1] != kQwen36GdnNumVHeads || desc->v.shape[2] != kQwen36GdnValueDim
+        || desc->v.shape[2] != kQwen36GdnValueDim
         || (tensor_present(desc->g_out)
             && (desc->g_out.shape[0] != static_cast<int64_t>(desc->num_tokens)
-                || desc->g_out.shape[1] != kQwen36GdnNumVHeads))
+                || desc->g_out.shape[1] != value_heads))
         || (tensor_present(desc->beta_out)
             && (desc->beta_out.shape[0] != static_cast<int64_t>(desc->num_tokens)
-                || desc->beta_out.shape[1] != kQwen36GdnNumVHeads))) {
+                || desc->beta_out.shape[1] != value_heads))) {
         return QSFI_STATUS_INVALID_ARGUMENT;
     }
     return QSFI_STATUS_OK;
@@ -1289,13 +1306,17 @@ qsfi_status validate_rmsnorm_gated_desc(const qscu_qwen36_gdn_rmsnorm_gated_desc
     if (!contiguous3(desc->x) || !contiguous3(desc->gate) || !contiguous1(desc->weight)
         || !contiguous3(desc->out))
         return QSFI_STATUS_INVALID_ARGUMENT;
+    const int64_t value_heads = desc->x.shape[1];
+    if (!qwen36_gdn_value_heads_supported(value_heads))
+        return QSFI_STATUS_INVALID_ARGUMENT;
+
     if (desc->x.shape[0] != static_cast<int64_t>(desc->num_tokens)
-        || desc->x.shape[1] != kQwen36GdnNumVHeads || desc->x.shape[2] != kQwen36GdnValueDim
+        || desc->x.shape[2] != kQwen36GdnValueDim
         || desc->gate.shape[0] != static_cast<int64_t>(desc->num_tokens)
-        || desc->gate.shape[1] != kQwen36GdnNumVHeads || desc->gate.shape[2] != kQwen36GdnValueDim
+        || desc->gate.shape[1] != value_heads || desc->gate.shape[2] != kQwen36GdnValueDim
         || desc->weight.shape[0] != kQwen36GdnValueDim
         || desc->out.shape[0] != static_cast<int64_t>(desc->num_tokens)
-        || desc->out.shape[1] != kQwen36GdnNumVHeads || desc->out.shape[2] != kQwen36GdnValueDim) {
+        || desc->out.shape[1] != value_heads || desc->out.shape[2] != kQwen36GdnValueDim) {
         return QSFI_STATUS_INVALID_ARGUMENT;
     }
     return QSFI_STATUS_OK;
@@ -1810,7 +1831,7 @@ qsfi_status qscu_qwen36_gdn_causal_conv1d_bf16(
     params.out = static_cast<__nv_bfloat16*>(desc->out.data);
     params.out_stride0 = desc->out.stride[0];
     params.out_stride1 = desc->out.stride[1];
-    params.conv_dim = kQwen36GdnPackedDim;
+    params.conv_dim = static_cast<uint32_t>(desc->x.shape[1]);
     params.activation = desc->activation;
     params.update_state = desc->update_state != 0 ? 1u : 0u;
 
@@ -1880,15 +1901,19 @@ qsfi_status qscu_qwen36_gdn_post_conv_prepare_bf16(
     params.forget_gate_output = desc->forget_gate_output;
     params.apply_qk_l2norm = desc->apply_qk_l2norm != 0 ? 1u : 0u;
 
-    const uint64_t items
-        = static_cast<uint64_t>(desc->num_tokens) * (kQwen36GdnNumKHeads + kQwen36GdnNumVHeads);
+    const uint32_t value_heads = static_cast<uint32_t>(desc->v.shape[1]);
+    const uint64_t items = static_cast<uint64_t>(desc->num_tokens) * (kQwen36GdnNumKHeads + value_heads);
     if (items > std::numeric_limits<uint32_t>::max())
         return QSFI_STATUS_UNSUPPORTED;
-    qwen36_gdn_post_conv_prepare_kernel<<<
-        static_cast<uint32_t>(items),
-        kQwen36GdnThreads,
-        0,
-        static_cast<cudaStream_t>(stream)>>>(params);
+    if (value_heads == 32) {
+        qwen36_gdn_post_conv_prepare_kernel<32><<<
+            static_cast<uint32_t>(items), kQwen36GdnThreads, 0,
+            static_cast<cudaStream_t>(stream)>>>(params);
+    } else {
+        qwen36_gdn_post_conv_prepare_kernel<48><<<
+            static_cast<uint32_t>(items), kQwen36GdnThreads, 0,
+            static_cast<cudaStream_t>(stream)>>>(params);
+    }
     return validate_cuda(cudaGetLastError());
 }
 
@@ -1921,14 +1946,19 @@ qsfi_status qscu_qwen36_gdn_rmsnorm_gated_bf16(
     params.eps = desc->eps;
     params.gate_activation = desc->gate_activation;
 
-    const uint64_t items = static_cast<uint64_t>(desc->num_tokens) * kQwen36GdnNumVHeads;
+    const uint32_t value_heads = static_cast<uint32_t>(desc->x.shape[1]);
+    const uint64_t items = static_cast<uint64_t>(desc->num_tokens) * value_heads;
     if (items > std::numeric_limits<uint32_t>::max())
         return QSFI_STATUS_UNSUPPORTED;
-    qwen36_gdn_rmsnorm_gated_kernel<<<
-        static_cast<uint32_t>(items),
-        kQwen36GdnThreads,
-        0,
-        static_cast<cudaStream_t>(stream)>>>(params);
+    if (value_heads == 32) {
+        qwen36_gdn_rmsnorm_gated_kernel<32><<<
+            static_cast<uint32_t>(items), kQwen36GdnThreads, 0,
+            static_cast<cudaStream_t>(stream)>>>(params);
+    } else {
+        qwen36_gdn_rmsnorm_gated_kernel<48><<<
+            static_cast<uint32_t>(items), kQwen36GdnThreads, 0,
+            static_cast<cudaStream_t>(stream)>>>(params);
+    }
     return validate_cuda(cudaGetLastError());
 }
 

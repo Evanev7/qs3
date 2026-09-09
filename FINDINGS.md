@@ -666,3 +666,19 @@ CPU-reference prep tests cover convolution, Q/K/V split, gate materialization an
 gated RMSNorm. Production integration must replace the fixed 32-head assumptions
 in validation, prep launch specialization, Rust tensor/state views and allocations;
 the warp recurrence already receives its head counts in validated parameters.
+
+
+Native production dispatch now accepts exactly 16Q/2KV or 24Q/4KV attention with
+head dimension 256, and 16Q/16K GDN with 32 or 48 value heads and dimension 128.
+Both FlashInfer planning and launch dispatch include GQA ratio six; no vendored
+source or JIT path is changed. Post-convolution prep and gated RMSNorm instantiate
+separate AOT 32/48-head kernels. Convolution and recurrent descriptors validate
+the matching widths before device addressing.
+
+The prescribed full script now builds and runs dedicated `qsfi_test_qwen27`
+checked/release targets alongside the existing targets. Both models pass attention
+CPU-reference/reprepare/append tests and analytic BF16/FP32 recurrence tests;
+27B also passes prep CPU references and checked metadata rejection. The loaded
+35B BF16 regression passes with both recurrent precisions, including failed
+rebuild continuation and reset/replay. Public 27B model configuration, Rust views,
+scratch/state allocation and loading remain gated pending integration.

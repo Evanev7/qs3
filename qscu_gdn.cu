@@ -339,11 +339,11 @@ __global__ void validate_gdn_prefill_metadata_kernel(
 qsfi_status require_exact_shape(qsfi_context* ctx, const gdn_shape& shape)
 {
     if (shape.num_q_heads != kDefaultNumQHeads || shape.num_k_heads != kDefaultNumKHeads
-        || shape.num_v_heads != kDefaultNumVHeads || shape.key_dim != kDefaultKeyDim
+        || (shape.num_v_heads != kDefaultNumVHeads && shape.num_v_heads != 48) || shape.key_dim != kDefaultKeyDim
         || shape.value_dim != kDefaultValueDim) {
         return set_unsupported(
             ctx,
-            "only qwen3.6 GDN shape q=%u k=%u v=%u key_dim=%u value_dim=%u is wired",
+            "only qwen3.6 GDN shapes q=%u k=%u v=%u/48 key_dim=%u value_dim=%u are wired",
             kDefaultNumQHeads,
             kDefaultNumKHeads,
             kDefaultNumVHeads,

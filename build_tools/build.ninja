@@ -33,11 +33,11 @@ rule nvcc_checked
   description = NVCC CHECKED $out
 
 rule link_test
-  command = nvcc $nvccflags $in -o $out -lcuda $libs
+  command = nvcc $nvccflags $extraflags $in -o $out -lcuda $libs
   description = LINK $out
 
 rule link_test_checked
-  command = nvcc $nvcc_checked_flags $in -o $out -lcuda $libs
+  command = nvcc $nvcc_checked_flags $extraflags $in -o $out -lcuda $libs
   description = LINK CHECKED $out
 
 rule ar
@@ -121,6 +121,32 @@ build qsfi_test_checked: link_test_checked $src/test.cu qsfi_checked.o qscu_gdn_
     $src/tests_cuda_qscu_gdn_router.inc
   libs = -lcublas -lcublasLt
 
+build qsfi_test_qwen27_release: link_test $src/test.cu qsfi.o qscu_gdn.o qscu.o qscb.o | $
+    $src/qs_tensor.h $
+    $src/qs_info.h $
+    $src/qsfi.h $
+    $src/qscu.h $
+    $src/qscb.h $
+    $src/tests_cuda_flashinfer_norm_rope.inc $
+    $src/tests_cuda_qscb_linear.inc $
+    $src/tests_cuda_qscu_utils.inc $
+    $src/tests_cuda_qscu_gdn_router.inc
+  libs = -lcublas -lcublasLt
+  extraflags = -DQS3_TEST_QWEN27 -diag-suppress 177
+
+build qsfi_test_qwen27_checked: link_test_checked $src/test.cu qsfi_checked.o qscu_gdn_checked.o qscu_checked.o qscb.o | $
+    $src/qs_tensor.h $
+    $src/qs_info.h $
+    $src/qsfi.h $
+    $src/qscu.h $
+    $src/qscb.h $
+    $src/tests_cuda_flashinfer_norm_rope.inc $
+    $src/tests_cuda_qscb_linear.inc $
+    $src/tests_cuda_qscu_utils.inc $
+    $src/tests_cuda_qscu_gdn_router.inc
+  libs = -lcublas -lcublasLt
+  extraflags = -DQS3_TEST_QWEN27 -diag-suppress 177
+
 build qsfi_bench_native: link_test $src/bench_native.cu qsfi.o qscu_gdn.o qscu.o qscb.o | $
     $src/qs_tensor.h $
     $src/qs_info.h $
@@ -130,7 +156,7 @@ build qsfi_bench_native: link_test $src/bench_native.cu qsfi.o qscu_gdn.o qscu.o
   libs = -lcublas -lcublasLt
 
 build qsfi_test: phony qsfi_test_release qsfi_test_checked
-build tests: phony qsfi_test
+build tests: phony qsfi_test qsfi_test_qwen27_release qsfi_test_qwen27_checked
 build bench: phony qsfi_bench_native
 build all: phony libqs_native.a
 

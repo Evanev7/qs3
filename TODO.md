@@ -83,11 +83,14 @@
   headers. Production Rust dense-manifest validation remains open.
 - [x] Probe native full attention with 24 Q heads, 4 KV heads, head dimension
   256, and GQA ratio 6. The isolated AOT probe passes CPU-reference prefill/decode
-  and append cases on sp10; see FINDINGS.md. Production dispatch and Rust shape
-  validation still need to adopt the tested 6/8 dispatch.
+  and append cases on sp10; see FINDINGS.md. Production native dispatch now
+  supports the tested 6/8 cases; dedicated checked/release 27B tests pass. Rust
+  model shape validation still needs to adopt the 27B geometry.
 - [ ] Validate GDN with 16 key heads and 48 value heads, head dimensions 128,
   and convolution width 4. Audit fixed 35B constants in native kernels, Rust
-  views, scratch allocation, and recurrent state.
+  views, scratch allocation, and recurrent state. Native 32/48-head dispatch and
+  AOT prep specializations now pass dedicated tests, including BF16/FP32 state.
+  Rust views and allocation changes remain open.
 - [ ] Add the 64-layer, hidden-size-5120 dense model path with MLP intermediate
   size 17408. Preserve the three-GDN/one-full-attention schedule and explicit
   support for the 35B shape; reject unsupported model configurations.

@@ -11,14 +11,20 @@
 #include <cstring>
 #include <limits>
 #include <vector>
+#include <type_traits>
 
 namespace {
 
 constexpr int kBatch = 2;
 constexpr int kNumPages = 3;
 constexpr int kPageSize = 4;
+#if defined(QS3_TEST_QWEN27)
+constexpr int kQHeads = 24;
+constexpr int kKvHeads = 4;
+#else
 constexpr int kQHeads = 16;
 constexpr int kKvHeads = 2;
+#endif
 constexpr int kHeadDim = 256;
 constexpr int kGqaGroupSize = kQHeads / kKvHeads;
 constexpr int kNumIndices = 3;
@@ -27,12 +33,16 @@ constexpr size_t kAttentionWorkspaceBytes = 64ull << 20;
 
 constexpr int kGdnQHeads = 16;
 constexpr int kGdnKHeads = 16;
+#if defined(QS3_TEST_QWEN27)
+constexpr int kGdnVHeads = 48;
+#else
 constexpr int kGdnVHeads = 32;
+#endif
 constexpr int kGdnKeyDim = 128;
 constexpr int kGdnValueDim = 128;
 constexpr int kGdnStateSlots = 1;
-constexpr int kGdnActiveVHead = 3;
-constexpr int kGdnActiveQKHead = kGdnActiveVHead / 2;
+constexpr int kGdnActiveVHead = kGdnVHeads - 1;
+constexpr int kGdnActiveQKHead = kGdnActiveVHead / (kGdnVHeads / kGdnKHeads);
 constexpr int kGdnActiveKeyDim = 7;
 constexpr int kGdnActiveValueDim = 5;
 constexpr uint16_t kBf16Zero = 0x0000u;
@@ -1352,6 +1362,28 @@ void test_prefill_append_maps_positions_through_page_table()
     qsfi_context_destroy(ctx);
 }
 
+template <typename StateT>
+void check_gdn_state_single_nonzero(
+    const std::vector<StateT>& state, size_t active, float value,
+    float tolerance, const char* label
+)
+{
+    for (size_t i = 0; i < state.size(); ++i) {
+        float got;
+        if constexpr (std::is_same_v<StateT, float>)
+            got = state[i];
+        else
+            got = bf16_to_f32(state[i]);
+        const float expected = i == active ? value : 0.0f;
+        if (!std::isfinite(got) || std::fabs(got - expected) > tolerance) {
+            std::fprintf(stderr, "FAIL: %s[%zu] got %g expected %g\n", label, i, got, expected);
+            ++failures;
+            return;
+        }
+    }
+}
+
+template <typename StateT>
 void test_gdn_decode_one_hot_recurrence()
 {
     qsfi_context* ctx = nullptr;
@@ -1372,7 +1404,7 @@ void test_gdn_decode_one_hot_recurrence()
     std::vector<uint16_t> h_b(gate_elems);
     std::vector<uint16_t> h_a_log(kGdnVHeads, kBf16Zero);
     std::vector<uint16_t> h_dt_bias(kGdnVHeads, kBf16Zero);
-    std::vector<uint16_t> h_state(state_elems, kBf16Zero);
+    std::vector<StateT> h_state(state_elems, StateT(0));
     std::vector<uint16_t> h_out(v_elems, kSentinel);
     const int32_t state_indices[] = { 0 };
     fill_gdn_inputs(h_q, h_k, h_v, h_a, h_b, tokens);
@@ -1384,7 +1416,7 @@ void test_gdn_decode_one_hot_recurrence()
     uint16_t* d_b = nullptr;
     uint16_t* d_a_log = nullptr;
     uint16_t* d_dt_bias = nullptr;
-    uint16_t* d_state = nullptr;
+    StateT* d_state = nullptr;
     int32_t* d_state_indices = nullptr;
     uint16_t* d_out = nullptr;
 
@@ -1416,6 +1448,7 @@ void test_gdn_decode_one_hot_recurrence()
     desc.a_log = gdn_tensor1_bf16(d_a_log, kGdnVHeads);
     desc.dt_bias = gdn_tensor1_bf16(d_dt_bias, kGdnVHeads);
     desc.state = gdn_state_tensor_bf16(d_state);
+    desc.state.dtype = std::is_same_v<StateT, float> ? QSFI_DTYPE_F32 : QSFI_DTYPE_BF16;
     desc.state_indices = gdn_tensor1_i32(d_state_indices, tokens);
     desc.out = gdn_tensor3_bf16(d_out, tokens, kGdnVHeads, kGdnValueDim);
     desc.num_tokens = tokens;
@@ -1437,7 +1470,7 @@ void test_gdn_decode_one_hot_recurrence()
         cudaMemcpy(
             h_state.data(),
             d_state,
-            h_state.size() * sizeof(uint16_t),
+            h_state.size() * sizeof(StateT),
             cudaMemcpyDeviceToHost
         ),
         "copy gdn decode state back"
@@ -1450,7 +1483,7 @@ void test_gdn_decode_one_hot_recurrence()
         0.0f,
         "gdn decode out"
     );
-    check_bf16_single_nonzero(
+    check_gdn_state_single_nonzero(
         h_state,
         gdn_state_offset(0, kGdnActiveVHead, kGdnActiveValueDim, kGdnActiveKeyDim),
         1.0f,
@@ -1471,6 +1504,7 @@ void test_gdn_decode_one_hot_recurrence()
     qsfi_context_destroy(ctx);
 }
 
+template <typename StateT>
 void test_gdn_prefill_two_token_recurrence()
 {
     qsfi_context* ctx = nullptr;
@@ -1491,7 +1525,7 @@ void test_gdn_prefill_two_token_recurrence()
     std::vector<uint16_t> h_b(gate_elems);
     std::vector<uint16_t> h_a_log(kGdnVHeads, kBf16Zero);
     std::vector<uint16_t> h_dt_bias(kGdnVHeads, kBf16Zero);
-    std::vector<uint16_t> h_state(state_elems, kBf16Zero);
+    std::vector<StateT> h_state(state_elems, StateT(0));
     std::vector<uint16_t> h_out(v_elems, kSentinel);
     const int32_t seq_indptr[] = { 0, tokens };
     const int32_t state_indices[] = { 0 };
@@ -1504,7 +1538,7 @@ void test_gdn_prefill_two_token_recurrence()
     uint16_t* d_b = nullptr;
     uint16_t* d_a_log = nullptr;
     uint16_t* d_dt_bias = nullptr;
-    uint16_t* d_state = nullptr;
+    StateT* d_state = nullptr;
     int32_t* d_seq_indptr = nullptr;
     int32_t* d_state_indices = nullptr;
     uint16_t* d_out = nullptr;
@@ -1538,6 +1572,7 @@ void test_gdn_prefill_two_token_recurrence()
     desc.a_log = gdn_tensor1_bf16(d_a_log, kGdnVHeads);
     desc.dt_bias = gdn_tensor1_bf16(d_dt_bias, kGdnVHeads);
     desc.state = gdn_state_tensor_bf16(d_state);
+    desc.state.dtype = std::is_same_v<StateT, float> ? QSFI_DTYPE_F32 : QSFI_DTYPE_BF16;
     desc.seq_indptr = d_seq_indptr;
     desc.state_indices = gdn_tensor1_i32(d_state_indices, 1);
     desc.out = gdn_tensor3_bf16(d_out, tokens, kGdnVHeads, kGdnValueDim);
@@ -1561,14 +1596,14 @@ void test_gdn_prefill_two_token_recurrence()
         cudaMemcpy(
             h_state.data(),
             d_state,
-            h_state.size() * sizeof(uint16_t),
+            h_state.size() * sizeof(StateT),
             cudaMemcpyDeviceToHost
         ),
         "copy gdn prefill state back"
     );
 
     check_gdn_prefill_output(h_out, 0.0f);
-    check_bf16_single_nonzero(
+    check_gdn_state_single_nonzero(
         h_state,
         gdn_state_offset(0, kGdnActiveVHead, kGdnActiveValueDim, kGdnActiveKeyDim),
         bf16_to_f32(kBf16OnePoint25),
@@ -2454,13 +2489,37 @@ int main()
     if (!check_cuda(cudaSetDevice(0), "select device"))
         return 1;
 
+#if defined(QS3_TEST_QWEN27)
     test_decode_append_uses_post_append_last_page_len();
     test_prefill_append_maps_positions_through_page_table();
     test_attention_rejects_non_qwen36_full_attention_shapes();
     test_batch_decode_attention_matches_cpu_reference();
     test_batch_prefill_attention_matches_cpu_reference();
-    test_gdn_decode_one_hot_recurrence();
-    test_gdn_prefill_two_token_recurrence();
+    test_gdn_decode_one_hot_recurrence<uint16_t>();
+    test_gdn_decode_one_hot_recurrence<float>();
+    test_gdn_prefill_two_token_recurrence<uint16_t>();
+    test_gdn_prefill_two_token_recurrence<float>();
+    test_qscu_qwen36_gdn_causal_conv1d_bf16_cpu_reference();
+    test_qscu_qwen36_gdn_post_conv_prepare_bf16_cpu_reference();
+    test_qscu_qwen36_gdn_rmsnorm_gated_bf16_cpu_reference();
+    test_qscu_gdn_router_validation_errors();
+#if QSFI_ENABLE_CHECKED_VALIDATION
+    test_checked_append_decode_rejects_invalid_page_id();
+    test_checked_append_prefill_rejects_invalid_position();
+    test_checked_gdn_decode_rejects_invalid_state_index();
+    test_checked_gdn_prefill_rejects_invalid_seq_indptr();
+    test_qscu_qwen36_gdn_causal_conv1d_bf16_checked_validation();
+#endif
+#else
+    test_decode_append_uses_post_append_last_page_len();
+    test_prefill_append_maps_positions_through_page_table();
+    test_attention_rejects_non_qwen36_full_attention_shapes();
+    test_batch_decode_attention_matches_cpu_reference();
+    test_batch_prefill_attention_matches_cpu_reference();
+    test_gdn_decode_one_hot_recurrence<uint16_t>();
+    test_gdn_decode_one_hot_recurrence<float>();
+    test_gdn_prefill_two_token_recurrence<uint16_t>();
+    test_gdn_prefill_two_token_recurrence<float>();
     test_moe_bf16_staged_grouped_gemm(4);
     test_moe_bf16_staged_grouped_gemm(96);
     test_moe_bf16_top2_weighted_accumulation(4);
@@ -2491,11 +2550,16 @@ int main()
     test_qscu_utils_greedy_argmax_f32();
     test_qscu_utils_negative_validation();
     test_qscu_gdn_router_helpers();
+#endif
 
     if (failures != 0) {
         std::fprintf(stderr, "%d failure(s)\n", failures);
         return 1;
     }
+#if defined(QS3_TEST_QWEN27)
+    std::puts("qsfi Qwen3.6-27B attention and GDN CUDA tests passed");
+#else
     std::puts("qsfi CUDA tests passed");
+#endif
     return 0;
 }

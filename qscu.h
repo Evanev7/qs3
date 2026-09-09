@@ -140,7 +140,8 @@ typedef enum {
  * This is the local CUDA recurrence fallback used after the caller has loaded
  * weights, run the input projections, applied the causal conv over the packed
  * q/k/v stream, and prepared q/k/v/a/b. State is v-major / K-last:
- * [state_pool, num_v_heads, value_dim, key_dim].
+ * [state_pool, num_v_heads, value_dim, key_dim]. Q/K heads are 16, value heads
+ * are 32 (35B) or 48 (27B), and key/value dimensions are 128.
  *
  * state_out_indices is optional. When omitted, state_indices is used for both
  * read and write. A negative state index skips that sequence/token and writes a
@@ -202,14 +203,15 @@ typedef struct {
 typedef enum { QSCU_ROUTER_SCORE_SOFTMAX = 0, QSCU_ROUTER_SCORE_SIGMOID = 1 } qscu_router_score;
 
 typedef struct {
-    qsfi_tensor2 x; /* bf16 [num_tokens, 8192], packed q/k/v projection. */
-    qsfi_tensor2 weight; /* bf16 [8192, 4]. */
-    qsfi_tensor1 bias; /* optional bf16/f32 [8192]. */
-    qsfi_tensor3 state; /* bf16/f32 [state_pool, 8192, 3], old-to-new. */
+    /* packed_dim is 8192 (35B) or 10240 (27B), with 32 or 48 value heads. */
+    qsfi_tensor2 x; /* bf16 [num_tokens, packed_dim], packed q/k/v projection. */
+    qsfi_tensor2 weight; /* bf16 [packed_dim, 4]. */
+    qsfi_tensor1 bias; /* optional bf16/f32 [packed_dim]. */
+    qsfi_tensor3 state; /* bf16/f32 [state_pool, packed_dim, 3], old-to-new. */
     qsfi_tensor1 state_read_indices; /* optional i32 [batch_size], negative means zero state. */
     qsfi_tensor1 state_write_indices; /* optional i32 [batch_size], negative skips writeback. */
     qsfi_device_ptr seq_indptr; /* optional i32 [batch_size + 1]; null means one token per row. */
-    qsfi_tensor2 out; /* bf16 [num_tokens, 8192]; prefill must not overlap x, decode may alias. */
+    qsfi_tensor2 out; /* bf16 [num_tokens, packed_dim]; prefill must not overlap x, decode may alias. */
     uint32_t num_tokens;
     uint32_t batch_size;
     qscu_activation activation; /* none or silu for qwen3.6 GDN conv. */
@@ -217,16 +219,16 @@ typedef struct {
 } qscu_qwen36_gdn_causal_conv1d_desc;
 
 typedef struct {
-    qsfi_tensor2 conv_out; /* bf16 [num_tokens, 8192]. */
-    qsfi_tensor2 a; /* bf16 [num_tokens, 32]. */
-    qsfi_tensor2 b; /* bf16 [num_tokens, 32]. */
-    qsfi_tensor1 a_log; /* bf16 [32]. */
-    qsfi_tensor1 dt_bias; /* bf16 [32]. */
+    qsfi_tensor2 conv_out; /* bf16 [num_tokens, packed_dim]. */
+    qsfi_tensor2 a; /* bf16 [num_tokens, num_v_heads]. */
+    qsfi_tensor2 b; /* bf16 [num_tokens, num_v_heads]. */
+    qsfi_tensor1 a_log; /* bf16 [num_v_heads]. */
+    qsfi_tensor1 dt_bias; /* bf16 [num_v_heads]. */
     qsfi_tensor3 q; /* bf16 [num_tokens, 16, 128]. */
     qsfi_tensor3 k; /* bf16 [num_tokens, 16, 128]. */
-    qsfi_tensor3 v; /* bf16 [num_tokens, 32, 128]. */
-    qsfi_tensor2 g_out; /* optional f32 [num_tokens, 32]. */
-    qsfi_tensor2 beta_out; /* optional f32 [num_tokens, 32]. */
+    qsfi_tensor3 v; /* bf16 [num_tokens, num_v_heads, 128]. */
+    qsfi_tensor2 g_out; /* optional f32 [num_tokens, num_v_heads]. */
+    qsfi_tensor2 beta_out; /* optional f32 [num_tokens, num_v_heads]. */
     uint32_t num_tokens;
     uint32_t apply_qk_l2norm;
     float l2norm_eps;
@@ -234,10 +236,10 @@ typedef struct {
 } qscu_qwen36_gdn_post_conv_prepare_desc;
 
 typedef struct {
-    qsfi_tensor3 x; /* bf16 [num_tokens, 32, 128]. */
-    qsfi_tensor3 gate; /* bf16 [num_tokens, 32, 128]. */
+    qsfi_tensor3 x; /* bf16 [num_tokens, num_v_heads, 128]. */
+    qsfi_tensor3 gate; /* bf16 [num_tokens, num_v_heads, 128]. */
     qsfi_tensor1 weight; /* bf16/f32 [128]. */
-    qsfi_tensor3 out; /* bf16 [num_tokens, 32, 128]. */
+    qsfi_tensor3 out; /* bf16 [num_tokens, num_v_heads, 128]. */
     uint32_t num_tokens;
     float eps;
     qscu_activation gate_activation; /* silu/swish or sigmoid. */

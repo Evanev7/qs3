@@ -506,7 +506,7 @@ void test_qscu_qwen36_gdn_post_conv_prepare_bf16_cpu_reference()
 {
     constexpr int kTokens = 2;
     constexpr int kQHead = 2;
-    constexpr int kVHead = 5;
+    constexpr int kVHead = kGdnVHeads - 1;
     constexpr int kDim0 = 3;
     constexpr int kDim1 = 4;
     constexpr int kVDim = 9;

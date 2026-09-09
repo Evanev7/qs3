@@ -5,6 +5,10 @@
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
 
+#include <flashinfer/utils.cuh>
+// FlashInfer's default launch dispatch omits the 27B GQA ratio six.
+#undef DISPATCH_GQA_GROUP_SIZE
+#define DISPATCH_GQA_GROUP_SIZE(...) QSFI_DISPATCH_GQA_GROUP_SIZE(__VA_ARGS__)
 #include <flashinfer/attention/decode.cuh>
 #include <flashinfer/attention/default_decode_params.cuh>
 #include <flashinfer/attention/default_prefill_params.cuh>
@@ -253,12 +257,13 @@ qsfi_status validate_attention(qsfi_context* ctx, const qsfi_attention_desc* att
     if (attention->head_dim_qk != attention->head_dim_vo) {
         return set_unsupported(ctx, "different qk/vo head dimensions are not wired yet");
     }
-    if (attention->head_dim_qk != 256 || attention->num_qo_heads != 16
-        || attention->num_kv_heads != 2) {
+    if (attention->head_dim_qk != 256
+        || !((attention->num_qo_heads == 16 && attention->num_kv_heads == 2)
+             || (attention->num_qo_heads == 24 && attention->num_kv_heads == 4))) {
         return set_unsupported(
             ctx,
-            "compiled attention dispatch supports only Qwen3.6 full-attention template shape "
-            "num_qo_heads=16 num_kv_heads=2 head_dim=256"
+            "compiled Qwen3.6 attention supports qo/kv heads 16/2 (35B) or 24/4 (27B), "
+            "with head_dim=256"
         );
     }
     if (attention->kv_layout != QSFI_KV_LAYOUT_NHD && attention->kv_layout != QSFI_KV_LAYOUT_HND) {
