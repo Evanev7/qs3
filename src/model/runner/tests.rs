@@ -3222,3 +3222,76 @@ fn gdn_slot_map_commit_is_explicit_and_uses_gdn_layer_count() {
     assert_eq!(reset.live_slot, before.live_slot);
     assert_eq!(reset.staged_slot, before.staged_slot);
 }
+
+#[test]
+fn failed_rebuild_after_final_layer_preserves_prefix_and_continuation() {
+    if !cuda_device_available() {
+        return;
+    }
+    let config = QwenConfig::randomized_shared_moe_tiny_fixture(0);
+    let seed = 0x5245_4255_494c_4401;
+    let prompt = [1, 2, 3];
+    let request_id = 41;
+    let mut runner = ModelRunner::random_bf16(config, seed).unwrap();
+    let initial = runner
+        .run(QwenRequest {
+            request_id,
+            tokens: &prompt,
+            max_new_tokens: 1,
+        })
+        .unwrap();
+    runner.assert_late_rebuild_failure_preserves_prefix(request_id, &[7, 6, 5, 4, 3]);
+
+    let continued = runner
+        .run(QwenRequest {
+            request_id,
+            tokens: &initial.live_tokens,
+            max_new_tokens: 2,
+        })
+        .unwrap();
+    let continued_logits = runner.last_logits_row_for_test().unwrap();
+    drop(runner);
+
+    let mut control = ModelRunner::random_bf16(config, seed).unwrap();
+    let expected = control
+        .run(QwenRequest {
+            request_id,
+            tokens: &prompt,
+            max_new_tokens: 3,
+        })
+        .unwrap();
+    assert_eq!(continued.generated_tokens, expected.generated_tokens[1..]);
+    assert_eq!(continued.live_tokens, expected.live_tokens);
+    assert_f32_close(
+        "continuation after failed prefix rebuild",
+        &continued_logits,
+        &control.last_logits_row_for_test().unwrap(),
+        1.0e-4,
+        1.0e-5,
+    );
+}
+
+impl ModelRunner {
+    // Shared with the full loaded-model regression to cover GDN state rollback.
+    pub(crate) fn assert_late_rebuild_failure_preserves_prefix(
+        &mut self,
+        request_id: crate::RequestId,
+        rewritten_prompt: &[i32],
+    ) {
+        let live_before = self.live_tokens().to_vec();
+        let logits_before = self.last_logits_row_for_test().unwrap();
+        // Fail after all candidate decoder layers, before replacing logits.
+        // Restore ownership before assertions or dropping the runner.
+        let final_norm = self.weights.final_norm.ptr;
+        self.weights.final_norm.ptr = ptr::null_mut();
+        let failed = self.run(QwenRequest {
+            request_id,
+            tokens: rewritten_prompt,
+            max_new_tokens: 0,
+        });
+        self.weights.final_norm.ptr = final_norm;
+        assert_eq!(failed.unwrap_err(), Status::InvalidArgument);
+        assert_eq!(self.live_tokens(), live_before);
+        assert_eq!(self.last_logits_row_for_test().unwrap(), logits_before);
+    }
+}

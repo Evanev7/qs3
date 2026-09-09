@@ -552,3 +552,22 @@ and identical-prefix score comparison, not evidence that it causes the sustained
 greedy divergence. Graph mode, projection packing, and output precision differ;
 these traces diagnose architecture choices rather than establish strict numerical
 or isolated performance equivalence. The asset download was active during capture.
+
+## Execution resources survive prefix rebuilds
+
+`AttentionSession` now retains provider handles, cuBLASLt and attention plans,
+workspaces and device batch buffers while `PrefixState` owns replaceable
+EngineCore/KV state. Rebuilds allocate candidate KV and GDN state before replacing
+live state. Failure restores the old prefix and recurrent state; the next batch
+uploads its metadata again. Attention keys retain page IDs and last-page lengths,
+and execution binds the current cache pointers. Configuration equality is checked
+before replacing state. No release stream synchronization is added.
+
+The prescribed full suite and native checked/release tests pass. A new narrow
+regression fails at final normalization after every candidate attention layer,
+then compares old-prefix continuation IDs and logits with an uninterrupted
+control. The loaded 35B regression injects the same failure with BF16 and FP32
+GDN recurrence, then verifies the reference continuation, reset and replay; both
+pass. This directly exercises failed candidate GDN/KV updates while keeping
+execution resources alive. Core prefill timing follows; the earlier trace showed
+40.320 ms in pinned-host allocation/free before its main GPU span.

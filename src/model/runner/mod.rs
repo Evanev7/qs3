@@ -243,13 +243,13 @@ impl ModelRunner {
         let mut rebuilt_live_tokens = Vec::new();
         rebuilt_live_tokens.safe_reserve(total_tokens as usize)?;
 
-        let fresh_engine = Engine::new(self.config.engine_config())?;
+        let fresh_prefix = self.engine.fresh_prefix_state()?;
         let fresh_gdn_state = if self.config.has_gdn_layers() {
             Some(GdnState::new(&self.config)?)
         } else {
             None
         };
-        let old_engine = mem::replace(&mut self.engine, fresh_engine);
+        let old_prefix = self.engine.replace_prefix_state(fresh_prefix)?;
         let old_gdn_state = mem::replace(&mut self.gdn_state, fresh_gdn_state);
         let old_live_request_id = self.live_request_id.take();
         let old_live_tokens = mem::replace(&mut self.live_tokens, rebuilt_live_tokens);
@@ -262,8 +262,11 @@ impl ModelRunner {
         match self.append_tokens(request_id, tokens) {
             Ok(()) => Ok(()),
             Err(status) => {
-                let failed_engine = mem::replace(&mut self.engine, old_engine);
-                drop(failed_engine);
+                let failed_prefix = self
+                    .engine
+                    .replace_prefix_state(old_prefix)
+                    .expect("prefix rebuild keeps the execution config unchanged");
+                drop(failed_prefix);
                 let failed_gdn_state = mem::replace(&mut self.gdn_state, old_gdn_state);
                 drop(failed_gdn_state);
                 self.live_request_id = old_live_request_id;

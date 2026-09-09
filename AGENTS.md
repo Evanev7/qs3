@@ -33,7 +33,8 @@ current architecture:
   upload event completes
 - `backend::qscb::Qscb` owns reusable cuBLASLt linear plans keyed by dimensions,
   strides, dtype, actual pointer alignment, and workspace capacity. Prefix
-  rebuilds still replace the Engine and discard these execution resources
+  rebuilds replace only `PrefixState` (core and KV caches) and GDN state; provider
+  contexts, linear/attention plans, workspaces and batch metadata buffers survive
 - `ModelRunner` is the boundary above `Engine`: it computes activations, supplies
   Q/K/V to attention, stores logits, samples, and owns exact-prefix sync/rebuild
 - `QwenTokenizer` is a separate host-side asset boundary: it strictly loads the

@@ -902,6 +902,8 @@ fn check_real_bf16_reference(precision: crate::model::GdnRecurrentPrecision) {
         REAL_DECODE_STABLE_PREFIX_LEN,
     );
 
+    runner.assert_late_rebuild_failure_preserves_prefix(request_id, &[7, 6, 5, 4]);
+
     let tail = runner
         .run(crate::model::QwenRequest {
             request_id,

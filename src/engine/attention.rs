@@ -163,64 +163,21 @@ impl PlanCache {
     }
 }
 
-pub(crate) struct AttentionSession {
+// Request state is replaced transactionally; provider contexts, plans and
+// device metadata remain owned by the execution session across replacements.
+pub(crate) struct PrefixState {
     pub(crate) core: EngineCore,
-    stream: *mut c_void,
-    qsfi: Qsfi,
-    #[allow(dead_code)]
-    qscb: Qscb,
-    append_attention: AttentionDesc,
-    decode_attention: AttentionDesc,
     layer_caches: Vec<LayerCache>,
-    d_batch_tokens: DeviceI32Buffer,
-    d_batch_qo_indptr: DeviceI32Buffer,
-    d_batch_kv_indptr: DeviceI32Buffer,
-    d_batch_kv_indices: DeviceI32Buffer,
-    d_batch_last_page_len: DeviceI32Buffer,
-    d_batch_rope_pos_offset: DeviceI32Buffer,
-    d_batch_append_batch_indices: DeviceI32Buffer,
-    d_batch_append_positions: DeviceI32Buffer,
-    append_plan: PlanCache,
-    decode_plan: PlanCache,
 }
 
-impl AttentionSession {
-    pub(crate) fn new(config: EngineConfig) -> Result<Box<Self>, Status> {
-        validate_runtime_config(&config)?;
-        let core = EngineCore::new(config)?;
-        let mut qsfi = Qsfi::new(config.device_ordinal, config.stream)?;
-        qsfi.reserve_workspace(
-            config.qsfi_float_workspace_bytes,
-            config.qsfi_int_workspace_bytes,
-            config.qsfi_host_int_workspace_bytes,
-        )?;
-        let qscb = Qscb::new(config.device_ordinal, config.stream)?;
-        let mut session = Box::new(Self {
-            append_attention: make_attention(&config, MASK_MODE_CAUSAL),
-            decode_attention: make_attention(&config, MASK_MODE_NONE),
+impl PrefixState {
+    pub(super) fn new(core: EngineCore) -> Result<Self, Status> {
+        let mut state = Self {
             core,
-            stream: config.stream,
-            qsfi,
-            qscb,
             layer_caches: Vec::new(),
-            d_batch_tokens: DeviceI32Buffer::new(),
-            d_batch_qo_indptr: DeviceI32Buffer::new(),
-            d_batch_kv_indptr: DeviceI32Buffer::new(),
-            d_batch_kv_indices: DeviceI32Buffer::new(),
-            d_batch_last_page_len: DeviceI32Buffer::new(),
-            d_batch_rope_pos_offset: DeviceI32Buffer::new(),
-            d_batch_append_batch_indices: DeviceI32Buffer::new(),
-            d_batch_append_positions: DeviceI32Buffer::new(),
-            append_plan: PlanCache::new(),
-            decode_plan: PlanCache::new(),
-        });
-        session.allocate_layer_caches()?;
-        Ok(session)
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn operators(&mut self) -> Operators<'_> {
-        Operators::new(&self.stream, &mut self.qsfi, &mut self.qscb)
+        };
+        state.allocate_layer_caches()?;
+        Ok(state)
     }
 
     fn allocate_layer_caches(&mut self) -> Result<(), Status> {
@@ -249,10 +206,88 @@ impl AttentionSession {
         }
         Ok(())
     }
+}
+
+impl Drop for PrefixState {
+    fn drop(&mut self) {
+        let _ = activate_device(self.core.config().device_ordinal);
+        for layer in &mut self.layer_caches {
+            if !layer.k.is_null() {
+                unsafe {
+                    cuda::cudaFree(layer.k);
+                }
+                layer.k = ptr::null_mut();
+            }
+            if !layer.v.is_null() {
+                unsafe {
+                    cuda::cudaFree(layer.v);
+                }
+                layer.v = ptr::null_mut();
+            }
+        }
+    }
+}
+
+pub(crate) struct AttentionSession {
+    pub(crate) prefix: PrefixState,
+    stream: *mut c_void,
+    qsfi: Qsfi,
+    #[allow(dead_code)]
+    qscb: Qscb,
+    append_attention: AttentionDesc,
+    decode_attention: AttentionDesc,
+    d_batch_tokens: DeviceI32Buffer,
+    d_batch_qo_indptr: DeviceI32Buffer,
+    d_batch_kv_indptr: DeviceI32Buffer,
+    d_batch_kv_indices: DeviceI32Buffer,
+    d_batch_last_page_len: DeviceI32Buffer,
+    d_batch_rope_pos_offset: DeviceI32Buffer,
+    d_batch_append_batch_indices: DeviceI32Buffer,
+    d_batch_append_positions: DeviceI32Buffer,
+    append_plan: PlanCache,
+    decode_plan: PlanCache,
+}
+
+impl AttentionSession {
+    pub(crate) fn new(config: EngineConfig) -> Result<Box<Self>, Status> {
+        validate_runtime_config(&config)?;
+        let core = EngineCore::new(config)?;
+        let mut qsfi = Qsfi::new(config.device_ordinal, config.stream)?;
+        qsfi.reserve_workspace(
+            config.qsfi_float_workspace_bytes,
+            config.qsfi_int_workspace_bytes,
+            config.qsfi_host_int_workspace_bytes,
+        )?;
+        let qscb = Qscb::new(config.device_ordinal, config.stream)?;
+        let session = Box::new(Self {
+            append_attention: make_attention(&config, MASK_MODE_CAUSAL),
+            decode_attention: make_attention(&config, MASK_MODE_NONE),
+            prefix: PrefixState::new(core)?,
+            stream: config.stream,
+            qsfi,
+            qscb,
+            d_batch_tokens: DeviceI32Buffer::new(),
+            d_batch_qo_indptr: DeviceI32Buffer::new(),
+            d_batch_kv_indptr: DeviceI32Buffer::new(),
+            d_batch_kv_indices: DeviceI32Buffer::new(),
+            d_batch_last_page_len: DeviceI32Buffer::new(),
+            d_batch_rope_pos_offset: DeviceI32Buffer::new(),
+            d_batch_append_batch_indices: DeviceI32Buffer::new(),
+            d_batch_append_positions: DeviceI32Buffer::new(),
+            append_plan: PlanCache::new(),
+            decode_plan: PlanCache::new(),
+        });
+        Ok(session)
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn operators(&mut self) -> Operators<'_> {
+        Operators::new(&self.stream, &mut self.qsfi, &mut self.qscb)
+    }
 
     fn upload_active_batch(&mut self) -> Result<(), Status> {
-        let config = self.core.config();
-        let batch = self.core.active_batch()?;
+        let config = self.prefix.core.config();
+        let batch = self.prefix.core.active_batch()?;
         if batch.request_ids.len() != batch.size as usize {
             return Err(Status::InternalError);
         }
@@ -291,7 +326,7 @@ impl AttentionSession {
     }
 
     fn ensure_append_plan(&mut self) -> Result<(), Status> {
-        let batch = self.core.active_batch()?;
+        let batch = self.prefix.core.active_batch()?;
         if batch.kind != crate::BatchKind::Append {
             return Err(Status::InternalError);
         }
@@ -348,7 +383,7 @@ impl AttentionSession {
     }
 
     fn ensure_decode_plan(&mut self) -> Result<(), Status> {
-        let batch = self.core.active_batch()?;
+        let batch = self.prefix.core.active_batch()?;
         if batch.kind != crate::BatchKind::Decode {
             return Err(Status::InternalError);
         }
@@ -400,7 +435,11 @@ impl AttentionSession {
 
     fn make_kv_cache(&self, layer_idx: u32) -> Result<PagedKvCache, Status> {
         let idx = usize::try_from(layer_idx).map_err(|_| Status::InvalidArgument)?;
-        let layer = self.layer_caches.get(idx).ok_or(Status::InvalidArgument)?;
+        let layer = self
+            .prefix
+            .layer_caches
+            .get(idx)
+            .ok_or(Status::InvalidArgument)?;
         Ok(PagedKvCache {
             k: self.make_cache_tensor(layer.k)?,
             v: self.make_cache_tensor(layer.v)?,
@@ -410,7 +449,7 @@ impl AttentionSession {
     }
 
     fn make_cache_tensor(&self, data: *mut c_void) -> Result<Tensor4, Status> {
-        let config = self.core.config();
+        let config = self.prefix.core.config();
         let mut shape = [0i64; 4];
         let mut stride = [0i64; 4];
         shape[0] = config.max_pages as i64;
@@ -440,7 +479,7 @@ impl AttentionSession {
     }
 
     fn make_active_page_table(&self) -> Result<PagedKvTable, Status> {
-        let batch = self.core.active_batch()?;
+        let batch = self.prefix.core.active_batch()?;
         Ok(PagedKvTable {
             indptr: self
                 .d_batch_kv_indptr
@@ -461,13 +500,14 @@ impl AttentionSession {
     }
 
     pub(crate) fn prepare_append(&mut self, batch: AppendBatch<'_>) -> Result<(), Status> {
-        self.core
+        self.prefix
+            .core
             .begin_append(batch.request_ids, batch.token_indptr, batch.tokens)?;
         if let Err(status) = self
             .upload_active_batch()
             .and_then(|_| self.ensure_append_plan())
         {
-            let _ = self.core.abort_batch();
+            let _ = self.prefix.core.abort_batch();
             return Err(status);
         }
         Ok(())
@@ -477,14 +517,14 @@ impl AttentionSession {
         &mut self,
         layer: &AttentionLayer,
     ) -> Result<(), Status> {
-        let pending_layer = self.core.pending_append_layer(layer.layer_idx)?;
+        let pending_layer = self.prefix.core.pending_append_layer(layer.layer_idx)?;
         self.validate_append_layer(layer)?;
         let Some(plan) = self.append_plan.plan.as_ref() else {
             return Err(Status::InvalidArgument);
         };
         let kv_cache = self.make_kv_cache(pending_layer.layer_idx())?;
         let page_table = self.make_active_page_table()?;
-        let batch = self.core.active_batch()?;
+        let batch = self.prefix.core.active_batch()?;
         let append = AppendPrefill {
             k: layer.k,
             v: layer.v,
@@ -521,16 +561,16 @@ impl AttentionSession {
             v_scale: layer.v_scale,
         };
         unsafe { self.qsfi.execute_prefill(plan, &execute) }?;
-        self.core.complete_append_layer(pending_layer)
+        self.prefix.core.complete_append_layer(pending_layer)
     }
 
     pub(crate) fn prepare_decode(&mut self, batch: DecodeBatch<'_>) -> Result<(), Status> {
-        self.core.begin_decode(batch.request_ids, batch.tokens)?;
+        self.prefix.core.begin_decode(batch.request_ids, batch.tokens)?;
         if let Err(status) = self
             .upload_active_batch()
             .and_then(|_| self.ensure_decode_plan())
         {
-            let _ = self.core.abort_batch();
+            let _ = self.prefix.core.abort_batch();
             return Err(status);
         }
         Ok(())
@@ -540,7 +580,7 @@ impl AttentionSession {
         &mut self,
         layer: &AttentionLayer,
     ) -> Result<(), Status> {
-        let pending_layer = self.core.pending_decode_layer(layer.layer_idx)?;
+        let pending_layer = self.prefix.core.pending_decode_layer(layer.layer_idx)?;
         self.validate_decode_layer(layer)?;
         let Some(plan) = self.decode_plan.plan.as_ref() else {
             return Err(Status::InvalidArgument);
@@ -572,12 +612,12 @@ impl AttentionSession {
             v_scale: layer.v_scale,
         };
         unsafe { self.qsfi.execute_decode(plan, &execute) }?;
-        self.core.complete_decode_layer(pending_layer)
+        self.prefix.core.complete_decode_layer(pending_layer)
     }
 
     fn validate_append_layer(&self, layer: &AttentionLayer) -> Result<(), Status> {
-        let config = self.core.config();
-        let tokens = i64::from(self.core.active_batch()?.token_count);
+        let config = self.prefix.core.config();
+        let tokens = i64::from(self.prefix.core.active_batch()?.token_count);
         self.validate_attention_layer_common(layer, tokens)?;
         validate_tensor3_shape(
             &layer.k,
@@ -596,8 +636,8 @@ impl AttentionSession {
     }
 
     fn validate_decode_layer(&self, layer: &AttentionLayer) -> Result<(), Status> {
-        let config = self.core.config();
-        let tokens = i64::from(self.core.active_batch()?.size);
+        let config = self.prefix.core.config();
+        let tokens = i64::from(self.prefix.core.active_batch()?.size);
         self.validate_attention_layer_common(layer, tokens)?;
         validate_tensor3_shape(
             &layer.k,
@@ -620,7 +660,7 @@ impl AttentionSession {
         layer: &AttentionLayer,
         tokens: i64,
     ) -> Result<(), Status> {
-        let config = self.core.config();
+        let config = self.prefix.core.config();
         validate_tensor3_shape(
             &layer.q,
             config.activation_dtype.to_raw(),
@@ -652,11 +692,11 @@ impl AttentionSession {
     pub(crate) fn commit_batch(&mut self, commit: Commit<'_>) -> Result<(), Status> {
         #[cfg(debug_assertions)]
         {
-            let config = self.core.config();
+            let config = self.prefix.core.config();
             activate_device(config.device_ordinal)?;
             result_from_cuda(unsafe { cuda::cudaStreamSynchronize(self.stream) })?;
         }
-        self.core.commit_batch(commit.accepted_token_counts)
+        self.prefix.core.commit_batch(commit.accepted_token_counts)
     }
 }
 
@@ -664,22 +704,8 @@ impl Drop for AttentionSession {
     fn drop(&mut self) {
         self.append_plan.destroy();
         self.decode_plan.destroy();
-        let config = self.core.config();
+        let config = self.prefix.core.config();
         let _ = activate_device(config.device_ordinal);
-        for layer in &mut self.layer_caches {
-            if !layer.k.is_null() {
-                unsafe {
-                    cuda::cudaFree(layer.k);
-                }
-                layer.k = ptr::null_mut();
-            }
-            if !layer.v.is_null() {
-                unsafe {
-                    cuda::cudaFree(layer.v);
-                }
-                layer.v = ptr::null_mut();
-            }
-        }
         self.d_batch_tokens.free();
         self.d_batch_qo_indptr.free();
         self.d_batch_kv_indptr.free();

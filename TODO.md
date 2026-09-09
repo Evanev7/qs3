@@ -63,8 +63,10 @@
   Native prepare now retains device workspace and uses event-protected pinned
   staging slots. The full suite, queued native replan regression, and real 35B
   BF16 reference test passed on sp10. The full metadata key is unchanged.
-- [ ] Separate execution-context/provider-handle lifetime from attention and
-  prefix state so rebuilds preserve reusable execution resources.
+- [x] Separate execution-context/provider-handle lifetime from attention and
+  prefix state so rebuilds preserve reusable execution resources. PrefixState
+  now owns replaceable core/KV state; AttentionSession keeps providers, plans and
+  metadata. Late-failure rollback and real BF16/FP32 continuation regressions pass.
 - [ ] Simplify bindings as these paths are changed: typed Rust tensor views into
   one lowering/launch method, removing redundant descriptor wrappers and
   forwarding methods. Preserve validation before device addressing.

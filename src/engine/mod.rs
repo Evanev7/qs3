@@ -20,16 +20,32 @@ impl Engine {
         attention::AttentionSession::new(config).map(|inner| Self { inner })
     }
 
+    pub(crate) fn fresh_prefix_state(&self) -> Result<attention::PrefixState, Status> {
+        attention::PrefixState::new(EngineCore::new(self.inner.prefix.core.config())?)
+    }
+
+    pub(crate) fn replace_prefix_state(
+        &mut self,
+        prefix: attention::PrefixState,
+    ) -> Result<attention::PrefixState, Status> {
+        // The existing plans/descriptors must still describe this cache geometry,
+        // device and stream. Validate before installing any candidate state.
+        if prefix.core.config() != self.inner.prefix.core.config() {
+            return Err(Status::InvalidArgument);
+        }
+        Ok(std::mem::replace(&mut self.inner.prefix, prefix))
+    }
+
     pub fn reset(&mut self) -> Result<(), Status> {
-        self.inner.core.reset()
+        self.inner.prefix.core.reset()
     }
 
     pub fn release_requests(&mut self, request_ids: &[RequestId]) -> Result<(), Status> {
-        self.inner.core.release_requests(request_ids)
+        self.inner.prefix.core.release_requests(request_ids)
     }
 
     pub fn state(&self) -> Result<CoreState<'_>, Status> {
-        self.inner.core.state()
+        self.inner.prefix.core.state()
     }
 
     pub fn begin_append(&mut self, batch: AppendBatch<'_>) -> Result<(), Status> {
@@ -53,7 +69,7 @@ impl Engine {
     }
 
     pub fn abort_batch(&mut self) -> Result<(), Status> {
-        self.inner.core.abort_batch()
+        self.inner.prefix.core.abort_batch()
     }
 }
 
@@ -175,7 +191,7 @@ pub enum BatchKind {
     Decode,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct EngineConfig {
     pub device_ordinal: i32,
     pub stream: *mut std::ffi::c_void,
