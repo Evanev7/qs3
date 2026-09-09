@@ -1,0 +1,6 @@
+channels	state_bytes	serial_ms	tiled_ms
+8192	2	0.018444	0.004096
+8192	4	0.018440	0.004102
+10240	2	0.022522	0.004100
+10240	4	0.022526	0.004083
+768 bitwise output/state cases passed
