@@ -19,8 +19,9 @@ but these implementation and output-precision differences remain explicit.
 
 The latest qs3 changes preserve every generated ID from the preceding runs
 (36 short, 260 sustained). The short vLLM sequence matches; the sustained greedy
-sequences first differ at output index 162. Identical-prefix score comparison,
-27B runtime support, graphs and NVFP4 remain open. The verified 27B snapshot is
+sequences first differ at output index 162. An identical-prefix diagnostic now
+finds 256/261 argmax agreement; precision controls and independent sustained
+quality evaluation, 27B runtime support, graphs and NVFP4 remain open. The verified 27B snapshot is
 cached on sp10. The following sections retain the measurements behind this state.
 
 ## Measurement contract
@@ -107,8 +108,8 @@ The remaining architecture gates are:
    precision. Graph replay and GPU kernel improvements address different costs;
    the current prefill span has little idle time while decode has larger gaps.
 3. Establish exact 27B BF16 support and matched-vLLM baselines. The pinned payload
-   is verified and native attention ratio six is prototyped; Rust shape support,
-   dense materialization, GDN preparation and reference inference remain open.
+   is verified and native ratio-six attention and 48-value-head GDN are tested;
+   Rust shape/state views, dense materialization and reference inference remain open.
 4. Implement verified NVFP4 packing/scales and actual SM121 AOT kernels after
    BF16 correctness. An emulation path does not establish competitive quantized
    execution.
@@ -274,11 +275,13 @@ short-run greedy agreement; recurrent precision and sustained quality remain ope
 
 ## Explicit AOT MoE launch selection
 
-`QwenConfig::moe_bf16_kernel` selects `CutlassBlocks4` or `CutlassBlocks96`.
-Both lower to the same local two-stage SM80 CUTLASS grouped GEMM, compiled for
-SM121. The default is 96 blocks. `QS3_BENCH_MOE_BLOCKS=4` selects the comparison
-launch in the core benchmark; JSON reports the kernel tile, stages and block
-count. Native and Rust validation reject other grid settings before execution.
+The initial `QwenConfig::moe_bf16_kernel` selections varied only the four/96-block
+grid of the same local two-stage SM80 CUTLASS grouped GEMM, compiled for SM121.
+The default was 96 blocks. Since `0dc68a2`, named tile/grid selections replace
+those variants and the old block-count benchmark variable;
+`QS3_BENCH_MOE_KERNEL=tile128_blocks4` now selects the original comparison launch.
+JSON reports the kernel tile, stages and block count. Native and Rust validation
+reject uncompiled selections before execution.
 The local launch replaces the vendor wrapper's fixed four-block call without
 changing routing, arithmetic, activation, or reduction. No vendor files change.
 
@@ -734,3 +737,22 @@ capture contains both optimizations; the same-commit core A/B above isolates
 the tile. Host submission/delivery gaps remain a graph target, and eight device
 allocations/frees remain in the captured decode range. CUDA API duration includes
 waiting and must not be interpreted as independent CPU work.
+
+## Identical-prefix numerical comparison
+
+The [forced-prefix diagnostic](benchmarks/2026-09-09-same-prefix-scores/README.md)
+records both runtimes on the same 1024-token prompt and 260 vLLM-selected decode
+IDs. qs3 uses its real decode path; vLLM records unmodified logits before forcing
+sampling. vLLM reproduces all 260 original greedy IDs. Argmax agrees at 256/261
+positions, with differences at 162, 163, 173, 218 and 223. Mean forced-token NLL
+is 0.108287 versus 0.105211 nats; this is one self-selected benchmark continuation,
+not independent language-quality evidence or an acceptance threshold.
+
+At index 162 qs3 scores IDs 8340/79091 at 21.865154/21.409761, while vLLM scores
+them at 21.125/21.375. Rounding those qs3 logits to BF16 gives 21.875/21.375 and
+does not resolve the disagreement. Earlier computation and projection-algorithm
+differences remain to be isolated. The loaded vLLM router's BF16 input/output is
+now verified directly; qs3 uses FP32 router logits. A controlled router/shared-gate
+precision comparison is warranted before attributing the divergence only to GDN
+state or LM-head output. All captures, score summaries and reproduction scripts
+are linked above; these diagnostic runs make no performance claim.

@@ -1,0 +1,29 @@
+Welcome to NVIDIA DGX Spark Version 7.5.0 (GNU/Linux 6.17.0-1014-nvidia aarch64)
+
+ System information as of Tue Sep  8 11:43:28 PM PDT 2026
+
+  System load:  0.44              Temperature:             51.0 C
+  Usage of /:   74.9% of 3.67TB   Processes:               466
+  Memory usage: 3%                Users logged in:         0
+  Swap usage:   2%                IPv4 address for wlP9s9: 10.229.55.182
+
+3 devices have a firmware upgrade available.
+Run `fwupdmgr get-upgrades` for more information.
+
+HEAD is now at 0dc68a2 Add named AOT MoE tiles and validate the 32-row candidate
+Current branch main is up to date.
+ninja: Entering directory `build'
+ninja: no work to do.
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.10s
+ninja: Entering directory `build'
+ninja: no work to do.
+   Compiling qs3 v0.1.0 (/home/sp10/qs3)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.60s
+     Running unittests src/lib.rs (target/debug/deps/qs3-3c4252620c3a5526)
+
+running 1 test
+test loader::tests::scores::real_qwen36_same_prefix_scores has been running for over 60 seconds
+test loader::tests::scores::real_qwen36_same_prefix_scores ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 119 filtered out; finished in 71.37s
+
