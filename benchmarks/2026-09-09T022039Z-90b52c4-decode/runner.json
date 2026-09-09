@@ -1,0 +1,118 @@
+{
+  "metadata": {
+    "host": "sp10",
+    "gpu": "NVIDIA GB10",
+    "driver": "580.142",
+    "cuda_runtime": "13.0",
+    "rust": "rustc 1.95.0 (59807616e 2026-04-14) (built from a source tarball)",
+    "commit_hash": "90b52c455d3a92abaa586daa8b856cc51cd1db00"
+  },
+  "measurement": {
+    "prompt": {
+      "token_id_fnv1a": "6ca602a4cc15238d",
+      "tokens": 102,
+      "bytes": 556
+    },
+    "model": "/home/sp10/.cache/huggingface/hub/models--Qwen--Qwen3.6-35B-A3B/snapshots/995ad96eacd98c81ed38be0c5b274b04031597b0",
+    "tokenize": {
+      "p50_ms": 0.039664,
+      "samples": 100,
+      "cold_ms": 0.15190399999999998
+    },
+    "prefill": {
+      "warmup_ms": [
+        1586.224927,
+        1021.985933
+      ],
+      "sample_ms": [
+        1028.093106,
+        1028.417827,
+        1027.283767,
+        1019.5458959999999,
+        1022.9702110000001
+      ],
+      "samples": 5,
+      "context_end": 102,
+      "tokens_per_second": 99.29096835421912,
+      "p50_ms": 1027.283767,
+      "warmups": 2,
+      "context_start": 0
+    },
+    "started_at": "2026-09-09T02:20:47.896184297+00:00",
+    "execution": {
+      "linear_workspace_bytes": 67108864,
+      "attention_int_workspace_bytes": 67108864,
+      "attention_host_workspace_bytes": 67108864,
+      "gdn": "qscu_local_bf16",
+      "sampling": "greedy",
+      "weight_backend": "managed_uma",
+      "attention_float_workspace_bytes": 67108864,
+      "cuda_profiler_range": true,
+      "linear": "cublaslt_prepared_f32_accum",
+      "attention": "flashinfer_paged_hd256_gqa8",
+      "precision": "bf16",
+      "norm": "flashinfer_gemma_aot",
+      "mode": "eager",
+      "moe": "flashinfer_cutlass_segment_gemm_bf16"
+    },
+    "setup_ms": {
+      "runner_init": 16.473072,
+      "weight_materialize": 0.439951,
+      "weight_plan": 3.4123769999999998,
+      "tokenizer_load": 309.802795,
+      "weight_load": 60404.946748999995
+    },
+    "profile": "release",
+    "finished_at": "2026-09-09T02:22:03.830948886+00:00",
+    "decode": {
+      "tokens_per_second": 11.823607198580959,
+      "total_ms": 2706.4498559999997,
+      "context_end": 138,
+      "sample_ms": [
+        87.255237,
+        86.31663,
+        86.360231,
+        84.31265,
+        84.220587,
+        85.33444,
+        84.250427,
+        84.317498,
+        84.278363,
+        84.10930599999999,
+        84.39621899999999,
+        84.226874,
+        84.436155,
+        84.13817,
+        84.052843,
+        84.185883,
+        84.211387,
+        84.185339,
+        84.215018,
+        84.221035,
+        84.40916299999999,
+        84.26241,
+        84.58663399999999,
+        84.321931,
+        84.468282,
+        84.44657099999999,
+        84.403738,
+        84.36930600000001,
+        84.38385099999999,
+        84.276715,
+        84.303018,
+        85.193945
+      ],
+      "p50_ms": 84.31507400000001,
+      "p95_ms": 86.360231,
+      "context_start": 106,
+      "samples": 32,
+      "warmups": 4,
+      "warmup_ms": [
+        115.685293,
+        83.539564,
+        83.691035,
+        84.72457
+      ]
+    }
+  }
+}

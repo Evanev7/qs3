@@ -1,0 +1,118 @@
+{
+  "measurement": {
+    "model": "/home/sp10/.cache/huggingface/hub/models--Qwen--Qwen3.6-35B-A3B/snapshots/995ad96eacd98c81ed38be0c5b274b04031597b0",
+    "decode": {
+      "context_end": 138,
+      "tokens_per_second": 11.905373330720819,
+      "warmup_ms": [
+        112.507113,
+        84.721766,
+        83.746649,
+        83.65922400000001
+      ],
+      "warmups": 4,
+      "total_ms": 2687.861952,
+      "samples": 32,
+      "context_start": 106,
+      "p95_ms": 85.71058,
+      "sample_ms": [
+        83.763385,
+        85.71058,
+        83.548776,
+        83.534569,
+        83.613849,
+        83.711544,
+        83.608505,
+        83.609673,
+        83.491833,
+        83.73564,
+        83.650633,
+        83.634361,
+        84.664902,
+        84.60411900000001,
+        84.605255,
+        83.613288,
+        85.63557300000001,
+        85.917204,
+        83.57332000000001,
+        83.66167300000001,
+        83.644153,
+        83.75604,
+        83.75197700000001,
+        83.67978500000001,
+        83.815993,
+        83.69108,
+        83.798633,
+        83.810025,
+        84.76136600000001,
+        83.95040800000001,
+        83.65932099999999,
+        83.654489
+      ],
+      "p50_ms": 83.701312
+    },
+    "prefill": {
+      "p50_ms": 1015.460633,
+      "samples": 5,
+      "sample_ms": [
+        1020.356262,
+        1019.5334979999999,
+        1015.1445329999999,
+        1014.4063940000001,
+        1015.460633
+      ],
+      "context_start": 0,
+      "context_end": 102,
+      "warmup_ms": [
+        1467.515957,
+        1014.9716159999999
+      ],
+      "warmups": 2,
+      "tokens_per_second": 100.44702540428271
+    },
+    "profile": "release",
+    "setup_ms": {
+      "tokenizer_load": 342.875994,
+      "weight_load": 64404.101973,
+      "weight_materialize": 0.457887,
+      "runner_init": 15.430556999999999,
+      "weight_plan": 3.480776
+    },
+    "started_at": "2026-09-09T02:18:33.133622539+00:00",
+    "finished_at": "2026-09-09T02:19:50.978846657+00:00",
+    "tokenize": {
+      "cold_ms": 0.251503,
+      "p50_ms": 0.039952,
+      "samples": 100
+    },
+    "execution": {
+      "cuda_profiler_range": false,
+      "linear_workspace_bytes": 67108864,
+      "gdn": "qscu_local_bf16",
+      "precision": "bf16",
+      "moe": "flashinfer_cutlass_segment_gemm_bf16",
+      "attention": "flashinfer_paged_hd256_gqa8",
+      "norm": "flashinfer_gemma_aot",
+      "attention_float_workspace_bytes": 67108864,
+      "mode": "eager",
+      "attention_host_workspace_bytes": 67108864,
+      "linear": "cublaslt_prepared_f32_accum",
+      "attention_int_workspace_bytes": 67108864,
+      "weight_backend": "managed_uma",
+      "sampling": "greedy"
+    },
+    "prompt": {
+      "bytes": 556,
+      "tokens": 102,
+      "token_id_fnv1a": "6ca602a4cc15238d"
+    }
+  },
+  "metadata": {
+    "cuda_runtime": "13.0",
+    "rust": "rustc 1.95.0 (59807616e 2026-04-14) (built from a source tarball)",
+    "host": "sp10",
+    "driver": "580.142",
+    "gpu": "NVIDIA GB10",
+    "commit_hash": "90b52c455d3a92abaa586daa8b856cc51cd1db00"
+  }
+}

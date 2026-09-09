@@ -24,6 +24,7 @@ or matched-vLLM comparison. Prefill samples follow resets of the same runner.
 | `f32f0e5` | 7.550 | 132.793 | 1023.724 | [JSON](benchmarks/2026-09-09T011848.800087754Z-f32f0e5.json) |
 | `6a3d39d` (prepared linear) | 7.638 | 131.361 | 1028.085 | [JSON](benchmarks/2026-09-09T013243.445741248Z-6a3d39d.json) |
 | `6bf75db` (norm fix) | 7.515 | 133.235 | 1026.774 | [JSON](benchmarks/2026-09-09T014957.161677547Z-6bf75db.json) |
+| `90b52c4` (attention workspace reuse) | 11.905 | 83.701 | 1015.461 | [JSON](benchmarks/2026-09-09T021833.133622539Z-90b52c4.json) |
 
 The first prepared-linear run is 1.17% higher in decode throughput than the fresh
 baseline, with prefill 0.43% slower. This is one pair of runs and does not resolve
@@ -185,4 +186,19 @@ Validation on sp10 (2026-09-09): the prescribed full test script passed 115
 library tests (3 ignored), 1 benchmark test, 3 engine tests, 16 model tests,
 14 vector tests, both native suites, and the native benchmark build. The real
 35B BF16 regression passed separately, including logits, greedy IDs and reset
-replay. Performance and allocation behavior are measured in subsequent runs.
+replay.
+
+The unprofiled core run now measures **11.905 tok/s**, up 58.4% from the norm-fix
+run, with decode p50 falling from 133.235 to 83.701 ms. Prefill p50 is 1015.461 ms.
+The [repeat Nsight capture](benchmarks/2026-09-09T022039Z-90b52c4-decode/README.md)
+contains no pinned allocation/free calls. Across 32 decode steps, event records
+and queries cost 0.591 ms combined. Time without recorded GPU work within the
+first-to-last-kernel span falls from 1539.70 to 97.53 ms; recorded GPU work falls
+only from 2661.11 to 2608.21 ms. This supports host planning allocation removal
+as the main cause of the wall-time improvement. Small differences in GPU time
+remain subject to run variation.
+
+Grouped MoE still takes 58.9% of GPU kernel time with all 2560 launches using four
+blocks. Benchmark wider launches next. Persistent batch metadata and explicit
+GDN parity remain prerequisites for graph replay; this result alone establishes
+neither graph readiness nor competitive vLLM performance.
