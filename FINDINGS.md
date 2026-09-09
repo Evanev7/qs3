@@ -571,3 +571,15 @@ GDN recurrence, then verifies the reference continuation, reset and replay; both
 pass. This directly exercises failed candidate GDN/KV updates while keeping
 execution resources alive. Core prefill timing follows; the earlier trace showed
 40.320 ms in pinned-host allocation/free before its main GPU span.
+
+The integrated [short run](benchmarks/2026-09-09T052704.174713155Z-1efaee8.json)
+measures 249.572 ms prefill, down from 295.488 ms (15.5%). The
+[1024-token/256-step run](benchmarks/2026-09-09T052846.378873097Z-1efaee8.json)
+measures 557.508 ms, down from 605.658 ms (8.0%). These 46–48 ms savings are
+consistent with avoiding provider recreation. All 36/260 generated IDs match
+the preceding core runs. Decode p50 is 42.369/42.461 ms; sustained throughput
+is 23.534 tok/s versus 23.596 previously. The short run has several 48–53 ms
+outliers and averages 22.754 tok/s, so there is no claimed decode gain. The asset
+download was paused during both timings and resumed afterwards; its HTTP stream
+subsequently failed and the downloader resumed from cached partial data. The
+remaining long-prefill gap to vLLM is about 1.52 times latency.
