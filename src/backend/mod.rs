@@ -13,7 +13,7 @@ pub(crate) mod qscu;
 pub(crate) mod qsfi;
 mod tensor;
 
-pub(crate) use dtype::{BF16, F32, I32};
+pub(crate) use dtype::{BF16, F32, I32, FloatDType};
 pub(crate) use qscb::Qscb;
 pub(crate) use qscu::Qscu;
 pub(crate) use qsfi::Qsfi;

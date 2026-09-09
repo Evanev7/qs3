@@ -511,7 +511,7 @@ fn upload_moe_vector_inputs(runner: &mut ModelRunner) {
 
 fn run_moe_vector_router(runner: &mut ModelRunner, renormalize: bool) {
     let moe = runner.config.moe_config().unwrap();
-    let router_logits = DMat::contiguous(
+    let router_logits = DMat::<crate::backend::F32>::contiguous(
         runner.scratch.router_logits.as_device_ptr(),
         MOE_VECTOR_ROWS,
         moe.num_experts,
@@ -3299,5 +3299,96 @@ impl ModelRunner {
         assert_eq!(failed.unwrap_err(), Status::InvalidArgument);
         assert_eq!(self.live_tokens(), live_before);
         assert_eq!(self.last_logits_row_for_test().unwrap(), logits_before);
+    }
+}
+
+#[test]
+fn bf16_router_matches_quantized_cpu_scores_and_breaks_rounding_ties_by_id() {
+    let mut runner = moe_vector_runner();
+    runner.config.moe_router_precision = crate::model::MoeRouterPrecision::Bf16;
+    runner
+        .scratch
+        .ensure(&runner.config, MOE_VECTOR_ROWS)
+        .unwrap();
+    let rows = MOE_VECTOR_ROWS as usize;
+    let experts = QWEN36_MOE_NUM_EXPERTS as usize;
+    let topk = QWEN36_MOE_TOP_K as usize;
+    let mut source: Vec<f32> = (0..rows * experts)
+        .map(|i| (((i * 37) % 257) as f32 - 128.0) * 0.037)
+        .collect();
+    source[0] = 9.01;
+    source[255] = 9.02;
+    let bits: Vec<u16> = source
+        .iter()
+        .map(|x| {
+            let bits = x.to_bits();
+            ((bits.wrapping_add(0x7fff + ((bits >> 16) & 1))) >> 16) as u16
+        })
+        .collect();
+    assert_eq!(bits[0], bits[255]);
+    runner
+        .scratch
+        .router_logits_bf16
+        .upload(runner.config.stream, &bits)
+        .unwrap();
+    for renormalize in [false, true] {
+        {
+            let mut ops = runner.engine.operators();
+            unsafe {
+                ops.qscu()
+                    .router_topk(
+                        DMat::<crate::backend::BF16>::contiguous(
+                            runner.scratch.router_logits_bf16.as_device_ptr(),
+                            MOE_VECTOR_ROWS,
+                            QWEN36_MOE_NUM_EXPERTS,
+                        )
+                        .unwrap(),
+                        DMat::contiguous(
+                            runner.scratch.topk_ids.as_device_ptr(),
+                            MOE_VECTOR_ROWS,
+                            QWEN36_MOE_TOP_K,
+                        )
+                        .unwrap(),
+                        DMat::contiguous(
+                            runner.scratch.topk_weights.as_device_ptr(),
+                            MOE_VECTOR_ROWS,
+                            QWEN36_MOE_TOP_K,
+                        )
+                        .unwrap(),
+                        QWEN36_MOE_ROUTER_SCORE,
+                        renormalize,
+                        1.0,
+                    )
+                    .unwrap();
+            }
+        }
+        let actual_ids = download_i32(&runner.scratch.topk_ids, runner.config.stream, rows * topk);
+        let actual_weights = download_f32(
+            &runner.scratch.topk_weights,
+            runner.config.stream,
+            rows * topk,
+        );
+        assert_eq!(actual_ids[0], 0);
+        assert_eq!(actual_ids[1], 255);
+        for row in 0..rows {
+            let logits: Vec<f64> = bits[row * experts..(row + 1) * experts]
+                .iter()
+                .map(|&x| f64::from(bf16_bits_to_f32(x)))
+                .collect();
+            let mut ids: Vec<usize> = (0..experts).collect();
+            ids.sort_by(|&a, &b| logits[b].total_cmp(&logits[a]).then(a.cmp(&b)));
+            let max = logits[ids[0]];
+            let denom: f64 = if renormalize {
+                ids[..topk].iter().map(|&i| (logits[i] - max).exp()).sum()
+            } else {
+                logits.iter().map(|x| (x - max).exp()).sum()
+            };
+            for rank in 0..topk {
+                let index = row * topk + rank;
+                assert_eq!(actual_ids[index], ids[rank] as i32);
+                let expected = (logits[ids[rank]] - max).exp() / denom;
+                assert!((f64::from(actual_weights[index]) - expected).abs() < 1.0e-6);
+            }
+        }
     }
 }

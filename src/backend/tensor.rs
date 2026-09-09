@@ -70,6 +70,10 @@ pub(crate) struct DMat<DT: DType> {
 }
 
 impl<DT: DType> DMat<DT> {
+    pub(crate) fn rows(self) -> u32 {
+        self.rows
+    }
+
     pub(crate) fn contiguous(data: ffi::DevicePtr, rows: u32, cols: u32) -> Result<Self, Status> {
         Self::new(data, rows, cols, cols)
     }

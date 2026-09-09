@@ -288,6 +288,22 @@ impl GdnRecurrentPrecision {
     }
 }
 
+/// Output storage for the MoE router projection; softmax/top-k remain FP32.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MoeRouterPrecision {
+    Bf16,
+    F32,
+}
+
+impl MoeRouterPrecision {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Bf16 => "bf16",
+            Self::F32 => "f32",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct QwenConfig {
     pub device_ordinal: i32,
@@ -303,6 +319,7 @@ pub struct QwenConfig {
     pub intermediate_size: u32,
     pub moe: Option<QwenMoeConfig>,
     pub moe_bf16_kernel: MoeBf16Kernel,
+    pub moe_router_precision: MoeRouterPrecision,
     pub gdn_recurrent_precision: GdnRecurrentPrecision,
     pub vocab_size: u32,
     pub num_q_heads: u32,
@@ -357,6 +374,7 @@ impl QwenConfig {
             qsfi_host_int_workspace_bytes: 64 << 20,
             qscb_workspace_bytes: 64 << 20,
             moe_bf16_kernel: MoeBf16Kernel::CutlassTile32Blocks96,
+            moe_router_precision: MoeRouterPrecision::F32,
             gdn_recurrent_precision: GdnRecurrentPrecision::F32,
             model_shape: QwenModelShape::qwen36_moe_gdn(),
         };
@@ -391,6 +409,7 @@ impl QwenConfig {
             qsfi_host_int_workspace_bytes: 64 << 20,
             qscb_workspace_bytes: 16 << 20,
             moe_bf16_kernel: MoeBf16Kernel::CutlassTile32Blocks96,
+            moe_router_precision: MoeRouterPrecision::F32,
             gdn_recurrent_precision: GdnRecurrentPrecision::Bf16,
             model_shape: QwenModelShape::full_attention_only(),
         }
@@ -441,6 +460,7 @@ impl QwenConfig {
             qsfi_host_int_workspace_bytes: 64 << 20,
             qscb_workspace_bytes: 64 << 20,
             moe_bf16_kernel: MoeBf16Kernel::CutlassTile32Blocks96,
+            moe_router_precision: MoeRouterPrecision::F32,
             gdn_recurrent_precision: GdnRecurrentPrecision::Bf16,
             model_shape: QwenModelShape::qwen36_moe_gdn(),
         }

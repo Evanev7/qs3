@@ -45,7 +45,7 @@ fn real_qwen36_same_prefix_scores() {
     let plan = QwenBf16LoadPlan::read(&model_dir).unwrap();
     let backend = ManagedUmaBackend::new(cuda_device_from_env()).unwrap();
     let loaded = execute_qwen36_bf16_load_plan(&plan, backend, ptr::null_mut()).unwrap();
-    let (config, weights) = loaded
+    let (mut config, weights) = loaded
         .into_qwen_model(
             ptr::null_mut(),
             u32::try_from(prompt.len() + forced.len() + 1).unwrap(),
@@ -55,6 +55,11 @@ fn real_qwen36_same_prefix_scores() {
         config.gdn_recurrent_precision,
         crate::model::GdnRecurrentPrecision::F32
     );
+    config.moe_router_precision = match std::env::var("QS3_SCORE_ROUTER_LOGITS").as_deref() {
+        Ok("bf16") => crate::model::MoeRouterPrecision::Bf16,
+        Ok("f32") | Err(std::env::VarError::NotPresent) => crate::model::MoeRouterPrecision::F32,
+        _ => panic!("QS3_SCORE_ROUTER_LOGITS must be unset, f32 or bf16"),
+    };
     let mut runner = crate::model::ModelRunner::new(config, weights).unwrap();
     const REQUEST: u64 = 0x53434f5245;
     runner
@@ -129,6 +134,10 @@ fn real_qwen36_same_prefix_scores() {
     let result = object([
         ("input", spec),
         ("records", records.into()),
+        (
+            "router_logits_dtype",
+            config.moe_router_precision.as_str().to_owned().into(),
+        ),
         (
             "protocol",
             "one prefill then forced token-by-token decode; raw logits before sampling"

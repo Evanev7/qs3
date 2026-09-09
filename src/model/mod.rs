@@ -10,7 +10,7 @@ mod config;
 mod runner;
 
 use config::QwenBlockKind;
-pub use config::{GdnRecurrentPrecision, QwenConfig, QwenMoeConfig};
+pub use config::{GdnRecurrentPrecision, MoeRouterPrecision, QwenConfig, QwenMoeConfig};
 pub use crate::backend::qsfi::MoeBf16Kernel;
 pub use runner::{ModelRunner, QwenRequest, QwenResult};
 mod weights;

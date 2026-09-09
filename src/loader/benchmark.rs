@@ -9,7 +9,7 @@ use super::{
 use crate::test_assets::require_real_qwen36_model_dir;
 use crate::{
     QwenTokenizer, ffi,
-    model::{GdnRecurrentPrecision, ModelRunner, MoeBf16Kernel, QwenRequest},
+    model::{GdnRecurrentPrecision, ModelRunner, MoeBf16Kernel, MoeRouterPrecision, QwenRequest},
 };
 use std::{ptr, time::Instant};
 
@@ -248,6 +248,12 @@ pub fn run_core_benchmark() -> JsonValue {
         Ok(value) if value == "f32" => GdnRecurrentPrecision::F32,
         _ => panic!("QS3_BENCH_GDN_STATE must be unset, bf16 or f32"),
     };
+    config.moe_router_precision = match std::env::var("QS3_BENCH_ROUTER_LOGITS") {
+        Err(std::env::VarError::NotPresent) => config.moe_router_precision,
+        Ok(value) if value == "f32" => MoeRouterPrecision::F32,
+        Ok(value) if value == "bf16" => MoeRouterPrecision::Bf16,
+        _ => panic!("QS3_BENCH_ROUTER_LOGITS must be unset, f32 or bf16"),
+    };
     config.moe_bf16_kernel = match std::env::var("QS3_BENCH_MOE_KERNEL") {
         Err(std::env::VarError::NotPresent) => config.moe_bf16_kernel,
         Ok(value) if value == "tile128_blocks4" => MoeBf16Kernel::CutlassTile128Blocks4,
@@ -332,6 +338,7 @@ pub fn run_core_benchmark() -> JsonValue {
                     f64::from(config.moe_bf16_kernel.threadblocks()).into(),
                 ),
                 ("moe_kernel", config.moe_bf16_kernel.as_str().to_owned().into()),
+                ("router_logits_dtype", config.moe_router_precision.as_str().to_owned().into()),
                 ("moe_cta_tile", config.moe_bf16_kernel.cta_tile().into_iter()
                     .map(|dim| JsonValue::Number(f64::from(dim))).collect::<Vec<_>>().into()),
                 ("gdn_conv_state_dtype", "bf16".to_owned().into()),
