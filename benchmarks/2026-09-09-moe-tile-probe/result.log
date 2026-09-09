@@ -1,0 +1,151 @@
+/home/sp10/qs3/.prototypes/moe_tiles/candidate.cu(382): warning #177-D: function "<unnamed>::validate_routes_kernel" was declared but never referenced
+  __attribute__((global)) void validate_routes_kernel(
+                               ^
+
+Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+
+MoE tile probe built; execute separately.
+repeat=0 active_experts=8 tile=128 tile=128 tokens=1 differing_bits=0 nonzero=2048 max_abs=0
+moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	1	8	1024	2048	2048	0	512	256	8	5	100	315.523
+repeat=0 active_experts=8 tile=32 tile=32 tokens=1 differing_bits=0 nonzero=2048 max_abs=0
+moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	1	8	1024	2048	2048	0	512	256	8	5	100	277.025
+repeat=0 active_experts=8 tile=16 tile=16 tokens=1 differing_bits=0 nonzero=2048 max_abs=0
+moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	1	8	1024	2048	2048	0	512	256	8	5	100	281.864
+repeat=0 active_experts=8 tile=128 tile=128 tokens=16 differing_bits=0 nonzero=32768 max_abs=0
+moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	16	128	1024	2048	2048	0	512	256	8	5	100	345.857
+repeat=0 active_experts=8 tile=32 tile=32 tokens=16 differing_bits=0 nonzero=32768 max_abs=0
+moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	16	128	1024	2048	2048	0	512	256	8	5	100	304.649
+repeat=0 active_experts=8 tile=16 moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	16	128	1024	2048	2048	0	512	256	8	5	100	302.420
+repeat=0 active_experts=8 tile=128 tile=16 tokens=16 differing_bits=0 nonzero=32768 max_abs=0
+tile=128 tokens=102 differing_bits=0 nonzero=208854 max_abs=0
+moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	102	816	1024	2048	2048	0	512	256	8	5	30	412.593
+repeat=0 active_experts=8 tile=32 moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	102	816	1024	2048	2048	0	512	256	8	5	30	376.005
+repeat=0 active_experts=8 tile=16 tile=32 tokens=102 differing_bits=0 nonzero=208854 max_abs=0
+tile=16 tokens=102 differing_bits=0 nonzero=208854 max_abs=0
+moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	102	816	1024	2048	2048	0	512	256	8	5	30	408.909
+repeat=0 active_experts=8 tile=128 tile=128 tokens=1024 differing_bits=0 nonzero=2096690 max_abs=0
+moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	1024	8192	1024	2048	2048	0	512	256	8	5	30	1860.700
+repeat=0 active_experts=8 tile=32 tile=32 tokens=1024 differing_bits=0 nonzero=2096690 max_abs=0
+moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	1024	8192	1024	2048	2048	0	512	256	8	5	30	2135.168
+repeat=0 active_experts=8 tile=16 tile=16 tokens=1024 differing_bits=0 nonzero=2096690 max_abs=0
+moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	1024	8192	1024	2048	2048	0	512	256	8	5	30	2838.964
+repeat=0 active_experts=32 tile=128 tile=128 tokens=1 differing_bits=0 nonzero=2048 max_abs=0
+moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	1	8	1024	2048	2048	0	512	256	8	5	100	335.318
+repeat=0 active_experts=32 tile=32 tile=32 tokens=1 differing_bits=0 nonzero=2048 max_abs=0
+moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	1	8	1024	2048	2048	0	512	256	8	5	100	277.830
+repeat=0 active_experts=32 tile=16 tile=16 tokens=1 differing_bits=0 nonzero=2048 max_abs=0
+moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	1	8	1024	2048	2048	0	512	256	8	5	100	283.687
+repeat=0 active_experts=32 tile=128 tile=128 tokens=16 differing_bits=0 nonzero=32768 max_abs=0
+moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	16	128	1024	2048	2048	0	512	256	8	5	100	1086.196
+repeat=0 active_experts=32 tile=32 tile=32 tokens=16 differing_bits=0 nonzero=32768 max_abs=0
+moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	16	128	1024	2048	2048	0	512	256	8	5	100	983.918
+repeat=0 active_experts=32 tile=16 tile=16 tokens=16 differing_bits=0 nonzero=32768 max_abs=0
+moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	16	128	1024	2048	2048	0	512	256	8	5	100	974.150
+repeat=0 active_experts=32 tile=128 tile=128 tokens=102 differing_bits=0 nonzero=208854 max_abs=0
+moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	102	816	1024	2048	2048	0	512	256	8	5	30	1238.623
+repeat=0 active_experts=32 tile=32 tile=32 tokens=102 differing_bits=0 nonzero=208854 max_abs=0
+moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	102	816	1024	2048	2048	0	512	256	8	5	30	1110.279
+repeat=0 active_experts=32 tile=16 tile=16 tokens=102 differing_bits=0 nonzero=208854 max_abs=0
+moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	102	816	1024	2048	2048	0	512	256	8	5	30	1134.240
+repeat=0 active_experts=32 tile=128 tile=128 tokens=1024 differing_bits=0 nonzero=2096708 max_abs=0
+moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	1024	8192	1024	2048	2048	0	512	256	8	5	30	2537.160
+repeat=0 active_experts=32 tile=32 tile=32 tokens=1024 differing_bits=0 nonzero=2096708 max_abs=0
+moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	1024	8192	1024	2048	2048	0	512	256	8	5	30	2543.267
+repeat=0 active_experts=32 tile=16 tile=16 tokens=1024 differing_bits=0 nonzero=2096708 max_abs=0
+moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	1024	8192	1024	2048	2048	0	512	256	8	5	30	3140.017
+repeat=0 active_experts=256 tile=128 tile=128 tokens=1 differing_bits=0 nonzero=2048 max_abs=0
+moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	1	8	1024	2048	2048	0	512	256	8	5	100	327.310
+repeat=0 active_experts=256 tile=32 tile=32 tokens=1 differing_bits=0 nonzero=2048 max_abs=0
+moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	1	8	1024	2048	2048	0	512	256	8	5	100	281.588
+repeat=0 active_experts=256 tile=16 tile=16 tokens=1 differing_bits=0 nonzero=2048 max_abs=0
+moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	1	8	1024	2048	2048	0	512	256	8	5	100	273.867
+repeat=0 active_experts=256 tile=128 tile=128 tokens=16 differing_bits=0 nonzero=32747 max_abs=0
+moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	16	128	1024	2048	2048	0	512	256	8	5	100	3942.162
+repeat=0 active_experts=256 tile=32 tile=32 tokens=16 differing_bits=0 nonzero=32747 max_abs=0
+moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	16	128	1024	2048	2048	0	512	256	8	5	100	3619.203
+repeat=0 active_experts=256 tile=16 tile=16 tokens=16 differing_bits=0 nonzero=32747 max_abs=0
+moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	16	128	1024	2048	2048	0	512	256	8	5	100	3623.144
+repeat=0 active_experts=256 tile=128 tile=128 tokens=102 differing_bits=0 nonzero=208854 max_abs=0
+moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	102	816	1024	2048	2048	0	512	256	8	5	30	7962.545
+repeat=0 active_experts=256 tile=32 tile=32 tokens=102 differing_bits=0 nonzero=208854 max_abs=0
+moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	102	816	1024	2048	2048	0	512	256	8	5	30	7231.102
+repeat=0 active_experts=256 tile=16 tile=16 tokens=102 differing_bits=0 nonzero=208854 max_abs=0
+moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	102	816	1024	2048	2048	0	512	256	8	5	30	7216.530
+repeat=0 active_experts=256 tile=128 tile=128 tokens=1024 differing_bits=0 nonzero=2096710 max_abs=0
+moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	1024	8192	1024	2048	2048	0	512	256	8	5	30	9376.006
+repeat=0 active_experts=256 tile=32 tile=32 tokens=1024 differing_bits=0 nonzero=2096710 max_abs=0
+moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	1024	8192	1024	2048	2048	0	512	256	8	5	30	8563.018
+repeat=0 active_experts=256 tile=16 tile=16 tokens=1024 differing_bits=0 nonzero=2096710 max_abs=0
+moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	1024	8192	1024	2048	2048	0	512	256	8	5	30	8623.366
+repeat=1 active_experts=8 tile=128 tile=128 tokens=1 differing_bits=0 nonzero=2048 max_abs=0
+moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	1	8	1024	2048	2048	0	512	256	8	5	100	322.817
+repeat=1 active_experts=8 tile=32 tile=32 tokens=1 differing_bits=0 nonzero=2048 max_abs=0
+moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	1	8	1024	2048	2048	0	512	256	8	5	100	284.527
+repeat=1 active_experts=8 tile=16 tile=16 tokens=1 differing_bits=0 nonzero=2048 max_abs=0
+moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	1	8	1024	2048	2048	0	512	256	8	5	100	275.045
+repeat=1 active_experts=8 tile=128 tile=128 tokens=16 differing_bits=0 nonzero=32768 max_abs=0
+moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	16	128	1024	2048	2048	0	512	256	8	5	100	331.917
+repeat=1 active_experts=8 tile=32 tile=32 tokens=16 differing_bits=0 nonzero=32768 max_abs=0
+moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	16	128	1024	2048	2048	0	512	256	8	5	100	304.607
+repeat=1 active_experts=8 tile=16 tile=16 tokens=16 differing_bits=0 nonzero=32768 max_abs=0
+moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	16	128	1024	2048	2048	0	512	256	8	5	100	298.043
+repeat=1 active_experts=8 tile=128 tile=128 tokens=102 differing_bits=0 nonzero=208854 max_abs=0
+moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	102	816	1024	2048	2048	0	512	256	8	5	30	407.646
+repeat=1 active_experts=8 tile=32 tile=32 tokens=102 differing_bits=0 nonzero=208854 max_abs=0
+moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	102	816	1024	2048	2048	0	512	256	8	5	30	381.428
+repeat=1 active_experts=8 tile=16 tile=16 tokens=102 differing_bits=0 nonzero=208854 max_abs=0
+moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	102	816	1024	2048	2048	0	512	256	8	5	30	426.213
+repeat=1 active_experts=8 tile=128 tile=128 tokens=1024 differing_bits=0 nonzero=2096690 max_abs=0
+moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	1024	8192	1024	2048	2048	0	512	256	8	5	30	1869.441
+repeat=1 active_experts=8 tile=32 tile=32 tokens=1024 differing_bits=0 nonzero=2096690 max_abs=0
+moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	1024	8192	1024	2048	2048	0	512	256	8	5	30	2103.728
+repeat=1 active_experts=8 tile=16 tile=16 tokens=1024 differing_bits=0 nonzero=2096690 max_abs=0
+moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	1024	8192	1024	2048	2048	0	512	256	8	5	30	2848.109
+repeat=1 active_experts=32 tile=128 tile=128 tokens=1 differing_bits=0 nonzero=2048 max_abs=0
+moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	1	8	1024	2048	2048	0	512	256	8	5	100	331.457
+repeat=1 active_experts=32 tile=32 tile=32 tokens=1 differing_bits=0 nonzero=2048 max_abs=0
+moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	1	8	1024	2048	2048	0	512	256	8	5	100	289.096
+repeat=1 active_experts=32 tile=16 tile=16 tokens=1 differing_bits=0 nonzero=2048 max_abs=0
+moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	1	8	1024	2048	2048	0	512	256	8	5	100	275.771
+repeat=1 active_experts=32 tile=128 moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	16	128	1024	2048	2048	0	512	256	8	5	100	1083.165
+repeat=1 active_experts=32 tile=32 tile=128 tokens=16 differing_bits=0 nonzero=32768 max_abs=0
+tile=32 tokens=16 differing_bits=0 nonzero=32768 max_abs=0
+moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	16	128	1024	2048	2048	0	512	256	8	5	100	972.534
+repeat=1 active_experts=32 tile=16 tile=16 tokens=16 differing_bits=0 nonzero=32768 max_abs=0
+moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	16	128	1024	2048	2048	0	512	256	8	5	100	973.115
+repeat=1 active_experts=32 tile=128 tile=128 tokens=102 differing_bits=0 nonzero=208854 max_abs=0
+moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	102	816	1024	2048	2048	0	512	256	8	5	30	1245.245
+repeat=1 active_experts=32 tile=32 tile=32 tokens=102 differing_bits=0 nonzero=208854 max_abs=0
+moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	102	816	1024	2048	2048	0	512	256	8	5	30	1113.149
+repeat=1 active_experts=32 tile=16 tile=16 tokens=102 differing_bits=0 nonzero=208854 max_abs=0
+moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	102	816	1024	2048	2048	0	512	256	8	5	30	1110.927
+repeat=1 active_experts=32 tile=128 tile=128 tokens=1024 differing_bits=0 nonzero=2096708 max_abs=0
+moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	1024	8192	1024	2048	2048	0	512	256	8	5	30	2510.769
+repeat=1 active_experts=32 tile=32 tile=32 tokens=1024 differing_bits=0 nonzero=2096708 max_abs=0
+moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	1024	8192	1024	2048	2048	0	512	256	8	5	30	2589.070
+repeat=1 active_experts=32 tile=16 tile=16 tokens=1024 differing_bits=0 nonzero=2096708 max_abs=0
+moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	1024	8192	1024	2048	2048	0	512	256	8	5	30	3173.468
+repeat=1 active_experts=256 tile=128 tile=128 tokens=1 differing_bits=0 nonzero=2048 max_abs=0
+moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	1	8	1024	2048	2048	0	512	256	8	5	100	322.507
+repeat=1 active_experts=256 tile=32 tile=32 tokens=1 differing_bits=0 nonzero=2048 max_abs=0
+moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	1	8	1024	2048	2048	0	512	256	8	5	100	285.725
+repeat=1 active_experts=256 tile=16 tile=16 tokens=1 differing_bits=0 nonzero=2048 max_abs=0
+moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	1	8	1024	2048	2048	0	512	256	8	5	100	276.010
+repeat=1 active_experts=256 tile=128 tile=128 tokens=16 differing_bits=0 nonzero=32747 max_abs=0
+moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	16	128	1024	2048	2048	0	512	256	8	5	100	3938.711
+repeat=1 active_experts=256 tile=32 tile=32 tokens=16 differing_bits=0 nonzero=32747 max_abs=0
+moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	16	128	1024	2048	2048	0	512	256	8	5	100	3618.117
+repeat=1 active_experts=256 tile=16 tile=16 tokens=16 differing_bits=0 nonzero=32747 max_abs=0
+moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	16	128	1024	2048	2048	0	512	256	8	5	100	3612.935
+repeat=1 active_experts=256 tile=128 tile=128 tokens=102 differing_bits=0 nonzero=208854 max_abs=0
+moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	102	816	1024	2048	2048	0	512	256	8	5	30	7977.667
+repeat=1 active_experts=256 tile=32 tile=32 tokens=102 differing_bits=0 nonzero=208854 max_abs=0
+moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	102	816	1024	2048	2048	0	512	256	8	5	30	7262.573
+repeat=1 active_experts=256 tile=16 tile=16 tokens=102 differing_bits=0 nonzero=208854 max_abs=0
+moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	102	816	1024	2048	2048	0	512	256	8	5	30	7244.244
+repeat=1 active_experts=256 tile=128 tile=128 tokens=1024 differing_bits=0 nonzero=2096710 max_abs=0
+moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	1024	8192	1024	2048	2048	0	512	256	8	5	30	9349.178
+repeat=1 active_experts=256 tile=32 tile=32 tokens=1024 differing_bits=0 nonzero=2096710 max_abs=0
+moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	1024	8192	1024	2048	2048	0	512	256	8	5	30	8656.615
+repeat=1 active_experts=256 tile=16 tile=16 tokens=1024 differing_bits=0 nonzero=2096710 max_abs=0
+moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	1024	8192	1024	2048	2048	0	512	256	8	5	30	8551.552

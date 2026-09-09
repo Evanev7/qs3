@@ -688,3 +688,16 @@ measures 24.281 tok/s, 41.111 ms decode p50 and 245.186 ms prefill. All 36
 returned IDs match the preceding core run. This establishes no observed 35B
 regression from the extra AOT shapes; the small timing differences are not a
 claimed performance improvement.
+
+## Grouped-MoE tile shape
+
+The [AOT tile probe](benchmarks/2026-09-09-moe-tile-probe/README.md) compares
+128x128x32, 32x128x64 and 16x128x64 CTA tiles at 96 blocks. All 72 complete-output
+comparisons are bitwise identical, covering nonzero BF16 values, 1/16/102/1024
+tokens and routes concentrated on 8/32/256 experts. With 256-expert routing, the
+32-row tile reduces one-token time from 324.91 to 283.66 microseconds and
+1024-token time from 9362.59 to 8609.82 microseconds. With 1024 tokens concentrated
+on eight experts it instead increases time from 1865.07 to 2119.45 microseconds.
+The 16-row option has still larger skewed-prefill regressions. Keep the 128-row
+control and test the 32-row candidate on real prompts; sparse-row padding and
+weight reuse favor different tiles. These are probe results, not core speedups.
