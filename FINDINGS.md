@@ -701,3 +701,14 @@ on eight experts it instead increases time from 1865.07 to 2119.45 microseconds.
 The 16-row option has still larger skewed-prefill regressions. Keep the 128-row
 control and test the 32-row candidate on real prompts; sparse-row padding and
 weight reuse favor different tiles. These are probe results, not core speedups.
+
+The production candidate exposes three named Rust/AOT selections:
+`tile128_blocks4`, `tile128_blocks96`, and `tile32_blocks96`. The benchmark uses
+`QS3_BENCH_MOE_KERNEL` and records both CTA shape and block count. The old raw
+block-count selector is removed. The 32-row candidate is the trial default;
+real short/sustained core measurements will determine whether it should remain.
+All Rust tests and all four native checked/release targets pass, with analytic
+MoE checks run for each selection. The native rerun also corrected three stale
+attention rejection-message assertions left by the 27B dispatch change. The
+loaded 35B reference regression passes with BF16 and FP32 GDN recurrence,
+including failed-rebuild continuation and reset/replay.

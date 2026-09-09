@@ -218,6 +218,12 @@ typedef enum {
     QSFI_MOE_ROUTE_ROUTER_LOGITS = 1
 } qsfi_moe_route_mode;
 
+typedef enum {
+    QSFI_MOE_BF16_TILE128_BLOCKS4 = 1,
+    QSFI_MOE_BF16_TILE128_BLOCKS96 = 2,
+    QSFI_MOE_BF16_TILE32_BLOCKS96 = 3
+} qsfi_moe_bf16_kernel;
+
 typedef struct {
     qsfi_moe_backend backend;
     qsfi_moe_route_mode route_mode;
@@ -231,7 +237,7 @@ typedef struct {
     qsfi_dtype activation_dtype;
     qsfi_dtype weight_dtype;
     qsfi_dtype output_dtype;
-    uint32_t gemm_threadblocks; /* Staged BF16: explicit AOT launch, 4 or 96. */
+    qsfi_moe_bf16_kernel bf16_kernel; /* Required named AOT tile/grid for staged BF16. */
 } qsfi_moe_plan_desc;
 
 typedef struct {

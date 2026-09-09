@@ -113,7 +113,8 @@
 - [ ] Report selected kernel implementations, precision, graph mode, and workspace
   sizes in benchmarks. Keep alternatives named and forceable in Rust. Current
   core JSON records provider paths, workspace sizes, GDN state dtype, and output
-  IDs. The BF16 MoE grid has explicit four- and 96-block Rust selections.
+  IDs. BF16 MoE has named 128-row/four-block, 128-row/96-block and 32-row/96-block
+  Rust selections; core JSON records the selected tile and grid.
 - [x] Profile attention preparation, dense projections, GDN, and MoE before
   choosing fusion, projection packing, or replacement provider kernels. Recorded
   qs3 prefill/decode and aligned vLLM decode traces identify serial convolution,

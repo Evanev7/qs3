@@ -45,10 +45,9 @@ struct moe_workspace {
     size_t bytes;
 };
 
-// Same SM80 CUTLASS arithmetic as the pinned FlashInfer grouped GEMM, with the
-// launch grid selected by the Rust plan. GB10 uses the two-stage specialization.
-// Keep the four-block launch available for numerical/performance comparisons.
-cudaError_t launch_grouped_bf16(
+// Two explicit AOT tiles; routing and workspace geometry are shared.
+template <int TileM, int TileK>
+cudaError_t launch_grouped_bf16_impl(
     const moe_workspace& ws, uint32_t experts, uint32_t threadblocks, cudaStream_t stream
 )
 {
@@ -67,8 +66,8 @@ cudaError_t launch_grouped_bf16(
         float,
         cutlass::arch::OpClassTensorOp,
         cutlass::arch::Sm80,
-        cutlass::gemm::GemmShape<128, 128, 32>,
-        cutlass::gemm::GemmShape<64, 64, 32>,
+        cutlass::gemm::GemmShape<TileM, 128, TileK>,
+        cutlass::gemm::GemmShape<(TileM < 64 ? TileM : 64), 64, TileK>,
         cutlass::gemm::GemmShape<16, 8, 16>,
         cutlass::epilogue::thread::LinearCombination<DType, 8, float, float>,
         cutlass::gemm::threadblock::GemmBatchedIdentityThreadblockSwizzle,
@@ -101,6 +100,22 @@ cudaError_t launch_grouped_bf16(
             std::string("MoE grouped GEMM run: ") + cutlassGetStatusString(status)
         );
     return cudaSuccess;
+}
+
+cudaError_t launch_grouped_bf16(
+    const moe_workspace& ws, uint32_t experts, qsfi_moe_bf16_kernel kernel, cudaStream_t stream
+)
+{
+    switch (kernel) {
+    case QSFI_MOE_BF16_TILE128_BLOCKS4:
+        return launch_grouped_bf16_impl<128, 32>(ws, experts, 4, stream);
+    case QSFI_MOE_BF16_TILE128_BLOCKS96:
+        return launch_grouped_bf16_impl<128, 32>(ws, experts, 96, stream);
+    case QSFI_MOE_BF16_TILE32_BLOCKS96:
+        return launch_grouped_bf16_impl<32, 64>(ws, experts, 96, stream);
+    default:
+        return cudaErrorInvalidValue;
+    }
 }
 
 size_t align_up(size_t value, size_t alignment)
@@ -218,8 +233,10 @@ qsfi_status validate_plan_desc(qsfi_context* ctx, const qsfi_moe_plan_desc* desc
         return set_unsupported(ctx, "MoE router-logits mode is not implemented yet");
     }
     if (desc->backend == QSFI_MOE_BACKEND_FLASHINFER_STAGED_BF16) {
-        if (desc->gemm_threadblocks != 4 && desc->gemm_threadblocks != 96)
-            return set_invalid_arg(ctx, "staged BF16 MoE gemm_threadblocks must be 4 or 96");
+        if (desc->bf16_kernel != QSFI_MOE_BF16_TILE128_BLOCKS4
+            && desc->bf16_kernel != QSFI_MOE_BF16_TILE128_BLOCKS96
+            && desc->bf16_kernel != QSFI_MOE_BF16_TILE32_BLOCKS96)
+            return set_invalid_arg(ctx, "staged BF16 MoE bf16_kernel must name a compiled tile/grid");
         if (desc->local_expert_offset != 0 || desc->local_num_experts != desc->num_experts) {
             return set_unsupported(
                 ctx,
@@ -697,7 +714,7 @@ cudaError_t launch_bf16_moe(
     err = cudaGetLastError();
     if (err != cudaSuccess)
         return err;
-    err = launch_grouped_bf16(ws, local_experts, p.gemm_threadblocks, stream);
+    err = launch_grouped_bf16(ws, local_experts, p.bf16_kernel, stream);
     if (err != cudaSuccess)
         return err;
 
@@ -741,7 +758,7 @@ cudaError_t launch_bf16_moe(
     err = cudaGetLastError();
     if (err != cudaSuccess)
         return err;
-    err = launch_grouped_bf16(ws, local_experts, p.gemm_threadblocks, stream);
+    err = launch_grouped_bf16(ws, local_experts, p.bf16_kernel, stream);
     if (err != cudaSuccess)
         return err;
 

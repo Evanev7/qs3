@@ -1140,7 +1140,7 @@ void expect_attention_plan_unsupported(
         ctx,
         qsfi_batch_decode_plan_prepare(ctx, &attention, &plan_table, &plan),
         QSFI_STATUS_UNSUPPORTED,
-        "num_qo_heads=16 num_kv_heads=2 head_dim=256",
+        "compiled Qwen3.6 attention supports qo/kv heads 16/2 (35B) or 24/4 (27B), with head_dim=256",
         label
     );
     qsfi_batch_decode_plan_destroy(plan);
@@ -1625,7 +1625,7 @@ void test_gdn_prefill_two_token_recurrence()
     qsfi_context_destroy(ctx);
 }
 
-void test_moe_bf16_staged_grouped_gemm(uint32_t gemm_threadblocks)
+void test_moe_bf16_staged_grouped_gemm(qsfi_moe_bf16_kernel kernel)
 {
     qsfi_context* ctx = nullptr;
     if (!make_context(&ctx))
@@ -1683,7 +1683,7 @@ void test_moe_bf16_staged_grouped_gemm(uint32_t gemm_threadblocks)
     }
 
     qsfi_moe_plan_desc plan_desc {};
-    plan_desc.gemm_threadblocks = gemm_threadblocks;
+    plan_desc.bf16_kernel = kernel;
     plan_desc.backend = QSFI_MOE_BACKEND_FLASHINFER_STAGED_BF16;
     plan_desc.route_mode = QSFI_MOE_ROUTE_PRECOMPUTED_TOPK;
     plan_desc.max_num_tokens = tokens;
@@ -1696,15 +1696,15 @@ void test_moe_bf16_staged_grouped_gemm(uint32_t gemm_threadblocks)
     plan_desc.weight_dtype = QSFI_DTYPE_BF16;
     plan_desc.output_dtype = QSFI_DTYPE_BF16;
 
-    plan_desc.gemm_threadblocks = 0;
+    plan_desc.bf16_kernel = static_cast<qsfi_moe_bf16_kernel>(0);
     check_status_message(
         ctx,
         qsfi_moe_plan_create(ctx, &plan_desc, &plan),
         QSFI_STATUS_INVALID_ARGUMENT,
-        "gemm_threadblocks",
-        "moe invalid launch grid"
+        "bf16_kernel",
+        "moe invalid compiled kernel"
     );
-    plan_desc.gemm_threadblocks = gemm_threadblocks;
+    plan_desc.bf16_kernel = kernel;
     if (!check_status(qsfi_moe_plan_create(ctx, &plan_desc, &plan), QSFI_STATUS_OK, "moe plan"))
         return;
 
@@ -1752,7 +1752,7 @@ void test_moe_bf16_staged_grouped_gemm(uint32_t gemm_threadblocks)
     qsfi_context_destroy(ctx);
 }
 
-void test_moe_bf16_top2_weighted_accumulation(uint32_t gemm_threadblocks)
+void test_moe_bf16_top2_weighted_accumulation(qsfi_moe_bf16_kernel kernel)
 {
     qsfi_context* ctx = nullptr;
     if (!make_context(&ctx))
@@ -1819,7 +1819,7 @@ void test_moe_bf16_top2_weighted_accumulation(uint32_t gemm_threadblocks)
         && copy_to_device(&d_out, h_out.data(), h_out.size(), "copy moe top2 out");
 
     qsfi_moe_plan_desc plan_desc {};
-    plan_desc.gemm_threadblocks = gemm_threadblocks;
+    plan_desc.bf16_kernel = kernel;
     plan_desc.backend = QSFI_MOE_BACKEND_FLASHINFER_STAGED_BF16;
     plan_desc.route_mode = QSFI_MOE_ROUTE_PRECOMPUTED_TOPK;
     plan_desc.max_num_tokens = tokens;
@@ -1893,7 +1893,7 @@ void test_moe_router_logits_plan_is_unsupported()
         return;
 
     qsfi_moe_plan_desc plan_desc {};
-    plan_desc.gemm_threadblocks = 96;
+    plan_desc.bf16_kernel = QSFI_MOE_BF16_TILE32_BLOCKS96;
     plan_desc.backend = QSFI_MOE_BACKEND_FLASHINFER_STAGED_BF16;
     plan_desc.route_mode = QSFI_MOE_ROUTE_ROUTER_LOGITS;
     plan_desc.max_num_tokens = 1;
@@ -1925,7 +1925,7 @@ void test_moe_nvfp4_execute_is_declared_unsupported()
         return;
 
     qsfi_moe_plan_desc plan_desc {};
-    plan_desc.gemm_threadblocks = 96;
+    plan_desc.bf16_kernel = QSFI_MOE_BF16_TILE32_BLOCKS96;
     plan_desc.backend = QSFI_MOE_BACKEND_FLASHINFER_NVFP4;
     plan_desc.route_mode = QSFI_MOE_ROUTE_PRECOMPUTED_TOPK;
     plan_desc.max_num_tokens = 1;
@@ -2400,7 +2400,7 @@ void run_checked_moe_route_negative(int32_t route_id, float route_weight, const 
         && copy_to_device(&d_out, h_out.data(), h_out.size(), "copy checked moe out");
 
     qsfi_moe_plan_desc plan_desc {};
-    plan_desc.gemm_threadblocks = 96;
+    plan_desc.bf16_kernel = QSFI_MOE_BF16_TILE32_BLOCKS96;
     plan_desc.backend = QSFI_MOE_BACKEND_FLASHINFER_STAGED_BF16;
     plan_desc.route_mode = QSFI_MOE_ROUTE_PRECOMPUTED_TOPK;
     plan_desc.max_num_tokens = tokens;
@@ -2520,10 +2520,12 @@ int main()
     test_gdn_decode_one_hot_recurrence<float>();
     test_gdn_prefill_two_token_recurrence<uint16_t>();
     test_gdn_prefill_two_token_recurrence<float>();
-    test_moe_bf16_staged_grouped_gemm(4);
-    test_moe_bf16_staged_grouped_gemm(96);
-    test_moe_bf16_top2_weighted_accumulation(4);
-    test_moe_bf16_top2_weighted_accumulation(96);
+    test_moe_bf16_staged_grouped_gemm(QSFI_MOE_BF16_TILE128_BLOCKS4);
+    test_moe_bf16_staged_grouped_gemm(QSFI_MOE_BF16_TILE128_BLOCKS96);
+    test_moe_bf16_staged_grouped_gemm(QSFI_MOE_BF16_TILE32_BLOCKS96);
+    test_moe_bf16_top2_weighted_accumulation(QSFI_MOE_BF16_TILE128_BLOCKS4);
+    test_moe_bf16_top2_weighted_accumulation(QSFI_MOE_BF16_TILE128_BLOCKS96);
+    test_moe_bf16_top2_weighted_accumulation(QSFI_MOE_BF16_TILE32_BLOCKS96);
     test_moe_router_logits_plan_is_unsupported();
     test_moe_nvfp4_execute_is_declared_unsupported();
 #if QSFI_ENABLE_CHECKED_VALIDATION

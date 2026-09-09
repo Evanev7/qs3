@@ -1,4 +1,5 @@
 use crate::{
+    backend::qsfi::MoeBf16Kernel,
     QWEN36_FULL_ATTN_GROUP_SIZE, QWEN36_FULL_ATTN_HEAD_DIM, QWEN36_FULL_ATTN_KV_HEADS,
     QWEN36_FULL_ATTN_KV_HIDDEN, QWEN36_FULL_ATTN_Q_HEADS, QWEN36_FULL_ATTN_Q_HIDDEN,
     QWEN36_GDN_CONV_WIDTH, QWEN36_GDN_KEY_DIM, QWEN36_GDN_NUM_K_HEADS, QWEN36_GDN_NUM_V_HEADS,
@@ -270,23 +271,6 @@ impl QwenModelShape {
     }
 }
 
-/// Named AOT grouped-GEMM launches measured on GB10. Both use the same
-/// BF16 SM80 tensor-core kernel with a 128x128x32 tile and two pipeline stages.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum MoeBf16Kernel {
-    CutlassBlocks4,
-    CutlassBlocks96,
-}
-
-impl MoeBf16Kernel {
-    pub const fn threadblocks(self) -> u32 {
-        match self {
-            Self::CutlassBlocks4 => 4,
-            Self::CutlassBlocks96 => 96,
-        }
-    }
-}
-
 /// Storage precision for the persistent GDN recurrence; activations and
 /// convolution history remain BF16 in either mode.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -372,7 +356,7 @@ impl QwenConfig {
             qsfi_int_workspace_bytes: 64 << 20,
             qsfi_host_int_workspace_bytes: 64 << 20,
             qscb_workspace_bytes: 64 << 20,
-            moe_bf16_kernel: MoeBf16Kernel::CutlassBlocks96,
+            moe_bf16_kernel: MoeBf16Kernel::CutlassTile32Blocks96,
             gdn_recurrent_precision: GdnRecurrentPrecision::F32,
             model_shape: QwenModelShape::qwen36_moe_gdn(),
         };
@@ -406,7 +390,7 @@ impl QwenConfig {
             qsfi_int_workspace_bytes: 64 << 20,
             qsfi_host_int_workspace_bytes: 64 << 20,
             qscb_workspace_bytes: 16 << 20,
-            moe_bf16_kernel: MoeBf16Kernel::CutlassBlocks96,
+            moe_bf16_kernel: MoeBf16Kernel::CutlassTile32Blocks96,
             gdn_recurrent_precision: GdnRecurrentPrecision::Bf16,
             model_shape: QwenModelShape::full_attention_only(),
         }
@@ -456,7 +440,7 @@ impl QwenConfig {
             qsfi_int_workspace_bytes: 64 << 20,
             qsfi_host_int_workspace_bytes: 64 << 20,
             qscb_workspace_bytes: 64 << 20,
-            moe_bf16_kernel: MoeBf16Kernel::CutlassBlocks96,
+            moe_bf16_kernel: MoeBf16Kernel::CutlassTile32Blocks96,
             gdn_recurrent_precision: GdnRecurrentPrecision::Bf16,
             model_shape: QwenModelShape::qwen36_moe_gdn(),
         }

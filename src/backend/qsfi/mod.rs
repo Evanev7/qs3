@@ -9,6 +9,7 @@ use crate::backend::result_from_raw;
 use crate::ffi::sys;
 
 mod ops;
+pub use ops::MoeBf16Kernel;
 pub(crate) use crate::backend::Workspace;
 pub(crate) use ops::{
     FusedAddRmsNormBf16, MoeBf16Execute, MoeBf16ExecuteArgs, MoeBf16PlanConfig, RmsNormBf16,
@@ -402,7 +403,12 @@ fn validate_moe_plan_desc(desc: &MoePlanDesc) -> Result<(), Status> {
     }
 
     if desc.backend == MOE_BACKEND_FLASHINFER_STAGED_BF16 {
-        if !matches!(desc.gemm_threadblocks, 4 | 96) {
+        if !matches!(
+            desc.bf16_kernel,
+            sys::QSFI_MOE_BF16_TILE128_BLOCKS4
+                | sys::QSFI_MOE_BF16_TILE128_BLOCKS96
+                | sys::QSFI_MOE_BF16_TILE32_BLOCKS96
+        ) {
             return Err(Status::InvalidArgument);
         }
         if desc.local_expert_offset != 0 || desc.local_num_experts != desc.num_experts {
@@ -1341,6 +1347,7 @@ impl Drop for MoePlan {
 
 #[cfg(test)]
 mod tests {
+    use crate::ffi::sys;
     use super::{
         AppendDecode, AppendPrefill, AttentionDesc, BatchDecodeExecuteDesc,
         BatchPrefillExecuteDesc, DTYPE_BF16, DTYPE_F16, DTYPE_F32, DTYPE_FP8_E4M3, DTYPE_I32,
@@ -2165,7 +2172,7 @@ mod tests {
             activation_dtype: DTYPE_BF16,
             weight_dtype: DTYPE_BF16,
             output_dtype: DTYPE_BF16,
-            gemm_threadblocks: 96,
+            bf16_kernel: sys::QSFI_MOE_BF16_TILE32_BLOCKS96,
         }
     }
 
@@ -2183,23 +2190,23 @@ mod tests {
             activation_dtype: DTYPE_NVFP4_E2M1,
             weight_dtype: DTYPE_NVFP4_E2M1,
             output_dtype: DTYPE_BF16,
-            gemm_threadblocks: 96,
+            bf16_kernel: sys::QSFI_MOE_BF16_TILE32_BLOCKS96,
         }
     }
 
     #[test]
     fn moe_plan_validation_checks_supported_backend_and_shape() {
         let valid = moe_bf16_plan_desc();
-        for blocks in [0, 1, 48, u32::MAX] {
+        for kernel in [0, 4, 96, u32::MAX] {
             let mut invalid = valid;
-            invalid.gemm_threadblocks = blocks;
+            invalid.bf16_kernel = kernel;
             assert_eq!(
                 validate_moe_plan_desc(&invalid),
                 Err(Status::InvalidArgument)
             );
         }
         let mut narrow = valid;
-        narrow.gemm_threadblocks = 4;
+        narrow.bf16_kernel = sys::QSFI_MOE_BF16_TILE128_BLOCKS4;
         assert_eq!(validate_moe_plan_desc(&narrow), Ok(()));
         assert_eq!(validate_moe_plan_desc(&valid), Ok(()));
         assert_eq!(validate_moe_plan_desc(&moe_nvfp4_plan_desc()), Ok(()));

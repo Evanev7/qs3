@@ -248,11 +248,12 @@ pub fn run_core_benchmark() -> JsonValue {
         Ok(value) if value == "f32" => GdnRecurrentPrecision::F32,
         _ => panic!("QS3_BENCH_GDN_STATE must be unset, bf16 or f32"),
     };
-    config.moe_bf16_kernel = match std::env::var("QS3_BENCH_MOE_BLOCKS") {
+    config.moe_bf16_kernel = match std::env::var("QS3_BENCH_MOE_KERNEL") {
         Err(std::env::VarError::NotPresent) => config.moe_bf16_kernel,
-        Ok(value) if value == "4" => MoeBf16Kernel::CutlassBlocks4,
-        Ok(value) if value == "96" => MoeBf16Kernel::CutlassBlocks96,
-        _ => panic!("QS3_BENCH_MOE_BLOCKS must be unset, 4 or 96"),
+        Ok(value) if value == "tile128_blocks4" => MoeBf16Kernel::CutlassTile128Blocks4,
+        Ok(value) if value == "tile128_blocks96" => MoeBf16Kernel::CutlassTile128Blocks96,
+        Ok(value) if value == "tile32_blocks96" => MoeBf16Kernel::CutlassTile32Blocks96,
+        _ => panic!("QS3_BENCH_MOE_KERNEL must name tile128_blocks4, tile128_blocks96 or tile32_blocks96"),
     };
     let started = Instant::now();
     let mut runner = ModelRunner::new(config, weights).expect("failed to construct ModelRunner");
@@ -330,6 +331,9 @@ pub fn run_core_benchmark() -> JsonValue {
                     "moe_threadblocks",
                     f64::from(config.moe_bf16_kernel.threadblocks()).into(),
                 ),
+                ("moe_kernel", config.moe_bf16_kernel.as_str().to_owned().into()),
+                ("moe_cta_tile", config.moe_bf16_kernel.cta_tile().into_iter()
+                    .map(|dim| JsonValue::Number(f64::from(dim))).collect::<Vec<_>>().into()),
                 ("gdn_conv_state_dtype", "bf16".to_owned().into()),
                 (
                     "gdn_recurrent_state_dtype",
@@ -337,7 +341,7 @@ pub fn run_core_benchmark() -> JsonValue {
                 ),
                 (
                     "moe",
-                    "cutlass_sm80_128x128x32_stages2_bf16".to_owned().into(),
+                    "cutlass_sm80_stages2_bf16".to_owned().into(),
                 ),
                 (
                     "linear_workspace_bytes",

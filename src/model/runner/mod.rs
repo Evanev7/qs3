@@ -72,7 +72,7 @@ impl ModelRunner {
                 let mut ops = engine.operators();
                 let plan = unsafe {
                     ops.qsfi().create_moe_bf16_plan(MoeBf16PlanConfig {
-                        gemm_threadblocks: config.moe_bf16_kernel.threadblocks(),
+                        kernel: config.moe_bf16_kernel,
                         max_num_tokens: config.max_seq_len,
                         hidden_size: config.hidden_size,
                         intermediate_size: moe.moe_intermediate_size,

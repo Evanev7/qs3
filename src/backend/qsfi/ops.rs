@@ -41,9 +41,49 @@ impl Qsfi {
     }
 }
 
+/// Explicit SM80 BF16 grouped-GEMM kernels compiled ahead of time.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MoeBf16Kernel {
+    CutlassTile128Blocks4,
+    CutlassTile128Blocks96,
+    CutlassTile32Blocks96,
+}
+
+impl MoeBf16Kernel {
+    pub const fn threadblocks(self) -> u32 {
+        match self {
+            Self::CutlassTile128Blocks4 => 4,
+            Self::CutlassTile128Blocks96 | Self::CutlassTile32Blocks96 => 96,
+        }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::CutlassTile128Blocks4 => "tile128_blocks4",
+            Self::CutlassTile128Blocks96 => "tile128_blocks96",
+            Self::CutlassTile32Blocks96 => "tile32_blocks96",
+        }
+    }
+
+    pub const fn cta_tile(self) -> [u32; 3] {
+        match self {
+            Self::CutlassTile128Blocks4 | Self::CutlassTile128Blocks96 => [128, 128, 32],
+            Self::CutlassTile32Blocks96 => [32, 128, 64],
+        }
+    }
+
+    pub(crate) const fn raw(self) -> ffi::sys::qsfi_moe_bf16_kernel {
+        match self {
+            Self::CutlassTile128Blocks4 => ffi::sys::QSFI_MOE_BF16_TILE128_BLOCKS4,
+            Self::CutlassTile128Blocks96 => ffi::sys::QSFI_MOE_BF16_TILE128_BLOCKS96,
+            Self::CutlassTile32Blocks96 => ffi::sys::QSFI_MOE_BF16_TILE32_BLOCKS96,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct MoeBf16PlanConfig {
-    pub(crate) gemm_threadblocks: u32,
+    pub(crate) kernel: MoeBf16Kernel,
     pub(crate) max_num_tokens: u32,
     pub(crate) hidden_size: u32,
     pub(crate) intermediate_size: u32,
@@ -76,7 +116,7 @@ impl MoeBf16PlanConfig {
             activation_dtype: ffi::DTYPE_BF16,
             weight_dtype: ffi::DTYPE_BF16,
             output_dtype: ffi::DTYPE_BF16,
-            gemm_threadblocks: self.gemm_threadblocks,
+            bf16_kernel: self.kernel.raw(),
         })
     }
 }

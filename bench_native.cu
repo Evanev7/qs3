@@ -1697,7 +1697,7 @@ bool bench_moe_execute_bf16(BenchState& state, const Options& options, uint32_t 
         h_topk_ids[route] = static_cast<int32_t>(route % kMoeExperts);
 
     qsfi_moe_plan_desc plan_desc {};
-    plan_desc.gemm_threadblocks = 96;
+    plan_desc.bf16_kernel = QSFI_MOE_BF16_TILE32_BLOCKS96;
     plan_desc.backend = QSFI_MOE_BACKEND_FLASHINFER_STAGED_BF16;
     plan_desc.route_mode = QSFI_MOE_ROUTE_PRECOMPUTED_TOPK;
     plan_desc.max_num_tokens = tokens;
