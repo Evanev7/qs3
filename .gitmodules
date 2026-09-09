@@ -16,3 +16,6 @@
 [submodule "3pty/b12x"]
 	path = 3pty/b12x
 	url = https://github.com/local-inference-lab/b12x
+[submodule "3pty/triton"]
+	path = 3pty/triton
+	url = https://github.com/triton-lang/triton

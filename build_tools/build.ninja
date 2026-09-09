@@ -2,6 +2,7 @@ ninja_required_version = 1.10
 
 flashinfer = ../3pty/flashinfer
 src = ..
+qwen36_vectors = ../build_tools/.venv/bin/qwen36-vectors
 
 fi_includes = $
   -I$flashinfer/3rdparty/cccl/libcudacxx/include $
@@ -45,7 +46,7 @@ rule ar
   description = ARCHIVE $out
 
 rule qwen36_vectors
-  command = rm -f $out && python3 $src/build_tools/qwen36-vectors/src/qwen36_vectors/__main__.py generate-all --output-root vectors/qwen36_semantics --clean && python3 $src/build_tools/qwen36-vectors/src/qwen36_vectors/__main__.py check-oracles --depfile $out.d --depfile-target $out --input-root vectors/qwen36_semantics && touch $out
+  command = rm -f $out && $qwen36_vectors generate-all --output-root vectors/qwen36_semantics --clean && $qwen36_vectors check-oracles --depfile $out.d --depfile-target $out --input-root vectors/qwen36_semantics && touch $out
   depfile = $out.d
   deps = gcc
   description = VECTORS qwen36_semantics
@@ -53,6 +54,9 @@ rule qwen36_vectors
 build qsfi_macros.h: run $src/build_tools/generate_macros.c
 
 build vectors/qwen36_semantics/.oracle-ok: qwen36_vectors $
+    $src/build_tools/pyproject.toml $
+    $src/build_tools/uv.lock $
+    $src/build_tools/qwen36-vectors/pyproject.toml $
     $src/build_tools/qwen36-vectors/oracle_hashes/full_attention_block.oracle.json $
     $src/build_tools/qwen36-vectors/oracle_hashes/full_attention_primitives.oracle.json $
     $src/build_tools/qwen36-vectors/oracle_hashes/gdn_decoder_layer.oracle.json $

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import os
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -357,18 +356,16 @@ def main(argv: Sequence[str] | None = None) -> None:
 
 
 def _write_depfile(output: str, target: str, oracle_root: str) -> None:
-    dependencies: set[Path] = set()
-    for root, suffix in (
-        (Path(__file__).resolve().parent, ".py"),
-        (Path(oracle_root).resolve(), ".json"),
-    ):
-        for directory, subdirs, files in os.walk(root):
-            subdirs[:] = [name for name in subdirs if name != "__pycache__"]
-            # Directory mtimes catch additions/removals; file mtimes catch edits.
-            dependencies.add(Path(directory))
-            dependencies.update(
-                Path(directory) / name for name in files if name.endswith(suffix)
-            )
+    source_root = Path(__file__).resolve().parent
+    oracle_dir = Path(oracle_root).resolve()
+    # Both trees are flat. Track directory mtimes for additions/removals, but
+    # exclude packaging output and interpreter caches beside the source files.
+    dependencies = {
+        source_root,
+        *source_root.glob("*.py"),
+        oracle_dir,
+        *oracle_dir.glob("*.json"),
+    }
 
     def escape(path: str) -> str:
         if "\n" in path or "\r" in path:

@@ -5,6 +5,24 @@
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
     crane.url = "github:ipetkov/crane";
+    pyproject-nix = {
+      url = "github:pyproject-nix/pyproject.nix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+    uv2nix = {
+      url = "github:pyproject-nix/uv2nix";
+      inputs.pyproject-nix.follows = "pyproject-nix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+    pyproject-build-systems = {
+      url = "github:pyproject-nix/build-system-pkgs";
+      inputs = {
+        pyproject-nix.follows = "pyproject-nix";
+        uv2nix.follows = "uv2nix";
+        nixpkgs.follows = "nixpkgs";
+      };
+    };
+
   };
 
   nixConfig = {
@@ -145,9 +163,11 @@
               meta.mainProgram = "qs3-bench";
             }
           );
+          venv = pkgs.callPackage nix/venv.nix { inherit (inputs) uv2nix pyproject-nix pyproject-build-systems;};
         };
         devShells.default = pkgs.mkShell rec {
           buildInputs = with pkgs; [
+            uv
             cargo
             rustc
             rust-analyzer

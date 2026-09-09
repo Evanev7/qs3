@@ -1,0 +1,16 @@
+[project]
+name = "build-tools"
+version = "0.1.0"
+description = "Build-time Python tools for qs3"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = ["qwen36-vectors"]
+
+[tool.uv]
+package = false
+
+[tool.uv.sources]
+qwen36-vectors = { workspace = true }
+
+[tool.uv.workspace]
+members = ["qwen36-vectors"]

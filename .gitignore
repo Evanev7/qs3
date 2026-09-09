@@ -1,6 +1,8 @@
 .direnv
 build
 **/__pycache__
+**/.venv
+**/*.egg-info
 target
 .ninja_lock
 .ninja_log

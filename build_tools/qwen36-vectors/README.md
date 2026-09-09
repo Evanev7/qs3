@@ -3,6 +3,15 @@
 This subproject generates synthetic correctness vectors for qs3's narrow
 Qwen3.6-35B-A3B runtime path.
 
+It is a member of the uv workspace in `build_tools/`. Python modules live
+directly beside `pyproject.toml`; the installed package is `qwen36_vectors`
+and its console command is `qwen36-vectors`. The workspace uses Python 3.14+.
+Ninja invokes `../build_tools/.venv/bin/qwen36-vectors` through its
+`qwen36_vectors` variable. Just's matching variable points to
+`build_tools/.venv/bin/qwen36-vectors` from the repository root.
+`just uv-sync` prepares the environment; `just generate-vectors` and
+`just refresh-vector-oracles` depend on it. Ninja only runs the installed command.
+
 The vector suite is intentionally separate from the production loader. It should
 exercise model semantics by directly emitting small deterministic tensors and
 expected outputs, then qs3 tests can upload those tensors into kernels or model
@@ -84,7 +93,7 @@ time:
 Generate the norm semantics vectors from the repository root with:
 
 ```sh
-python3 build_tools/qwen36-vectors/src/qwen36_vectors/__main__.py generate-norms
+build_tools/.venv/bin/qwen36-vectors generate-norms
 ```
 
 The `norms` group emits Gemma RMSNorm and Gemma fused add RMSNorm artifacts.
@@ -102,16 +111,15 @@ That recipe writes all groups under `build/vectors/qwen36_semantics/` and checks
 the generated file set, byte lengths, and SHA256 hashes against
 `build_tools/qwen36-vectors/oracle_hashes/*.oracle.json`.
 
-The Ninja stamp depends on the committed oracle hash metadata, not on Python
-generator sources. After editing any generator Python, explicitly regenerate and
-check the vectors before testing or committing; remove
-`build/vectors/qwen36_semantics/.oracle-ok` first if you need to force a clean
-`just generate-vectors` run without changing oracle metadata.
+The Ninja stamp tracks the workspace and member metadata, uv lockfile, committed
+oracle hashes, and the installed Python generator files through its depfile.
+When replacing a Nix-built generator, remove the `.oracle-ok` stamp
+to force regeneration: Nix store timestamps do not represent source edit times.
 
 The `check-oracles` command can emit a Make-style depfile after verification:
 
 ```sh
-python3 build_tools/qwen36-vectors/src/qwen36_vectors/__main__.py check-oracles \
+build_tools/.venv/bin/qwen36-vectors check-oracles \
   --input-root build/vectors/qwen36_semantics \
   --depfile build/vectors/qwen36_semantics/.oracle-ok.d \
   --depfile-target build/vectors/qwen36_semantics/.oracle-ok
@@ -134,7 +142,7 @@ just refresh-vector-oracles
 ## Rust consumption
 
 Rust tests should consume these artifacts through `tests/vector_harness.rs`.
-That harness is intentionally independent from `src/weight_loader.rs` and the
+That harness is intentionally independent from `src/loader/` and the
 production safetensors path. It parses only `manifest.json`, validates flat
 tensor paths and byte lengths, and reads tensor files as little-endian scalar
 dumps.
@@ -190,7 +198,7 @@ Current Rust coverage includes:
 Generate the full-attention primitive vectors with:
 
 ```sh
-python3 build_tools/qwen36-vectors/src/qwen36_vectors/__main__.py generate-attention
+build_tools/.venv/bin/qwen36-vectors generate-attention
 ```
 
 The `full_attention_primitives` group emits packed per-head `[q, output_gate]`
@@ -200,7 +208,7 @@ over rotary dim 64, and sigmoid output-gate artifacts.
 Generate the GDN decoder-layer vector with:
 
 ```sh
-python3 build_tools/qwen36-vectors/src/qwen36_vectors/__main__.py generate-gdn-decoder-layer
+build_tools/.venv/bin/qwen36-vectors generate-gdn-decoder-layer
 ```
 
 The `gdn_decoder_layer` group emits row-coded GDN projection weights for six
