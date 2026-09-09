@@ -153,7 +153,8 @@ improvements with the unprofiled core benchmark after each change.
 A matched-vLLM baseline can use the existing local container
 `vllm-node@sha256:d966c1831d5da55c0cc52c6bd40f7d02cfc3d83404c3bd599139b055232d3970`.
 Read-only package inspection found vLLM 0.21.0, PyTorch 2.11.0+cu130, and
-Transformers 5.8.1. No matched inference run has been recorded yet. The expected
+Transformers 5.8.1. An initial inference comparison is recorded below; recurrent precision is not
+yet matched. The expected
 27B BF16 cache path is absent; a third-party 27B NVFP4/MTP cache does not satisfy
 the pinned 27B BF16 correctness requirement.
 
@@ -202,3 +203,25 @@ Grouped MoE still takes 58.9% of GPU kernel time with all 2560 launches using fo
 blocks. Benchmark wider launches next. Persistent batch metadata and explicit
 GDN parity remain prerequisites for graph replay; this result alone establishes
 neither graph readiness nor competitive vLLM performance.
+
+## First vLLM inference comparison
+
+The [pinned-container run](benchmarks/2026-09-09T023628Z-vllm-bf16-core/README.md)
+measures 30.826 tok/s and 32.355 ms decode p50 for the same 35B BF16 weights,
+102-token prompt, greedy sampling and 32 warmed decode forwards. Full decode
+CUDA graphs are enabled. Selected providers include FlashInfer CUTLASS MoE,
+FlashAttention 2, and Triton/FLA GDN prefill. qs3's current eager result is
+11.905 tok/s and 83.701 ms p50. Prefill is 181.369 ms in vLLM, including sampling
+and delivery of its first token, versus qs3's 1015.461 ms to logits.
+
+The effective vLLM GDN recurrent state is **FP32**, while qs3 stores BF16; its
+convolution state is BF16. Thus this is a useful performance target but not the
+matched-precision completion gate. The container rejects explicit BF16 Mamba
+cache arguments and resolves `auto` recurrence to FP32. Record resolved cache
+types, not just requested weight precision. Output tokens are preserved in the
+artifact; output equivalence, longer contexts and sustained quality remain open.
+
+The first vLLM prefill warmup triggers additional JIT and costs 16.592 seconds;
+the second takes 183.219 ms. Neither is included in steady samples. The harness
+includes empty engine steps in token-delivery intervals, preventing asynchronous
+submission from being mistaken for completed inference latency.
