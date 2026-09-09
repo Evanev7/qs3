@@ -94,7 +94,11 @@ impl<DT: DType> DMat<DT> {
         })
     }
 
-    pub(crate) fn row(self, index: u32) -> Result<Self, Status> {
+    /// # Safety
+    /// `self.data` must point into a live allocation covering this matrix's
+    /// strided extent. Descriptor construction alone does not establish that:
+    /// even the pointer arithmetic here requires an in-allocation offset.
+    pub(crate) unsafe fn row(self, index: u32) -> Result<Self, Status> {
         if index >= self.rows {
             return Err(Status::InvalidArgument);
         }

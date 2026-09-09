@@ -10,7 +10,7 @@ use crate::{
 };
 
 impl BatchExecution<'_> {
-    pub(super) fn execute_attention_layer(
+    pub(super) unsafe fn execute_attention_layer(
         &mut self,
         attention_layer_idx: u32,
         rows: u32,
@@ -69,7 +69,7 @@ impl BatchExecution<'_> {
                 }
             }
         }
-        self.apply_attention_rope(rows)?;
+        unsafe { self.apply_attention_rope(rows)? };
         let q = self
             .scratch
             .q
@@ -116,7 +116,7 @@ impl BatchExecution<'_> {
         }
     }
 
-    pub(super) fn apply_attention_rope(&mut self, rows: u32) -> Result<(), Status> {
+    pub(super) unsafe fn apply_attention_rope(&mut self, rows: u32) -> Result<(), Status> {
         let q = self
             .scratch
             .q

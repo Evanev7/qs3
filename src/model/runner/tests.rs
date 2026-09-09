@@ -1816,12 +1816,14 @@ fn qwen36_full_attention_vectors_validate_qk_norm_and_rope_pipeline() {
         &expected_k_norm,
     );
 
-    runner
-        .execution()
-        .unwrap()
-        .1
-        .apply_attention_rope(rows)
-        .unwrap();
+    unsafe {
+        runner
+            .execution()
+            .unwrap()
+            .1
+            .apply_attention_rope(rows)
+            .unwrap();
+    }
     synchronize_stream(stream).unwrap();
 
     let got_q_rope = download_bf16(&runner.scratch.q, stream, q_len);
@@ -2163,12 +2165,14 @@ fn qwen36_full_attention_block_vector_validates_attention_residual_norm_composit
         BF16_BLOCK_NORM_ABS_TOL,
     );
 
-    runner
-        .execution()
-        .unwrap()
-        .1
-        .apply_attention_rope(rows)
-        .unwrap();
+    unsafe {
+        runner
+            .execution()
+            .unwrap()
+            .1
+            .apply_attention_rope(rows)
+            .unwrap();
+    }
     synchronize_stream(stream).unwrap();
     assert_bf16_close_to_f32_oracle(
         "full-attention block q partial RoPE",
@@ -2385,18 +2389,20 @@ fn qwen36_full_attention_decoder_slice_chains_attention_into_moe_and_next_norm()
         })
         .unwrap();
     let attention_layer_idx = runner.config.attention_layer_index(0).unwrap();
-    runner
-        .execution()
-        .unwrap()
-        .1
-        .execute_attention_layer(
-            attention_layer_idx,
-            rows,
-            norm_ptr,
-            layer_weights,
-            ActiveRunKind::Append,
-        )
-        .unwrap();
+    unsafe {
+        runner
+            .execution()
+            .unwrap()
+            .1
+            .execute_attention_layer(
+                attention_layer_idx,
+                rows,
+                norm_ptr,
+                layer_weights,
+                ActiveRunKind::Append,
+            )
+            .unwrap();
+    }
     synchronize_stream(stream).unwrap();
     assert_bf16_close_to_f32_oracle(
         "decoder slice produced attention output projection",
@@ -2406,17 +2412,19 @@ fn qwen36_full_attention_decoder_slice_chains_attention_into_moe_and_next_norm()
         BF16_BLOCK_PROJ_ABS_TOL,
     );
 
-    runner
-        .execution()
-        .unwrap()
-        .1
-        .execute_post_attention_mlp(
-            rows,
-            &layer_weights.mlp_norm,
-            &layer_weights.mlp,
-            &layer.next_norm,
-        )
-        .unwrap();
+    unsafe {
+        runner
+            .execution()
+            .unwrap()
+            .1
+            .execute_post_attention_mlp(
+                rows,
+                &layer_weights.mlp_norm,
+                &layer_weights.mlp,
+                &layer.next_norm,
+            )
+            .unwrap();
+    }
     synchronize_stream(stream).unwrap();
 
     assert_bf16_close_to_f32_oracle(
@@ -2483,12 +2491,14 @@ fn qwen36_gdn_decoder_layer_vector_chains_gdn_into_moe_and_next_norm() {
     let layer = gdn_decoder_layer_fixture(device, stream);
     let layer_weights = layer.weights();
     let norm_ptr = runner.scratch.norm.matrix(rows, hidden).unwrap();
-    runner
-        .execution()
-        .unwrap()
-        .1
-        .execute_gdn_layer(0, rows, norm_ptr, layer_weights, ActiveRunKind::Append)
-        .unwrap();
+    unsafe {
+        runner
+            .execution()
+            .unwrap()
+            .1
+            .execute_gdn_layer(0, rows, norm_ptr, layer_weights, ActiveRunKind::Append)
+            .unwrap();
+    }
     synchronize_stream(stream).unwrap();
 
     assert_bf16_close_to_f32_oracle(
@@ -2512,17 +2522,19 @@ fn qwen36_gdn_decoder_layer_vector_chains_gdn_into_moe_and_next_norm() {
         BF16_GDN_DECODER_PROJ_ABS_TOL,
     );
 
-    runner
-        .execution()
-        .unwrap()
-        .1
-        .execute_post_attention_mlp(
-            rows,
-            &layer_weights.mlp_norm,
-            &layer_weights.mlp,
-            &layer.next_norm,
-        )
-        .unwrap();
+    unsafe {
+        runner
+            .execution()
+            .unwrap()
+            .1
+            .execute_post_attention_mlp(
+                rows,
+                &layer_weights.mlp_norm,
+                &layer_weights.mlp,
+                &layer.next_norm,
+            )
+            .unwrap();
+    }
     synchronize_stream(stream).unwrap();
 
     assert_bf16_close_to_f32_oracle(
@@ -2660,12 +2672,14 @@ fn qwen36_full_attention_block_vector_validates_oracle_seeded_moe_shared_and_nex
         QwenMlpWeights::Dense { .. } => unreachable!("block fixture must use MoE"),
     };
 
-    runner
-        .execution()
-        .unwrap()
-        .1
-        .execute_moe_mlp(rows, router_proj, gate_up_proj, down_proj, shared)
-        .unwrap();
+    unsafe {
+        runner
+            .execution()
+            .unwrap()
+            .1
+            .execute_moe_mlp(rows, router_proj, gate_up_proj, down_proj, shared)
+            .unwrap();
+    }
     synchronize_stream(stream).unwrap();
 
     assert_bf16_close_to_f32_oracle(
@@ -3291,12 +3305,14 @@ fn shared_moe_execution_produces_routed_and_shared_outputs() {
         0.01,
     );
 
-    runner
-        .execution()
-        .unwrap()
-        .1
-        .execute_moe_mlp(rows, &router_proj, &gate_up_proj, &down_proj, None)
-        .unwrap();
+    unsafe {
+        runner
+            .execution()
+            .unwrap()
+            .1
+            .execute_moe_mlp(rows, &router_proj, &gate_up_proj, &down_proj, None)
+            .unwrap();
+    }
     let routed = download_bf16(&runner.scratch.mlp_out, config.stream, hidden_len);
     assert!(has_nonzero_bf16(&routed));
 
@@ -3332,12 +3348,14 @@ fn shared_moe_execution_produces_routed_and_shared_outputs() {
         shared_expert_gate: shared_expert_gate,
     };
 
-    runner
-        .execution()
-        .unwrap()
-        .1
-        .execute_moe_mlp(rows, &router_proj, &gate_up_proj, &down_proj, Some(&shared))
-        .unwrap();
+    unsafe {
+        runner
+            .execution()
+            .unwrap()
+            .1
+            .execute_moe_mlp(rows, &router_proj, &gate_up_proj, &down_proj, Some(&shared))
+            .unwrap();
+    }
 
     let shared_out = download_bf16(&runner.scratch.shared_out, config.stream, hidden_len);
     let combined = download_bf16(&runner.scratch.mlp_out, config.stream, hidden_len);

@@ -345,6 +345,10 @@ impl<T: crate::backend::DeviceElement> DeviceBuffer<T> {
     ) -> Result<crate::backend::DMat<T::DType>, Status> {
         let len = checked_usize_product(&[rows, cols])?;
         self.check_view_len(offset.checked_add(len).ok_or(Status::InvalidArgument)?)?;
+        // SAFETY: DeviceBuffer owns `cap` elements; the checked sum above places
+        // offset within that allocation (or one past it for a rejected empty
+        // shape). Borrowing self keeps it live during this pointer calculation.
+        // Constructing the descriptor neither dereferences nor launches work.
         crate::backend::DMat::contiguous(unsafe { self.ptr.add(offset).cast() }, rows, cols)
     }
 
@@ -412,8 +416,11 @@ mod view_tests {
             device_ordinal: -1,
         });
         let matrix: DMat<BF16> = buffer.matrix(2, 4).unwrap();
-        assert_eq!(matrix.row(1).unwrap(), buffer.matrix_at(4, 1, 4).unwrap());
-        assert!(matrix.row(2).is_err());
+        // SAFETY: storage backs the entire matrix and is live for both calls.
+        unsafe {
+            assert_eq!(matrix.row(1).unwrap(), buffer.matrix_at(4, 1, 4).unwrap());
+            assert!(matrix.row(2).is_err());
+        }
         assert!(buffer.matrix(3, 3).is_err());
         assert!(buffer.matrix_at(5, 1, 4).is_err());
         assert!(buffer.matrix_at(usize::MAX, 1, 1).is_err());
@@ -433,7 +440,11 @@ mod view_tests {
             device_ordinal: -1,
         });
         let matrix: DMat<F32> = buffer.matrix(2, 4).unwrap();
-        assert_eq!(matrix.row(1).unwrap(), buffer.matrix_at(4, 1, 4).unwrap());
+        // SAFETY: floats backs the entire matrix and remains live here.
+        assert_eq!(
+            unsafe { matrix.row(1) }.unwrap(),
+            buffer.matrix_at(4, 1, 4).unwrap()
+        );
     }
 
     #[test]

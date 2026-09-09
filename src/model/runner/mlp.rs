@@ -10,7 +10,7 @@ use crate::{
 };
 
 impl BatchExecution<'_> {
-    pub(super) fn execute_post_attention_mlp(
+    pub(super) unsafe fn execute_post_attention_mlp(
         &mut self,
         rows: u32,
         norm: &DeviceBuffer<u16>,
@@ -70,9 +70,9 @@ impl BatchExecution<'_> {
                 gate_up_proj,
                 down_proj,
                 shared,
-            } => {
+            } => unsafe {
                 self.execute_moe_mlp(rows, router_proj, gate_up_proj, down_proj, shared.as_ref())?;
-            }
+            },
         }
         let after = FusedAddRmsNormBf16::qwen_decoder_norm(
             self.scratch.mlp_out.matrix(rows, hidden)?,
@@ -88,7 +88,7 @@ impl BatchExecution<'_> {
         }
     }
 
-    pub(super) fn execute_moe_mlp(
+    pub(super) unsafe fn execute_moe_mlp(
         &mut self,
         rows: u32,
         router_proj: &DeviceBuffer<u16>,
@@ -145,12 +145,14 @@ impl BatchExecution<'_> {
             }
         }
         if let Some(shared) = shared {
-            self.execute_shared_expert_mlp(rows, moe.shared_expert_intermediate_size, shared)?;
+            unsafe {
+                self.execute_shared_expert_mlp(rows, moe.shared_expert_intermediate_size, shared)?;
+            }
         }
         Ok(())
     }
 
-    fn execute_shared_expert_mlp(
+    unsafe fn execute_shared_expert_mlp(
         &mut self,
         rows: u32,
         intermediate: u32,

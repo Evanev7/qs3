@@ -361,7 +361,10 @@ impl ModelRunner {
         self.upload_batch_inputs(run.tokens, run.start_pos)?;
 
         let (weights, mut execution) = self.execution()?;
-        execution.run(weights, rows, run.kind)?;
+        // SAFETY: weights, state and workspace remain owned by this runner,
+        // including on error. Inputs are uploaded on the engine stream; scratch
+        // reuse is ordered on that stream and successful sampling waits for it.
+        unsafe { execution.run(weights, rows, run.kind)? };
         self.sample_logits(1)
     }
 
@@ -420,6 +423,8 @@ impl ModelRunner {
         let _ = self.engine.abort_batch();
     }
 
+    // Safe within the runner: checked views address owned, separate buffers;
+    // logits production, sampling and the synchronizing download share a stream.
     fn sample_logits(&mut self, rows: u32) -> Result<Vec<i32>, Status> {
         let logits = self.scratch.logits.matrix(rows, self.config.vocab_size)?;
         if self.config.logits_soft_cap > 0.0 {
@@ -453,6 +458,10 @@ impl ModelRunner {
 
 // Borrow execution resources independently of immutable weights. Views are
 // prepared after scratch allocation; the scope borrows their owners while enqueueing.
+// Launch contract: inputs must be initialized on the execution device, weights
+// must not alias writable scratch, and workspace/plan/state must match config.
+// Callers retain allocations and prevent conflicting accesses until stream work
+// completes, even on error. These borrows alone do not establish that lifetime.
 struct BatchExecution<'a> {
     config: &'a QwenConfig,
     engine: &'a mut Engine,
@@ -464,7 +473,12 @@ struct BatchExecution<'a> {
 }
 
 impl BatchExecution<'_> {
-    fn run(&mut self, weights: &QwenWeights, rows: u32, kind: ActiveRunKind) -> Result<(), Status> {
+    unsafe fn run(
+        &mut self,
+        weights: &QwenWeights,
+        rows: u32,
+        kind: ActiveRunKind,
+    ) -> Result<(), Status> {
         let hidden = self.config.hidden_size;
         let mut input = self.scratch.norm.matrix(rows, hidden)?;
         let layer0 = weights.layers.first().ok_or(Status::InternalError)?;
@@ -490,28 +504,30 @@ impl BatchExecution<'_> {
             }
         }
         for (index, layer) in weights.layers.iter().enumerate() {
-            match layer {
-                QwenLayerWeights::AttentionMlp(layer) => self.execute_attention_layer(
-                    self.config.attention_layer_index(index as u32)?,
-                    rows,
-                    input,
-                    layer,
-                    kind,
-                )?,
-                QwenLayerWeights::Gdn(layer) => self.execute_gdn_layer(
-                    self.config.gdn_layer_index(index as u32)?,
-                    rows,
-                    input,
-                    layer,
-                    kind,
-                )?,
+            unsafe {
+                match layer {
+                    QwenLayerWeights::AttentionMlp(layer) => self.execute_attention_layer(
+                        self.config.attention_layer_index(index as u32)?,
+                        rows,
+                        input,
+                        layer,
+                        kind,
+                    )?,
+                    QwenLayerWeights::Gdn(layer) => self.execute_gdn_layer(
+                        self.config.gdn_layer_index(index as u32)?,
+                        rows,
+                        input,
+                        layer,
+                        kind,
+                    )?,
+                }
             }
             let next_norm = weights
                 .layers
                 .get(index + 1)
                 .map_or(&weights.final_norm, |next| next.input_norm());
             let (norm, mlp) = layer.post_attention_mlp();
-            self.execute_post_attention_mlp(rows, norm, mlp, next_norm)?;
+            unsafe { self.execute_post_attention_mlp(rows, norm, mlp, next_norm)? };
             input = self.scratch.mlp_out.matrix(rows, hidden)?;
         }
         let mut ops = self.engine.operators();

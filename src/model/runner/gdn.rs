@@ -8,7 +8,7 @@ use crate::{
 };
 
 impl BatchExecution<'_> {
-    pub(super) fn execute_gdn_layer(
+    pub(super) unsafe fn execute_gdn_layer(
         &mut self,
         gdn_layer_idx: u32,
         rows: u32,
