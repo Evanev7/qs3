@@ -219,7 +219,8 @@ measures 30.826 tok/s and 32.355 ms decode p50 for the same 35B BF16 weights,
 CUDA graphs are enabled. Selected providers include FlashInfer CUTLASS MoE,
 FlashAttention 2, and Triton/FLA GDN prefill. qs3's current eager result is
 11.905 tok/s and 83.701 ms p50. Prefill is 181.369 ms in vLLM, including sampling
-and delivery of its first token, versus qs3's 1015.461 ms to logits.
+and delivery of its first token, versus qs3's 1015.461 ms prefill call. qs3 also
+samples internally, but returns no generated token for `max_new_tokens=0`.
 
 The effective vLLM GDN recurrent state is **FP32**, while qs3 stores BF16; its
 convolution state is BF16. Thus this is a useful performance target but not the
@@ -375,3 +376,12 @@ normalization settings, scaling, checked rejection of nonfinite logits, and
 release nonfinite fallback behavior. The full suite and both native builds pass.
 The pinned real BF16 model passes reference logits/greedy IDs/reset with both
 BF16 and FP32 recurrence. Core throughput is measured separately after integration.
+
+
+Source audit corrected an earlier prefill endpoint description: `execute_active_batch`
+always calls `sample_logits`, including `max_new_tokens=0`. qs3 projects the full
+prompt-row matrix into vocabulary logits and samples/downloads all those rows;
+only the last prediction is needed for this single-request continuation. Test
+projecting/sampling only the final row as a separate prefill optimization, with
+public-runner and vector semantics checked explicitly. This is additional work
+beyond reducing decode preparation or router cost.

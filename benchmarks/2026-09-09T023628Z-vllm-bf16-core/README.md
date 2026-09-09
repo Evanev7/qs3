@@ -34,7 +34,8 @@ Each sample is wall time between host token deliveries, including engine steps
 that produce no output. One empty step was observed per request, before its first
 output. This includes scheduling and host output processing; it is not CUDA event
 kernel time. Prefill p50 is 181.369 ms, including first-token sampling/delivery;
-qs3's 1015.461 ms prefill ends with logits and performs no sampling. Setup takes
+qs3's 1015.461 ms prefill internally projects and samples all prompt rows, but
+returns no generated token with `max_new_tokens=0`. Setup takes
 272.161 seconds. The first prefill warmup takes 16.592 seconds and logs additional
 JIT compilation. The second warmup is 183.219 ms; both are excluded from the five
 prefill samples. Setup and warmup are not steady decode latency.

@@ -35,7 +35,7 @@ FP32 recurrent state; expose that choice through model storage and rerun the
 comparison before interpreting sustained output differences. Broader quality
 validation and a third context length remain open.
 
-Prefill timing has the same endpoint difference as the short run: qs3 ends at
-logits while vLLM includes first-token sampling/delivery. The vLLM log includes
+Prefill timing has the same endpoint difference as the short run: qs3 internally projects and samples every prompt row, returning no generated
+token for `max_new_tokens=0`, while vLLM returns its first generated token. The vLLM log includes
 its actual provider, graph, cache and compilation choices. Host token-delivery
 intervals include empty engine steps.
