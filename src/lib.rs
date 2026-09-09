@@ -16,8 +16,8 @@ pub(crate) const QWEN36_MOE_NUM_EXPERTS: u32 = 256;
 pub(crate) const QWEN36_MOE_TOP_K: u32 = 8;
 pub(crate) const QWEN36_MOE_INTERMEDIATE_SIZE: u32 = 512;
 pub(crate) const QWEN36_MOE_SHARED_EXPERT_INTERMEDIATE_SIZE: u32 = 512;
-pub(crate) const QWEN36_MOE_MAX_TOP_K: u32 = 16;
-pub(crate) const QWEN36_MOE_MAX_EXPERTS: u32 = 4096;
+pub(crate) const QWEN36_MOE_MAX_TOP_K: u32 = 8;
+pub(crate) const QWEN36_MOE_MAX_EXPERTS: u32 = 256;
 pub(crate) const QWEN36_MOE_ROUTER_SCORE: backend::qscu::RouterScore =
     backend::qscu::RouterScore::Softmax;
 pub(crate) const QWEN36_MOE_ROUTER_RENORMALIZE: bool = true;

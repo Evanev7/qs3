@@ -183,6 +183,17 @@ fn qscu_descriptor_builders_validate_shapes_and_modes() {
         Err(Status::InvalidArgument)
     ));
 
+    assert!(matches!(
+        qscu::router_topk_desc(
+            f32_mat(30, 2, 257),
+            DMat::<I32>::contiguous(device_ptr(31), 2, 8).unwrap(),
+            f32_mat(32, 2, 8),
+            RouterScore::Softmax,
+            true,
+            1.0,
+        ),
+        Err(Status::Unsupported)
+    ));
     let logits = f32_mat(17, 2, 128);
     assert!(qscu::validate_logits_soft_cap(logits, 30.0).is_ok());
     assert!(qscu::validate_logits_soft_cap(logits, f32::NEG_INFINITY).is_ok());

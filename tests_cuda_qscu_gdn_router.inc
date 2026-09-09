@@ -1316,6 +1316,19 @@ void test_qscu_gdn_router_validation_errors()
         "qscu router topk exceeds experts"
     );
 
+    router = qscu_test_valid_router_validation_desc(257, 8);
+    check_status(
+        qscu_router_topk(&router, nullptr),
+        QSFI_STATUS_UNSUPPORTED,
+        "router exceeds Qwen expert count"
+    );
+    router = qscu_test_valid_router_validation_desc(256, 9);
+    check_status(
+        qscu_router_topk(&router, nullptr),
+        QSFI_STATUS_UNSUPPORTED,
+        "router exceeds Qwen top-k"
+    );
+
     router = qscu_test_valid_router_validation_desc(2, 1);
     router.score = static_cast<qscu_router_score>(99);
     check_status(
@@ -1333,12 +1346,197 @@ void test_qscu_gdn_router_validation_errors()
     );
 }
 
+void test_qscu_router_warp_widths_and_modes()
+{
+    constexpr int tokens = 4;
+    for (int experts : { 5, 31, 32, 33, 255, 256 }) {
+        const int top_k = std::min(experts, 8);
+        for (bool bf16 : { false, true }) {
+            std::vector<float> logits(tokens * experts);
+            std::vector<uint16_t> packed(logits.size());
+            for (int row = 0; row < tokens; ++row) {
+                for (int expert = 0; expert < experts; ++expert) {
+                    float value = (((expert * 37 + row * 29) % 257) - 128) * 0.037f;
+                    if (row == 1)
+                        value = expert % 32 == 0 || expert == experts - 1 ? 4.0f : -8.0f;
+                    if (row == 2)
+                        value = expert % 3 == 0 ? 100.0f : -100.0f;
+                    const int offset = row * experts + expert;
+                    packed[offset] = qscu_test_f32_to_bf16(value);
+                    logits[offset] = bf16 ? bf16_to_f32(packed[offset]) : value;
+                }
+            }
+            float* d_f32 = nullptr;
+            uint16_t* d_bf16 = nullptr;
+            int32_t* d_ids = nullptr;
+            float* d_weights = nullptr;
+            bool ok = bf16 ? copy_to_device(&d_bf16, packed.data(), packed.size(), "router BF16")
+                           : copy_to_device(&d_f32, logits.data(), logits.size(), "router F32");
+            ok = ok && alloc_device(&d_ids, tokens * top_k, "router ids")
+                && alloc_device(&d_weights, tokens * top_k, "router weights");
+            if (ok) {
+                qscu_router_topk_desc desc {};
+                desc.logits = bf16 ? tensor2_bf16(d_bf16, tokens, experts)
+                                   : tensor2_f32(d_f32, tokens, experts);
+                desc.topk_ids = tensor2_i32(d_ids, tokens, top_k);
+                desc.topk_weights = tensor2_f32(d_weights, tokens, top_k);
+                desc.num_tokens = tokens;
+                desc.num_experts = experts;
+                desc.top_k = top_k;
+                desc.routed_scaling_factor = 1.25f;
+                std::vector<int32_t> ids(tokens * top_k);
+                std::vector<float> weights(ids.size());
+                for (auto score : { QSCU_ROUTER_SCORE_SOFTMAX, QSCU_ROUTER_SCORE_SIGMOID }) {
+                    for (bool renormalize : { false, true }) {
+                        desc.score = score;
+                        desc.renormalize = renormalize;
+                        check_status(
+                            qscu_router_topk(&desc, nullptr),
+                            QSFI_STATUS_OK,
+                            "warp router"
+                        );
+                        check_cuda(cudaDeviceSynchronize(), "sync warp router");
+                        check_cuda(
+                            cudaMemcpy(
+                                ids.data(),
+                                d_ids,
+                                ids.size() * sizeof(int32_t),
+                                cudaMemcpyDeviceToHost
+                            ),
+                            "router ids back"
+                        );
+                        check_cuda(
+                            cudaMemcpy(
+                                weights.data(),
+                                d_weights,
+                                weights.size() * sizeof(float),
+                                cudaMemcpyDeviceToHost
+                            ),
+                            "router weights back"
+                        );
+                        for (int row = 0; row < tokens; ++row) {
+                            const auto ref = qscu_test_router_reference(
+                                logits,
+                                row,
+                                experts,
+                                top_k,
+                                score,
+                                renormalize,
+                                desc.routed_scaling_factor
+                            );
+                            for (int pos = 0; pos < top_k; ++pos) {
+                                qscu_test_check_i32_eq(
+                                    ids[row * top_k + pos],
+                                    ref.ids[pos],
+                                    "router width/mode id"
+                                );
+                                qscu_test_check_f32_near(
+                                    weights[row * top_k + pos],
+                                    ref.weights[pos],
+                                    1.0e-5f,
+                                    "router width/mode weight"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            cudaFree(d_f32);
+            cudaFree(d_bf16);
+            cudaFree(d_ids);
+            cudaFree(d_weights);
+        }
+    }
+}
+
+void test_qscu_router_nonfinite_logits()
+{
+    constexpr int tokens = 4, experts = 256, top_k = 8;
+    std::vector<float> logits(tokens * experts, 0.0f);
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const float inf = std::numeric_limits<float>::infinity();
+    logits[0] = nan;
+    for (int expert = 0; expert < experts; ++expert) {
+        logits[experts + expert] = nan;
+        logits[2 * experts + expert] = -inf;
+    }
+    logits[3 * experts] = inf;
+    float* d_logits = nullptr;
+    float* d_weights = nullptr;
+    int32_t* d_ids = nullptr;
+    const bool ok = copy_to_device(&d_logits, logits.data(), logits.size(), "nonfinite router")
+        && alloc_device(&d_ids, tokens * top_k, "nonfinite router ids")
+        && alloc_device(&d_weights, tokens * top_k, "nonfinite router weights");
+    if (ok) {
+        qscu_router_topk_desc desc {};
+        desc.logits = tensor2_f32(d_logits, tokens, experts);
+        desc.topk_ids = tensor2_i32(d_ids, tokens, top_k);
+        desc.topk_weights = tensor2_f32(d_weights, tokens, top_k);
+        desc.num_tokens = tokens;
+        desc.num_experts = experts;
+        desc.top_k = top_k;
+        desc.renormalize = 1;
+        desc.routed_scaling_factor = 1.0f;
+        std::vector<int32_t> ids(tokens * top_k);
+        std::vector<float> weights(ids.size());
+        for (auto score : { QSCU_ROUTER_SCORE_SOFTMAX, QSCU_ROUTER_SCORE_SIGMOID }) {
+            desc.score = score;
+#if QSFI_ENABLE_CHECKED_VALIDATION
+            check_status(qscu_router_topk(&desc, nullptr), QSFI_STATUS_INVALID_ARGUMENT,
+                         "checked router rejects nonfinite logits");
+            continue;
+#endif
+            check_status(qscu_router_topk(&desc, nullptr), QSFI_STATUS_OK, "nonfinite router");
+            check_cuda(cudaDeviceSynchronize(), "sync nonfinite router");
+            check_cuda(
+                cudaMemcpy(ids.data(), d_ids, ids.size() * sizeof(int32_t), cudaMemcpyDeviceToHost),
+                "nonfinite ids back"
+            );
+            check_cuda(
+                cudaMemcpy(
+                    weights.data(),
+                    d_weights,
+                    weights.size() * sizeof(float),
+                    cudaMemcpyDeviceToHost
+                ),
+                "nonfinite weights back"
+            );
+            for (int row = 0; row < tokens; ++row) {
+                for (int pos = 0; pos < top_k; ++pos) {
+                    const int expected_id = row == 0 ? pos + 1 : pos;
+                    float expected_weight = 0.0f;
+                    if (score == QSCU_ROUTER_SCORE_SIGMOID && row == 0)
+                        expected_weight = 0.125f;
+                    if (score == QSCU_ROUTER_SCORE_SIGMOID && row == 3)
+                        expected_weight = (pos == 0 ? 1.0f : 0.5f) / 4.5f;
+                    qscu_test_check_i32_eq(
+                        ids[row * top_k + pos],
+                        expected_id,
+                        "nonfinite router id"
+                    );
+                    qscu_test_check_f32_near(
+                        weights[row * top_k + pos],
+                        expected_weight,
+                        1.0e-6f,
+                        "nonfinite router weight"
+                    );
+                }
+            }
+        }
+    }
+    cudaFree(d_logits);
+    cudaFree(d_ids);
+    cudaFree(d_weights);
+}
+
 void test_qscu_gdn_router_helpers()
 {
     test_qscu_qwen36_gdn_causal_conv1d_bf16_cpu_reference();
     test_qscu_qwen36_gdn_post_conv_prepare_bf16_cpu_reference();
     test_qscu_qwen36_gdn_rmsnorm_gated_bf16_cpu_reference();
     test_qscu_router_topk_cpu_reference();
+    test_qscu_router_warp_widths_and_modes();
+    test_qscu_router_nonfinite_logits();
 #if QSFI_ENABLE_CHECKED_VALIDATION
     test_qscu_qwen36_gdn_causal_conv1d_bf16_checked_validation();
 #endif

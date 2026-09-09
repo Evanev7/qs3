@@ -271,6 +271,8 @@ qsfi_status qscu_gdn_decode(qsfi_context* ctx, const qscu_gdn_decode_desc* desc)
 qsfi_status qscu_gdn_prefill(qsfi_context* ctx, const qscu_gdn_prefill_desc* desc);
 
 /*
+ * Qwen3.6 routing supports at most 256 experts and top-k 8 (including narrow
+ * numerical fixtures); larger descriptors fail before device addressing.
  * Checked native validation builds reject non-finite router logits before
  * launching the router. Release builds do not scan logits; CUDA math and
  * comparison behavior applies, so non-finite inputs may propagate to weights.

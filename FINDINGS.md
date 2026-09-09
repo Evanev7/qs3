@@ -357,3 +357,21 @@ headers confirm 24 Q/four KV attention heads, 48 GDN value heads, separate dense
 MLP gate/up/down tensors, and FP32 recurrent-state intent. The exact metadata and
 validation scripts are committed; payload download, production dense manifest
 support and native shape validation are separate steps.
+
+## Parallel Qwen router
+
+The [AOT router probe](benchmarks/2026-09-09-router-warp-probe/README.md) improves
+one-token routing from 143.479 to 8.188 µs using one warp. An initial version kept
+old 4096-expert scratch/loop bounds and took 22.542 µs; specializing to the actual
+256-expert/top-eight model removes that excess work. Native and Rust descriptors
+now reject larger shapes before addressing device memory, while narrow numerical
+fixtures remain supported. The scalar kernel is replaced.
+
+The warp computes scores and performs ordered top-k comparison in parallel.
+Expert-order softmax addition and selected-weight normalization remain serial
+to preserve summation order. New tests cover BF16/F32 inputs, widths around warp
+boundaries and the full 256 experts, cross-lane ties, softmax/sigmoid, both
+normalization settings, scaling, checked rejection of nonfinite logits, and
+release nonfinite fallback behavior. The full suite and both native builds pass.
+The pinned real BF16 model passes reference logits/greedy IDs/reset with both
+BF16 and FP32 recurrence. Core throughput is measured separately after integration.

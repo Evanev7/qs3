@@ -1,0 +1,6 @@
+router_topk_e256_k8	qscu_router_topk	1	1	0	0	0	0	0	256	8	100	1000	143.479
+router_topk_e256_k8	qscu_router_topk	16	16	0	0	0	0	0	256	8	100	1000	143.291
+router_topk_e256_k8	qscu_router_topk	1024	1024	0	0	0	0	0	256	8	100	1000	261.899
+router_topk_e256_k8	qscu_router_topk	1	1	0	0	0	0	0	256	8	100	1000	22.542
+router_topk_e256_k8	qscu_router_topk	16	16	0	0	0	0	0	256	8	100	1000	22.539
+router_topk_e256_k8	qscu_router_topk	1024	1024	0	0	0	0	0	256	8	100	1000	164.258
