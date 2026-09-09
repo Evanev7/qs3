@@ -12,8 +12,8 @@ but these implementation and output-precision differences remain explicit.
 
 | System | Prompt/decode samples | Prefill p50 ms | Decode p50 ms | Decode tok/s | Evidence |
 | --- | ---: | ---: | ---: | ---: | --- |
-| qs3 eager | 102/32 | 250.405 | 41.245 | 24.199 | [JSON](benchmarks/2026-09-09T054130.766285819Z-d6ad953.json) |
-| qs3 eager | 1024/256 | 555.079 | 41.260 | 24.217 | [JSON](benchmarks/2026-09-09T054323.171540392Z-affb470.json) |
+| qs3 eager | 102/32 | 242.080 | 40.385 | 24.668 | [JSON](benchmarks/2026-09-09T063550.352923789Z-0dc68a2.json) |
+| qs3 eager | 1024/256 | 557.628 | 40.276 | 24.807 | [JSON](benchmarks/2026-09-09T063740.799837217Z-0dc68a2.json) |
 | vLLM graphs | 102/32 | 181.369 | 32.355 | 30.826 | [JSON](benchmarks/2026-09-09T023628Z-vllm-bf16-core/result.json) |
 | vLLM graphs | 1024/256 | 367.629 | 32.481 | 30.769 | [JSON](benchmarks/2026-09-09T030615Z-vllm-bf16-core/result.json) |
 
@@ -712,3 +712,15 @@ MoE checks run for each selection. The native rerun also corrected three stale
 attention rejection-message assertions left by the 27B dispatch change. The
 loaded 35B reference regression passes with BF16 and FP32 GDN recurrence,
 including failed-rebuild continuation and reset/replay.
+
+The integrated 32-row [short run](benchmarks/2026-09-09T063550.352923789Z-0dc68a2.json)
+measures 24.668 tok/s, 40.385 ms decode p50 and 242.080 ms prefill. The
+[sustained run](benchmarks/2026-09-09T063740.799837217Z-0dc68a2.json) measures
+24.807 tok/s, 40.276 ms decode p50 and 557.628 ms prefill. The same-commit
+[128-row control](benchmarks/2026-09-09T063952.232429825Z-0dc68a2.json) measures
+24.163 tok/s, 41.358 ms decode p50 and 554.269 ms prefill. The 32-row tile gains
+2.66% sustained throughput; its 0.6% prefill difference does not establish a
+regression. All 36/260 IDs match the earlier implementation, and both sustained
+tile selections return identical IDs. Retain the 32-row default and forceable
+128-row controls. The sustained throughput gap to the recorded vLLM graph run
+is still 19.4%; the tile improvement does not close the graph or quality work.
