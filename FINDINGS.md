@@ -10,6 +10,11 @@ disposable `sp10@sp10:qs3` checkout and record release JSON in `benchmarks/`.
 Do not run it concurrently with the test script: both replace that checkout.
 Tests run through the gitignored `run_cuda_test.sh`.
 
+`QS3_BENCH_CONTEXT_TOKENS` and `QS3_BENCH_DECODE_SAMPLES` select longer core
+workloads (defaults 102 and 32). Longer prompts repeat the base prompt's token
+IDs. JSON includes the full prompt fingerprint, generated IDs including warmups,
+and explicit GDN state precision. The default workload remains unchanged.
+
 The current core workload uses the pinned Qwen3.6-35B-A3B BF16 snapshot
 `995ad96eacd98c81ed38be0c5b274b04031597b0`, managed weights, eager execution,
 greedy sampling, a 102-token prompt, 4 decode warmups and 32 measured decode

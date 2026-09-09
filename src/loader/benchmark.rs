@@ -23,7 +23,7 @@ const TOKENIZE_SAMPLES: usize = 100;
 const PREFILL_WARMUPS: usize = 2;
 const PREFILL_SAMPLES: usize = 5;
 const DECODE_WARMUPS: usize = 4;
-const DECODE_SAMPLES: usize = 32;
+const DEFAULT_DECODE_SAMPLES: usize = 32;
 
 const FIXED_PROMPT: &str = concat!(
     "<|im_start|>system\n",
@@ -123,6 +123,18 @@ fn synchronize_stream() {
         .expect("benchmark stream synchronization failed");
 }
 
+fn positive_env(name: &str, default: usize) -> usize {
+    match std::env::var(name) {
+        Err(std::env::VarError::NotPresent) => default,
+        Ok(value) => value
+            .parse::<usize>()
+            .ok()
+            .filter(|&value| value > 0)
+            .unwrap_or_else(|| panic!("{name} must be a positive integer")),
+        Err(error) => panic!("invalid {name}: {error}"),
+    }
+}
+
 fn measure_fresh_prefill(runner: &mut ModelRunner, prompt: &[i32]) -> Duration {
     runner.reset().expect("benchmark runner reset failed");
     synchronize_stream();
@@ -163,6 +175,7 @@ fn measure_decode_step(
 }
 
 pub fn run_core_benchmark() -> JsonValue {
+    let decode_samples = positive_env("QS3_BENCH_DECODE_SAMPLES", DEFAULT_DECODE_SAMPLES);
     let profile_decode = match std::env::var("QS3_PROFILE_DECODE") {
         Err(std::env::VarError::NotPresent) => false,
         Ok(value) if value == "1" => true,
@@ -189,12 +202,28 @@ pub fn run_core_benchmark() -> JsonValue {
         );
     }
     let tokenize_median = median_seconds(&tokenize_times).expect("tokenizer samples are non-empty");
+    let context_tokens = positive_env("QS3_BENCH_CONTEXT_TOKENS", prompt.len());
+    // Longer-context comparisons repeat the exact base token IDs, avoiding
+    // tokenizer boundary differences between runtimes.
+    let prompt = prompt
+        .iter()
+        .copied()
+        .cycle()
+        .take(context_tokens)
+        .collect::<Vec<_>>();
 
     let started = Instant::now();
     let plan = QwenBf16LoadPlan::read(&model_dir).expect("failed to build BF16 load plan");
     let weight_plan = started.elapsed();
-    let max_seq_len = u32::try_from(prompt.len() + DECODE_WARMUPS + DECODE_SAMPLES + 1)
-        .expect("fixed benchmark sequence length exceeds u32");
+    let max_seq_len = u32::try_from(
+        prompt
+            .len()
+            .checked_add(DECODE_WARMUPS)
+            .and_then(|len| len.checked_add(decode_samples))
+            .and_then(|len| len.checked_add(1))
+            .expect("benchmark sequence length overflow"),
+    )
+    .expect("fixed benchmark sequence length exceeds u32");
     let backend = ManagedUmaBackend::new(0).expect("failed to create managed-UMA backend");
     let started = Instant::now();
     let loaded = execute_qwen36_bf16_load_plan(&plan, backend, ptr::null_mut())
@@ -237,13 +266,13 @@ pub fn run_core_benchmark() -> JsonValue {
         live_tokens = next_live_tokens;
     }
     let decode_context_start = live_tokens.len();
-    let mut decode_times = Vec::with_capacity(DECODE_SAMPLES);
+    let mut decode_times = Vec::with_capacity(decode_samples);
     // Nsight Systems can capture only this prepared, steady-decode interval.
     // Profiler API calls stay outside the per-step latency samples.
     if profile_decode {
         result_from_cuda(unsafe { cudaProfilerStart() }).expect("start decode profiling range");
     }
-    for _ in 0..DECODE_SAMPLES {
+    for _ in 0..decode_samples {
         let (elapsed, next_live_tokens) =
             measure_decode_step(&mut runner, &tokenizer, &live_tokens);
         decode_times.push(elapsed);
@@ -270,6 +299,8 @@ pub fn run_core_benchmark() -> JsonValue {
                 ("attention", "flashinfer_paged_hd256_gqa8".to_owned().into()),
                 ("norm", "flashinfer_gemma_aot".to_owned().into()),
                 ("gdn", "qscu_local_bf16".to_owned().into()),
+                ("gdn_conv_state_dtype", "bf16".to_owned().into()),
+                ("gdn_recurrent_state_dtype", "bf16".to_owned().into()),
                 (
                     "moe",
                     "flashinfer_cutlass_segment_gemm_bf16".to_owned().into(),
@@ -297,7 +328,8 @@ pub fn run_core_benchmark() -> JsonValue {
         (
             "prompt",
             object([
-                ("bytes", (FIXED_PROMPT.len() as f64).into()),
+                ("base_bytes", (FIXED_PROMPT.len() as f64).into()),
+                ("construction", "repeat_base_token_ids".to_owned().into()),
                 ("tokens", (prompt.len() as f64).into()),
                 (
                     "token_id_fnv1a",
@@ -343,15 +375,23 @@ pub fn run_core_benchmark() -> JsonValue {
             "decode",
             object([
                 ("warmups", (DECODE_WARMUPS as f64).into()),
-                ("samples", (DECODE_SAMPLES as f64).into()),
+                ("samples", (decode_samples as f64).into()),
                 ("warmup_ms", sample_milliseconds(&decode_warmup_times)),
                 ("sample_ms", sample_milliseconds(&decode_times)),
                 ("context_start", (decode_context_start as f64).into()),
                 ("context_end", (live_tokens.len() as f64).into()),
+                (
+                    "generated_token_ids",
+                    live_tokens[prompt.len()..]
+                        .iter()
+                        .map(|&token| JsonValue::Number(f64::from(token)))
+                        .collect::<Vec<_>>()
+                        .into(),
+                ),
                 ("total_ms", milliseconds(decode_total)),
                 (
                     "tokens_per_second",
-                    tokens_per_second(DECODE_SAMPLES, decode_total)
+                    tokens_per_second(decode_samples, decode_total)
                         .expect("nonzero decode time")
                         .into(),
                 ),
@@ -379,7 +419,7 @@ mod tests {
         assert_eq!(PREFILL_WARMUPS, 2);
         assert_eq!(PREFILL_SAMPLES, 5);
         assert_eq!(DECODE_WARMUPS, 4);
-        assert_eq!(DECODE_SAMPLES, 32);
+        assert_eq!(DEFAULT_DECODE_SAMPLES, 32);
     }
 
     #[test]
