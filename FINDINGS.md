@@ -483,3 +483,24 @@ IDs to the final-row-projection baseline (36 and 260 IDs). Decode throughput is
 The asset download was paused for each timing run and resumed between them.
 The 491 ms longer-prefill reduction is consistent with removing the measured
 serial-convolution cost. GDN recurrence is the next larger prefill target.
+
+## Ordered warp GDN recurrence
+
+The [warp-row recurrence probe](benchmarks/2026-09-09-gdn-warp-probe/README.md)
+reproduces the original 128-element FP32 reduction tree using four values per
+lane and warp shuffles. Explicit rounded additions prevent contraction across
+reduction boundaries. Four independent value rows share each 128-thread block;
+there are no block-wide barriers in the token loop.
+
+All output and state bits match in 192 standalone cases covering BF16/FP32
+state, normalization on/off, decode and prefill, short/long and empty sequences,
+negative read slots, same/separate state slots and disabled updates. With FP32
+state and normalization enabled, the 1024-token kernel falls from 32.076 to
+4.390 ms; a single decode token falls from 35.101 to 10.226 microseconds. These
+are kernel probes, not isolated core results.
+
+Integration replaces both old recurrence kernels and their shared-memory helper.
+The benchmark names the selected `qscu_warp4_row128_bf16` path and independently
+records recurrence dtype. The prescribed full suite and both native builds pass;
+the pinned real 35B reference also passes with BF16 and FP32 state, including
+existing logit tolerances, greedy IDs, reset and replay. Core timing follows.

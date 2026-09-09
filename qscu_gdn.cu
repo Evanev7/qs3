@@ -16,8 +16,9 @@ constexpr uint32_t kDefaultNumKHeads = QSFI_QWEN36_GDN_NUM_K_HEADS;
 constexpr uint32_t kDefaultNumVHeads = QSFI_QWEN36_GDN_NUM_V_HEADS;
 constexpr uint32_t kDefaultKeyDim = QSFI_QWEN36_GDN_KEY_DIM;
 constexpr uint32_t kDefaultValueDim = QSFI_QWEN36_GDN_VALUE_DIM;
-constexpr uint32_t kThreads = QSFI_QWEN36_GDN_THREADS;
-static_assert(kThreads == kDefaultKeyDim, "GDN row kernel maps one thread to one K element");
+constexpr uint32_t kWarpsPerBlock = 4;
+constexpr uint32_t kThreads = kWarpsPerBlock * 32;
+static_assert(kDefaultKeyDim == 128, "GDN warp row maps four key elements to each lane");
 
 struct gdn_shape {
     uint32_t num_q_heads;
@@ -165,22 +166,6 @@ __device__ void store_bf16(__nv_bfloat16* ptr, float value)
     *ptr = __float2bfloat16(value);
 }
 
-__device__ float block_sum(float value)
-{
-    __shared__ float scratch[kThreads];
-    const uint32_t tid = threadIdx.x;
-    scratch[tid] = value;
-    __syncthreads();
-    for (uint32_t stride = kThreads / 2; stride > 0; stride >>= 1) {
-        if (tid < stride)
-            scratch[tid] += scratch[tid + stride];
-        __syncthreads();
-    }
-    const float sum = scratch[0];
-    __syncthreads();
-    return sum;
-}
-
 __device__ float softplus(float x, float beta, float threshold)
 {
     const float beta_x = beta * x;
@@ -194,156 +179,108 @@ __device__ uint32_t mapped_head(uint32_t v_head, uint32_t v_heads, uint32_t mapp
     return v_head / (v_heads / mapped_heads);
 }
 
-template <typename StateT>
-__device__ void run_gdn_sequence_row(
-    const gdn_kernel_params& p,
-    StateT* state,
-    uint32_t sequence_or_token,
-    uint32_t v_head,
-    uint32_t value_dim,
-    int32_t token_begin,
-    int32_t token_end,
-    int32_t read_slot,
-    int32_t write_slot
-)
+__device__ float qwen36_gdn_warp_sum4(float a, float b, float c, float d)
 {
-    const uint32_t tid = threadIdx.x;
-    const uint32_t q_head = mapped_head(v_head, p.num_v_heads, p.num_q_heads);
-    const uint32_t k_head = mapped_head(v_head, p.num_v_heads, p.num_k_heads);
+    // Match the original 128-thread shared-memory tree: strides 64, 32, then 16..1.
+    float sum = __fadd_rn(__fadd_rn(a, c), __fadd_rn(b, d));
+    for (unsigned step = 16; step; step >>= 1)
+        sum = __fadd_rn(sum, __shfl_down_sync(0xffffffffu, sum, step));
+    return __shfl_sync(0xffffffffu, sum, 0);
+}
 
-    if (read_slot < 0) {
-        if (tid == 0) {
-            for (int32_t token = token_begin; token < token_end; ++token) {
+template <class StateT, bool Prefill>
+__global__ void qwen36_gdn_warp_kernel(gdn_kernel_params p, StateT* state)
+{
+    const unsigned lane = threadIdx.x % 32;
+    const uint64_t linear = uint64_t(blockIdx.x) * kWarpsPerBlock + threadIdx.x / 32;
+    if (linear >= uint64_t(p.outer_count) * p.num_v_heads * p.value_dim)
+        return;
+    const unsigned dim = linear % p.value_dim;
+    const unsigned head = (linear / p.value_dim) % p.num_v_heads;
+    const unsigned seq = linear / (p.value_dim * p.num_v_heads);
+    const int begin = Prefill ? p.seq_indptr[seq] : int(seq);
+    const int end = Prefill ? p.seq_indptr[seq + 1] : int(seq + 1);
+    const int read = p.state_indices[seq];
+    const int write = p.state_out_indices == nullptr ? read : p.state_out_indices[seq];
+    if (read < 0) {
+        if (lane == 0)
+            for (int token = begin; token < end; ++token)
                 store_bf16(
-                    p.out.data + token * p.out.stride0 + v_head * p.out.stride1
-                        + value_dim * p.out.stride2,
-                    0.0f
+                    p.out.data + int64_t(token) * p.out.stride0 + int64_t(head) * p.out.stride1
+                        + int64_t(dim) * p.out.stride2,
+                    0.f
                 );
-            }
-        }
         return;
     }
-
-    const int64_t read_base = static_cast<int64_t>(read_slot) * p.state.stride0
-        + static_cast<int64_t>(v_head) * p.state.stride1
-        + static_cast<int64_t>(value_dim) * p.state.stride2;
-    float h = load_state_value(state + read_base + static_cast<int64_t>(tid) * p.state.stride3);
-
-    for (int32_t token = token_begin; token < token_end; ++token) {
-        const float q_raw = load_bf16(
-            p.q.data + static_cast<int64_t>(token) * p.q.stride0
-            + static_cast<int64_t>(q_head) * p.q.stride1 + tid * p.q.stride2
-        );
-        const float k_raw = load_bf16(
-            p.k.data + static_cast<int64_t>(token) * p.k.stride0
-            + static_cast<int64_t>(k_head) * p.k.stride1 + tid * p.k.stride2
-        );
-
-        float q_factor = p.scale;
-        float k_factor = 1.0f;
-        if (p.use_qk_l2norm != 0) {
-            const float q_norm2 = block_sum(q_raw * q_raw);
-            const float k_norm2 = block_sum(k_raw * k_raw);
-            q_factor *= rsqrtf(q_norm2 + 1.0e-8f);
-            k_factor *= rsqrtf(k_norm2 + 1.0e-8f);
-        }
-        const float q_value = q_raw * q_factor;
-        const float k_value = k_raw * k_factor;
-
-        const float a_value = load_bf16(
-            p.a.data + static_cast<int64_t>(token) * p.a.stride0
-            + static_cast<int64_t>(v_head) * p.a.stride1
-        );
-        const float b_value = load_bf16(
-            p.b.data + static_cast<int64_t>(token) * p.b.stride0
-            + static_cast<int64_t>(v_head) * p.b.stride1
-        );
-        const float a_log
-            = load_bf16(p.a_log.data + static_cast<int64_t>(v_head) * p.a_log.stride0);
-        const float dt_bias
-            = load_bf16(p.dt_bias.data + static_cast<int64_t>(v_head) * p.dt_bias.stride0);
-        const float g = -expf(a_log)
-            * softplus(
-                a_value + dt_bias,
-                QSFI_QWEN36_GDN_SOFTPLUS_BETA,
-                QSFI_QWEN36_GDN_SOFTPLUS_THRESHOLD
+    const unsigned qhead = mapped_head(head, p.num_v_heads, p.num_q_heads);
+    const unsigned khead = mapped_head(head, p.num_v_heads, p.num_k_heads);
+    const int64_t base = int64_t(read) * p.state.stride0 + int64_t(head) * p.state.stride1
+        + int64_t(dim) * p.state.stride2;
+    float h[4];
+#pragma unroll
+    for (unsigned j = 0; j < 4; ++j)
+        h[j] = load_state_value(state + base + int64_t(lane + 32 * j) * p.state.stride3);
+    for (int token = begin; token < end; ++token) {
+        float qr[4], kr[4], q[4], k[4];
+#pragma unroll
+        for (unsigned j = 0; j < 4; ++j) {
+            qr[j] = load_bf16(
+                p.q.data + int64_t(token) * p.q.stride0 + int64_t(qhead) * p.q.stride1
+                + int64_t(lane + 32 * j) * p.q.stride2
             );
-        const float beta_gate = 1.0f / (1.0f + expf(-b_value));
-
-        h *= expf(g);
-        const float kv_dot = block_sum(k_value * h);
-        const float v_value = load_bf16(
-            p.v.data + static_cast<int64_t>(token) * p.v.stride0
-            + static_cast<int64_t>(v_head) * p.v.stride1
-            + static_cast<int64_t>(value_dim) * p.v.stride2
+            kr[j] = load_bf16(
+                p.k.data + int64_t(token) * p.k.stride0 + int64_t(khead) * p.k.stride1
+                + int64_t(lane + 32 * j) * p.k.stride2
+            );
+        }
+        float qf = p.scale, kf = 1.f;
+        if (p.use_qk_l2norm) {
+            float qn
+                = qwen36_gdn_warp_sum4(qr[0] * qr[0], qr[1] * qr[1], qr[2] * qr[2], qr[3] * qr[3]);
+            float kn
+                = qwen36_gdn_warp_sum4(kr[0] * kr[0], kr[1] * kr[1], kr[2] * kr[2], kr[3] * kr[3]);
+            qf *= rsqrtf(qn + 1.e-8f);
+            kf *= rsqrtf(kn + 1.e-8f);
+        }
+        const float a
+            = load_bf16(p.a.data + int64_t(token) * p.a.stride0 + int64_t(head) * p.a.stride1);
+        const float b
+            = load_bf16(p.b.data + int64_t(token) * p.b.stride0 + int64_t(head) * p.b.stride1);
+        const float alog = load_bf16(p.a_log.data + int64_t(head) * p.a_log.stride0);
+        const float dt = load_bf16(p.dt_bias.data + int64_t(head) * p.dt_bias.stride0);
+        const float g = -expf(alog)
+            * softplus(a + dt, QSFI_QWEN36_GDN_SOFTPLUS_BETA, QSFI_QWEN36_GDN_SOFTPLUS_THRESHOLD);
+        const float beta = 1.f / (1.f + expf(-b));
+#pragma unroll
+        for (unsigned j = 0; j < 4; ++j) {
+            q[j] = qr[j] * qf;
+            k[j] = kr[j] * kf;
+            h[j] *= expf(g);
+        }
+        const float dot = qwen36_gdn_warp_sum4(k[0] * h[0], k[1] * h[1], k[2] * h[2], k[3] * h[3]);
+        const float v = load_bf16(
+            p.v.data + int64_t(token) * p.v.stride0 + int64_t(head) * p.v.stride1
+            + int64_t(dim) * p.v.stride2
         );
-        const float delta_v = (v_value - kv_dot) * beta_gate;
-        h += k_value * delta_v;
-
-        const float out_value = block_sum(q_value * h);
-        if (tid == 0) {
+        const float delta = (v - dot) * beta;
+#pragma unroll
+        for (unsigned j = 0; j < 4; ++j)
+            h[j] += k[j] * delta;
+        const float out = qwen36_gdn_warp_sum4(q[0] * h[0], q[1] * h[1], q[2] * h[2], q[3] * h[3]);
+        if (lane == 0)
             store_bf16(
-                p.out.data + static_cast<int64_t>(token) * p.out.stride0
-                    + static_cast<int64_t>(v_head) * p.out.stride1
-                    + static_cast<int64_t>(value_dim) * p.out.stride2,
-                out_value
+                p.out.data + int64_t(token) * p.out.stride0 + int64_t(head) * p.out.stride1
+                    + int64_t(dim) * p.out.stride2,
+                out
             );
-        }
     }
-
-    if (p.disable_state_update == 0 && write_slot >= 0) {
-        const int64_t write_base = static_cast<int64_t>(write_slot) * p.state.stride0
-            + static_cast<int64_t>(v_head) * p.state.stride1
-            + static_cast<int64_t>(value_dim) * p.state.stride2;
-        state[write_base + static_cast<int64_t>(tid) * p.state.stride3]
-            = make_state_value<StateT>(h);
+    if (!p.disable_state_update && write >= 0) {
+        const int64_t dest = int64_t(write) * p.state.stride0 + int64_t(head) * p.state.stride1
+            + int64_t(dim) * p.state.stride2;
+#pragma unroll
+        for (unsigned j = 0; j < 4; ++j)
+            state[dest + int64_t(lane + 32 * j) * p.state.stride3] = make_state_value<StateT>(h[j]);
     }
-}
-
-template <typename StateT> __global__ void gdn_decode_kernel(gdn_kernel_params p, StateT* state)
-{
-    const uint64_t linear = blockIdx.x;
-    const uint32_t value_dim = static_cast<uint32_t>(linear % p.value_dim);
-    const uint32_t v_head = static_cast<uint32_t>((linear / p.value_dim) % p.num_v_heads);
-    const uint32_t token = static_cast<uint32_t>(linear / (p.value_dim * p.num_v_heads));
-    const int32_t read_slot = p.state_indices[token];
-    const int32_t write_slot
-        = p.state_out_indices == nullptr ? read_slot : p.state_out_indices[token];
-    run_gdn_sequence_row(
-        p,
-        state,
-        token,
-        v_head,
-        value_dim,
-        static_cast<int32_t>(token),
-        static_cast<int32_t>(token + 1),
-        read_slot,
-        write_slot
-    );
-}
-
-template <typename StateT> __global__ void gdn_prefill_kernel(gdn_kernel_params p, StateT* state)
-{
-    const uint64_t linear = blockIdx.x;
-    const uint32_t value_dim = static_cast<uint32_t>(linear % p.value_dim);
-    const uint32_t v_head = static_cast<uint32_t>((linear / p.value_dim) % p.num_v_heads);
-    const uint32_t sequence = static_cast<uint32_t>(linear / (p.value_dim * p.num_v_heads));
-    const int32_t token_begin = p.seq_indptr[sequence];
-    const int32_t token_end = p.seq_indptr[sequence + 1];
-    const int32_t read_slot = p.state_indices[sequence];
-    const int32_t write_slot
-        = p.state_out_indices == nullptr ? read_slot : p.state_out_indices[sequence];
-    run_gdn_sequence_row(
-        p,
-        state,
-        sequence,
-        v_head,
-        value_dim,
-        token_begin,
-        token_end,
-        read_slot,
-        write_slot
-    );
 }
 
 #if QSFI_ENABLE_CHECKED_VALIDATION
@@ -664,7 +601,9 @@ launch_gdn_decode(qsfi_context* ctx, const qscu_gdn_decode_desc* desc, const gdn
 {
     const uint64_t items = work_items(desc->num_tokens, shape);
     gdn_kernel_params params = make_params(desc, shape, desc->num_tokens, nullptr);
-    gdn_decode_kernel<StateT><<<static_cast<uint32_t>(items), kThreads, 0, ctx->stream>>>(
+    qwen36_gdn_warp_kernel<StateT, false><<<
+        static_cast<uint32_t>((items + kWarpsPerBlock - 1) / kWarpsPerBlock),
+        kThreads, 0, ctx->stream>>>(
         params,
         static_cast<StateT*>(desc->state.data)
     );
@@ -678,7 +617,9 @@ launch_gdn_prefill(qsfi_context* ctx, const qscu_gdn_prefill_desc* desc, const g
     const uint64_t items = work_items(desc->batch_size, shape);
     gdn_kernel_params params
         = make_params(desc, shape, desc->batch_size, static_cast<const int32_t*>(desc->seq_indptr));
-    gdn_prefill_kernel<StateT><<<static_cast<uint32_t>(items), kThreads, 0, ctx->stream>>>(
+    qwen36_gdn_warp_kernel<StateT, true><<<
+        static_cast<uint32_t>((items + kWarpsPerBlock - 1) / kWarpsPerBlock),
+        kThreads, 0, ctx->stream>>>(
         params,
         static_cast<StateT*>(desc->state.data)
     );
