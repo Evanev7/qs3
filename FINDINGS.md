@@ -544,8 +544,10 @@ although vLLM fuses additional preparation. MoE projection kernels account for
 392.597 versus 324.712 ms, with different tile shapes and fused work. Packed
 projection and MoE changes need controlled AOT probes.
 
-The LM-head signatures expose another precision mismatch: qs3 uses FP32 input
-and output, while vLLM uses BF16. Both have 32 calls at grid 62,080, consistent
+The LM-head signatures expose another precision mismatch: qs3 projects to FP32
+logits, while vLLM projects to BF16. Both receive BF16 model activations. qs3's
+cuBLASLt GEMV signature has FP32 internal input; native matrix layouts confirm
+that the caller still supplies BF16 input, so this reflects cuBLASLt internals. Both have 32 calls at grid 62,080, consistent
 with the padded 248,320 vocabulary and four outputs per block. Captured durations
 are 197.355 and 164.707 ms. This is a candidate for a controlled precision probe
 and identical-prefix score comparison, not evidence that it causes the sustained

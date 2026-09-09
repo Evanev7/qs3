@@ -33,8 +33,11 @@ packing are concrete candidates for AOT probes; preserving device addresses and
 moving sampling/output completion out of enqueueing are prerequisites for graphs.
 
 The presumed LM-head GEMV (grid 62,080 = 248,320 output rows / 4) has 32 calls,
-164.707 ms, and BF16 matrix/input/output. qs3's matching grid has FP32 input/output
-and 197.355 ms. Shape and signatures identify the projection; a same-prefix score
+164.707 ms, and BF16 matrix/input/output. qs3's matching kernel signature has FP32 input/output
+and 197.355 ms. Its caller supplies BF16 activations, as confirmed by the Rust
+scratch type and native cuBLASLt matrix layouts; FP32 input here belongs to the
+internal library path. Output precision is the confirmed model-level difference.
+Shape and signatures identify the projection; a same-prefix score
 comparison and controlled precision probe are still needed before changing it.
 Do not attribute the sustained greedy divergence to this difference without that
 comparison.
