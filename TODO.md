@@ -78,8 +78,9 @@
 - [ ] Pin and validate the 27B config, tokenizer, and safetensors manifest.
   Revision `6a9e13bd6fc8f0983b9b99948120bc37f49c13e9` and all shard headers are
   recorded under `model_manifests/`. An independent host check validates 851
-  text tensor shapes; tokenizer bytes match the pinned 35B asset. Production
-  Rust dense-manifest validation and payload validation remain open.
+  text tensor shapes; tokenizer bytes match the pinned 35B asset. All 15 full
+  shards are now cached on sp10 and match their Hub SHA256 hashes and pinned
+  headers. Production Rust dense-manifest validation remains open.
 - [x] Probe native full attention with 24 Q heads, 4 KV heads, head dimension
   256, and GQA ratio 6. The isolated AOT probe passes CPU-reference prefill/decode
   and append cases on sp10; see FINDINGS.md. Production dispatch and Rust shape

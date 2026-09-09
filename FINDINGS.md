@@ -609,3 +609,13 @@ its parallel output/writeback path. The benchmark records `qscu_tiled_channels`.
 The prescribed full suite and native checked/release tests pass, as does the
 loaded 35B regression with both recurrent precisions, including late failed
 rebuild, continuation, reset and replay. Core decode timing follows.
+
+
+The complete 27B snapshot is now cached on sp10. Independent
+[payload validation](model_manifests/qwen3.6-27b/6a9e13bd6fc8f0983b9b99948120bc37f49c13e9/payload_validation.json)
+checks all 15 shard SHA256 hashes against their Hub blob names, exact file lengths,
+headers/config/index against pinned records, and tokenizer SHA256. Every check
+passes (55,563,006,400 bytes including headers). The network download needed
+resumption after truncated HTTP streams; validation was performed only after
+completion. Rust dense-manifest/materialization and public-runner 27B correctness
+remain open.

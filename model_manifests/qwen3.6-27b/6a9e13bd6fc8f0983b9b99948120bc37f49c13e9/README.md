@@ -12,7 +12,8 @@ The manifest has 1199 BF16 tensors in 15 shards: 851 text tensors totaling
 is 55,562,855,904 bytes. Validation checks duplicate JSON keys/tensor names,
 index/header agreement, dtype, tensor byte sizes, contiguous nonoverlapping
 ranges within each reported file, and the exact dense text model shape set.
-It does not validate weight payload contents or prove runtime 27B support.
+The header-only check does not establish payload integrity or runtime support.
+The completed payload validation below independently checks all file hashes.
 
 The text model has hidden size 5120 and 64 layers in a three-GDN/one-full-attention
 pattern. Full attention uses 24 Q and four KV heads, dimension 256, with a
@@ -30,3 +31,12 @@ copied into this manifest directory. `validation.json` records counts and hashes
 `probe.json` records per-shard physical sizes and header hashes. Production Rust
 manifest validation, dense materialization, AOT shape support and inference
 reference checks remain TODO items.
+
+The full snapshot is now cached on sp10 under
+`~/.cache/huggingface/hub/models--Qwen--Qwen3.6-27B/snapshots/6a9e13bd6fc8f0983b9b99948120bc37f49c13e9/`.
+`validate_payload.py` hashes all 15 complete shard files and compares each SHA256
+with its Hub blob name, compares downloaded headers/config/index with the pinned
+records, verifies exact file lengths, and checks tokenizer SHA256. All checks
+pass; the files total 55,563,006,400 bytes including headers. Results are in
+`payload_validation.json`. This confirms cached payload integrity; production
+27B loading and inference validation remain open.
