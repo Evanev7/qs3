@@ -720,7 +720,7 @@ def _combine_moe_and_shared(
 def _compute_moe_shared_output(
     hidden_rows: list[list[float]],
 ) -> tuple[tuple[float, ...], tuple[int, ...], list[list[float]]]:
-    router_logits_f32, router_logits_rows = _project_sparse_terms_f32(
+    _router_logits_f32, _router_logits_bf16, router_logits_rows = _project_sparse_terms_bf16(
         hidden_rows,
         MOE_NUM_EXPERTS,
         _moe_router_terms,
@@ -734,7 +734,6 @@ def _compute_moe_shared_output(
     _shared_f32, shared_bf16, _shared_rows, shared_gate_logits = _compute_shared_expert(
         hidden_rows,
     )
-    _ = router_logits_f32
     return _combine_moe_and_shared(
         routed_bf16,
         shared_bf16,

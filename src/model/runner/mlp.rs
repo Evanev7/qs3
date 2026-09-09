@@ -2,15 +2,12 @@ use super::ModelRunner;
 use crate::{
     QWEN36_MOE_ROUTER_RENORMALIZE, QWEN36_MOE_ROUTER_SCALING_FACTOR, QWEN36_MOE_ROUTER_SCORE,
     backend::{
-        BF16, DMat, DTensor3, F32, FloatDType,
+        DMat, DTensor3,
         qsfi::{MoeBf16Execute, MoeBf16ExecuteArgs, Workspace},
     },
     engine::Status,
     ffi,
-    model::{
-        MoeRouterPrecision, QwenMoeConfig,
-        weights::{QwenMlpPtrs, QwenSharedExpertPtrs},
-    },
+    model::weights::{QwenMlpPtrs, QwenSharedExpertPtrs},
 };
 
 impl ModelRunner {
@@ -96,34 +93,6 @@ impl ModelRunner {
         )
     }
 
-    fn route_moe_logits<T: FloatDType>(
-        &mut self,
-        logits: DMat<T>,
-        moe: QwenMoeConfig,
-    ) -> Result<(), Status> {
-        let ids = DMat::contiguous(
-            self.scratch.topk_ids.as_device_ptr(),
-            logits.rows(),
-            moe.num_experts_per_tok,
-        )?;
-        let weights = DMat::contiguous(
-            self.scratch.topk_weights.as_device_ptr(),
-            logits.rows(),
-            moe.num_experts_per_tok,
-        )?;
-        let mut ops = self.engine.operators();
-        unsafe {
-            ops.qscu().router_topk(
-                logits,
-                ids,
-                weights,
-                QWEN36_MOE_ROUTER_SCORE,
-                QWEN36_MOE_ROUTER_RENORMALIZE,
-                QWEN36_MOE_ROUTER_SCALING_FACTOR,
-            )
-        }
-    }
-
     pub(super) fn execute_moe_mlp(
         &mut self,
         rows: u32,
@@ -134,43 +103,42 @@ impl ModelRunner {
         shared: Option<QwenSharedExpertPtrs>,
     ) -> Result<(), Status> {
         let moe = self.config.moe_config().ok_or(Status::InternalError)?;
-        match self.config.moe_router_precision {
-            MoeRouterPrecision::F32 => {
-                self.linear_f32(
-                    self.scratch.attn_proj.as_device_ptr(),
-                    rows,
-                    hidden,
-                    router_proj,
-                    self.scratch.router_logits.as_device_ptr(),
-                    moe.num_experts,
-                )?;
-                self.route_moe_logits(
-                    DMat::<F32>::contiguous(
-                        self.scratch.router_logits.as_device_ptr(),
-                        rows,
-                        moe.num_experts,
-                    )?,
-                    moe,
-                )?;
-            }
-            MoeRouterPrecision::Bf16 => {
-                self.linear_bf16(
-                    self.scratch.attn_proj.as_device_ptr(),
-                    rows,
-                    hidden,
-                    router_proj,
-                    self.scratch.router_logits_bf16.as_device_ptr(),
-                    moe.num_experts,
-                )?;
-                self.route_moe_logits(
-                    DMat::<BF16>::contiguous(
-                        self.scratch.router_logits_bf16.as_device_ptr(),
-                        rows,
-                        moe.num_experts,
-                    )?,
-                    moe,
-                )?;
-            }
+        self.linear_bf16(
+            self.scratch.attn_proj.as_device_ptr(),
+            rows,
+            hidden,
+            router_proj,
+            self.scratch.router_logits.as_device_ptr(),
+            moe.num_experts,
+        )?;
+
+        let router_logits = DMat::contiguous(
+            self.scratch.router_logits.as_device_ptr(),
+            rows,
+            moe.num_experts,
+        )?;
+        let topk_ids = DMat::contiguous(
+            self.scratch.topk_ids.as_device_ptr(),
+            rows,
+            moe.num_experts_per_tok,
+        )?;
+        let topk_weights = DMat::contiguous(
+            self.scratch.topk_weights.as_device_ptr(),
+            rows,
+            moe.num_experts_per_tok,
+        )?;
+        {
+            let mut ops = self.engine.operators();
+            unsafe {
+                ops.qscu().router_topk(
+                    router_logits,
+                    topk_ids,
+                    topk_weights,
+                    QWEN36_MOE_ROUTER_SCORE,
+                    QWEN36_MOE_ROUTER_RENORMALIZE,
+                    QWEN36_MOE_ROUTER_SCALING_FACTOR,
+                )?
+            };
         }
 
         let plan = self.moe_plan.as_ref().ok_or(Status::InternalError)?;

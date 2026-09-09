@@ -28,8 +28,3 @@ impl_dtype!(I32, DTYPE_I32);
 impl_dtype!(U32, DTYPE_U32);
 impl_dtype!(I8, DTYPE_I8);
 impl_dtype!(U8, DTYPE_U8);
-
-/// Floating storage accepted by mixed BF16/FP32 qwen kernels.
-pub(crate) trait FloatDType: DType {}
-impl FloatDType for BF16 {}
-impl FloatDType for F32 {}

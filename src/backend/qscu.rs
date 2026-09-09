@@ -1,6 +1,5 @@
 use super::{
-    BF16, Bf16Heads, DMat, DVec, F32, FloatDType, GdnStateIndexPolicy, I32, Qsfi,
-    require_gdn_state_index_vec,
+    BF16, Bf16Heads, DMat, DVec, F32, GdnStateIndexPolicy, I32, Qsfi, require_gdn_state_index_vec,
     require_i32_vec, require_qwen36_gdn_heads, result_from_raw, validate_eps,
     validate_gdn_recurrent_tensors, validate_nonzero, validate_soft_cap, zero_tensor1,
     zero_tensor2,
@@ -104,9 +103,9 @@ impl<'a> Qscu<'a> {
         result_from_raw(unsafe { sys::qscu_greedy_argmax_f32(&desc, *self.stream) })
     }
 
-    pub(crate) unsafe fn router_topk<T: FloatDType>(
+    pub(crate) unsafe fn router_topk(
         &mut self,
-        logits: DMat<T>,
+        logits: DMat<BF16>,
         topk_ids: DMat<I32>,
         topk_weights: DMat<F32>,
         score: RouterScore,
@@ -385,8 +384,8 @@ pub(super) fn greedy_argmax_desc(
     })
 }
 
-pub(super) fn router_topk_desc<T: FloatDType>(
-    logits: DMat<T>,
+pub(super) fn router_topk_desc(
+    logits: DMat<BF16>,
     topk_ids: DMat<I32>,
     topk_weights: DMat<F32>,
     score: RouterScore,

@@ -355,6 +355,52 @@ fn assert_f32_close(what: &str, got: &[f32], expected: &[f32], abs_tol: f32, rel
     }
 }
 
+// Projection checks allow normal BF16 rounding differences. Check routing
+// arithmetic separately against the actual validated projection output, so
+// its tighter tolerance does not accidentally constrain the preceding GEMM.
+fn assert_moe_router_matches_cpu(runner: &ModelRunner, rows: u32) {
+    let moe = runner.config.moe_config().unwrap();
+    let experts = moe.num_experts as usize;
+    let topk = moe.num_experts_per_tok as usize;
+    let logits = download_bf16(
+        &runner.scratch.router_logits,
+        runner.config.stream,
+        rows as usize * experts,
+    );
+    let ids = download_i32(
+        &runner.scratch.topk_ids,
+        runner.config.stream,
+        rows as usize * topk,
+    );
+    let weights = download_f32(
+        &runner.scratch.topk_weights,
+        runner.config.stream,
+        ids.len(),
+    );
+    let mut expected_weights = Vec::with_capacity(weights.len());
+    for (row_idx, row) in logits.chunks_exact(experts).enumerate() {
+        let values: Vec<f64> = row
+            .iter()
+            .map(|&x| f64::from(bf16_bits_to_f32(x)))
+            .collect();
+        let mut order: Vec<usize> = (0..experts).collect();
+        order.sort_by(|&a, &b| values[b].total_cmp(&values[a]).then(a.cmp(&b)));
+        let max = values[order[0]];
+        let denom: f64 = order[..topk].iter().map(|&i| (values[i] - max).exp()).sum();
+        for rank in 0..topk {
+            assert_eq!(ids[row_idx * topk + rank], order[rank] as i32);
+            expected_weights.push(((values[order[rank]] - max).exp() / denom) as f32);
+        }
+    }
+    assert_f32_close(
+        "router weights from validated BF16 logits",
+        &weights,
+        &expected_weights,
+        MOE_ROUTER_WEIGHT_ABS_TOL,
+        MOE_ROUTER_WEIGHT_REL_TOL,
+    );
+}
+
 fn assert_bf16_close_to_f32_oracle(
     what: &str,
     got_bf16: &[u16],
@@ -501,8 +547,8 @@ fn upload_moe_vector_inputs(runner: &mut ModelRunner) {
         .router_logits
         .upload(
             runner.config.stream,
-            &read_moe_f32_vector(
-                "router_logits.f32",
+            &read_moe_bf16_vector(
+                "router_logits.bf16",
                 (MOE_VECTOR_ROWS * QWEN36_MOE_NUM_EXPERTS) as usize,
             ),
         )
@@ -511,7 +557,7 @@ fn upload_moe_vector_inputs(runner: &mut ModelRunner) {
 
 fn run_moe_vector_router(runner: &mut ModelRunner, renormalize: bool) {
     let moe = runner.config.moe_config().unwrap();
-    let router_logits = DMat::<crate::backend::F32>::contiguous(
+    let router_logits = DMat::contiguous(
         runner.scratch.router_logits.as_device_ptr(),
         MOE_VECTOR_ROWS,
         moe.num_experts,
@@ -2260,11 +2306,15 @@ fn qwen36_gdn_decoder_layer_vector_chains_gdn_into_moe_and_next_norm() {
         ),
         BF16_GDN_DECODER_NORM_ABS_TOL,
     );
-    assert_f32_close(
+    assert_bf16_close_to_f32_oracle(
         "GDN decoder slice MoE router logits",
-        &download_f32(
+        &download_bf16(
             &runner.scratch.router_logits,
             stream,
+            (rows * QWEN36_MOE_NUM_EXPERTS) as usize,
+        ),
+        &read_gdn_decoder_bf16_vector(
+            "gdn_decoder_expected_moe_router_logits_bf16.bf16",
             (rows * QWEN36_MOE_NUM_EXPERTS) as usize,
         ),
         &read_gdn_decoder_f32_vector(
@@ -2272,20 +2322,13 @@ fn qwen36_gdn_decoder_layer_vector_chains_gdn_into_moe_and_next_norm() {
             (rows * QWEN36_MOE_NUM_EXPERTS) as usize,
         ),
         BF16_GDN_DECODER_PROJ_ABS_TOL,
-        1.0e-4,
     );
     assert_eq!(
         download_i32(&runner.scratch.topk_ids, stream, topk_len),
         read_gdn_decoder_i32_vector("gdn_decoder_expected_moe_topk_ids.i32", topk_len),
         "GDN decoder slice MoE router top-k ids changed"
     );
-    assert_f32_close(
-        "GDN decoder slice MoE top-k weights",
-        &download_f32(&runner.scratch.topk_weights, stream, topk_len),
-        &read_gdn_decoder_f32_vector("gdn_decoder_expected_moe_topk_weights_f32.f32", topk_len),
-        MOE_ROUTER_WEIGHT_ABS_TOL,
-        MOE_ROUTER_WEIGHT_REL_TOL,
-    );
+    assert_moe_router_matches_cpu(&runner, rows);
     assert_f32_close(
         "GDN decoder slice shared expert gate logits",
         &download_f32(&runner.scratch.shared_gate_logits, stream, rows as usize),
@@ -2391,11 +2434,15 @@ fn qwen36_full_attention_block_vector_validates_oracle_seeded_moe_shared_and_nex
         .unwrap();
     synchronize_stream(stream).unwrap();
 
-    assert_f32_close(
+    assert_bf16_close_to_f32_oracle(
         "full-attention block MoE router logits",
-        &download_f32(
+        &download_bf16(
             &runner.scratch.router_logits,
             stream,
+            (rows * QWEN36_MOE_NUM_EXPERTS) as usize,
+        ),
+        &read_block_bf16_vector(
+            "block_expected_moe_router_logits_bf16.bf16",
             (rows * QWEN36_MOE_NUM_EXPERTS) as usize,
         ),
         &read_block_f32_vector(
@@ -2403,20 +2450,13 @@ fn qwen36_full_attention_block_vector_validates_oracle_seeded_moe_shared_and_nex
             (rows * QWEN36_MOE_NUM_EXPERTS) as usize,
         ),
         BF16_BLOCK_PROJ_ABS_TOL,
-        1.0e-4,
     );
     assert_eq!(
         download_i32(&runner.scratch.topk_ids, stream, topk_len),
         read_block_i32_vector("block_expected_moe_topk_ids.i32", topk_len),
         "full-attention block MoE router top-k ids changed"
     );
-    assert_f32_close(
-        "full-attention block MoE top-k weights",
-        &download_f32(&runner.scratch.topk_weights, stream, topk_len),
-        &read_block_f32_vector("block_expected_moe_topk_weights_f32.f32", topk_len),
-        MOE_ROUTER_WEIGHT_ABS_TOL,
-        MOE_ROUTER_WEIGHT_REL_TOL,
-    );
+    assert_moe_router_matches_cpu(&runner, rows);
     assert_f32_close(
         "full-attention block shared expert gate logits",
         &download_f32(&runner.scratch.shared_gate_logits, stream, rows as usize),
@@ -2501,10 +2541,8 @@ fn qwen36_model_logits_vector_validates_public_run_moe_logits_handoff() {
 
     let vocab = MODEL_LOGITS_VOCAB as usize;
     let prefill_logits_len = MODEL_LOGITS_PROMPT_LEN * vocab;
-    let expected_prefill = read_model_logits_f32_vector(
-        "model_expected_prefill_logits_f32.f32",
-        prefill_logits_len,
-    );
+    let expected_prefill =
+        read_model_logits_f32_vector("model_expected_prefill_logits_f32.f32", prefill_logits_len);
     assert_f32_close(
         "model logits final prefill row",
         &download_f32(&runner.scratch.logits, stream, vocab),
@@ -3299,96 +3337,5 @@ impl ModelRunner {
         assert_eq!(failed.unwrap_err(), Status::InvalidArgument);
         assert_eq!(self.live_tokens(), live_before);
         assert_eq!(self.last_logits_row_for_test().unwrap(), logits_before);
-    }
-}
-
-#[test]
-fn bf16_router_matches_quantized_cpu_scores_and_breaks_rounding_ties_by_id() {
-    let mut runner = moe_vector_runner();
-    runner.config.moe_router_precision = crate::model::MoeRouterPrecision::Bf16;
-    runner
-        .scratch
-        .ensure(&runner.config, MOE_VECTOR_ROWS)
-        .unwrap();
-    let rows = MOE_VECTOR_ROWS as usize;
-    let experts = QWEN36_MOE_NUM_EXPERTS as usize;
-    let topk = QWEN36_MOE_TOP_K as usize;
-    let mut source: Vec<f32> = (0..rows * experts)
-        .map(|i| (((i * 37) % 257) as f32 - 128.0) * 0.037)
-        .collect();
-    source[0] = 9.01;
-    source[255] = 9.02;
-    let bits: Vec<u16> = source
-        .iter()
-        .map(|x| {
-            let bits = x.to_bits();
-            ((bits.wrapping_add(0x7fff + ((bits >> 16) & 1))) >> 16) as u16
-        })
-        .collect();
-    assert_eq!(bits[0], bits[255]);
-    runner
-        .scratch
-        .router_logits_bf16
-        .upload(runner.config.stream, &bits)
-        .unwrap();
-    for renormalize in [false, true] {
-        {
-            let mut ops = runner.engine.operators();
-            unsafe {
-                ops.qscu()
-                    .router_topk(
-                        DMat::<crate::backend::BF16>::contiguous(
-                            runner.scratch.router_logits_bf16.as_device_ptr(),
-                            MOE_VECTOR_ROWS,
-                            QWEN36_MOE_NUM_EXPERTS,
-                        )
-                        .unwrap(),
-                        DMat::contiguous(
-                            runner.scratch.topk_ids.as_device_ptr(),
-                            MOE_VECTOR_ROWS,
-                            QWEN36_MOE_TOP_K,
-                        )
-                        .unwrap(),
-                        DMat::contiguous(
-                            runner.scratch.topk_weights.as_device_ptr(),
-                            MOE_VECTOR_ROWS,
-                            QWEN36_MOE_TOP_K,
-                        )
-                        .unwrap(),
-                        QWEN36_MOE_ROUTER_SCORE,
-                        renormalize,
-                        1.0,
-                    )
-                    .unwrap();
-            }
-        }
-        let actual_ids = download_i32(&runner.scratch.topk_ids, runner.config.stream, rows * topk);
-        let actual_weights = download_f32(
-            &runner.scratch.topk_weights,
-            runner.config.stream,
-            rows * topk,
-        );
-        assert_eq!(actual_ids[0], 0);
-        assert_eq!(actual_ids[1], 255);
-        for row in 0..rows {
-            let logits: Vec<f64> = bits[row * experts..(row + 1) * experts]
-                .iter()
-                .map(|&x| f64::from(bf16_bits_to_f32(x)))
-                .collect();
-            let mut ids: Vec<usize> = (0..experts).collect();
-            ids.sort_by(|&a, &b| logits[b].total_cmp(&logits[a]).then(a.cmp(&b)));
-            let max = logits[ids[0]];
-            let denom: f64 = if renormalize {
-                ids[..topk].iter().map(|&i| (logits[i] - max).exp()).sum()
-            } else {
-                logits.iter().map(|x| (x - max).exp()).sum()
-            };
-            for rank in 0..topk {
-                let index = row * topk + rank;
-                assert_eq!(actual_ids[index], ids[rank] as i32);
-                let expected = (logits[ids[rank]] - max).exp() / denom;
-                assert!((f64::from(actual_weights[index]) - expected).abs() < 1.0e-6);
-            }
-        }
     }
 }

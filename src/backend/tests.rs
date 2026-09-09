@@ -185,7 +185,7 @@ fn qscu_descriptor_builders_validate_shapes_and_modes() {
 
     assert!(matches!(
         qscu::router_topk_desc(
-            f32_mat(30, 2, 257),
+            bf16_mat(30, 2, 257),
             DMat::<I32>::contiguous(device_ptr(31), 2, 8).unwrap(),
             f32_mat(32, 2, 8),
             RouterScore::Softmax,
@@ -215,7 +215,7 @@ fn qscu_descriptor_builders_validate_shapes_and_modes() {
 
     assert!(
         qscu::router_topk_desc(
-            logits,
+            bf16_mat(17, 2, 128),
             DMat::<I32>::contiguous(device_ptr(21), 2, 4).unwrap(),
             f32_mat(22, 2, 4),
             RouterScore::Softmax,
@@ -226,7 +226,7 @@ fn qscu_descriptor_builders_validate_shapes_and_modes() {
     );
     assert!(matches!(
         qscu::router_topk_desc(
-            logits,
+            bf16_mat(17, 2, 128),
             DMat::<I32>::contiguous(device_ptr(26), 2, QWEN36_MOE_MAX_TOP_K + 1,).unwrap(),
             f32_mat(27, 2, QWEN36_MOE_MAX_TOP_K + 1),
             RouterScore::Softmax,
@@ -237,7 +237,7 @@ fn qscu_descriptor_builders_validate_shapes_and_modes() {
     ));
     assert!(matches!(
         qscu::router_topk_desc(
-            logits,
+            bf16_mat(17, 2, 128),
             DMat::<I32>::contiguous(device_ptr(28), 2, 4).unwrap(),
             f32_mat(29, 2, 4),
             RouterScore::Softmax,

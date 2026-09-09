@@ -673,7 +673,7 @@ def _compute_one_layer_moe_tensors(
     residual_after_attention_bf16: tuple[int, ...],
 ) -> tuple[list[TensorWrite], dict[str, Any]]:
     next_norm_weight = _bf16_words(_next_norm_weight_value(col) for col in range(HIDDEN_SIZE))
-    router_logits_f32, router_logits_rows = _project_sparse_terms_f32(
+    router_logits_f32, router_logits_bf16, router_logits_rows = _project_sparse_terms_bf16(
         post_attention_rows,
         MOE_NUM_EXPERTS,
         _moe_router_terms,
@@ -719,7 +719,16 @@ def _compute_one_layer_moe_tensors(
             router_logits_f32,
             "reference",
             "moe_router_projection",
-            "f32 router logits from the post-attention hidden state.",
+            "FP32 accumulation before BF16 router-output rounding.",
+        ),
+        TensorWrite(
+            "expected_moe_router_logits_bf16",
+            "bf16",
+            (ROWS, MOE_NUM_EXPERTS),
+            router_logits_bf16,
+            "expected",
+            "moe_router_projection",
+            "BF16 router logits consumed by FP32 softmax and top-k.",
         ),
         TensorWrite(
             "expected_moe_topk_ids",

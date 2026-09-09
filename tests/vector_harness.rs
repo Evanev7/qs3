@@ -3104,7 +3104,7 @@ fn moe_vector_exposes_router_and_topk_views_when_present() {
     let topk_weights = artifact.tensor("topk_weights").unwrap();
 
     assert_eq!(router_logits.spec.shape, [5, 256]);
-    assert_eq!(router_logits.as_f32_vec().unwrap().len(), 5 * 256);
+    assert_eq!(router_logits.as_bf16_words().unwrap().len(), 5 * 256);
     assert_eq!(topk_ids.spec.shape, [5, 8]);
     assert_eq!(topk_ids.as_i32_vec().unwrap().len(), 5 * 8);
     assert_eq!(topk_weights.spec.shape, [5, 8]);

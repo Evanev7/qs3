@@ -71,12 +71,12 @@ CASES: tuple[CaseSpec, ...] = (
     CaseSpec(
         name="near_ties",
         description=(
-            "Near ties with small positive logit deltas around the eighth and "
-            "ninth candidates."
+            "Small logit deltas collapse to BF16 ties, including the eighth and "
+            "ninth candidates; lower expert id wins."
         ),
         shared_gate_logit=2.0,
         logit_overrides=(
-            (12, 0.500030),
+            (12, 0.499950),
             (13, 0.500020),
             (14, 0.500010),
             (15, 0.500000),
@@ -84,7 +84,7 @@ CASES: tuple[CaseSpec, ...] = (
             (17, 0.499980),
             (18, 0.499970),
             (19, 0.499960),
-            (20, 0.499950),
+            (20, 0.500030),
         ),
     ),
     CaseSpec(
@@ -161,7 +161,7 @@ def build_moe_artifact() -> tuple[VectorManifest, dict[str, list[float] | list[i
 
     tensors: dict[str, list[float] | list[int]] = {
         "hidden": hidden_words,
-        "router_logits": _flatten2(router_logits),
+        "router_logits": [float32_to_bf16_bits(x) for x in _flatten2(router_logits)],
         "gate_up_weight": gate_up_words,
         "down_weight": down_words,
         "shared_gate_up_weight": shared_gate_up_words,
@@ -263,10 +263,10 @@ def _build_manifest(topk_ids: list[list[int]]) -> VectorManifest:
             ),
             TensorSpec(
                 "router_logits",
-                "f32",
+                "bf16",
                 (NUM_TOKENS, NUM_EXPERTS),
                 role="input",
-                description="Router logits consumed by softmax top-k routing.",
+                description="BF16 router logits consumed by FP32 softmax top-k routing.",
             ),
             TensorSpec(
                 "gate_up_weight",
@@ -506,7 +506,7 @@ def _build_router_logits() -> list[list[float]]:
             if expert < 0 or expert >= NUM_EXPERTS:
                 raise ValueError(f"{case.name}: expert id out of range: {expert}")
             row[expert] = _f32(logit)
-        rows.append(row)
+        rows.append([bf16_bits_to_float32(float32_to_bf16_bits(x)) for x in row])
     return rows
 
 

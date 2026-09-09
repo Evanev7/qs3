@@ -1,6 +1,5 @@
 use super::{
-    MoeRouterPrecision, QwenConfig, activate_device, checked_usize_product, result_from_cuda,
-    synchronize_stream,
+    QwenConfig, activate_device, checked_usize_product, result_from_cuda, synchronize_stream,
 };
 use crate::{
     QWEN36_FULL_ATTN_Q_PROJ_OUT, QWEN36_GDN_KEY_DIM, QWEN36_GDN_NUM_K_HEADS,
@@ -32,8 +31,7 @@ pub(super) struct RunnerScratch {
     pub(super) shared_mlp: DeviceBuffer<u16>,
     pub(super) shared_out: DeviceBuffer<u16>,
     pub(super) shared_gate_logits: DeviceBuffer<f32>,
-    pub(super) router_logits: DeviceBuffer<f32>,
-    pub(super) router_logits_bf16: DeviceBuffer<u16>,
+    pub(super) router_logits: DeviceBuffer<u16>,
     pub(super) topk_ids: DeviceBuffer<i32>,
     pub(super) topk_weights: DeviceBuffer<f32>,
     pub(super) moe_workspace: DeviceBuffer<u8>,
@@ -78,7 +76,6 @@ impl RunnerScratch {
             shared_out: DeviceBuffer::empty(device_ordinal),
             shared_gate_logits: DeviceBuffer::empty(device_ordinal),
             router_logits: DeviceBuffer::empty(device_ordinal),
-            router_logits_bf16: DeviceBuffer::empty(device_ordinal),
             topk_ids: DeviceBuffer::empty(device_ordinal),
             topk_weights: DeviceBuffer::empty(device_ordinal),
             moe_workspace: DeviceBuffer::empty(device_ordinal),
@@ -120,11 +117,8 @@ impl RunnerScratch {
         self.attn_proj.ensure(hidden)?;
         self.attn_gate.ensure(q_hidden)?;
         if let Some(moe) = config.moe_config() {
-            let router_elements = checked_usize_product(&[rows, moe.num_experts])?;
-            match config.moe_router_precision {
-                MoeRouterPrecision::F32 => self.router_logits.ensure(router_elements)?,
-                MoeRouterPrecision::Bf16 => self.router_logits_bf16.ensure(router_elements)?,
-            }
+            self.router_logits
+                .ensure(checked_usize_product(&[rows, moe.num_experts])?)?;
             let topk = checked_usize_product(&[rows, moe.num_experts_per_tok])?;
             self.topk_ids.ensure(topk)?;
             self.topk_weights.ensure(topk)?;

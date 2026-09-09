@@ -3,12 +3,12 @@
     {
       "bytes": 160,
       "path": "combined_output.f32",
-      "sha256": "a7af748798f2f17db76cb20dd55bb96d20df362d1573bd06e336c9908de818c2"
+      "sha256": "041973756955ab3d7297fc265ff552e4b0c9b50ec6c7e9591fbe62b5258a6d64"
     },
     {
       "bytes": 80,
       "path": "combined_output_bf16.bf16",
-      "sha256": "60937a5520f55157ba51b98121e0e1fa1344fbd1680e5f3f7cffbbb3b854e80d"
+      "sha256": "85e4080f8395058b2eda659a784ab49481cfbb5bcc94c654f1accb84c5a881fc"
     },
     {
       "bytes": 32768,
@@ -26,9 +26,9 @@
       "sha256": "a842fef24a1d46fae656d8442effa46ac1134be329181ef0d91ace876e240158"
     },
     {
-      "bytes": 8088,
+      "bytes": 8124,
       "path": "manifest.json",
-      "sha256": "daa38888db5e6f7af00c6d05ece1164ca40a64b4458d867b69da199eed186e7b"
+      "sha256": "d3e9cdf6d4cf56075d7545ba2420f8338e7b835682e8a61921f8651f8d32c3c2"
     },
     {
       "bytes": 1280,
@@ -38,17 +38,17 @@
     {
       "bytes": 160,
       "path": "routed_moe_output.f32",
-      "sha256": "d02bdf0d705607730cedb1e9f73df1605cec073e6762eac8bd20faeb1cc8ae49"
+      "sha256": "c08fe902903e8fc5987797dfebe9fde6eb75b4a8527a1fd9f6673135a3bbb2f4"
     },
     {
       "bytes": 80,
       "path": "routed_moe_output_bf16.bf16",
-      "sha256": "596017ca9e8ea8a72075804d86487ec883b1992fa415f7fdf401590a961c2df4"
+      "sha256": "6d39c10d24d8ad6a7efed97143a803ee5a55dc8d6044ddd5c3fa95bb82fa6074"
     },
     {
-      "bytes": 5120,
-      "path": "router_logits.f32",
-      "sha256": "d313a3a4bfe8134790f03e482e2f791a2b91debc92c3b1a2a72fd906e9d1b9e9"
+      "bytes": 2560,
+      "path": "router_logits.bf16",
+      "sha256": "4dda6037774c9082b5b315b25c3b27af129f052a9a38a9430d4fb91254c69fac"
     },
     {
       "bytes": 128,
@@ -83,12 +83,12 @@
     {
       "bytes": 160,
       "path": "topk_unrenormalized_weights.f32",
-      "sha256": "7b0ae0b850b05b46eca01789c23c6e5083dfc48be65e45ed5ef97d88e0fe846d"
+      "sha256": "746d0436cb159f6148f9dbb119ae880cd9e38aea8ed323cefd4b32b7d8bc2de7"
     },
     {
       "bytes": 160,
       "path": "topk_weights.f32",
-      "sha256": "01ab35f9c24a10f5476bf2edf81b3d81608e49301dfef0a64ca295ab375008b4"
+      "sha256": "b6fe70dd262d32de63781f4286b41f9e2b7238b48319d857031b16e200aa6298"
     }
   ],
   "group": "moe_shared_expert",

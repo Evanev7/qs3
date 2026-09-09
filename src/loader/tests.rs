@@ -38,10 +38,12 @@ const REAL_DECODE_TOP_IDS: [i32; 8] = [6, 9, 9_867, 61, 41_813, 1, 3, 14_482];
 const REAL_DECODE_TOP_VALUES: [f32; 8] = [
     14.875, 11.25, 11.1875, 11.125, 10.8125, 10.5625, 10.5625, 10.5625,
 ];
-const REAL_PREFILL_STABLE_PREFIX_LEN: usize = REAL_PREFILL_TOP_IDS.len();
+const REAL_PREFILL_STABLE_TOP_COUNT: usize = REAL_PREFILL_TOP_IDS.len();
 // Reference decode ranks 5-7 are BF16-tied at 10.5625 with no cutoff
 // margin, so exact cross-runtime ID membership is stable only through 5.
-const REAL_DECODE_STABLE_PREFIX_LEN: usize = 5;
+// Secondary ordering is not fixed: BF16 router-output rounding can swap scores
+// within the existing numerical tolerances. Keep the winner and top-set checks.
+const REAL_DECODE_STABLE_TOP_COUNT: usize = 5;
 const REAL_LOGIT_ABS_TOL: f32 = 0.35;
 const REAL_LOGIT_REL_TOL: f32 = 0.03;
 
@@ -51,9 +53,9 @@ fn assert_real_top_logits(
     expected_ids: &[i32; 8],
     expected_values: &[f32; 8],
     expected_margin: f32,
-    stable_prefix_len: usize,
+    stable_top_count: usize,
 ) {
-    assert!((1..=expected_ids.len()).contains(&stable_prefix_len));
+    assert!((1..=expected_ids.len()).contains(&stable_top_count));
     assert!(logits.iter().all(|value| value.is_finite()));
     let mut ids = (0..logits.len()).collect::<Vec<_>>();
     ids.sort_unstable_by(|lhs, rhs| {
@@ -65,10 +67,14 @@ fn assert_real_top_logits(
         .iter()
         .map(|id| i32::try_from(*id).unwrap())
         .collect::<Vec<_>>();
+    assert_eq!(got_ids[0], expected_ids[0], "{label} greedy winner changed");
+    let mut got_top = got_ids[..stable_top_count].to_vec();
+    let mut expected_top = expected_ids[..stable_top_count].to_vec();
+    got_top.sort_unstable();
+    expected_top.sort_unstable();
     assert_eq!(
-        &got_ids[..stable_prefix_len],
-        &expected_ids[..stable_prefix_len],
-        "{label} stable top-id prefix changed"
+        got_top, expected_top,
+        "{label} stable top-id membership changed"
     );
 
     for (&id, &expected) in expected_ids.iter().zip(expected_values) {
@@ -120,6 +126,53 @@ fn real_logit_helper_checks_values_after_stable_prefix() {
         &expected_ids,
         &expected_values,
         0.5,
+        5,
+    );
+}
+
+#[test]
+fn real_logit_helper_allows_close_secondary_rank_swaps() {
+    let expected_ids = [0, 1, 2, 3, 4, 5, 6, 7];
+    let expected_values = [3.0, 1.5, 1.4, 1.1, 1.0, 0.9, 0.8, 0.7];
+    let logits = [3.0, 1.4, 1.5, 1.1, 1.0, 0.9, 0.8, 0.7];
+    assert_real_top_logits(
+        "close ranks",
+        &logits,
+        &expected_ids,
+        &expected_values,
+        1.5,
+        5,
+    );
+}
+
+#[test]
+#[should_panic(expected = "greedy winner changed")]
+fn real_logit_helper_rejects_changed_winner() {
+    let expected_ids = [0, 1, 2, 3, 4, 5, 6, 7];
+    let expected_values = [2.0, 1.8, 1.4, 1.1, 1.0, 0.9, 0.8, 0.7];
+    let logits = [1.8, 2.0, 1.4, 1.1, 1.0, 0.9, 0.8, 0.7];
+    assert_real_top_logits(
+        "changed winner",
+        &logits,
+        &expected_ids,
+        &expected_values,
+        0.2,
+        5,
+    );
+}
+
+#[test]
+#[should_panic(expected = "stable top-id membership changed")]
+fn real_logit_helper_rejects_changed_top_membership() {
+    let expected_ids = [0, 1, 2, 3, 4, 5, 6, 7];
+    let expected_values = [3.0, 1.5, 1.4, 1.1, 1.0, 0.9, 0.8, 0.7];
+    let logits = [3.0, 1.5, 1.4, 1.1, 1.0, 1.05, 0.8, 0.7];
+    assert_real_top_logits(
+        "changed membership",
+        &logits,
+        &expected_ids,
+        &expected_values,
+        1.5,
         5,
     );
 }
@@ -856,26 +909,17 @@ fn real_qwen36_bf16_generates_reference_tokens() {
         crate::model::GdnRecurrentPrecision::F32,
     ] {
         eprintln!("real BF16 model with {} GDN recurrence", precision.as_str());
-        check_real_bf16_reference(precision, crate::model::MoeRouterPrecision::F32);
+        check_real_bf16_reference(precision);
     }
-    eprintln!("real BF16 model with BF16 router logits and FP32 GDN recurrence");
-    check_real_bf16_reference(
-        crate::model::GdnRecurrentPrecision::F32,
-        crate::model::MoeRouterPrecision::Bf16,
-    );
 }
 
-fn check_real_bf16_reference(
-    precision: crate::model::GdnRecurrentPrecision,
-    router: crate::model::MoeRouterPrecision,
-) {
+fn check_real_bf16_reference(precision: crate::model::GdnRecurrentPrecision) {
     let model_dir = require_real_qwen36_model_dir();
     let plan = QwenBf16LoadPlan::read(model_dir).unwrap();
     let backend = ManagedUmaBackend::new(cuda_device_from_env()).unwrap();
     let loaded = execute_qwen36_bf16_load_plan(&plan, backend, ptr::null_mut()).unwrap();
     let (mut config, weights) = loaded.into_qwen_model(ptr::null_mut(), 8).unwrap();
     config.gdn_recurrent_precision = precision;
-    config.moe_router_precision = router;
     let mut runner = crate::model::ModelRunner::new(config, weights).unwrap();
     let request_id = 0xBF16_0001;
 
@@ -893,7 +937,7 @@ fn check_real_bf16_reference(
         &REAL_PREFILL_TOP_IDS,
         &REAL_PREFILL_TOP_VALUES,
         1.875,
-        REAL_PREFILL_STABLE_PREFIX_LEN,
+        REAL_PREFILL_STABLE_TOP_COUNT,
     );
 
     let first = runner
@@ -910,7 +954,7 @@ fn check_real_bf16_reference(
         &REAL_DECODE_TOP_IDS,
         &REAL_DECODE_TOP_VALUES,
         3.625,
-        REAL_DECODE_STABLE_PREFIX_LEN,
+        REAL_DECODE_STABLE_TOP_COUNT,
     );
 
     runner.assert_late_rebuild_failure_preserves_prefix(request_id, &[7, 6, 5, 4]);
