@@ -1,0 +1,20 @@
+/dev/nvme0n1p2 ext4
+loop0                                 0 
+loop1                                 0 
+loop2                                 0 
+loop3                                 0 
+loop4                                 0 
+loop5                                 0 
+loop6                                 0 
+loop7                                 0 
+loop8                                 0 
+loop9                                 0 
+loop10                                0 
+loop11                                0 
+loop12                                0 
+loop14                                0 
+loop15                                0 
+loop16                                0 
+loop17                                0 
+loop18                                0 
+nvme0n1 SAMSUNG MZALC4T0HBL1-00B07    0 nvme

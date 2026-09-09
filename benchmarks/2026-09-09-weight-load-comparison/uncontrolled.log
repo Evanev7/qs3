@@ -1,0 +1,75 @@
+Welcome to NVIDIA DGX Spark Version 7.5.0 (GNU/Linux 6.17.0-1014-nvidia aarch64)
+
+ System information as of Wed Sep  9 12:03:55 AM PDT 2026
+
+  System load:  0.62              Temperature:             55.0 C
+  Usage of /:   74.9% of 3.67TB   Processes:               468
+  Memory usage: 3%                Users logged in:         0
+  Swap usage:   2%                IPv4 address for wlP9s9: 10.229.55.182
+
+3 devices have a firmware upgrade available.
+Run `fwupdmgr get-upgrades` for more information.
+
+HEAD is now at b2e6530 Compare identical decode prefixes and record remaining precision differences
+Current branch main is up to date.
+ninja: Entering directory `build'
+ninja: no work to do.
+   Compiling qs3 v0.1.0 (/home/sp10/qs3)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.03s
+ninja: Entering directory `build'
+ninja: no work to do.
+Weight-load backend: managed_uma
+Wed Sep  9 07:04:28 AM UTC 2026
+MemAvailable:   122065872 kB
+Cached:         48585016 kB
+SwapFree:       16343036 kB
+   Compiling qs3 v0.1.0 (/home/sp10/qs3)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.24s
+     Running unittests src/lib.rs (target/debug/deps/qs3-3c4252620c3a5526)
+
+running 1 test
+test loader::tests::bench_real_qwen36_bf16_managed_uma_load ... planned 723 tensors in 0.023s from /home/sp10/.cache/huggingface/hub/models--Qwen--Qwen3.6-35B-A3B/snapshots/995ad96eacd98c81ed38be0c5b274b04031597b0
+backend setup 0.331s
+backend setup + load 38.630s
+loaded 723 tensors: 64.560 GiB read, 0.469 MiB zero-fill, 38.299s, 1.686 GiB/s
+phases: alloc 0.003s, read 38.288s (1.686 GiB/s), zero 0.000001s, seal 0.000628s
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 119 filtered out; finished in 39.79s
+
+Weight-load backend: pinned_upload
+Wed Sep  9 07:05:09 AM UTC 2026
+MemAvailable:   122296344 kB
+Cached:          8840192 kB
+SwapFree:       16341856 kB
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.05s
+     Running unittests src/lib.rs (target/debug/deps/qs3-3c4252620c3a5526)
+
+running 1 test
+test loader::tests::bench_real_qwen36_bf16_pinned_upload_load ... planned 723 tensors in 0.046s from /home/sp10/.cache/huggingface/hub/models--Qwen--Qwen3.6-35B-A3B/snapshots/995ad96eacd98c81ed38be0c5b274b04031597b0
+backend setup 1.474s
+backend setup + load 58.803s
+loaded 723 tensors: 64.560 GiB read, 0.469 MiB zero-fill, 57.330s, 1.126 GiB/s
+phases: alloc 2.146s, wait 0.408s, read 54.748s (1.179 GiB/s), copy-enqueue 0.009s, zero 0.000088s, seal 0.000383s, chunks 693, buffers 4 x 1024 MiB
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 119 filtered out; finished in 60.60s
+
+Weight-load backend: managed_uma
+Wed Sep  9 07:06:10 AM UTC 2026
+MemAvailable:   122242236 kB
+Cached:         46924284 kB
+SwapFree:       16342232 kB
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.07s
+     Running unittests src/lib.rs (target/debug/deps/qs3-3c4252620c3a5526)
+
+running 1 test
+test loader::tests::bench_real_qwen36_bf16_managed_uma_load ... planned 723 tensors in 0.041s from /home/sp10/.cache/huggingface/hub/models--Qwen--Qwen3.6-35B-A3B/snapshots/995ad96eacd98c81ed38be0c5b274b04031597b0
+backend setup 0.252s
+backend setup + load 44.726s
+loaded 723 tensors: 64.560 GiB read, 0.469 MiB zero-fill, 44.474s, 1.452 GiB/s
+phases: alloc 0.003s, read 44.466s (1.452 GiB/s), zero 0.000001s, seal 0.000024s
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 119 filtered out; finished in 45.88s
+

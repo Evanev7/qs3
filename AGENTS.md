@@ -86,7 +86,9 @@ loader direction:
   tensors must fail before device addressing
 - first backend for GB10/UMA: `cudaMallocManaged` final weights, `preadv`
   directly into managed pointers, optional advise/prefetch, one load-end sync
-  probes saw ~5 GiB/s direct managed read and no first-touch penalty
+  weight-load comparisons must include backend/ring setup and record file-cache
+  residency. Full cold sp10 results are in FINDINGS.md; cached small probes do
+  not predict full-snapshot load time or settle first GPU use
 - keep pinned staging as the dGPU fallback: `cudaMalloc` final weights,
   `cudaHostAlloc` ring, `preadv`, `cudaMemcpyAsync`, events
 - do not retain mmap or InstantTensor staging pointers as committed weights
@@ -108,5 +110,3 @@ near-term todos:
 - `TODO.md` is the completion checklist; `FINDINGS.md` records benchmark evidence
   and architecture direction. Current correctness covers 35B BF16; exact 27B,
   graphs, optimized NVFP4, and matched vLLM comparisons remain open
-- rerun managed versus pinned weight-load tests on sp10, including the
-  interrupted `4 x 1 GiB` pinned-ring run

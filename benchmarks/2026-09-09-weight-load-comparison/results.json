@@ -1,0 +1,108 @@
+{
+  "source_commit": "89a264e",
+  "snapshot": "995ad96eacd98c81ed38be0c5b274b04031597b0",
+  "host": "sp10",
+  "cuda_runtime": "13.0",
+  "pinned_ring": {
+    "buffers": 4,
+    "bytes_per_buffer": 1073741824
+  },
+  "timing": "backend setup plus execute_qwen36_bf16_load_plan; manifest planning and teardown separate",
+  "runs": [
+    {
+      "condition": "uncontrolled",
+      "backend": "managed_uma",
+      "sequence": 0,
+      "tensor_count": 723,
+      "read_gib": 64.56,
+      "zero_fill_mib": 0.469,
+      "load_seconds": 38.299,
+      "load_gib_per_second": 1.686,
+      "backend_setup_seconds": 0.331,
+      "setup_plus_load_seconds": 38.63,
+      "phases": "alloc 0.003s, read 38.288s (1.686 GiB/s), zero 0.000001s, seal 0.000628s",
+      "mem_available_kib": 122065872,
+      "cached_kib": 48585016
+    },
+    {
+      "condition": "uncontrolled",
+      "backend": "pinned_upload",
+      "sequence": 1,
+      "tensor_count": 723,
+      "read_gib": 64.56,
+      "zero_fill_mib": 0.469,
+      "load_seconds": 57.33,
+      "load_gib_per_second": 1.126,
+      "backend_setup_seconds": 1.474,
+      "setup_plus_load_seconds": 58.803,
+      "phases": "alloc 2.146s, wait 0.408s, read 54.748s (1.179 GiB/s), copy-enqueue 0.009s, zero 0.000088s, seal 0.000383s, chunks 693, buffers 4 x 1024 MiB",
+      "mem_available_kib": 122296344,
+      "cached_kib": 8840192
+    },
+    {
+      "condition": "uncontrolled",
+      "backend": "managed_uma",
+      "sequence": 2,
+      "tensor_count": 723,
+      "read_gib": 64.56,
+      "zero_fill_mib": 0.469,
+      "load_seconds": 44.474,
+      "load_gib_per_second": 1.452,
+      "backend_setup_seconds": 0.252,
+      "setup_plus_load_seconds": 44.726,
+      "phases": "alloc 0.003s, read 44.466s (1.452 GiB/s), zero 0.000001s, seal 0.000024s",
+      "mem_available_kib": 122242236,
+      "cached_kib": 46924284
+    },
+    {
+      "condition": "cold",
+      "backend": "managed_uma",
+      "sequence": 0,
+      "tensor_count": 723,
+      "read_gib": 64.56,
+      "zero_fill_mib": 0.469,
+      "load_seconds": 63.043,
+      "load_gib_per_second": 1.024,
+      "backend_setup_seconds": 0.299,
+      "setup_plus_load_seconds": 63.342,
+      "phases": "alloc 0.003s, read 63.035s (1.024 GiB/s), zero 0.000000s, seal 0.000162s",
+      "mem_available_kib": 122270040,
+      "cached_kib": 949528,
+      "cache_preparation": {
+        "files": 26,
+        "bytes": 71903776776,
+        "page_size": 4096,
+        "pages": 17554646,
+        "resident_pages_before": 5507285,
+        "resident_pages_after": 0,
+        "resident_fraction_after": 0.0,
+        "method": "POSIX_FADV_DONTNEED per shard; mincore before/after; no global drop_caches"
+      }
+    },
+    {
+      "condition": "cold",
+      "backend": "pinned_upload",
+      "sequence": 1,
+      "tensor_count": 723,
+      "read_gib": 64.56,
+      "zero_fill_mib": 0.469,
+      "load_seconds": 56.913,
+      "load_gib_per_second": 1.134,
+      "backend_setup_seconds": 1.554,
+      "setup_plus_load_seconds": 58.467,
+      "phases": "alloc 2.087s, wait 0.404s, read 54.408s (1.187 GiB/s), copy-enqueue 0.008s, zero 0.000082s, seal 0.000004s, chunks 693, buffers 4 x 1024 MiB",
+      "mem_available_kib": 122264188,
+      "cached_kib": 524932,
+      "cache_preparation": {
+        "files": 26,
+        "bytes": 71903776776,
+        "page_size": 4096,
+        "pages": 17554646,
+        "resident_pages_before": 6911229,
+        "resident_pages_after": 0,
+        "resident_fraction_after": 0.0,
+        "method": "POSIX_FADV_DONTNEED per shard; mincore before/after; no global drop_caches"
+      }
+    }
+  ]
+}

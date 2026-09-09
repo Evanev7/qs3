@@ -776,3 +776,27 @@ prefixes; their timing is not an identical-prefix comparison. The earlier
 1024-token forced-prefix diagnostic does not resolve this case. Several-context
 performance is now recorded, but matched precision, sustained quality and
 competitive performance remain unfinished.
+
+## Full-snapshot load comparison
+
+The [sp10 load comparison](benchmarks/2026-09-09-weight-load-comparison/README.md)
+completes five full-snapshot tests, including the previously interrupted four
+1 GiB pinned buffers. All validate 723 allocations and planned file/zero-fill
+byte counts. Benchmark instrumentation now includes backend initialization;
+the pinned ring's allocation had previously fallen outside the reported time.
+
+The initial managed/pinned/managed sequence gives 38.630/58.803/44.726 s including
+setup, with uncontrolled cache conditions. It does not establish a backend
+ranking. A subsequent pair verifies zero resident shard pages with `mincore`
+after per-file cache eviction before each run. Managed then takes 63.342 s
+including setup, while pinned takes 58.467 s, 7.7% less. The pinned run includes
+1.554 s ring setup, 2.087 s final allocation, 0.404 s event waits and 54.408 s
+file reads across 693 transfers. Read time into managed pointers is 63.035 s;
+it includes destination-memory handling and does not isolate storage bandwidth.
+
+These cold Linux file-cache runs supersede extrapolation from the earlier small
+cached probes for full-load planning. One controlled pair is not exhaustive
+tuning, and the tests do not measure first GPU use or inference from the two
+allocation types. That remains the next backend decision gate. The production
+managed default is unchanged; full logs, storage metadata, cache verification
+and extracted measurements are linked above.

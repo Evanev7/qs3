@@ -126,8 +126,12 @@
 - [ ] Implement optimized quantized paths, beginning with NVFP4 after BF16
   correctness. Validate packing/scales and actual SM121 kernel support; compare
   matched quantization with vLLM.
-- [ ] Revisit managed versus pinned weight-load performance on the new host,
+- [x] Revisit managed versus pinned weight-load performance on the new host,
   including the previously interrupted four-buffer, 1 GiB-per-buffer run.
+  Five full-snapshot tests pass. With zero resident shard pages verified before
+  both cold runs, setup + load is 63.342 s managed and 58.467 s pinned. First GPU
+  use and inference from each allocation type remain a backend decision gate;
+  the load-only comparison does not change the production default.
 
 ## Model configuration references
 
