@@ -44,9 +44,10 @@
   separate setup, prefill, steady decode, and output delivery. Initial short-context
   qs3 measurements and a 32-step decode timeline are recorded in FINDINGS.md;
   102- and 1024-token vLLM comparisons are recorded, the latter with 256 decode
-  samples. vLLM uses FP32 recurrence versus qs3 BF16; the longer run diverges
-  after 56 matching IDs. Matched recurrent precision, sustained quality, a third
-  context, and a vLLM GPU timeline remain open.
+  samples. FP32 recurrence is now available and the loaded-model default; it
+  extends the longer matching prefix from 56 to 162 generated IDs with little
+  throughput change. Identical-prefix score comparison, sustained quality, a
+  third context, and a vLLM GPU timeline remain open.
 
 ## 2. Remove repeated preparation from decode
 

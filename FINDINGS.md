@@ -316,7 +316,7 @@ keeping BF16 activations and convolution history. Owned typed buffers determine
 the native descriptor dtype; reset and prefix reconstruction allocate/clear the
 selected type. The native AOT kernels already implement both forms, so no new
 runtime kernel selection framework, compilation or synchronization is needed.
-The current default remains BF16 while comparisons establish the FP32 behavior.
+Loaded real models now default to FP32; narrow fixtures retain their BF16 state.
 `QS3_BENCH_GDN_STATE=f32 ./run_core_benchmark.sh` selects FP32, and JSON reports
 the effective state dtype.
 
@@ -325,3 +325,19 @@ The prescribed full suite passed (115 library, 1 benchmark, 3 engine, 16 model,
 runs both recurrent precisions sequentially; both passed the existing prefill
 and first-decode logit checks, greedy IDs `[5, 6, 24218, 10]`, and reset/replay.
 The modes must remain explicit in subsequent throughput and output comparisons.
+
+
+The [FP32 short run](benchmarks/2026-09-09T032157.505542859Z-bb36781.json)
+measures 20.653 tok/s and 48.343 ms decode p50, with all 36 generated IDs matching
+vLLM. The [1024-token/256-step run](benchmarks/2026-09-09T032256.107210192Z-bb36781.json)
+measures 20.658 tok/s, 48.380 ms decode p50 and 1934.079 ms prefill p50. These
+throughputs are within 0.4% of the corresponding BF16-state measurements; this
+small difference is not resolved beyond run variation.
+
+FP32 recurrence extends the sustained matching prefix from 56 to 162 generated
+IDs. At index 162, qs3 emits 8340 while vLLM emits 79091. Thus matching recurrent
+storage helps this trajectory but does not establish complete output equivalence.
+Different projection/output rounding and prefill algorithms still need attention;
+compare scores under identical token prefixes before assigning a remaining cause.
+Loaded model configurations now default to FP32 recurrence. BF16 remains an
+explicit comparison choice, and benchmark metadata records the effective mode.
