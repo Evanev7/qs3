@@ -9,7 +9,7 @@ use super::{
 use crate::test_assets::require_real_qwen36_model_dir;
 use crate::{
     QwenTokenizer, ffi,
-    model::{ModelRunner, MoeBf16Kernel, QwenRequest},
+    model::{GdnRecurrentPrecision, ModelRunner, MoeBf16Kernel, QwenRequest},
 };
 use std::{ptr, time::Instant};
 
@@ -235,6 +235,12 @@ pub fn run_core_benchmark() -> JsonValue {
         .into_qwen_model(ptr::null_mut(), max_seq_len)
         .expect("failed to materialize Qwen model weights");
     let weight_materialize = started.elapsed();
+    config.gdn_recurrent_precision = match std::env::var("QS3_BENCH_GDN_STATE") {
+        Err(std::env::VarError::NotPresent) => config.gdn_recurrent_precision,
+        Ok(value) if value == "bf16" => GdnRecurrentPrecision::Bf16,
+        Ok(value) if value == "f32" => GdnRecurrentPrecision::F32,
+        _ => panic!("QS3_BENCH_GDN_STATE must be unset, bf16 or f32"),
+    };
     config.moe_bf16_kernel = match std::env::var("QS3_BENCH_MOE_BLOCKS") {
         Err(std::env::VarError::NotPresent) => config.moe_bf16_kernel,
         Ok(value) if value == "4" => MoeBf16Kernel::CutlassBlocks4,
@@ -310,7 +316,10 @@ pub fn run_core_benchmark() -> JsonValue {
                     f64::from(config.moe_bf16_kernel.threadblocks()).into(),
                 ),
                 ("gdn_conv_state_dtype", "bf16".to_owned().into()),
-                ("gdn_recurrent_state_dtype", "bf16".to_owned().into()),
+                (
+                    "gdn_recurrent_state_dtype",
+                    config.gdn_recurrent_precision.as_str().to_owned().into(),
+                ),
                 (
                     "moe",
                     "cutlass_sm80_128x128x32_stages2_bf16".to_owned().into(),

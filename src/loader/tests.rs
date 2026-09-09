@@ -849,11 +849,22 @@ fn validates_real_qwen36_bf16_manifest_when_available() {
 #[test]
 #[ignore = "loads and executes the full real Qwen3.6 BF16 model"]
 fn real_qwen36_bf16_generates_reference_tokens() {
+    for precision in [
+        crate::model::GdnRecurrentPrecision::Bf16,
+        crate::model::GdnRecurrentPrecision::F32,
+    ] {
+        eprintln!("real BF16 model with {} GDN recurrence", precision.as_str());
+        check_real_bf16_reference(precision);
+    }
+}
+
+fn check_real_bf16_reference(precision: crate::model::GdnRecurrentPrecision) {
     let model_dir = require_real_qwen36_model_dir();
     let plan = QwenBf16LoadPlan::read(model_dir).unwrap();
     let backend = ManagedUmaBackend::new(cuda_device_from_env()).unwrap();
     let loaded = execute_qwen36_bf16_load_plan(&plan, backend, ptr::null_mut()).unwrap();
-    let (config, weights) = loaded.into_qwen_model(ptr::null_mut(), 8).unwrap();
+    let (mut config, weights) = loaded.into_qwen_model(ptr::null_mut(), 8).unwrap();
+    config.gdn_recurrent_precision = precision;
     let mut runner = crate::model::ModelRunner::new(config, weights).unwrap();
     let request_id = 0xBF16_0001;
 

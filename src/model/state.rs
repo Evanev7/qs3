@@ -1,9 +1,10 @@
-use super::{QwenConfig, checked_usize_product, scratch::DeviceBuffer};
+use super::{GdnRecurrentPrecision, QwenConfig, checked_usize_product, scratch::DeviceBuffer};
 use crate::{
     QWEN36_GDN_CONV_STATE, QWEN36_GDN_KEY_DIM, QWEN36_GDN_NUM_V_HEADS, QWEN36_GDN_PACKED_DIM,
     QWEN36_GDN_STATE_SLOTS_PER_LAYER, QWEN36_GDN_VALUE_DIM, engine::Status, ext::SafeVec,
 };
 
+use crate::backend::{FloatStorage, GdnRecurrentState};
 use std::mem;
 
 pub(super) struct GdnLayerSlots {
@@ -80,9 +81,46 @@ impl GdnSlotMap {
     }
 }
 
+enum RecurrentBuffer {
+    Bf16(DeviceBuffer<u16>),
+    F32(DeviceBuffer<f32>),
+}
+
+impl RecurrentBuffer {
+    fn new(config: &QwenConfig, elements: usize) -> Result<Self, Status> {
+        match config.gdn_recurrent_precision {
+            GdnRecurrentPrecision::Bf16 => {
+                let mut buffer = DeviceBuffer::empty(config.device_ordinal);
+                buffer.ensure(elements)?;
+                Ok(Self::Bf16(buffer))
+            }
+            GdnRecurrentPrecision::F32 => {
+                let mut buffer = DeviceBuffer::empty(config.device_ordinal);
+                buffer.ensure(elements)?;
+                Ok(Self::F32(buffer))
+            }
+        }
+    }
+
+    fn zero(&mut self, stream: crate::ffi::CudaStream) -> Result<(), Status> {
+        match self {
+            Self::Bf16(buffer) => buffer.zero(buffer.cap, stream),
+            Self::F32(buffer) => buffer.zero(buffer.cap, stream),
+        }
+    }
+
+    fn view(&self, state_pool: u32) -> Result<GdnRecurrentState, Status> {
+        let (data, dtype) = match self {
+            Self::Bf16(buffer) => (buffer.as_device_ptr(), FloatStorage::Bf16),
+            Self::F32(buffer) => (buffer.as_device_ptr(), FloatStorage::F32),
+        };
+        GdnRecurrentState::contiguous(data, dtype, state_pool)
+    }
+}
+
 pub(super) struct GdnState {
     pub(super) conv: DeviceBuffer<u16>,
-    pub(super) recurrent: DeviceBuffer<u16>,
+    recurrent: RecurrentBuffer,
     pub(super) slots: GdnSlotMap,
 }
 
@@ -100,11 +138,10 @@ impl GdnState {
         ])?;
         let mut state = Self {
             conv: DeviceBuffer::empty(config.device_ordinal),
-            recurrent: DeviceBuffer::empty(config.device_ordinal),
+            recurrent: RecurrentBuffer::new(config, recurrent_len)?,
             slots,
         };
         state.conv.ensure(conv_len)?;
-        state.recurrent.ensure(recurrent_len)?;
         state.zero(config)?;
         Ok(state)
     }
@@ -116,7 +153,11 @@ impl GdnState {
 
     pub(super) fn zero(&mut self, config: &QwenConfig) -> Result<(), Status> {
         self.conv.zero(self.conv.cap, config.stream)?;
-        self.recurrent.zero(self.recurrent.cap, config.stream)
+        self.recurrent.zero(config.stream)
+    }
+
+    pub(super) fn recurrent_view(&self) -> Result<GdnRecurrentState, Status> {
+        self.recurrent.view(self.slots.state_pool)
     }
 
     pub(super) fn layer_slots(&self, gdn_layer_idx: u32) -> Result<GdnLayerSlots, Status> {

@@ -487,11 +487,7 @@ impl ModelRunner {
             FloatStorage::Bf16,
             state.slots.state_pool,
         )?;
-        let recurrent_state = GdnRecurrentState::contiguous(
-            state.recurrent.as_device_ptr(),
-            FloatStorage::Bf16,
-            state.slots.state_pool,
-        )?;
+        let recurrent_state = state.recurrent_view()?;
         Ok((
             state.slots.state_pool,
             slots.live_slot,

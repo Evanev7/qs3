@@ -308,3 +308,20 @@ a cause from this alone. Native `qscu_gdn_prefill/decode` already support FP32
 state, and `GdnRecurrentState` can describe it; the runner currently allocates
 `DeviceBuffer<u16>`. Expose explicit FP32 runner storage and compare again to
 address the precision gate. Sustained quality and a third context remain open.
+
+## Explicit recurrent-state precision
+
+`QwenConfig::gdn_recurrent_precision` now selects BF16 or FP32 storage while
+keeping BF16 activations and convolution history. Owned typed buffers determine
+the native descriptor dtype; reset and prefix reconstruction allocate/clear the
+selected type. The native AOT kernels already implement both forms, so no new
+runtime kernel selection framework, compilation or synchronization is needed.
+The current default remains BF16 while comparisons establish the FP32 behavior.
+`QS3_BENCH_GDN_STATE=f32 ./run_core_benchmark.sh` selects FP32, and JSON reports
+the effective state dtype.
+
+The prescribed full suite passed (115 library, 1 benchmark, 3 engine, 16 model,
+14 vector tests and both native suites). The pinned 35B BF16 real-model test now
+runs both recurrent precisions sequentially; both passed the existing prefill
+and first-decode logit checks, greedy IDs `[5, 6, 24218, 10]`, and reset/replay.
+The modes must remain explicit in subsequent throughput and output comparisons.
