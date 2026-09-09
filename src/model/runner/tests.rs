@@ -3272,6 +3272,12 @@ fn failed_rebuild_after_final_layer_preserves_prefix_and_continuation() {
 }
 
 impl ModelRunner {
+    pub(crate) fn decode_forced_token_for_test(&mut self, token: i32) -> Result<(), Status> {
+        let request_id = self.live_request_id.ok_or(Status::InvalidArgument)?;
+        super::validate_token_ids(&[token], self.config.vocab_size)?;
+        self.decode_one(request_id, token)
+    }
+
     // Shared with the full loaded-model regression to cover GDN state rollback.
     pub(crate) fn assert_late_rebuild_failure_preserves_prefix(
         &mut self,

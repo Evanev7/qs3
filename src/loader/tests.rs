@@ -26,6 +26,8 @@ use std::collections::BTreeMap;
 use std::ffi::c_void;
 use std::{env, ptr, time::Instant};
 
+mod scores;
+
 const REAL_PROMPT: [i32; 4] = [1, 2, 3, 4];
 const REAL_GENERATED: [i32; 4] = [5, 6, 24_218, 10];
 const REAL_PREFILL_TOP_IDS: [i32; 8] = [5, 3, 2, 220, 61, 198, 26_972, 271];
