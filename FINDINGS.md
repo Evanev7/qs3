@@ -452,3 +452,24 @@ local AOT target; initial/final state and aliasing must remain correct. Chunked
 GDN prefill is the larger subsequent target. The trace also shows 40.320 ms of
 pinned allocation/free with no GPU overlap before the main kernel span, so
 retaining provider resources across prefix rebuilds still matters.
+
+## Parallel prefill convolution
+
+The [standalone AOT convolution probe](benchmarks/2026-09-09-conv-prefill-probe/README.md)
+reduces 1024-token/8192-channel convolution with final-state writeback from
+14.368 to 0.190 ms. Outputs and state bytes match the serial reference in 72
+cases covering short/long and empty sequences, negative read slots, BF16/FP32
+state, and separate/same-slot writeback. These are kernel-probe measurements,
+not isolated core timing.
+
+Integration parallelizes prefill outputs over a bounded flat grid, then updates
+final history in a second stream-ordered kernel. No host synchronization is
+added. Decode retains its single-token launch. Prefill output must be disjoint
+from the input projection; the runner already allocates separate buffers, and
+native validation now rejects exact/partial overlap before device addressing.
+Same-slot convolution-state updates remain supported.
+
+The prescribed full suite and real 35B reference pass with BF16 and FP32
+recurrence, including reset/replay. The integrated flat-grid implementation also
+passes the 72-case bitwise probe (14.074 versus 0.188 ms in that repeat). Core
+prefill and sustained token comparisons are the next gate.

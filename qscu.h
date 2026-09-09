@@ -209,7 +209,7 @@ typedef struct {
     qsfi_tensor1 state_read_indices; /* optional i32 [batch_size], negative means zero state. */
     qsfi_tensor1 state_write_indices; /* optional i32 [batch_size], negative skips writeback. */
     qsfi_device_ptr seq_indptr; /* optional i32 [batch_size + 1]; null means one token per row. */
-    qsfi_tensor2 out; /* bf16 [num_tokens, 8192], may alias x. */
+    qsfi_tensor2 out; /* bf16 [num_tokens, 8192]; prefill must not overlap x, decode may alias. */
     uint32_t num_tokens;
     uint32_t batch_size;
     qscu_activation activation; /* none or silu for qwen3.6 GDN conv. */

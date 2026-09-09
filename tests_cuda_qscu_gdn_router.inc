@@ -1285,6 +1285,21 @@ void test_qscu_gdn_router_validation_errors()
         "qscu conv unsupported activation"
     );
 
+    conv = qscu_test_valid_conv_validation_desc();
+    conv.seq_indptr = qscu_test_validation_ptr(8);
+    conv.out = conv.x;
+    check_status(
+        qscu_qwen36_gdn_causal_conv1d_bf16(&conv, nullptr),
+        QSFI_STATUS_INVALID_ARGUMENT,
+        "qscu prefill conv rejects in-place output before device addressing"
+    );
+    conv.out.data = static_cast<char*>(conv.x.data) + sizeof(uint16_t);
+    check_status(
+        qscu_qwen36_gdn_causal_conv1d_bf16(&conv, nullptr),
+        QSFI_STATUS_INVALID_ARGUMENT,
+        "qscu prefill conv rejects partially overlapping output"
+    );
+
     qscu_qwen36_gdn_post_conv_prepare_desc post = qscu_test_valid_post_validation_desc();
     post.forget_gate_output = static_cast<qscu_gdn_forget_gate_output>(99);
     check_status(

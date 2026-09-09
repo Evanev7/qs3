@@ -6,6 +6,7 @@
 #include <cuda_bf16.h>
 #include <cuda_runtime.h>
 
+#include <algorithm>
 #include <climits>
 #include <cmath>
 #include <cstdint>
@@ -634,6 +635,109 @@ __global__ void qwen36_gdn_causal_conv1d_kernel(conv1d_params p, StateT* state)
     }
 }
 
+template <typename StateT>
+__device__ float qwen36_conv_input_at(
+    const conv1d_params& p, const StateT* state, int token, int begin, int read_slot, unsigned dim
+)
+{
+    if (token >= begin)
+        return load_bf16(p.x + int64_t(token) * p.x_stride0 + int64_t(dim) * p.x_stride1);
+    if (read_slot < 0)
+        return 0.0f;
+    return load_state(
+        state + int64_t(read_slot) * p.state_stride0 + int64_t(dim) * p.state_stride1
+        + int64_t(token - begin + 3) * p.state_stride2
+    );
+}
+
+template <typename StateT>
+__global__ void qwen36_gdn_conv_prefill_outputs(
+    conv1d_params p, const StateT* state, unsigned tokens, unsigned batch
+)
+{
+    const uint64_t count = uint64_t(tokens) * p.conv_dim;
+    for (uint64_t i = uint64_t(blockIdx.x) * blockDim.x + threadIdx.x; i < count;
+         i += uint64_t(gridDim.x) * blockDim.x) {
+        const int token = i / p.conv_dim;
+        const unsigned dim = i % p.conv_dim;
+        unsigned lo = 0, hi = batch;
+        while (lo + 1 < hi) {
+            const unsigned mid = (lo + hi) / 2;
+            if (p.seq_indptr[mid] <= token)
+                lo = mid;
+            else
+                hi = mid;
+        }
+        const int begin = p.seq_indptr[lo];
+        const int fallback = p.write_indices == nullptr ? -1 : p.write_indices[lo];
+        const int read_slot = p.read_indices == nullptr ? fallback : p.read_indices[lo];
+        const float h0 = qwen36_conv_input_at(p, state, token - 3, begin, read_slot, dim);
+        const float h1 = qwen36_conv_input_at(p, state, token - 2, begin, read_slot, dim);
+        const float h2 = qwen36_conv_input_at(p, state, token - 1, begin, read_slot, dim);
+        const float x = qwen36_conv_input_at(p, state, token, begin, read_slot, dim);
+        const auto* w = p.weight + int64_t(dim) * p.weight_stride0;
+        const float w0 = load_bf16(w), w1 = load_bf16(w + p.weight_stride1);
+        const float w2 = load_bf16(w + 2 * p.weight_stride1),
+                    w3 = load_bf16(w + 3 * p.weight_stride1);
+        const float bias = load_optional_bias(
+            p.bias_bf16 == nullptr ? nullptr : p.bias_bf16 + int64_t(dim) * p.bias_stride0,
+            p.bias_f32 == nullptr ? nullptr : p.bias_f32 + int64_t(dim) * p.bias_stride0,
+            0
+        );
+        const float out
+            = apply_activation(h0 * w0 + h1 * w1 + h2 * w2 + x * w3 + bias, p.activation);
+        store_bf16(p.out + int64_t(token) * p.out_stride0 + int64_t(dim) * p.out_stride1, out);
+    }
+}
+
+template <typename StateT>
+__global__ void qwen36_gdn_conv_prefill_final_state(conv1d_params p, StateT* state, uint32_t batch)
+{
+    const uint64_t count = uint64_t(batch) * p.conv_dim;
+    for (uint64_t i = uint64_t(blockIdx.x) * blockDim.x + threadIdx.x; i < count;
+         i += uint64_t(gridDim.x) * blockDim.x) {
+        const uint32_t seq = i / p.conv_dim;
+        const uint32_t dim = i % p.conv_dim;
+        const int fallback = p.write_indices == nullptr ? -1 : p.write_indices[seq];
+        const int read_slot = p.read_indices == nullptr ? fallback : p.read_indices[seq];
+        const int write_slot = p.write_indices == nullptr ? read_slot : p.write_indices[seq];
+        if (write_slot < 0)
+            continue;
+        const int begin = p.seq_indptr[seq], end = p.seq_indptr[seq + 1];
+        // Load all history before writing to permit same-slot updates.
+        const float h0 = qwen36_conv_input_at(p, state, end - 3, begin, read_slot, dim);
+        const float h1 = qwen36_conv_input_at(p, state, end - 2, begin, read_slot, dim);
+        const float h2 = qwen36_conv_input_at(p, state, end - 1, begin, read_slot, dim);
+        auto* out = state + int64_t(write_slot) * p.state_stride0 + int64_t(dim) * p.state_stride1;
+        out[0] = make_state<StateT>(h0);
+        out[p.state_stride2] = make_state<StateT>(h1);
+        out[2 * p.state_stride2] = make_state<StateT>(h2);
+    }
+}
+
+template <typename StateT>
+qsfi_status launch_qwen36_conv1d(
+    conv1d_params p, StateT* state, uint32_t tokens, uint32_t batch, cudaStream_t stream
+)
+{
+    if (p.seq_indptr == nullptr) {
+        qwen36_gdn_causal_conv1d_kernel<<<batch, 256, 0, stream>>>(p, state);
+        return validate_cuda(cudaGetLastError());
+    }
+    const uint32_t output_blocks
+        = std::min<uint64_t>((uint64_t(tokens) * p.conv_dim + 255) / 256, 4096);
+    qwen36_gdn_conv_prefill_outputs<<<output_blocks, 256, 0, stream>>>(p, state, tokens, batch);
+    qsfi_status status = validate_cuda(cudaGetLastError());
+    if (status != QSFI_STATUS_OK || p.update_state == 0)
+        return status;
+    // Output blocks must finish reading initial history before any writeback.
+    // Stream ordering supplies this dependency without a host synchronization.
+    const uint32_t state_blocks
+        = std::min<uint64_t>((uint64_t(batch) * p.conv_dim + 255) / 256, 4096);
+    qwen36_gdn_conv_prefill_final_state<<<state_blocks, 256, 0, stream>>>(p, state, batch);
+    return validate_cuda(cudaGetLastError());
+}
+
 #if QSFI_ENABLE_CHECKED_VALIDATION
 __device__ bool qscu_invalid_state_slot(int32_t slot, int32_t state_pool)
 {
@@ -1033,6 +1137,9 @@ qsfi_status validate_conv_desc(const qscu_qwen36_gdn_causal_conv1d_desc* desc)
             && desc->state_write_indices.shape[0] != static_cast<int64_t>(desc->batch_size))) {
         return QSFI_STATUS_INVALID_ARGUMENT;
     }
+    if (desc->seq_indptr != nullptr && contiguous_bf16_ranges_overlap(desc->x, desc->out))
+        return QSFI_STATUS_INVALID_ARGUMENT;
+
     return QSFI_STATUS_OK;
 }
 
@@ -1706,17 +1813,21 @@ qsfi_status qscu_qwen36_gdn_causal_conv1d_bf16(
     params.update_state = desc->update_state != 0 ? 1u : 0u;
 
     if (desc->state.dtype == QSFI_DTYPE_BF16) {
-        qwen36_gdn_causal_conv1d_kernel<<<desc->batch_size, 256, 0, cuda_stream>>>(
+        return launch_qwen36_conv1d(
             params,
-            static_cast<__nv_bfloat16*>(desc->state.data)
-        );
-    } else {
-        qwen36_gdn_causal_conv1d_kernel<<<desc->batch_size, 256, 0, cuda_stream>>>(
-            params,
-            static_cast<float*>(desc->state.data)
+            static_cast<__nv_bfloat16*>(desc->state.data),
+            desc->num_tokens,
+            desc->batch_size,
+            cuda_stream
         );
     }
-    return validate_cuda(cudaGetLastError());
+    return launch_qwen36_conv1d(
+        params,
+        static_cast<float*>(desc->state.data),
+        desc->num_tokens,
+        desc->batch_size,
+        cuda_stream
+    );
 }
 
 qsfi_status qscu_qwen36_gdn_post_conv_prepare_bf16(
