@@ -341,3 +341,19 @@ Different projection/output rounding and prefill algorithms still need attention
 compare scores under identical token prefixes before assigning a remaining cause.
 Loaded model configurations now default to FP32 recurrence. BF16 remains an
 explicit comparison choice, and benchmark metadata records the effective mode.
+
+## Pinned 27B assets
+
+The [27B manifest](model_manifests/qwen3.6-27b/6a9e13bd6fc8f0983b9b99948120bc37f49c13e9/README.md)
+pins revision `6a9e13bd6fc8f0983b9b99948120bc37f49c13e9`. All 15 shard headers
+and their physical sizes were read with bounded HTTP range requests. Independent
+host validation finds 1199 BF16 tensors, including 851 exact-shape text tensors
+(53.792 GB). It checks index/header agreement, dtype/shape byte sizes, duplicate
+names, and contiguous nonoverlapping ranges. This is asset evidence, not proof
+of Rust loader or inference support.
+
+The 27B tokenizer SHA-256 matches the pinned 35B tokenizer exactly. Config and
+headers confirm 24 Q/four KV attention heads, 48 GDN value heads, separate dense
+MLP gate/up/down tensors, and FP32 recurrent-state intent. The exact metadata and
+validation scripts are committed; payload download, production dense manifest
+support and native shape validation are separate steps.

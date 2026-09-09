@@ -73,6 +73,10 @@
 ## 3. Add the exact 27B path
 
 - [ ] Pin and validate the 27B config, tokenizer, and safetensors manifest.
+  Revision `6a9e13bd6fc8f0983b9b99948120bc37f49c13e9` and all shard headers are
+  recorded under `model_manifests/`. An independent host check validates 851
+  text tensor shapes; tokenizer bytes match the pinned 35B asset. Production
+  Rust dense-manifest validation and payload validation remain open.
 - [ ] Probe native full attention with 24 Q heads, 4 KV heads, head dimension
   256, and GQA ratio 6. Current dispatch only includes ratio 8.
 - [ ] Validate GDN with 16 key heads and 48 value heads, head dimensions 128,

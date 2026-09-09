@@ -1,0 +1,15 @@
+{
+  "repo": "Qwen/Qwen3.6-27B",
+  "revision": "6a9e13bd6fc8f0983b9b99948120bc37f49c13e9",
+  "shards": 15,
+  "all_tensors": 1199,
+  "text_tensors": 851,
+  "all_tensor_bytes": 55562855904,
+  "text_tensor_bytes": 53791996928,
+  "ignored_tensor_prefix_counts": {
+    "model.visual": 333,
+    "mtp": 15
+  },
+  "config_sha256": "69db4eb7196bc8190813231b3018ca05d8c2e3abc7b1af19d55c157af44a9d9c",
+  "index_sha256": "a8ad2c26fb707ff8c245806315b03e3b4b74595528492423af5dae0ce39b4d9b"
+}
