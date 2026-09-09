@@ -14,6 +14,9 @@ ground rules:
   model/runtime compatibility
 - avoid release-mode stream synchronizes for transactionality or validation
   unless making a deliberate performance trade
+- Rust owns model schedules, preparation, memory, and CUDA graph orchestration;
+  C/C++ is kernel glue. Build-time Python is fine; inference must use AOT kernels
+  without runtime Python or JIT
 
 current architecture:
 - `3pty` is vendored kernels/reference code; `target` is the rust build dir
@@ -23,9 +26,14 @@ current architecture:
   begin/commit/abort/reset/release paths should stay transactional: build
   candidate state and live views before installing them. allocator invariant
   checks stay debug-only
-- `runtime::EngineInner` owns CUDA stream/context state, per-layer paged K/V
-  caches, device batch metadata, and FlashInfer prefill/decode plan caches
-  plan-cache keys include page ids and last-page lengths, not just CSR shape
+- `engine::attention::AttentionSession` owns stream/provider context state,
+  per-layer paged K/V caches, device batch metadata, and FlashInfer plan caches.
+  Plan keys include page ids and last-page lengths, not just CSR shape. Reprepare
+  retains device workspace; pinned planning slots are reused only after their
+  upload event completes
+- `backend::qscb::Qscb` owns reusable cuBLASLt linear plans keyed by dimensions,
+  strides, dtype, actual pointer alignment, and workspace capacity. Prefix
+  rebuilds still replace the Engine and discard these execution resources
 - `ModelRunner` is the boundary above `Engine`: it computes activations, supplies
   Q/K/V to attention, stores logits, samples, and owns exact-prefix sync/rebuild
 - `QwenTokenizer` is a separate host-side asset boundary: it strictly loads the
@@ -41,7 +49,10 @@ current architecture:
   loading
 
 real qwen3.6-35b-a3b findings:
-- materialized BF16 and NVFP4 safetensors exist on `spark-1565`
+- `sp10@sp10:qs3` is the disposable GPU checkout used by the gitignored test
+  and core benchmark scripts; both replace it, so run them sequentially.
+  The pinned 35B BF16 and NVIDIA NVFP4 snapshots are cached on sp10. Model paths
+  are resolved by `src/test_assets.rs`; use `QS3_QWEN36_MODEL_DIR` to override
 - real text model prefix is `model.language_model.*`; ignore `model.visual.*`
   and `mtp.*` for the first text-only loader
 - real BF16 shape differs from the randomized fixture: hidden size 2048, 40
@@ -63,7 +74,7 @@ real qwen3.6-35b-a3b findings:
   logit tolerances
 
 loader direction:
-- `src/weight_loader.rs` has the backend trait. keep qwen-specific manifest
+- `src/loader/transfer.rs` has the backend trait. keep qwen-specific manifest
   parsing/validation above it
 - a loaded BF16 plan owns its backend until consuming materialization drains
   the backend's final allocation list into DeviceBuffers. backend Drop frees
@@ -93,7 +104,8 @@ GDN direction:
   FlashInfer GDN headers/JIT plumbing through local `qscu` files
 
 near-term todos:
-- resume weight-load speed testing after spark-1565 recovers: rerun the
-  managed baseline and pinned staging comparison, including the interrupted
-  `4 x 1 GiB` pinned-ring run
-- after BF16 real-model correctness, add the first optimized NVFP4 path
+- `TODO.md` is the completion checklist; `FINDINGS.md` records benchmark evidence
+  and architecture direction. Current correctness covers 35B BF16; exact 27B,
+  graphs, optimized NVFP4, and matched vLLM comparisons remain open
+- rerun managed versus pinned weight-load tests on sp10, including the
+  interrupted `4 x 1 GiB` pinned-ring run
