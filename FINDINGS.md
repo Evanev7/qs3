@@ -682,3 +682,9 @@ CPU-reference/reprepare/append tests and analytic BF16/FP32 recurrence tests;
 35B BF16 regression passes with both recurrent precisions, including failed
 rebuild continuation and reset/replay. Public 27B model configuration, Rust views,
 scratch/state allocation and loading remain gated pending integration.
+
+The native-extension [35B core regression](benchmarks/2026-09-09T060704.072590770Z-7f0e658.json)
+measures 24.281 tok/s, 41.111 ms decode p50 and 245.186 ms prefill. All 36
+returned IDs match the preceding core run. This establishes no observed 35B
+regression from the extra AOT shapes; the small timing differences are not a
+claimed performance improvement.
