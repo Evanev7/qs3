@@ -291,3 +291,20 @@ same 38,948 launches. Time without recorded GPU work stays near 98 ms across
 32 steps, supporting reduced GPU execution time as the cause of this gain.
 Dense cuBLAS GEMV now dominates; serial router top-k remains 178.05 ms (12.1%).
 Prioritize those measured kernels alongside persistent metadata and graph work.
+
+## Longer prompt and sustained decode
+
+The [1024-token / 256-step comparison](benchmarks/2026-09-09T030615Z-vllm-bf16-core/README.md)
+uses repeated base prompt IDs and contexts 1028 through 1284. qs3 holds at
+20.730 tok/s (48.216 ms decode p50, 1941.522 ms prefill p50); vLLM measures
+30.769 tok/s (32.481 ms decode p50, 367.629 ms prefill p50). Thus the short-context
+qs3 throughput persists across this longer run. This is a synthetic performance
+probe, not a natural-language quality benchmark.
+
+The first 56 generated IDs agree; they diverge at index 56 (qs3 32956, vLLM 33027).
+Subsequent token contexts therefore differ. Recurrent state remains BF16 in qs3
+and FP32 in vLLM, while kernel arithmetic/prefill paths also differ. Do not assign
+a cause from this alone. Native `qscu_gdn_prefill/decode` already support FP32
+state, and `GdnRecurrentState` can describe it; the runner currently allocates
+`DeviceBuffer<u16>`. Expose explicit FP32 runner storage and compare again to
+address the precision gate. Sustained quality and a third context remain open.

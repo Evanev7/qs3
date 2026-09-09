@@ -43,8 +43,10 @@
   matched vLLM run. Include several context lengths and sustained decode;
   separate setup, prefill, steady decode, and output delivery. Initial short-context
   qs3 measurements and a 32-step decode timeline are recorded in FINDINGS.md;
-  an initial vLLM run uses FP32 recurrent state versus qs3 BF16. Matched recurrent
-  precision, output equivalence, multiple contexts, and sustained runs remain open.
+  102- and 1024-token vLLM comparisons are recorded, the latter with 256 decode
+  samples. vLLM uses FP32 recurrence versus qs3 BF16; the longer run diverges
+  after 56 matching IDs. Matched recurrent precision, sustained quality, a third
+  context, and a vLLM GPU timeline remain open.
 
 ## 2. Remove repeated preparation from decode
 
