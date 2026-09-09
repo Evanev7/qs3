@@ -14,12 +14,15 @@ but these implementation and output-precision differences remain explicit.
 | --- | ---: | ---: | ---: | ---: | --- |
 | qs3 eager | 102/32 | 242.080 | 40.385 | 24.668 | [JSON](benchmarks/2026-09-09T063550.352923789Z-0dc68a2.json) |
 | qs3 eager | 1024/256 | 557.628 | 40.276 | 24.807 | [JSON](benchmarks/2026-09-09T063740.799837217Z-0dc68a2.json) |
+| qs3 eager | 4096/256 | 1556.533 | 40.900 | 24.436 | [JSON](benchmarks/2026-09-09T065605.711996081Z-b2e6530.json) |
 | vLLM graphs | 102/32 | 181.369 | 32.355 | 30.826 | [JSON](benchmarks/2026-09-09T023628Z-vllm-bf16-core/result.json) |
 | vLLM graphs | 1024/256 | 367.629 | 32.481 | 30.769 | [JSON](benchmarks/2026-09-09T030615Z-vllm-bf16-core/result.json) |
+| vLLM graphs | 4096/256 | 850.012 | 32.975 | 29.887 | [JSON](benchmarks/2026-09-09T065726Z-vllm-bf16-core/result.json) |
 
 The latest qs3 changes preserve every generated ID from the preceding runs
 (36 short, 260 sustained). The short vLLM sequence matches; the sustained greedy
-sequences first differ at output index 162. An identical-prefix diagnostic now
+sequences first differ at output index 162 for the 1024-token prompt, and at
+index two for the 4096-token prompt. An identical-prefix diagnostic at 1024 tokens now
 finds 256/261 argmax agreement; precision controls and independent sustained
 quality evaluation, 27B runtime support, graphs and NVFP4 remain open. The verified 27B snapshot is
 cached on sp10. The following sections retain the measurements behind this state.
@@ -756,3 +759,20 @@ now verified directly; qs3 uses FP32 router logits. A controlled router/shared-g
 precision comparison is warranted before attributing the divergence only to GDN
 state or LM-head output. All captures, score summaries and reproduction scripts
 are linked above; these diagnostic runs make no performance claim.
+
+## Third context: 4096 prompt tokens
+
+The [4096-token comparison](benchmarks/2026-09-09T065726Z-vllm-bf16-core/README.md)
+adds 256 measured decode forwards at contexts 4100–4356. qs3 measures 24.436
+tok/s, 40.900 ms decode p50 and 1556.533 ms prefill; vLLM measures 29.887 tok/s,
+32.975 ms and 850.012 ms. Prompt fingerprint `8fdb3ca77a5d0ac3` matches exactly.
+The throughput gap is 18.2%, and qs3 prefill takes 1.83 times as long. These are
+the same synthetic repeated base IDs used for context scaling, with the existing
+BF16 projection-output and execution differences still explicit.
+
+The first two generated IDs match, then qs3 selects 248046 while vLLM selects
+10885 at index two. Consequently these sustained runs follow different token
+prefixes; their timing is not an identical-prefix comparison. The earlier
+1024-token forced-prefix diagnostic does not resolve this case. Several-context
+performance is now recorded, but matched precision, sustained quality and
+competitive performance remain unfinished.

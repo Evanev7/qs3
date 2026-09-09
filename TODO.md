@@ -43,13 +43,14 @@
   matched vLLM run. Include several context lengths and sustained decode;
   separate setup, prefill, steady decode, and output delivery. Initial short-context
   qs3 measurements and a 32-step decode timeline are recorded in FINDINGS.md;
-  102- and 1024-token vLLM comparisons are recorded, the latter with 256 decode
-  samples. FP32 recurrence is now available and the loaded-model default; it
+  102-, 1024- and 4096-token vLLM comparisons are recorded, the longer two with
+  256 decode samples. The 4096-token outputs first differ at index two, so that
+  timing follows different generated prefixes. FP32 recurrence is now available and the loaded-model default; it
   extends the longer matching prefix from 56 to 162 generated IDs with little
   throughput change. An identical-prefix diagnostic now records 256/261 argmax
   agreement and five differences; its vLLM-selected continuation is not an
-  independent quality evaluation. Precision controls, sustained quality, and a
-  third context remain open. Aligned qs3/vLLM 32-forward GPU timelines are now
+  independent quality evaluation. Precision controls and sustained quality remain
+  open. Aligned qs3/vLLM 32-forward GPU timelines are now
   recorded, including graph gaps, kernel choices and LM-head precision differences.
 
 ## 2. Remove repeated preparation from decode
