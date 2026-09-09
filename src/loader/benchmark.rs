@@ -343,6 +343,7 @@ pub fn run_core_benchmark() -> JsonValue {
                 ),
                 ("weight_backend", "managed_uma".to_owned().into()),
                 ("sampling", "greedy".to_owned().into()),
+                ("logits_rows", "final_token".to_owned().into()),
             ]),
         ),
         (

@@ -17,6 +17,7 @@ use crate::{
     ffi,
     model::{
         ActiveRunKind, BatchRun, QwenConfig, QwenWeights,
+        checked_usize_product, device_ptr_byte_offset,
         scratch::{DeviceBuffer, RunnerScratch},
         state::GdnState,
         validate_token_ids,
@@ -39,6 +40,7 @@ pub struct QwenResult {
     pub prompt_tokens: u32,
     pub generated_tokens: Vec<i32>,
     pub live_tokens: Vec<i32>,
+    /// One retained prediction row, for the final token in `live_tokens`.
     pub logits_rows: u32,
     pub logits_vocab_size: u32,
 }
@@ -430,15 +432,20 @@ impl ModelRunner {
             layer_input = self.scratch.mlp_out.as_device_ptr();
         }
 
+        // This runner executes one request. Only its final token predicts the
+        // continuation; earlier rows have already updated attention/GDN state.
+        let last_row_bytes = checked_usize_product(&[rows - 1, hidden])?
+            .checked_mul(mem::size_of::<u16>())
+            .ok_or(Status::InvalidArgument)?;
         self.linear_f32(
-            layer_input,
-            rows,
+            device_ptr_byte_offset(layer_input, last_row_bytes)?,
+            1,
             hidden,
             self.weights.lm_head.as_device_ptr(),
             self.scratch.logits.as_device_ptr(),
             self.config.vocab_size,
         )?;
-        self.sample_logits(rows)
+        self.sample_logits(1)
     }
 
     fn upload_batch_inputs(&mut self, tokens: &[i32], start_pos: u32) -> Result<(), Status> {

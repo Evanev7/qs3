@@ -403,3 +403,18 @@ there are 93.761 ms without GPU work across 32 decode steps. Kernel sum is
 1300.622 ms. The old trace used BF16 recurrence, so use the matched FP32 core
 runs above for end-to-end attribution. Both GPU projections and host preparation
 remain material targets after removing scalar routing.
+
+## Final-row vocabulary projection
+
+The single-request runner now projects and samples only the final activation
+row for prefill, prefix extension, and decode. Attention/GDN still process every
+input token. `QwenResult.logits_rows` explicitly reports one retained row. This
+reduces a 1024-token FP32 vocabulary buffer from 970 MiB to about 0.95 MiB, and
+avoids projecting the other 1023 rows. Benchmark metadata records `final_token`.
+
+The prescribed full suite passes, including the final-row comparison against the
+existing full-row vector oracle and public prefix/rebuild cases. The real 35B
+reference passes with BF16 and FP32 recurrence, retaining the existing logit
+tolerances and greedy/reset/replay checks. Moving prefill LM-head execution from
+a matrix projection to a single-row projection can change rounding; sustained
+output and prefill timing comparisons follow separately.

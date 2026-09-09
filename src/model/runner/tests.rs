@@ -2493,32 +2493,34 @@ fn qwen36_model_logits_vector_validates_public_run_moe_logits_handoff() {
     assert_eq!(prefill_result.prompt_tokens, MODEL_LOGITS_PROMPT_LEN as u32);
     assert!(prefill_result.generated_tokens.is_empty());
     assert_eq!(prefill_result.live_tokens, prompt);
-    assert_eq!(prefill_result.logits_rows, MODEL_LOGITS_PROMPT_LEN as u32);
+    assert_eq!(prefill_result.logits_rows, 1);
     assert_eq!(prefill_result.logits_vocab_size, MODEL_LOGITS_VOCAB);
     assert_eq!(runner.live_tokens(), prompt.as_slice());
-    assert_eq!(runner.last_logits_rows, MODEL_LOGITS_PROMPT_LEN as u32);
+    assert_eq!(runner.last_logits_rows, 1);
     assert_eq!(runner.last_logits_vocab_size, MODEL_LOGITS_VOCAB);
 
-    let prefill_logits_len = MODEL_LOGITS_PROMPT_LEN * MODEL_LOGITS_VOCAB as usize;
+    let vocab = MODEL_LOGITS_VOCAB as usize;
+    let prefill_logits_len = MODEL_LOGITS_PROMPT_LEN * vocab;
+    let expected_prefill = read_model_logits_f32_vector(
+        "model_expected_prefill_logits_f32.f32",
+        prefill_logits_len,
+    );
     assert_f32_close(
-        "model logits prefill rows",
-        &download_f32(&runner.scratch.logits, stream, prefill_logits_len),
-        &read_model_logits_f32_vector("model_expected_prefill_logits_f32.f32", prefill_logits_len),
+        "model logits final prefill row",
+        &download_f32(&runner.scratch.logits, stream, vocab),
+        &expected_prefill[prefill_logits_len - vocab..],
         MODEL_LOGITS_ABS_TOL,
         MODEL_LOGITS_REL_TOL,
     );
-    let prefill_top = download_i32(
-        &runner.scratch.next_token_ids,
-        stream,
+    let prefill_top = download_i32(&runner.scratch.next_token_ids, stream, 1);
+    let expected_prefill_top = read_model_logits_i32_vector(
+        "model_expected_prefill_top_ids.i32",
         MODEL_LOGITS_PROMPT_LEN,
     );
     assert_eq!(
         prefill_top,
-        read_model_logits_i32_vector(
-            "model_expected_prefill_top_ids.i32",
-            MODEL_LOGITS_PROMPT_LEN
-        ),
-        "prefill greedy top ids changed"
+        expected_prefill_top[MODEL_LOGITS_PROMPT_LEN - 1..],
+        "final prefill greedy top id changed"
     );
     assert_eq!(
         runner.last_next_tokens, prefill_top,

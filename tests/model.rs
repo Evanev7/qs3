@@ -230,7 +230,7 @@ fn randomized_moe_model_runs_prefill_decode_rebuild_and_failed_rewrite() {
         .unwrap();
     assert!(prefill.generated_tokens.is_empty());
     assert_eq!(prefill.live_tokens, vec![1, 7, 13]);
-    assert_eq!(prefill.logits_rows, 3);
+    assert_eq!(prefill.logits_rows, 1);
     assert_eq!(prefill.logits_vocab_size, config.vocab_size);
 
     let decoded = runner

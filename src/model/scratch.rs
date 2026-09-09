@@ -99,7 +99,7 @@ impl RunnerScratch {
 
     pub(super) fn ensure(&mut self, config: &QwenConfig, rows: u32) -> Result<(), Status> {
         let hidden = checked_usize_product(&[rows, config.hidden_size])?;
-        let logits = checked_usize_product(&[rows, config.vocab_size])?;
+        let logits = config.vocab_size as usize;
         let row_count = rows as usize;
 
         self.token_ids.ensure(row_count)?;
@@ -168,7 +168,7 @@ impl RunnerScratch {
             self.attn_proj.ensure(hidden)?;
         }
         self.logits.ensure(logits)?;
-        self.next_token_ids.ensure(row_count)?;
+        self.next_token_ids.ensure(1)?;
         Ok(())
     }
 
