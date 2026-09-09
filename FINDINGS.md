@@ -418,3 +418,15 @@ reference passes with BF16 and FP32 recurrence, retaining the existing logit
 tolerances and greedy/reset/replay checks. Moving prefill LM-head execution from
 a matrix projection to a single-row projection can change rounding; sustained
 output and prefill timing comparisons follow separately.
+
+The [short core run](benchmarks/2026-09-09T040743.919435353Z-f23e557.json)
+measures 405.529 ms prefill p50 and 23.224 tok/s decode. The
+[1024-token/256-step run](benchmarks/2026-09-09T040848.201791088Z-f23e557.json)
+measures 1922.211 ms and 23.200 tok/s. Before this change, the corresponding
+prefill medians were 403.116 and 1929.128 ms. These small, oppositely directed
+changes do not establish a prefill speedup; retain the change for the large
+logits-memory reduction and the explicit single-request output contract. All
+36 short-run and 260 sustained-run IDs match the prior warp-router baseline.
+The failed asset-download process had exited before these timing runs. Profile
+prefill itself next: removing unused vocabulary rows does not explain or close
+the much larger prefill gap against vLLM.
