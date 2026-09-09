@@ -449,6 +449,7 @@ fn moe_vector_runner() -> ModelRunner {
         let plan = unsafe {
             ops.qsfi()
                 .create_moe_bf16_plan(MoeBf16PlanConfig {
+                    gemm_threadblocks: config.moe_bf16_kernel.threadblocks(),
                     max_num_tokens: config.max_seq_len,
                     hidden_size: config.hidden_size,
                     intermediate_size: moe.moe_intermediate_size,
@@ -759,6 +760,7 @@ fn full_attention_block_moe_vector_runner() -> ModelRunner {
         let plan = unsafe {
             ops.qsfi()
                 .create_moe_bf16_plan(MoeBf16PlanConfig {
+                    gemm_threadblocks: config.moe_bf16_kernel.threadblocks(),
                     max_num_tokens: config.max_seq_len,
                     hidden_size: config.hidden_size,
                     intermediate_size: moe.moe_intermediate_size,
@@ -980,6 +982,7 @@ fn gdn_decoder_layer_vector_runner() -> ModelRunner {
         let plan = unsafe {
             ops.qsfi()
                 .create_moe_bf16_plan(MoeBf16PlanConfig {
+                    gemm_threadblocks: config.moe_bf16_kernel.threadblocks(),
                     max_num_tokens: config.max_seq_len,
                     hidden_size: config.hidden_size,
                     intermediate_size: moe.moe_intermediate_size,

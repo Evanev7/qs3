@@ -231,7 +231,7 @@ typedef struct {
     qsfi_dtype activation_dtype;
     qsfi_dtype weight_dtype;
     qsfi_dtype output_dtype;
-    uint32_t reserved0;
+    uint32_t gemm_threadblocks; /* Staged BF16: explicit AOT launch, 4 or 96. */
 } qsfi_moe_plan_desc;
 
 typedef struct {

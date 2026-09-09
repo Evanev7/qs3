@@ -5,13 +5,15 @@
 #include <cuda_runtime.h>
 
 #include <cutlass/numeric_types.h>
-#include <flashinfer/gemm/group_gemm.cuh>
+#include <flashinfer/cutlass_utils.cuh>
 
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <limits>
 #include <new>
+#include <stdexcept>
+#include <string>
 
 struct qsfi_moe_plan {
     qsfi_moe_plan_desc desc;
@@ -42,6 +44,64 @@ struct moe_workspace {
     int64_t* y_ld;
     size_t bytes;
 };
+
+// Same SM80 CUTLASS arithmetic as the pinned FlashInfer grouped GEMM, with the
+// launch grid selected by the Rust plan. GB10 uses the two-stage specialization.
+// Keep the four-block launch available for numerical/performance comparisons.
+cudaError_t launch_grouped_bf16(
+    const moe_workspace& ws, uint32_t experts, uint32_t threadblocks, cudaStream_t stream
+)
+{
+    using DType = cutlass::bfloat16_t;
+    using Kernel = typename cutlass::gemm::kernel::DefaultGemmGrouped<
+        DType,
+        cutlass::layout::RowMajor,
+        cutlass::ComplexTransform::kNone,
+        8,
+        DType,
+        cutlass::layout::ColumnMajor,
+        cutlass::ComplexTransform::kNone,
+        8,
+        DType,
+        cutlass::layout::RowMajor,
+        float,
+        cutlass::arch::OpClassTensorOp,
+        cutlass::arch::Sm80,
+        cutlass::gemm::GemmShape<128, 128, 32>,
+        cutlass::gemm::GemmShape<64, 64, 32>,
+        cutlass::gemm::GemmShape<16, 8, 16>,
+        cutlass::epilogue::thread::LinearCombination<DType, 8, float, float>,
+        cutlass::gemm::threadblock::GemmBatchedIdentityThreadblockSwizzle,
+        2>::GemmKernel;
+    using Gemm = cutlass::gemm::device::GemmGrouped<Kernel>;
+    typename Kernel::Epilogue::OutputOp::Params epilogue(1.0f, 1.0f);
+    typename Gemm::Arguments args(
+        reinterpret_cast<cutlass::gemm::GemmCoord*>(ws.problems),
+        static_cast<int>(experts),
+        static_cast<int>(threadblocks),
+        epilogue,
+        reinterpret_cast<DType**>(ws.x_ptrs),
+        reinterpret_cast<DType**>(ws.w_ptrs),
+        reinterpret_cast<DType**>(ws.y_ptrs),
+        reinterpret_cast<DType**>(ws.y_ptrs),
+        ws.x_ld,
+        ws.w_ld,
+        ws.y_ld,
+        ws.y_ld
+    );
+    Gemm gemm;
+    auto status = gemm.initialize(args, nullptr, stream);
+    if (status != cutlass::Status::kSuccess)
+        throw std::runtime_error(
+            std::string("MoE grouped GEMM initialize: ") + cutlassGetStatusString(status)
+        );
+    status = gemm.run(stream);
+    if (status != cutlass::Status::kSuccess)
+        throw std::runtime_error(
+            std::string("MoE grouped GEMM run: ") + cutlassGetStatusString(status)
+        );
+    return cudaSuccess;
+}
 
 size_t align_up(size_t value, size_t alignment)
 {
@@ -158,6 +218,8 @@ qsfi_status validate_plan_desc(qsfi_context* ctx, const qsfi_moe_plan_desc* desc
         return set_unsupported(ctx, "MoE router-logits mode is not implemented yet");
     }
     if (desc->backend == QSFI_MOE_BACKEND_FLASHINFER_STAGED_BF16) {
+        if (desc->gemm_threadblocks != 4 && desc->gemm_threadblocks != 96)
+            return set_invalid_arg(ctx, "staged BF16 MoE gemm_threadblocks must be 4 or 96");
         if (desc->local_expert_offset != 0 || desc->local_num_experts != desc->num_experts) {
             return set_unsupported(
                 ctx,
@@ -635,20 +697,7 @@ cudaError_t launch_bf16_moe(
     err = cudaGetLastError();
     if (err != cudaSuccess)
         return err;
-    err = flashinfer::group_gemm::CutlassSegmentGEMMRun<cutlass::bfloat16_t>(
-        desc->workspace.data,
-        static_cast<size_t>(desc->workspace.shape[0]),
-        ws.problems,
-        local_experts,
-        ws.x_ptrs,
-        ws.w_ptrs,
-        ws.y_ptrs,
-        ws.x_ld,
-        ws.w_ld,
-        ws.y_ld,
-        true,
-        stream
-    );
+    err = launch_grouped_bf16(ws, local_experts, p.gemm_threadblocks, stream);
     if (err != cudaSuccess)
         return err;
 
@@ -692,20 +741,7 @@ cudaError_t launch_bf16_moe(
     err = cudaGetLastError();
     if (err != cudaSuccess)
         return err;
-    err = flashinfer::group_gemm::CutlassSegmentGEMMRun<cutlass::bfloat16_t>(
-        desc->workspace.data,
-        static_cast<size_t>(desc->workspace.shape[0]),
-        ws.problems,
-        local_experts,
-        ws.x_ptrs,
-        ws.w_ptrs,
-        ws.y_ptrs,
-        ws.x_ld,
-        ws.w_ld,
-        ws.y_ld,
-        true,
-        stream
-    );
+    err = launch_grouped_bf16(ws, local_experts, p.gemm_threadblocks, stream);
     if (err != cudaSuccess)
         return err;
 

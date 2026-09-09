@@ -95,7 +95,9 @@
 ## 5. Tune the measured GPU work
 
 - [ ] Report selected kernel implementations, precision, graph mode, and workspace
-  sizes in benchmarks. Keep alternatives named and forceable in Rust.
+  sizes in benchmarks. Keep alternatives named and forceable in Rust. Current
+  core JSON records provider paths, workspace sizes, GDN state dtype, and output
+  IDs. The BF16 MoE grid has explicit four- and 96-block Rust selections.
 - [ ] Profile attention preparation, dense projections, GDN, and MoE before
   choosing fusion, projection packing, or replacement provider kernels.
 - [ ] Implement optimized quantized paths, beginning with NVFP4 after BF16

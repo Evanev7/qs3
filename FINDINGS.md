@@ -245,3 +245,21 @@ The subsequent output-recording core run `3bb273e` reproduces 11.908 tok/s and
 83.724 ms decode p50 with the original four-block launch. All 36 generated IDs
 (including warmups) match the first 36 vLLM IDs on the fixed prompt. This supports
 short-run greedy agreement; recurrent precision and sustained quality remain open.
+
+## Explicit AOT MoE launch selection
+
+`QwenConfig::moe_bf16_kernel` selects `CutlassBlocks4` or `CutlassBlocks96`.
+Both lower to the same local two-stage SM80 CUTLASS grouped GEMM, compiled for
+SM121. The default is 96 blocks. `QS3_BENCH_MOE_BLOCKS=4` selects the comparison
+launch in the core benchmark; JSON reports the kernel tile, stages and block
+count. Native and Rust validation reject other grid settings before execution.
+The local launch replaces the vendor wrapper's fixed four-block call without
+changing routing, arithmetic, activation, or reduction. No vendor files change.
+
+The full prescribed suite passed on sp10: 115 library tests (3 ignored), one
+benchmark test, three engine tests, 16 model tests, 14 vector tests, both native
+suites and the native benchmark build. Native numerical cases now run at both
+four and 96 blocks, including repeated routes and weighted top-2 accumulation.
+The separate pinned 35B BF16 regression also passed, including prefill/first-decode
+logit tolerances, greedy IDs `[5, 6, 24218, 10]`, and reset/replay. End-to-end
+measurements follow.

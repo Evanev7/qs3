@@ -9,7 +9,7 @@ use super::{
 use crate::test_assets::require_real_qwen36_model_dir;
 use crate::{
     QwenTokenizer, ffi,
-    model::{ModelRunner, QwenRequest},
+    model::{ModelRunner, MoeBf16Kernel, QwenRequest},
 };
 use std::{ptr, time::Instant};
 
@@ -231,10 +231,16 @@ pub fn run_core_benchmark() -> JsonValue {
     let weight_load = started.elapsed();
 
     let started = Instant::now();
-    let (config, weights) = loaded
+    let (mut config, weights) = loaded
         .into_qwen_model(ptr::null_mut(), max_seq_len)
         .expect("failed to materialize Qwen model weights");
     let weight_materialize = started.elapsed();
+    config.moe_bf16_kernel = match std::env::var("QS3_BENCH_MOE_BLOCKS") {
+        Err(std::env::VarError::NotPresent) => config.moe_bf16_kernel,
+        Ok(value) if value == "4" => MoeBf16Kernel::CutlassBlocks4,
+        Ok(value) if value == "96" => MoeBf16Kernel::CutlassBlocks96,
+        _ => panic!("QS3_BENCH_MOE_BLOCKS must be unset, 4 or 96"),
+    };
     let started = Instant::now();
     let mut runner = ModelRunner::new(config, weights).expect("failed to construct ModelRunner");
     let runner_init = started.elapsed();
@@ -299,11 +305,15 @@ pub fn run_core_benchmark() -> JsonValue {
                 ("attention", "flashinfer_paged_hd256_gqa8".to_owned().into()),
                 ("norm", "flashinfer_gemma_aot".to_owned().into()),
                 ("gdn", "qscu_local_bf16".to_owned().into()),
+                (
+                    "moe_threadblocks",
+                    f64::from(config.moe_bf16_kernel.threadblocks()).into(),
+                ),
                 ("gdn_conv_state_dtype", "bf16".to_owned().into()),
                 ("gdn_recurrent_state_dtype", "bf16".to_owned().into()),
                 (
                     "moe",
-                    "flashinfer_cutlass_segment_gemm_bf16".to_owned().into(),
+                    "cutlass_sm80_128x128x32_stages2_bf16".to_owned().into(),
                 ),
                 (
                     "linear_workspace_bytes",

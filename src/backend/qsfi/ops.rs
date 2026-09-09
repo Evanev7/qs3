@@ -43,6 +43,7 @@ impl Qsfi {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct MoeBf16PlanConfig {
+    pub(crate) gemm_threadblocks: u32,
     pub(crate) max_num_tokens: u32,
     pub(crate) hidden_size: u32,
     pub(crate) intermediate_size: u32,
@@ -75,7 +76,7 @@ impl MoeBf16PlanConfig {
             activation_dtype: ffi::DTYPE_BF16,
             weight_dtype: ffi::DTYPE_BF16,
             output_dtype: ffi::DTYPE_BF16,
-            reserved0: 0,
+            gemm_threadblocks: self.gemm_threadblocks,
         })
     }
 }

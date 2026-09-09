@@ -270,6 +270,23 @@ impl QwenModelShape {
     }
 }
 
+/// Named AOT grouped-GEMM launches measured on GB10. Both use the same
+/// BF16 SM80 tensor-core kernel with a 128x128x32 tile and two pipeline stages.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MoeBf16Kernel {
+    CutlassBlocks4,
+    CutlassBlocks96,
+}
+
+impl MoeBf16Kernel {
+    pub const fn threadblocks(self) -> u32 {
+        match self {
+            Self::CutlassBlocks4 => 4,
+            Self::CutlassBlocks96 => 96,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct QwenConfig {
     pub device_ordinal: i32,
@@ -284,6 +301,7 @@ pub struct QwenConfig {
     pub hidden_size: u32,
     pub intermediate_size: u32,
     pub moe: Option<QwenMoeConfig>,
+    pub moe_bf16_kernel: MoeBf16Kernel,
     pub vocab_size: u32,
     pub num_q_heads: u32,
     pub num_kv_heads: u32,
@@ -336,6 +354,7 @@ impl QwenConfig {
             qsfi_int_workspace_bytes: 64 << 20,
             qsfi_host_int_workspace_bytes: 64 << 20,
             qscb_workspace_bytes: 64 << 20,
+            moe_bf16_kernel: MoeBf16Kernel::CutlassBlocks96,
             model_shape: QwenModelShape::qwen36_moe_gdn(),
         };
         config.validate()?;
@@ -368,6 +387,7 @@ impl QwenConfig {
             qsfi_int_workspace_bytes: 64 << 20,
             qsfi_host_int_workspace_bytes: 64 << 20,
             qscb_workspace_bytes: 16 << 20,
+            moe_bf16_kernel: MoeBf16Kernel::CutlassBlocks96,
             model_shape: QwenModelShape::full_attention_only(),
         }
     }
@@ -416,6 +436,7 @@ impl QwenConfig {
             qsfi_int_workspace_bytes: 64 << 20,
             qsfi_host_int_workspace_bytes: 64 << 20,
             qscb_workspace_bytes: 64 << 20,
+            moe_bf16_kernel: MoeBf16Kernel::CutlassBlocks96,
             model_shape: QwenModelShape::qwen36_moe_gdn(),
         }
     }

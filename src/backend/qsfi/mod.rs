@@ -402,6 +402,9 @@ fn validate_moe_plan_desc(desc: &MoePlanDesc) -> Result<(), Status> {
     }
 
     if desc.backend == MOE_BACKEND_FLASHINFER_STAGED_BF16 {
+        if !matches!(desc.gemm_threadblocks, 4 | 96) {
+            return Err(Status::InvalidArgument);
+        }
         if desc.local_expert_offset != 0 || desc.local_num_experts != desc.num_experts {
             return Err(Status::Unsupported);
         }
@@ -2162,7 +2165,7 @@ mod tests {
             activation_dtype: DTYPE_BF16,
             weight_dtype: DTYPE_BF16,
             output_dtype: DTYPE_BF16,
-            reserved0: 0,
+            gemm_threadblocks: 96,
         }
     }
 
@@ -2180,13 +2183,24 @@ mod tests {
             activation_dtype: DTYPE_NVFP4_E2M1,
             weight_dtype: DTYPE_NVFP4_E2M1,
             output_dtype: DTYPE_BF16,
-            reserved0: 0,
+            gemm_threadblocks: 96,
         }
     }
 
     #[test]
     fn moe_plan_validation_checks_supported_backend_and_shape() {
         let valid = moe_bf16_plan_desc();
+        for blocks in [0, 1, 48, u32::MAX] {
+            let mut invalid = valid;
+            invalid.gemm_threadblocks = blocks;
+            assert_eq!(
+                validate_moe_plan_desc(&invalid),
+                Err(Status::InvalidArgument)
+            );
+        }
+        let mut narrow = valid;
+        narrow.gemm_threadblocks = 4;
+        assert_eq!(validate_moe_plan_desc(&narrow), Ok(()));
         assert_eq!(validate_moe_plan_desc(&valid), Ok(()));
         assert_eq!(validate_moe_plan_desc(&moe_nvfp4_plan_desc()), Ok(()));
 
