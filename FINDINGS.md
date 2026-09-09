@@ -724,3 +724,13 @@ regression. All 36/260 IDs match the earlier implementation, and both sustained
 tile selections return identical IDs. Retain the 32-row default and forceable
 128-row controls. The sustained throughput gap to the recorded vLLM graph run
 is still 19.4%; the tile improvement does not close the graph or quality work.
+
+The [updated 32-forward decode trace](benchmarks/2026-09-09T064138Z-0dc68a2-decode/README.md)
+confirms the kernel savings. Against the earlier aligned qs3 trace, grouped MoE
+time falls from 392.597 to 358.915 ms and decode convolution from 37.418 to
+2.764 ms. GDN recurrence and GEMV time remain close. Kernel span falls from
+1379.419 to 1315.389 ms, while time without GPU work stays near 95 ms. The
+capture contains both optimizations; the same-commit core A/B above isolates
+the tile. Host submission/delivery gaps remain a graph target, and eight device
+allocations/frees remain in the captured decode range. CUDA API duration includes
+waiting and must not be interpreted as independent CPU work.
