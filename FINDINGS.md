@@ -155,3 +155,34 @@ Read-only package inspection found vLLM 0.21.0, PyTorch 2.11.0+cu130, and
 Transformers 5.8.1. No matched inference run has been recorded yet. The expected
 27B BF16 cache path is absent; a third-party 27B NVFP4/MTP cache does not satisfy
 the pinned 27B BF16 correctness requirement.
+
+## Reusing attention planning storage
+
+The prepare API replaces the one-shot native create entrypoints for both paged
+prefill and decode. Rust retains the plan handle and its full metadata key.
+Candidate key vectors are allocated before reprepare; the key is installed only
+on success. Validation/allocation failure preserves a native plan. A planner or
+upload failure invalidates it until successful preparation, so stale schedule
+metadata cannot execute.
+
+The native plan keeps its device integer workspace and a pool of pinned host
+buffers. Device updates are ordered with attention execution on the same stream.
+Each host buffer records an event after its planning upload and can be overwritten
+only when that event reports completion. If all slots remain busy, preparation
+adds a slot instead of waiting. An event-record failure quarantines that slot.
+Normal synchronous token delivery should need one slot; enqueue-only callers can
+retain more. Teardown releases the buffers and events. No stream synchronization
+was added to preparation or execution.
+
+The queued native regression alternates query offsets, retains every output,
+and compares all results against CPU attention. A short GPU delay makes uploads
+remain in flight in the release suite. It also verifies execution after a rejected
+update. Existing cache tests still reject matches when page IDs or last-page
+lengths change. The device-workspace address now persists across reprepare;
+graph capture still needs persistent batch buffers and explicit metadata updates.
+
+Validation on sp10 (2026-09-09): the prescribed full test script passed 115
+library tests (3 ignored), 1 benchmark test, 3 engine tests, 16 model tests,
+14 vector tests, both native suites, and the native benchmark build. The real
+35B BF16 regression passed separately, including logits, greedy IDs and reset
+replay. Performance and allocation behavior are measured in subsequent runs.

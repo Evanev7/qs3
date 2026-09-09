@@ -52,11 +52,12 @@
   output dtype, actual pointer alignment, and workspace capacity. The prescribed
   full suite and real 35B BF16 reference regression passed on sp10 (2026-09-09).
   The native one-shot entrypoint was removed; benchmarks prepare outside timing.
-- [ ] Reuse attention planning workspaces instead of destroying and reallocating
+- [x] Reuse attention planning workspaces instead of destroying and reallocating
   device and pinned-host storage on every metadata change. Introduce a correct
   update/replan path; do not obtain reuse by weakening the existing metadata key.
-  The first timeline measures 42.61 ms/token in pinned allocation/free with no
-  overlapping GPU work; this is the next preparation target.
+  Native prepare now retains device workspace and uses event-protected pinned
+  staging slots. The full suite, queued native replan regression, and real 35B
+  BF16 reference test passed on sp10. The full metadata key is unchanged.
 - [ ] Separate execution-context/provider-handle lifetime from attention and
   prefix state so rebuilds preserve reusable execution resources.
 - [ ] Simplify bindings as these paths are changed: typed Rust tensor views into

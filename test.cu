@@ -818,11 +818,26 @@ void test_batch_decode_attention_matches_cpu_reference()
     plan_table.num_indices = kNumIndices;
     if (ok) {
         ok = check_status(
-            qsfi_batch_decode_plan_create(ctx, &attention, &plan_table, &plan),
+            qsfi_batch_decode_plan_prepare(ctx, &attention, &plan_table, &plan),
             QSFI_STATUS_OK,
             "batch decode plan"
         );
     }
+    if (ok) {
+        auto* original_plan = plan;
+        for (int i = 0; i < 8; ++i) {
+            check_status(
+                qsfi_batch_decode_plan_prepare(ctx, &attention, &plan_table, &plan),
+                QSFI_STATUS_OK,
+                "reprepare decode plan"
+            );
+            if (plan != original_plan) {
+                std::fprintf(stderr, "FAIL: decode reprepare replaced the native plan handle\n");
+                ++failures;
+            }
+        }
+    }
+
     if (ok) {
         qsfi_batch_decode_execute_desc desc {};
         desc.q = tensor3_bf16(d_q, kBatch, kQHeads, kHeadDim);
@@ -857,6 +872,14 @@ void test_batch_decode_attention_matches_cpu_reference()
     cudaFree(d_indices);
     cudaFree(d_last_page_len);
     qsfi_context_destroy(ctx);
+}
+
+// Hold an upload in flight long enough to exercise the plan's staging pool in
+// the release suite. The checked suite can synchronize for its own validation.
+__global__ void attention_replan_delay()
+{
+    const auto started = clock64();
+    while (clock64() - started < 20000000ULL) { }
 }
 
 void test_batch_prefill_attention_matches_cpu_reference()
@@ -941,7 +964,7 @@ void test_batch_prefill_attention_matches_cpu_reference()
     plan_table.num_indices = kNumIndices;
     if (ok) {
         ok = check_status(
-            qsfi_batch_prefill_plan_create(ctx, &attention, &qo_plan, &plan_table, &plan),
+            qsfi_batch_prefill_plan_prepare(ctx, &attention, &qo_plan, &plan_table, &plan),
             QSFI_STATUS_OK,
             "batch prefill plan"
         );
@@ -972,6 +995,111 @@ void test_batch_prefill_attention_matches_cpu_reference()
         check_bf16_vector_close(h_out, h_expected, 0.06f, "batch prefill attention out");
     }
 
+    if (ok) {
+        constexpr int repetitions = 8;
+        const int32_t alternate_qo[] = { 0, 1, total_tokens };
+        const int alternate_requests[] = { 0, 1, 1 };
+        std::vector<float> alternate_expected(q_elems);
+        cpu_attention_reference(
+            h_q,
+            h_k_cache,
+            h_v_cache,
+            alternate_requests,
+            total_tokens,
+            indptr,
+            indices,
+            last_page_len,
+            alternate_expected
+        );
+        int32_t* d_alternate_qo = nullptr;
+        uint16_t* d_results = nullptr;
+        if (copy_to_device(&d_alternate_qo, alternate_qo, 3, "copy alternate qo")
+            && alloc_device(&d_results, repetitions * q_elems, "allocate replan results")) {
+            auto* original_plan = plan;
+            attention_replan_delay<<<1, 1>>>();
+            check_cuda(cudaGetLastError(), "launch replan delay");
+            for (int iteration = 0; iteration < repetitions; ++iteration) {
+                const bool alternate = iteration % 2 != 0;
+                auto next_qo = qo_plan;
+                next_qo.indptr = alternate ? alternate_qo : qo_indptr;
+                check_status(
+                    qsfi_batch_prefill_plan_prepare(ctx, &attention, &next_qo, &plan_table, &plan),
+                    QSFI_STATUS_OK,
+                    "reprepare queued prefill plan"
+                );
+                if (plan != original_plan) {
+                    std::fprintf(stderr, "FAIL: reprepare replaced the native plan handle\n");
+                    ++failures;
+                }
+                qsfi_batch_prefill_execute_desc desc {};
+                desc.q = tensor3_bf16(d_q, total_tokens, kQHeads, kHeadDim);
+                desc.o = tensor3_bf16(
+                    d_results + iteration * q_elems,
+                    total_tokens,
+                    kQHeads,
+                    kHeadDim
+                );
+                desc.qo_indptr = alternate ? d_alternate_qo : d_qo_indptr;
+                desc.kv_cache = cache_desc_bf16(d_k_cache, d_v_cache);
+                desc.page_table = page_table_desc(d_indptr, d_indices, d_last_page_len);
+                check_status(
+                    qsfi_batch_prefill_execute(ctx, plan, &desc),
+                    QSFI_STATUS_OK,
+                    "execute queued reprepared prefill plan"
+                );
+            }
+            // A validation failure must preserve the successfully prepared plan.
+            auto bad_qo = qo_plan;
+            bad_qo.batch_size = 0;
+            check_status(
+                qsfi_batch_prefill_plan_prepare(ctx, &attention, &bad_qo, &plan_table, &plan),
+                QSFI_STATUS_INVALID_ARGUMENT,
+                "reprepare rejects invalid qo"
+            );
+            qsfi_batch_prefill_execute_desc after_failure {};
+            after_failure.q = tensor3_bf16(d_q, total_tokens, kQHeads, kHeadDim);
+            after_failure.o = tensor3_bf16(
+                d_results + (repetitions - 1) * q_elems,
+                total_tokens,
+                kQHeads,
+                kHeadDim
+            );
+            after_failure.qo_indptr = d_alternate_qo;
+            after_failure.kv_cache = cache_desc_bf16(d_k_cache, d_v_cache);
+            after_failure.page_table = page_table_desc(d_indptr, d_indices, d_last_page_len);
+            check_status(
+                qsfi_batch_prefill_execute(ctx, plan, &after_failure),
+                QSFI_STATUS_OK,
+                "validation failure preserves the prepared plan"
+            );
+            check_cuda(cudaDeviceSynchronize(), "sync queued replan results");
+            std::vector<uint16_t> results(repetitions * q_elems);
+            check_cuda(
+                cudaMemcpy(
+                    results.data(),
+                    d_results,
+                    results.size() * sizeof(uint16_t),
+                    cudaMemcpyDeviceToHost
+                ),
+                "download queued replan results"
+            );
+            for (int iteration = 0; iteration < repetitions; ++iteration) {
+                std::vector<uint16_t> actual(
+                    results.begin() + iteration * q_elems,
+                    results.begin() + (iteration + 1) * q_elems
+                );
+                check_bf16_vector_close(
+                    actual,
+                    iteration % 2 ? alternate_expected : h_expected,
+                    0.06f,
+                    "queued replan attention output"
+                );
+            }
+        }
+        cudaFree(d_alternate_qo);
+        cudaFree(d_results);
+    }
+
     qsfi_batch_prefill_plan_destroy(plan);
     cudaFree(d_q);
     cudaFree(d_k_cache);
@@ -1000,7 +1128,7 @@ void expect_attention_plan_unsupported(
     qsfi_batch_decode_plan* plan = nullptr;
     check_status_message(
         ctx,
-        qsfi_batch_decode_plan_create(ctx, &attention, &plan_table, &plan),
+        qsfi_batch_decode_plan_prepare(ctx, &attention, &plan_table, &plan),
         QSFI_STATUS_UNSUPPORTED,
         "num_qo_heads=16 num_kv_heads=2 head_dim=256",
         label

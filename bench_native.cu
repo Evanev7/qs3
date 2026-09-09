@@ -1139,7 +1139,7 @@ bool bench_batch_decode_execute(BenchState& state, const Options& options, uint3
     const qsfi_attention_desc attention = qwen_attention_desc();
     const qsfi_paged_kv_plan plan_table = attention_plan_table(table);
     qsfi_batch_decode_plan* plan = nullptr;
-    qsfi_status status = qsfi_batch_decode_plan_create(state.qsfi, &attention, &plan_table, &plan);
+    qsfi_status status = qsfi_batch_decode_plan_prepare(state.qsfi, &attention, &plan_table, &plan);
     if (status != QSFI_STATUS_OK) {
         std::fprintf(
             stderr,
@@ -1228,7 +1228,7 @@ bool bench_batch_prefill_execute(BenchState& state, const Options& options, uint
     const qsfi_paged_kv_plan plan_table = attention_plan_table(table);
     qsfi_batch_prefill_plan* plan = nullptr;
     qsfi_status status
-        = qsfi_batch_prefill_plan_create(state.qsfi, &attention, &qo_plan, &plan_table, &plan);
+        = qsfi_batch_prefill_plan_prepare(state.qsfi, &attention, &qo_plan, &plan_table, &plan);
     if (status != QSFI_STATUS_OK) {
         std::fprintf(
             stderr,

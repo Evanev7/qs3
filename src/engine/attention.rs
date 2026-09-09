@@ -310,7 +310,12 @@ impl AttentionSession {
             return Ok(());
         }
 
-        self.append_plan.destroy();
+        // Reserve candidate key storage before touching a reusable plan.
+        let qo_indptr = try_clone_slice(key.qo_indptr)?;
+        let kv_indptr = try_clone_slice(key.kv_indptr)?;
+        let kv_indices = try_clone_slice(key.kv_indices)?;
+        let last_page_len = try_clone_slice(key.last_page_len)?;
+        self.append_plan.valid = false;
         let qo = QoPlan {
             indptr: ptr_or_null(batch.qo_indptr),
             batch_size: batch.size,
@@ -323,18 +328,21 @@ impl AttentionSession {
             batch_size: batch.size,
             num_indices,
         };
-        let plan = unsafe {
-            self.qsfi
-                .create_prefill_plan(&self.append_attention, &qo, &page_table)
+        unsafe {
+            self.qsfi.prepare_prefill_plan(
+                &mut self.append_plan.plan,
+                &self.append_attention,
+                &qo,
+                &page_table,
+            )
         }?;
-        self.append_plan.plan = Some(plan);
         self.append_plan.batch_size = batch.size;
         self.append_plan.num_indices = num_indices;
         self.append_plan.total_tokens = batch.token_count;
-        self.append_plan.qo_indptr = try_clone_slice(batch.qo_indptr)?;
-        self.append_plan.kv_indptr = try_clone_slice(batch.kv_indptr)?;
-        self.append_plan.kv_indices = try_clone_slice(batch.kv_indices)?;
-        self.append_plan.last_page_len = try_clone_slice(batch.last_page_len)?;
+        self.append_plan.qo_indptr = qo_indptr;
+        self.append_plan.kv_indptr = kv_indptr;
+        self.append_plan.kv_indices = kv_indices;
+        self.append_plan.last_page_len = last_page_len;
         self.append_plan.valid = true;
         Ok(())
     }
@@ -359,7 +367,12 @@ impl AttentionSession {
             return Ok(());
         }
 
-        self.decode_plan.destroy();
+        // Reserve candidate key storage before touching a reusable plan.
+        let qo_indptr = try_clone_slice(key.qo_indptr)?;
+        let kv_indptr = try_clone_slice(key.kv_indptr)?;
+        let kv_indices = try_clone_slice(key.kv_indices)?;
+        let last_page_len = try_clone_slice(key.last_page_len)?;
+        self.decode_plan.valid = false;
         let page_table = PagedKvPlan {
             indptr: ptr_or_null(batch.kv_indptr),
             indices: ptr_or_null(batch.kv_indices),
@@ -367,18 +380,20 @@ impl AttentionSession {
             batch_size: batch.size,
             num_indices,
         };
-        let plan = unsafe {
-            self.qsfi
-                .create_decode_plan(&self.decode_attention, &page_table)
+        unsafe {
+            self.qsfi.prepare_decode_plan(
+                &mut self.decode_plan.plan,
+                &self.decode_attention,
+                &page_table,
+            )
         }?;
-        self.decode_plan.plan = Some(plan);
         self.decode_plan.batch_size = batch.size;
         self.decode_plan.num_indices = num_indices;
         self.decode_plan.total_tokens = batch.size;
-        self.decode_plan.qo_indptr.clear();
-        self.decode_plan.kv_indptr = try_clone_slice(batch.kv_indptr)?;
-        self.decode_plan.kv_indices = try_clone_slice(batch.kv_indices)?;
-        self.decode_plan.last_page_len = try_clone_slice(batch.last_page_len)?;
+        self.decode_plan.qo_indptr = qo_indptr;
+        self.decode_plan.kv_indptr = kv_indptr;
+        self.decode_plan.kv_indices = kv_indices;
+        self.decode_plan.last_page_len = last_page_len;
         self.decode_plan.valid = true;
         Ok(())
     }

@@ -1057,21 +1057,35 @@ impl Qsfi {
         result_from_raw(status).inspect_err(|_| _ = self.last_error())
     }
 
-    pub(crate) unsafe fn create_decode_plan(
+    pub(crate) unsafe fn prepare_decode_plan(
         &mut self,
+        slot: &mut Option<Plan>,
         attention: &AttentionDesc,
         page_table: &PagedKvPlan,
-    ) -> Result<Plan, Status> {
+    ) -> Result<(), Status> {
         validate_attention_desc(attention)?;
         if attention.mask_mode != MASK_MODE_NONE {
             return Err(Status::Unsupported);
         }
         let shape = validate_paged_kv_plan_desc(page_table)?;
-        let mut raw = ptr::null_mut();
+        let mut raw = match slot.as_ref() {
+            Some(Plan {
+                raw: PlanRaw::Decode(raw),
+                ..
+            }) => raw.as_ptr(),
+            Some(_) => return Err(Status::InvalidArgument),
+            None => ptr::null_mut(),
+        };
         self.result_with_last_error(unsafe {
-            sys::qsfi_batch_decode_plan_create(self.raw.as_ptr(), attention, page_table, &mut raw)
+            sys::qsfi_batch_decode_plan_prepare(self.raw.as_ptr(), attention, page_table, &mut raw)
         })?;
-        Plan::from_decode_raw(raw, *attention, shape)
+        if let Some(plan) = slot {
+            plan.attention = *attention;
+            plan.shape = shape;
+        } else {
+            *slot = Some(Plan::from_decode_raw(raw, *attention, shape)?);
+        }
+        Ok(())
     }
 
     pub(crate) unsafe fn execute_decode(
@@ -1088,12 +1102,13 @@ impl Qsfi {
         })
     }
 
-    pub(crate) unsafe fn create_prefill_plan(
+    pub(crate) unsafe fn prepare_prefill_plan(
         &mut self,
+        slot: &mut Option<Plan>,
         attention: &AttentionDesc,
         qo: &QoPlan,
         page_table: &PagedKvPlan,
-    ) -> Result<Plan, Status> {
+    ) -> Result<(), Status> {
         validate_attention_desc(attention)?;
         if !matches!(attention.mask_mode, MASK_MODE_NONE | MASK_MODE_CAUSAL) {
             return Err(Status::Unsupported);
@@ -1107,9 +1122,16 @@ impl Qsfi {
             total_tokens: qo_shape.total_tokens,
             ..page_shape
         };
-        let mut raw = ptr::null_mut();
+        let mut raw = match slot.as_ref() {
+            Some(Plan {
+                raw: PlanRaw::Prefill(raw),
+                ..
+            }) => raw.as_ptr(),
+            Some(_) => return Err(Status::InvalidArgument),
+            None => ptr::null_mut(),
+        };
         self.result_with_last_error(unsafe {
-            sys::qsfi_batch_prefill_plan_create(
+            sys::qsfi_batch_prefill_plan_prepare(
                 self.raw.as_ptr(),
                 attention,
                 qo,
@@ -1117,7 +1139,13 @@ impl Qsfi {
                 &mut raw,
             )
         })?;
-        Plan::from_prefill_raw(raw, *attention, shape)
+        if let Some(plan) = slot {
+            plan.attention = *attention;
+            plan.shape = shape;
+        } else {
+            *slot = Some(Plan::from_prefill_raw(raw, *attention, shape)?);
+        }
+        Ok(())
     }
 
     pub(crate) unsafe fn execute_prefill(

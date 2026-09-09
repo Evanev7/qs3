@@ -292,7 +292,13 @@ void qsfi_context_clear_last_error(qsfi_context* ctx);
  * GEMM is a direct run surface for now; if a backend later needs persistent
  * tactic/schedule state, add a module-specific plan type then.
  */
-qsfi_status qsfi_batch_decode_plan_create(
+/* Prepare creates a plan when *out is NULL, otherwise reuses its workspaces.
+ * Repreparation requires the same context, stream and scratch generation.
+ * A validation/allocation failure leaves an existing plan untouched. Once the
+ * planner starts, failure invalidates it until the next successful prepare.
+ * Device work is ordered on the context stream; pinned staging is event-gated.
+ */
+qsfi_status qsfi_batch_decode_plan_prepare(
     qsfi_context* ctx,
     const qsfi_attention_desc* attention,
     const qsfi_paged_kv_plan* page_table,
@@ -305,7 +311,7 @@ qsfi_status qsfi_batch_decode_execute(
 );
 void qsfi_batch_decode_plan_destroy(qsfi_batch_decode_plan* plan);
 
-qsfi_status qsfi_batch_prefill_plan_create(
+qsfi_status qsfi_batch_prefill_plan_prepare(
     qsfi_context* ctx,
     const qsfi_attention_desc* attention,
     const qsfi_qo_plan* qo,

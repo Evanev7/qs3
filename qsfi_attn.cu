@@ -26,8 +26,20 @@ enum qsfi_plan_kind {
     QSFI_PLAN_BATCH_PREFILL = 2,
 };
 
+struct qsfi_plan_host_buffer {
+    void* data = nullptr;
+    cudaEvent_t copied = nullptr;
+    bool busy = false;
+    bool recorded = false;
+    qsfi_plan_host_buffer* next = nullptr;
+};
+
 struct qsfi_plan {
     qsfi_plan_kind kind;
+    qsfi_context* owner;
+    bool valid;
+    qsfi_plan_host_buffer* host_buffers;
+    qsfi_plan_host_buffer* active_host_buffer;
     int32_t device_ordinal;
     cudaStream_t stream;
     qsfi_attention_desc attention;
@@ -84,6 +96,8 @@ qsfi_status require_scratch(qsfi_context* ctx)
         || ctx->host_int_workspace_bytes == 0) {
         return set_invalid_arg(ctx, "scratch workspace sizes are not reserved");
     }
+    if (ctx->host_int_workspace_bytes < ctx->int_workspace_bytes)
+        return set_invalid_arg(ctx, "host planning workspace must cover the integer workspace");
     return QSFI_STATUS_OK;
 }
 
@@ -95,8 +109,15 @@ void destroy_plan(qsfi_plan* plan)
         cudaSetDevice(plan->device_ordinal);
     if (plan->int_workspace != nullptr)
         cudaFree(plan->int_workspace);
-    if (plan->host_int_workspace != nullptr)
-        cudaFreeHost(plan->host_int_workspace);
+    while (plan->host_buffers != nullptr) {
+        auto* buffer = plan->host_buffers;
+        plan->host_buffers = buffer->next;
+        // cudaFreeHost retains the usual CUDA allocation teardown semantics.
+        // There is no stream synchronization in preparation or execution.
+        cudaFreeHost(buffer->data);
+        cudaEventDestroy(buffer->copied);
+        delete buffer;
+    }
     plan->int_workspace = nullptr;
     plan->host_int_workspace = nullptr;
 }
@@ -117,21 +138,64 @@ qsfi_status allocate_plan_workspaces(qsfi_context* ctx, qsfi_plan* plan)
             return set_cuda_error(ctx, err, "cudaMalloc plan int workspace");
         plan->int_workspace_bytes = ctx->int_workspace_bytes;
     }
-    if (ctx->host_int_workspace_bytes != 0) {
-        cudaError_t err = cudaHostAlloc(
-            &plan->host_int_workspace,
-            ctx->host_int_workspace_bytes,
-            cudaHostAllocDefault
-        );
-        if (err != cudaSuccess)
-            return set_cuda_error(ctx, err, "cudaHostAlloc plan host int workspace");
-        plan->host_int_workspace_bytes = ctx->host_int_workspace_bytes;
-    }
+    plan->host_int_workspace_bytes = ctx->host_int_workspace_bytes;
     return QSFI_STATUS_OK;
+}
+
+// Device metadata is overwritten in stream order. Host staging must not be
+// overwritten until its previous H2D copy is finished. Enqueue-only callers can
+// temporarily grow this pool; synchronous token delivery normally reuses one.
+qsfi_status acquire_plan_host_buffer(qsfi_context* ctx, qsfi_plan* plan)
+{
+    for (auto* buffer = plan->host_buffers; buffer != nullptr; buffer = buffer->next) {
+        if (buffer->busy && buffer->recorded) {
+            auto err = cudaEventQuery(buffer->copied);
+            if (err == cudaSuccess)
+                buffer->busy = false;
+            else if (err != cudaErrorNotReady)
+                return set_cuda_error(ctx, err, "cudaEventQuery plan staging");
+        }
+        if (!buffer->busy) {
+            plan->active_host_buffer = buffer;
+            plan->host_int_workspace = buffer->data;
+            return QSFI_STATUS_OK;
+        }
+    }
+    auto* buffer = new (std::nothrow) qsfi_plan_host_buffer;
+    if (buffer == nullptr)
+        return set_out_of_memory(ctx, "failed to allocate plan staging slot");
+    auto err = cudaHostAlloc(&buffer->data, plan->host_int_workspace_bytes, cudaHostAllocDefault);
+    if (err == cudaSuccess)
+        err = cudaEventCreateWithFlags(&buffer->copied, cudaEventDisableTiming);
+    if (err != cudaSuccess) {
+        if (buffer->data != nullptr)
+            cudaFreeHost(buffer->data);
+        delete buffer;
+        return set_cuda_error(ctx, err, "allocate plan staging slot");
+    }
+    buffer->next = plan->host_buffers;
+    plan->host_buffers = buffer;
+    plan->active_host_buffer = buffer;
+    plan->host_int_workspace = buffer->data;
+    return QSFI_STATUS_OK;
+}
+
+qsfi_status finish_plan_upload(qsfi_context* ctx, qsfi_plan* plan)
+{
+    auto* buffer = plan->active_host_buffer;
+    // Even a failed planner may have enqueued work. If recording fails, keep
+    // this slot busy and unrecorded so a subsequent prepare cannot reuse it.
+    auto err = cudaEventRecord(buffer->copied, plan->stream);
+    buffer->recorded = err == cudaSuccess;
+    return set_cuda_error(ctx, err, "cudaEventRecord plan staging");
 }
 
 qsfi_status require_plan_stream(qsfi_context* ctx, const qsfi_plan* plan)
 {
+    if (plan->owner != ctx || plan->device_ordinal != ctx->device_ordinal)
+        return set_invalid_arg(ctx, "plan must belong to the execution context");
+    if (!plan->valid)
+        return set_invalid_arg(ctx, "plan requires a successful prepare before execution");
     if (plan->stream != ctx->stream) {
         return set_invalid_arg(ctx, "plan must execute on the stream used for plan creation");
     }
@@ -1108,7 +1172,7 @@ qsfi_status validate_prefill_execute(
 
 extern "C" {
 
-qsfi_status qsfi_batch_decode_plan_create(
+qsfi_status qsfi_batch_decode_plan_prepare(
     qsfi_context* ctx,
     const qsfi_attention_desc* attention,
     const qsfi_paged_kv_plan* page_table,
@@ -1118,7 +1182,6 @@ qsfi_status qsfi_batch_decode_plan_create(
     if (ctx == nullptr || out == nullptr)
         return QSFI_STATUS_INVALID_ARGUMENT;
     qsfi_clear_error_info(&ctx->last_error);
-    *out = nullptr;
     qsfi_status status = activate_context(ctx);
     if (status != QSFI_STATUS_OK)
         return status;
@@ -1134,34 +1197,54 @@ qsfi_status qsfi_batch_decode_plan_create(
     status = validate_paged_kv_plan(ctx, attention, page_table);
     if (status != QSFI_STATUS_OK)
         return status;
-    qsfi_batch_decode_plan* handle = new (std::nothrow) qsfi_batch_decode_plan {};
-    if (handle == nullptr) {
+    const bool creating = *out == nullptr;
+    qsfi_batch_decode_plan* handle = creating ? new (std::nothrow) qsfi_batch_decode_plan {} : *out;
+    if (handle == nullptr)
         return set_out_of_memory(ctx, "failed to allocate decode plan");
-    }
     qsfi_plan* plan = &handle->impl;
-    plan->kind = QSFI_PLAN_BATCH_DECODE;
-    plan->device_ordinal = ctx->device_ordinal;
-    plan->stream = ctx->stream;
+    if (creating) {
+        plan->kind = QSFI_PLAN_BATCH_DECODE;
+        plan->owner = ctx;
+        plan->device_ordinal = ctx->device_ordinal;
+        plan->stream = ctx->stream;
+        plan->scratch_generation = ctx->scratch_generation;
+        status = allocate_plan_workspaces(ctx, plan);
+    } else if (plan->owner != ctx || plan->stream != ctx->stream
+               || plan->scratch_generation != ctx->scratch_generation) {
+        return set_invalid_arg(ctx, "cannot reprepare a plan after context/scratch changes");
+    }
+    if (status == QSFI_STATUS_OK)
+        status = acquire_plan_host_buffer(ctx, plan);
+    if (status != QSFI_STATUS_OK) {
+        if (creating)
+            destroy_batch_plan(handle);
+        return status;
+    }
+    plan->valid = false;
+    plan->active_host_buffer->busy = true;
+    plan->active_host_buffer->recorded = false;
+    flashinfer::DecodePlanInfo candidate {};
+    try {
+        auto err = decode_plan_dispatch(ctx, plan, attention, page_table, &candidate);
+        if (err != cudaSuccess)
+            status = set_cuda_error(ctx, err, "flashinfer decode plan");
+    } catch (const std::exception& ex) {
+        status = set_flashinfer_error(ctx, "flashinfer decode plan", ex);
+    }
+    auto upload_status = finish_plan_upload(ctx, plan);
+    if (upload_status != QSFI_STATUS_OK)
+        status = upload_status;
+    if (status != QSFI_STATUS_OK) {
+        if (creating)
+            destroy_batch_plan(handle);
+        return status;
+    }
+    plan->decode = candidate;
     plan->attention = *attention;
     plan->batch_size = page_table->batch_size;
     plan->num_indices = page_table->num_indices;
     plan->total_tokens = page_table->batch_size;
-    plan->scratch_generation = ctx->scratch_generation;
-    status = allocate_plan_workspaces(ctx, plan);
-    if (status != QSFI_STATUS_OK) {
-        destroy_batch_plan(handle);
-        return status;
-    }
-    try {
-        cudaError_t err = decode_plan_dispatch(ctx, plan, attention, page_table, &plan->decode);
-        if (err != cudaSuccess) {
-            destroy_batch_plan(handle);
-            return set_cuda_error(ctx, err, "flashinfer decode plan");
-        }
-    } catch (const std::exception& ex) {
-        destroy_batch_plan(handle);
-        return set_flashinfer_error(ctx, "flashinfer decode plan", ex);
-    }
+    plan->valid = true;
     *out = handle;
     return QSFI_STATUS_OK;
 }
@@ -1201,7 +1284,7 @@ qsfi_status qsfi_batch_decode_execute(
     return QSFI_STATUS_OK;
 }
 
-qsfi_status qsfi_batch_prefill_plan_create(
+qsfi_status qsfi_batch_prefill_plan_prepare(
     qsfi_context* ctx,
     const qsfi_attention_desc* attention,
     const qsfi_qo_plan* qo,
@@ -1212,7 +1295,6 @@ qsfi_status qsfi_batch_prefill_plan_create(
     if (ctx == nullptr || out == nullptr)
         return QSFI_STATUS_INVALID_ARGUMENT;
     qsfi_clear_error_info(&ctx->last_error);
-    *out = nullptr;
     qsfi_status status = activate_context(ctx);
     if (status != QSFI_STATUS_OK)
         return status;
@@ -1235,43 +1317,62 @@ qsfi_status qsfi_batch_prefill_plan_create(
     if (qo->batch_size != page_table->batch_size) {
         return set_invalid_arg(ctx, "qo and page_table batch sizes must match");
     }
-    qsfi_batch_prefill_plan* handle = new (std::nothrow) qsfi_batch_prefill_plan {};
-    if (handle == nullptr) {
+    const bool creating = *out == nullptr;
+    qsfi_batch_prefill_plan* handle
+        = creating ? new (std::nothrow) qsfi_batch_prefill_plan {} : *out;
+    if (handle == nullptr)
         return set_out_of_memory(ctx, "failed to allocate prefill plan");
-    }
     qsfi_plan* plan = &handle->impl;
-    plan->kind = QSFI_PLAN_BATCH_PREFILL;
-    plan->device_ordinal = ctx->device_ordinal;
-    plan->stream = ctx->stream;
-    plan->attention = *attention;
-    plan->batch_size = page_table->batch_size;
-    plan->num_indices = page_table->num_indices;
-    plan->total_tokens = qo->total_tokens;
-    plan->scratch_generation = ctx->scratch_generation;
-    status = allocate_plan_workspaces(ctx, plan);
+    if (creating) {
+        plan->kind = QSFI_PLAN_BATCH_PREFILL;
+        plan->owner = ctx;
+        plan->device_ordinal = ctx->device_ordinal;
+        plan->stream = ctx->stream;
+        plan->scratch_generation = ctx->scratch_generation;
+        status = allocate_plan_workspaces(ctx, plan);
+    } else if (plan->owner != ctx || plan->stream != ctx->stream
+               || plan->scratch_generation != ctx->scratch_generation) {
+        return set_invalid_arg(ctx, "cannot reprepare a plan after context/scratch changes");
+    }
+    if (status == QSFI_STATUS_OK)
+        status = acquire_plan_host_buffer(ctx, plan);
     if (status != QSFI_STATUS_OK) {
-        destroy_batch_plan(handle);
+        if (creating)
+            destroy_batch_plan(handle);
         return status;
     }
+    plan->valid = false;
+    plan->active_host_buffer->busy = true;
+    plan->active_host_buffer->recorded = false;
+    flashinfer::PrefillPlanInfo candidate {};
     try {
-        cudaError_t err
-            = prefill_plan_dispatch(ctx, plan, attention, qo, page_table, &plan->prefill);
-        if (err != cudaSuccess) {
-            destroy_batch_plan(handle);
-            return set_cuda_error(ctx, err, "flashinfer prefill plan");
-        }
-        if (plan->prefill.cta_tile_q != 16 && plan->prefill.cta_tile_q != 32
-            && plan->prefill.cta_tile_q != 64 && plan->prefill.cta_tile_q != 128) {
-            destroy_batch_plan(handle);
-            return set_unsupported(
+        auto err = prefill_plan_dispatch(ctx, plan, attention, qo, page_table, &candidate);
+        if (err != cudaSuccess)
+            status = set_cuda_error(ctx, err, "flashinfer prefill plan");
+        if (status == QSFI_STATUS_OK && candidate.cta_tile_q != 16 && candidate.cta_tile_q != 32
+            && candidate.cta_tile_q != 64 && candidate.cta_tile_q != 128) {
+            status = set_unsupported(
                 ctx,
                 "compiled prefill dispatch supports only cta_tile_q=16/32/64/128"
             );
         }
     } catch (const std::exception& ex) {
-        destroy_batch_plan(handle);
-        return set_flashinfer_error(ctx, "flashinfer prefill plan", ex);
+        status = set_flashinfer_error(ctx, "flashinfer prefill plan", ex);
     }
+    auto upload_status = finish_plan_upload(ctx, plan);
+    if (upload_status != QSFI_STATUS_OK)
+        status = upload_status;
+    if (status != QSFI_STATUS_OK) {
+        if (creating)
+            destroy_batch_plan(handle);
+        return status;
+    }
+    plan->prefill = candidate;
+    plan->attention = *attention;
+    plan->batch_size = page_table->batch_size;
+    plan->num_indices = page_table->num_indices;
+    plan->total_tokens = qo->total_tokens;
+    plan->valid = true;
     *out = handle;
     return QSFI_STATUS_OK;
 }
