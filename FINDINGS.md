@@ -23,11 +23,14 @@ or matched-vLLM comparison. Prefill samples follow resets of the same runner.
 | `ba4ad6e` | 7.498 | 133.401 | 1022.074 | [JSON](benchmarks/2026-09-09T010751.748761081Z-ba4ad6e.json) |
 | `f32f0e5` | 7.550 | 132.793 | 1023.724 | [JSON](benchmarks/2026-09-09T011848.800087754Z-f32f0e5.json) |
 | `6a3d39d` (prepared linear) | 7.638 | 131.361 | 1028.085 | [JSON](benchmarks/2026-09-09T013243.445741248Z-6a3d39d.json) |
+| `6bf75db` (norm fix) | 7.515 | 133.235 | 1026.774 | [JSON](benchmarks/2026-09-09T014957.161677547Z-6bf75db.json) |
 
 The first prepared-linear run is 1.17% higher in decode throughput than the fresh
 baseline, with prefill 0.43% slower. This is one pair of runs and does not resolve
 small effects from run-to-run variation. It does show that removing this host
-preparation alone leaves the overall decode cost close to 131 ms/token.
+preparation alone leaves the overall decode cost close to 131–133 ms/token.
+The norm-fix measurement returned to 7.515 tok/s, reinforcing that these small
+wall-time differences do not yet establish a performance gain.
 
 All runs report GB10, driver 580.142 and CUDA runtime 13.0. Model, precision,
 context, software and kernel choices must remain explicit in comparisons.

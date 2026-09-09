@@ -13,6 +13,11 @@ use crate::{
 };
 use std::{ptr, time::Instant};
 
+unsafe extern "C" {
+    fn cudaProfilerStart() -> i32;
+    fn cudaProfilerStop() -> i32;
+}
+
 const REQUEST_ID: u64 = 0x5450_5300_0000_0001;
 const TOKENIZE_SAMPLES: usize = 100;
 const PREFILL_WARMUPS: usize = 2;
@@ -158,6 +163,11 @@ fn measure_decode_step(
 }
 
 pub fn run_core_benchmark() -> JsonValue {
+    let profile_decode = match std::env::var("QS3_PROFILE_DECODE") {
+        Err(std::env::VarError::NotPresent) => false,
+        Ok(value) if value == "1" => true,
+        _ => panic!("QS3_PROFILE_DECODE must be unset or 1"),
+    };
     let model_dir = require_real_qwen36_model_dir();
     let started = Instant::now();
     let tokenizer =
@@ -228,11 +238,19 @@ pub fn run_core_benchmark() -> JsonValue {
     }
     let decode_context_start = live_tokens.len();
     let mut decode_times = Vec::with_capacity(DECODE_SAMPLES);
+    // Nsight Systems can capture only this prepared, steady-decode interval.
+    // Profiler API calls stay outside the per-step latency samples.
+    if profile_decode {
+        result_from_cuda(unsafe { cudaProfilerStart() }).expect("start decode profiling range");
+    }
     for _ in 0..DECODE_SAMPLES {
         let (elapsed, next_live_tokens) =
             measure_decode_step(&mut runner, &tokenizer, &live_tokens);
         decode_times.push(elapsed);
         live_tokens = next_live_tokens;
+    }
+    if profile_decode {
+        result_from_cuda(unsafe { cudaProfilerStop() }).expect("stop decode profiling range");
     }
     let decode_total = decode_times.iter().copied().sum::<Duration>();
     let decode_p50 = median_seconds(&decode_times).expect("decode samples are non-empty");
@@ -246,6 +264,32 @@ pub fn run_core_benchmark() -> JsonValue {
             "execution",
             object([
                 ("mode", "eager".to_owned().into()),
+                ("precision", "bf16".to_owned().into()),
+                ("cuda_profiler_range", profile_decode.into()),
+                ("linear", "cublaslt_prepared_f32_accum".to_owned().into()),
+                ("attention", "flashinfer_paged_hd256_gqa8".to_owned().into()),
+                ("norm", "flashinfer_gemma_aot".to_owned().into()),
+                ("gdn", "qscu_local_bf16".to_owned().into()),
+                (
+                    "moe",
+                    "flashinfer_cutlass_segment_gemm_bf16".to_owned().into(),
+                ),
+                (
+                    "linear_workspace_bytes",
+                    (config.qscb_workspace_bytes as f64).into(),
+                ),
+                (
+                    "attention_float_workspace_bytes",
+                    (config.qsfi_float_workspace_bytes as f64).into(),
+                ),
+                (
+                    "attention_int_workspace_bytes",
+                    (config.qsfi_int_workspace_bytes as f64).into(),
+                ),
+                (
+                    "attention_host_workspace_bytes",
+                    (config.qsfi_host_int_workspace_bytes as f64).into(),
+                ),
                 ("weight_backend", "managed_uma".to_owned().into()),
                 ("sampling", "greedy".to_owned().into()),
             ]),
