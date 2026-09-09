@@ -79,9 +79,9 @@ fn read_exact_at_raw(file: &File, dst: *mut u8, bytes: usize, offset: u64) -> io
     Ok(())
 }
 
-/// Backend interface for the future real-model weight loader.
+/// Backend interface for validated Qwen3.6 weight transfers.
 ///
-/// The qwen3.6-specific loader should stay below this trait: parse
+/// Qwen3.6 manifest parsing and model validation stay above this trait: parse
 /// `config.json`, safetensors indexes, and all shard headers first; reject
 /// duplicate, missing, unexpected, wrong-dtype, wrong-shape, overlapping, or
 /// out-of-range tensors before allocating CUDA-visible memory. Once the exact

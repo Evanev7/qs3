@@ -939,11 +939,18 @@ fn bench_real_qwen36_bf16_managed_uma_load() {
         model_dir.display()
     );
 
+    let setup_started = Instant::now();
     let backend = ManagedUmaBackend::new(cuda_device_from_env()).unwrap();
+    let backend_setup = setup_started.elapsed();
+    println!("backend setup {:.3}s", backend_setup.as_secs_f64());
 
     let load_started = Instant::now();
     let loaded = execute_qwen36_bf16_load_plan(&plan, backend, ptr::null_mut()).unwrap();
     let elapsed = load_started.elapsed();
+    println!(
+        "backend setup + load {:.3}s",
+        (backend_setup + elapsed).as_secs_f64()
+    );
     let loaded_tensors = loaded.tensors.len();
     let stats = loaded.backend.stats();
     let read_gib = stats.read_bytes as f64 / (1u64 << 30) as f64;
@@ -985,11 +992,18 @@ fn bench_real_qwen36_bf16_pinned_upload_load() {
         model_dir.display()
     );
 
+    let setup_started = Instant::now();
     let backend = PinnedUploadBackend::new(cuda_device_from_env()).unwrap();
+    let backend_setup = setup_started.elapsed();
+    println!("backend setup {:.3}s", backend_setup.as_secs_f64());
 
     let load_started = Instant::now();
     let loaded = execute_qwen36_bf16_load_plan(&plan, backend, ptr::null_mut()).unwrap();
     let elapsed = load_started.elapsed();
+    println!(
+        "backend setup + load {:.3}s",
+        (backend_setup + elapsed).as_secs_f64()
+    );
     let loaded_tensors = loaded.tensors.len();
     let stats = loaded.backend.stats();
     let read_gib = stats.read_bytes as f64 / (1u64 << 30) as f64;
