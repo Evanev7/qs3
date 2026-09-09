@@ -33,19 +33,12 @@
   so edits cannot silently reuse stale fixtures and the `.oracle-ok` stamp.
 - [x] Run the prescribed test script and the real 35B BF16 regression on the
   new Spark.
-- [ ] Diagnose the intermittent FlashInfer norm launch error. Reproduced on
-  `sp10` on 2026-09-08 using `run_cuda_test.sh` with normal Cargo test parallelism:
-  one full run passed, then the next failed in
-  `exact_prefix_extension_accepts_caller_suffix_tokens` (15/16 model tests passed).
-  CUDA reported `invalid argument` from `cudaLaunchKernelEx` at
-  `3pty/flashinfer/include/flashinfer/norm.cuh:679`; the Rust failure was an
-  `Err(CudaError)` unwrap at `tests/model.rs:75`.
-  `prompt_rewrite_behind_live_tail_rebuilds_like_fresh_runner` passed in that same
-  failing run, so the observed failure is not limited to prompt rewriting.
-  These randomized model tests do not require downloaded weights. Next compare
-  repeated model-test runs with normal parallelism versus `--test-threads=1`,
-  then investigate CUDA context/stream and runner resource lifetimes. Concurrency
-  is a hypothesis, not an established cause.
+- [x] Diagnose and fix the intermittent FlashInfer norm launch error. A focused
+  concurrent-width regression reproduced `norm.cuh:679`; serializing only the
+  launches passed. The host wrapper was racing on the CUDA function's dynamic
+  shared-memory limit. Launch the same AOT kernels without changing shared
+  function attributes. The full suite, 20 parallel model-test repetitions, and
+  real 35B BF16 reference regression passed on sp10 (2026-09-09). See FINDINGS.md.
 - [ ] Record 35B BF16 single-request latency/TPS and a GPU timeline against a
   matched vLLM run. Include several context lengths and sustained decode;
   separate setup, prefill, steady decode, and output delivery.

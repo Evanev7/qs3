@@ -22,7 +22,6 @@ or matched-vLLM comparison. Prefill samples follow resets of the same runner.
 | --- | ---: | ---: | ---: | --- |
 | `ba4ad6e` | 7.498 | 133.401 | 1022.074 | [JSON](benchmarks/2026-09-09T010751.748761081Z-ba4ad6e.json) |
 | `f32f0e5` | 7.550 | 132.793 | 1023.724 | [JSON](benchmarks/2026-09-09T011848.800087754Z-f32f0e5.json) |
-
 | `6a3d39d` (prepared linear) | 7.638 | 131.361 | 1028.085 | [JSON](benchmarks/2026-09-09T013243.445741248Z-6a3d39d.json) |
 
 The first prepared-linear run is 1.17% higher in decode throughput than the fresh
@@ -91,3 +90,33 @@ suites. Native cases cover repeated execution with changed alpha and rejection
 of changed strides, dtype, alignment and workspace. The separately requested
 real BF16 regression passed its prefill/first-decode logit tolerances, greedy
 IDs `[5, 6, 24218, 10]` and reset/replay.
+
+## Norm launch race: reproduced and fixed
+
+FlashInfer revision `b3baedbbef2686df91b6dc43818ee56fe26ceba2` calls
+`cudaFuncSetAttribute(MaxDynamicSharedMemorySize, requested_bytes)` immediately
+before each Gemma RMSNorm/fused-add launch. Different hidden widths instantiate
+the same vector-width-8 BF16 kernel. That CUDA function attribute is shared
+across host threads using the device primary context; a smaller-width call can
+lower the limit between another call's setter and launch.
+
+On 2026-09-09, the focused `qwen36_norm_concurrent_widths_keep_launch_configuration_independent`
+regression reproduced the exact `invalid argument` at `norm.cuh:679`: width 2048
+failed on iteration 35 and width 5120 on iteration 102. It creates four independent
+contexts with widths 8, 256, 2048 and 5120. A temporary mutex around only the native
+launch calls made the same test pass. Removing the per-call attribute mutation
+also passed, without serialization. This is direct evidence for the launch race,
+not a prefix-rebuild or stream-lifetime hypothesis.
+
+`qsfi_norm_rope.cu` now launches the same AOT FlashInfer kernels with a zero-initialized
+local CUDA launch configuration, Gemma weight bias 1, and PDL disabled. All Qwen
+shapes fit the default shared-memory allowance; oversized fused norms fail before
+launch. No mutex or stream synchronization was added. CUDA requires explicit
+opt-in for dynamic shared memory above 48 KiB; see the [CUDA programming guide](https://docs.nvidia.com/cuda/cuda-programming-guide/03-advanced/advanced-kernel-programming.html).
+
+Validation through `QS3_TEST_MODE=norm_validation ./run_cuda_test.sh` passed:
+115 library tests (3 ignored), 1 benchmark test, 3 engine tests, 16 model tests,
+14 vector tests including 16,000 concurrent norm launches, both native suites,
+and a build of `qsfi_bench_native`. Twenty additional normal-parallelism model
+runs passed all 320 executions. The separate real 35B BF16 regression also passed
+its logits, greedy IDs and reset/replay checks.

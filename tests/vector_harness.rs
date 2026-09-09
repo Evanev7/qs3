@@ -1626,6 +1626,54 @@ fn assert_bf16_close_to_f32_oracle(
     }
 }
 
+// All widths instantiate the same BF16 vector-width-8 FlashInfer kernel, but
+// require different launch shared-memory sizes. Independent contexts share
+// that kernel's CUDA function attributes within the device primary context.
+#[test]
+fn qwen36_norm_concurrent_widths_keep_launch_configuration_independent() {
+    for fused in [false, true] {
+        let start = std::sync::Barrier::new(4);
+        std::thread::scope(|scope| {
+            for hidden in [8, 256, 2048, 5120] {
+                let start = &start;
+                scope.spawn(move || {
+                    let ctx = QsfiContext::new();
+                    let x = DeviceTensor::from_slice_with_dtype(
+                        &vec![0x3f80u16; hidden], vec![1, hidden], Some(ffi::DTYPE_BF16),
+                    ).unwrap();
+                    let weight = DeviceTensor::zeroed_bf16(vec![hidden]).unwrap();
+                    let residual = DeviceTensor::zeroed_bf16(vec![1, hidden]).unwrap();
+                    let out = DeviceTensor::zeroed_bf16(vec![1, hidden]).unwrap();
+                    let norm = ffi::RmsnormDesc {
+                        x: x.tensor2().unwrap(), weight: weight.tensor1().unwrap(),
+                        out: out.tensor2().unwrap(), hidden_size: hidden as u32, eps: 1.0e-6,
+                    };
+                    let add = ffi::FusedAddRmsnormDesc {
+                        x: x.tensor2().unwrap(), residual_inout: residual.tensor2().unwrap(),
+                        weight: weight.tensor1().unwrap(), out: x.tensor2().unwrap(),
+                        hidden_size: hidden as u32, eps: 1.0e-6,
+                    };
+                    start.wait();
+                    for iteration in 0..2000 {
+                        let status = unsafe {
+                            if fused { qsfi_fused_add_rmsnorm(ctx.raw(), &add) }
+                            else { qsfi_rmsnorm(ctx.raw(), &norm) }
+                        };
+                        assert_eq!(status, QSFI_STATUS_OK,
+                            "concurrent norm launch hidden={hidden} fused={fused} iteration={iteration}");
+                    }
+                    assert_cuda(unsafe { cudaDeviceSynchronize() }, "sync concurrent norms");
+                    let got = if fused { x.to_u16_vec("fused norm") }
+                        else { out.to_u16_vec("norm") };
+                    for value in got {
+                        assert!((bf16_bits_to_f32(value) - 1.0).abs() < 0.008);
+                    }
+                });
+            }
+        });
+    }
+}
+
 #[test]
 fn qwen36_cuda_rmsnorm_hidden2048_matches_gemma_vector() {
     let Some((manifest, artifact)) = load_norm_vector_case("gemma_rmsnorm_hidden2048") else {

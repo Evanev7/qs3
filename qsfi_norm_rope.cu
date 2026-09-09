@@ -147,37 +147,71 @@ qsfi_status validate_rmsnorm_common(
     return validate_eps(ctx, eps);
 }
 
+// FlashInfer's host wrappers set MaxDynamicSharedMemorySize to each call's
+// request. That is a shared CUDA function attribute, so another host thread can
+// lower it between the setter and launch. Qwen norms fit within the default
+// 48 KiB limit: launch the same AOT kernels without mutating function attributes.
+template <typename T>
+cudaLaunchConfig_t norm_launch_config(qsfi_context* ctx, uint32_t rows, uint32_t d, bool fused)
+{
+    const uint32_t vec_size = std::gcd(16 / sizeof(T), d);
+    const uint32_t block_size = std::min<uint32_t>(1024, d / vec_size);
+    const uint32_t num_warps = flashinfer::ceil_div(block_size, 32);
+    cudaLaunchConfig_t config {};
+    config.gridDim = dim3(rows);
+    config.blockDim = dim3(32, num_warps);
+    config.dynamicSmemBytes = fused
+        ? (static_cast<size_t>(flashinfer::ceil_div(num_warps, 4)) * 4 + d) * sizeof(float)
+        : num_warps * sizeof(float);
+    config.stream = ctx->stream;
+    return config;
+}
+
 template <typename T> cudaError_t launch_rmsnorm(qsfi_context* ctx, const qsfi_rmsnorm_desc* desc)
 {
-    return flashinfer::norm::GemmaRMSNorm<T>(
-        static_cast<T*>(desc->x.data),
-        static_cast<T*>(desc->weight.data),
-        static_cast<T*>(desc->out.data),
-        static_cast<uint32_t>(desc->x.shape[0]),
-        desc->hidden_size,
-        static_cast<uint32_t>(desc->x.stride[0]),
-        static_cast<uint32_t>(desc->out.stride[0]),
-        desc->eps,
-        false,
-        ctx->stream
-    );
+    const uint32_t d = desc->hidden_size;
+    const uint32_t vec_size = std::gcd(16 / sizeof(T), d);
+    auto config = norm_launch_config<T>(ctx, static_cast<uint32_t>(desc->x.shape[0]), d, false);
+    DISPATCH_ALIGNED_VEC_SIZE(vec_size, VEC_SIZE, {
+        FLASHINFER_CUDA_CALL(cudaLaunchKernelEx(
+            &config,
+            flashinfer::norm::RMSNormKernel<VEC_SIZE, T>,
+            static_cast<T*>(desc->x.data),
+            static_cast<T*>(desc->weight.data),
+            static_cast<T*>(desc->out.data),
+            d,
+            static_cast<uint32_t>(desc->x.stride[0]),
+            static_cast<uint32_t>(desc->out.stride[0]),
+            1.0f,
+            desc->eps
+        ));
+    });
+    return cudaSuccess;
 }
 
 template <typename T>
 cudaError_t launch_fused_add_rmsnorm(qsfi_context* ctx, const qsfi_fused_add_rmsnorm_desc* desc)
 {
-    return flashinfer::norm::GemmaFusedAddRMSNorm<T>(
-        static_cast<T*>(desc->x.data),
-        static_cast<T*>(desc->residual_inout.data),
-        static_cast<T*>(desc->weight.data),
-        static_cast<uint32_t>(desc->x.shape[0]),
-        desc->hidden_size,
-        static_cast<uint32_t>(desc->x.stride[0]),
-        static_cast<uint32_t>(desc->residual_inout.stride[0]),
-        desc->eps,
-        false,
-        ctx->stream
-    );
+    const uint32_t d = desc->hidden_size;
+    const uint32_t vec_size = std::gcd(16 / sizeof(T), d);
+    auto config = norm_launch_config<T>(ctx, static_cast<uint32_t>(desc->x.shape[0]), d, true);
+    if (config.dynamicSmemBytes > 48 * 1024)
+        return cudaErrorInvalidValue;
+    DISPATCH_ALIGNED_VEC_SIZE(vec_size, VEC_SIZE, {
+        FLASHINFER_CUDA_CALL(cudaLaunchKernelEx(
+            &config,
+            flashinfer::norm::FusedAddRMSNormKernel<VEC_SIZE, T>,
+            static_cast<T*>(desc->x.data),
+            static_cast<T*>(desc->residual_inout.data),
+            static_cast<T*>(desc->weight.data),
+            d,
+            static_cast<uint32_t>(desc->x.stride[0]),
+            static_cast<uint32_t>(desc->residual_inout.stride[0]),
+            1.0f,
+            desc->eps
+        ));
+    });
+    return cudaSuccess;
 }
 
 qsfi_status validate_fused_add_rmsnorm(qsfi_context* ctx, const qsfi_fused_add_rmsnorm_desc* desc)

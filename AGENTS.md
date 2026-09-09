@@ -80,6 +80,12 @@ loader direction:
 - do not retain mmap or InstantTensor staging pointers as committed weights
   mmap can be a source view only. cuFile/GDS stays optional behind a hard probe
 
+norm launch finding:
+- FlashInfer's per-launch MaxDynamicSharedMemorySize setter races between host
+  threads using different widths of the same kernel specialization. Keep the
+  local AOT norm launches free of shared function-attribute mutation; see the
+  concurrent-width regression and FINDINGS.md.
+
 GDN direction:
 - keep qwen3.6-specific GDN prep glue local for now: causal conv, post-conv
   Q/K/V split, decay/beta materialization, gated RMSNorm, and local recurrence
@@ -90,6 +96,4 @@ near-term todos:
 - resume weight-load speed testing after spark-1565 recovers: rerun the
   managed baseline and pinned staging comparison, including the interrupted
   `4 x 1 GiB` pinned-ring run
-- track down intermittent `prompt_rewrite_behind_live_tail_rebuilds_like_fresh_runner`
-  CUDA invalid-argument failures from the FlashInfer norm launch
 - after BF16 real-model correctness, add the first optimized NVFP4 path
