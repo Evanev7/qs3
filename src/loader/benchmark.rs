@@ -135,9 +135,12 @@ fn positive_env(name: &str, default: usize) -> usize {
     }
 }
 
-fn measure_fresh_prefill(runner: &mut ModelRunner, prompt: &[i32]) -> Duration {
+fn measure_fresh_prefill(runner: &mut ModelRunner, prompt: &[i32], profile: bool) -> Duration {
     runner.reset().expect("benchmark runner reset failed");
     synchronize_stream();
+    if profile {
+        result_from_cuda(unsafe { cudaProfilerStart() }).expect("start prefill profiling range");
+    }
     let started = Instant::now();
     let result = runner
         .run(QwenRequest {
@@ -147,6 +150,9 @@ fn measure_fresh_prefill(runner: &mut ModelRunner, prompt: &[i32]) -> Duration {
         })
         .expect("fresh benchmark prefill failed");
     let elapsed = started.elapsed();
+    if profile {
+        result_from_cuda(unsafe { cudaProfilerStop() }).expect("stop prefill profiling range");
+    }
     assert!(result.generated_tokens.is_empty());
     assert_eq!(result.live_tokens, prompt);
     elapsed
@@ -176,10 +182,11 @@ fn measure_decode_step(
 
 pub fn run_core_benchmark() -> JsonValue {
     let decode_samples = positive_env("QS3_BENCH_DECODE_SAMPLES", DEFAULT_DECODE_SAMPLES);
-    let profile_decode = match std::env::var("QS3_PROFILE_DECODE") {
-        Err(std::env::VarError::NotPresent) => false,
-        Ok(value) if value == "1" => true,
-        _ => panic!("QS3_PROFILE_DECODE must be unset or 1"),
+    let profile_phase = match std::env::var("QS3_PROFILE") {
+        Err(std::env::VarError::NotPresent) => "none",
+        Ok(value) if value == "decode" => "decode",
+        Ok(value) if value == "prefill" => "prefill",
+        _ => panic!("QS3_PROFILE must be unset, decode or prefill"),
     };
     let model_dir = require_real_qwen36_model_dir();
     let started = Instant::now();
@@ -253,11 +260,15 @@ pub fn run_core_benchmark() -> JsonValue {
 
     let mut prefill_warmup_times = Vec::with_capacity(PREFILL_WARMUPS);
     for _ in 0..PREFILL_WARMUPS {
-        prefill_warmup_times.push(measure_fresh_prefill(&mut runner, &prompt));
+        prefill_warmup_times.push(measure_fresh_prefill(&mut runner, &prompt, false));
     }
     let mut prefill_times = Vec::with_capacity(PREFILL_SAMPLES);
-    for _ in 0..PREFILL_SAMPLES {
-        prefill_times.push(measure_fresh_prefill(&mut runner, &prompt));
+    for sample in 0..PREFILL_SAMPLES {
+        prefill_times.push(measure_fresh_prefill(
+            &mut runner,
+            &prompt,
+            profile_phase == "prefill" && sample == 0,
+        ));
     }
     let prefill_median = median_seconds(&prefill_times).expect("prefill samples are non-empty");
 
@@ -281,7 +292,7 @@ pub fn run_core_benchmark() -> JsonValue {
     let mut decode_times = Vec::with_capacity(decode_samples);
     // Nsight Systems can capture only this prepared, steady-decode interval.
     // Profiler API calls stay outside the per-step latency samples.
-    if profile_decode {
+    if profile_phase == "decode" {
         result_from_cuda(unsafe { cudaProfilerStart() }).expect("start decode profiling range");
     }
     for _ in 0..decode_samples {
@@ -290,7 +301,7 @@ pub fn run_core_benchmark() -> JsonValue {
         decode_times.push(elapsed);
         live_tokens = next_live_tokens;
     }
-    if profile_decode {
+    if profile_phase == "decode" {
         result_from_cuda(unsafe { cudaProfilerStop() }).expect("stop decode profiling range");
     }
     let decode_total = decode_times.iter().copied().sum::<Duration>();
@@ -306,7 +317,8 @@ pub fn run_core_benchmark() -> JsonValue {
             object([
                 ("mode", "eager".to_owned().into()),
                 ("precision", "bf16".to_owned().into()),
-                ("cuda_profiler_range", profile_decode.into()),
+                ("cuda_profiler_range", (profile_phase != "none").into()),
+                ("cuda_profiler_phase", profile_phase.to_owned().into()),
                 ("linear", "cublaslt_prepared_f32_accum".to_owned().into()),
                 ("attention", "flashinfer_paged_hd256_gqa8".to_owned().into()),
                 ("norm", "flashinfer_gemma_aot".to_owned().into()),
