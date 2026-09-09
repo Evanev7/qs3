@@ -395,3 +395,11 @@ only the last prediction is needed for this single-request continuation. Test
 projecting/sampling only the final row as a separate prefill optimization, with
 public-runner and vector semantics checked explicitly. This is additional work
 beyond reducing decode preparation or router cost.
+
+The [integrated router trace](benchmarks/2026-09-09T035835Z-f898d32-decode/README.md)
+records 8.662 ms for 1280 router calls, down from 178.054 ms in the earlier
+96-block-MoE trace. Dense GEMV remains 774.393 ms, grouped MoE 395.691 ms, and
+there are 93.761 ms without GPU work across 32 decode steps. Kernel sum is
+1300.622 ms. The old trace used BF16 recurrence, so use the matched FP32 core
+runs above for end-to-end attribution. Both GPU projections and host preparation
+remain material targets after removing scalar routing.
