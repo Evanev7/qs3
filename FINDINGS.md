@@ -123,3 +123,35 @@ Validation through `QS3_TEST_MODE=norm_validation ./run_cuda_test.sh` passed:
 and a build of `qsfi_bench_native`. Twenty additional normal-parallelism model
 runs passed all 320 executions. The separate real 35B BF16 regression also passed
 its logits, greedy IDs and reset/replay checks.
+
+## First steady-decode GPU timeline
+
+The [Nsight capture and summaries](benchmarks/2026-09-09T015556Z-0a7eef9-decode/README.md)
+for `0a7eef9` isolate the 32 warmed decode samples. Two costs now have evidence:
+
+- Grouped MoE GEMM: 59.3% of aggregate GPU kernel time, 1.576 seconds across
+  2,560 launches (49.25 ms/token). The pinned FlashInfer grouped-GEMM wrapper
+  hardcodes four thread blocks; the trace confirms `[4,1,1]` for all 2,560
+  launches. Benchmark a wider launch before replacing its arithmetic or adding
+  fusion.
+- Attention replanning: 32 pinned allocations cost 816.15 ms and 32 pinned frees
+  cost 547.49 ms (42.61 ms/token combined). These correspond to the 64 MiB host
+  planning workspace being recreated as each token changes metadata. Reuse this
+  storage with explicit asynchronous-copy lifetime management; weakening the
+  metadata key or adding a release-mode stream synchronization is unnecessary.
+
+The SQLite timeline has 1,539.70 ms without recorded GPU work within a
+4,200.81 ms first-to-last-kernel span. The pinned allocation/free calls have
+zero overlap with recorded GPU work in this capture. Their total also includes
+calls preceding the first kernel, so these interval endpoints differ.
+
+Host and GPU timings in general can overlap and must not be summed into a speedup prediction.
+In particular, blocking host copies include waits for queued GPU work. Confirm
+improvements with the unprofiled core benchmark after each change.
+
+A matched-vLLM baseline can use the existing local container
+`vllm-node@sha256:d966c1831d5da55c0cc52c6bd40f7d02cfc3d83404c3bd599139b055232d3970`.
+Read-only package inspection found vLLM 0.21.0, PyTorch 2.11.0+cu130, and
+Transformers 5.8.1. No matched inference run has been recorded yet. The expected
+27B BF16 cache path is absent; a third-party 27B NVFP4/MTP cache does not satisfy
+the pinned 27B BF16 correctness requirement.

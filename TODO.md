@@ -41,7 +41,9 @@
   real 35B BF16 reference regression passed on sp10 (2026-09-09). See FINDINGS.md.
 - [ ] Record 35B BF16 single-request latency/TPS and a GPU timeline against a
   matched vLLM run. Include several context lengths and sustained decode;
-  separate setup, prefill, steady decode, and output delivery.
+  separate setup, prefill, steady decode, and output delivery. Initial short-context
+  qs3 measurements and a 32-step decode timeline are recorded in FINDINGS.md;
+  multiple context lengths, sustained runs, and matched vLLM remain open.
 
 ## 2. Remove repeated preparation from decode
 
@@ -53,6 +55,8 @@
 - [ ] Reuse attention planning workspaces instead of destroying and reallocating
   device and pinned-host storage on every metadata change. Introduce a correct
   update/replan path; do not obtain reuse by weakening the existing metadata key.
+  The first timeline measures 42.61 ms/token in pinned allocation/free with no
+  overlapping GPU work; this is the next preparation target.
 - [ ] Separate execution-context/provider-handle lifetime from attention and
   prefix state so rebuilds preserve reusable execution resources.
 - [ ] Simplify bindings as these paths are changed: typed Rust tensor views into

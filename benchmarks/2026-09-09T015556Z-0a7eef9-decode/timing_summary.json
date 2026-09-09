@@ -1,0 +1,23 @@
+{
+  "kernel_count": 38948,
+  "kernel_duration_sum_ms": 2655.455816,
+  "kernel_span_ms": 4200.80736,
+  "gpu_work_union_within_kernel_span_ms": 2661.107144,
+  "no_gpu_work_within_kernel_span_ms": 1539.700216,
+  "pinned_host_api_union_ms": 1363.645424,
+  "pinned_host_api_overlap_gpu_work_ms": 0.0,
+  "grouped_moe_grid": [
+    4,
+    1,
+    1
+  ],
+  "grouped_moe_launches": 2560,
+  "grouped_moe_grid_counts": [
+    [
+      4,
+      1,
+      1,
+      2560
+    ]
+  ]
+}
