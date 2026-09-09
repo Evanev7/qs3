@@ -1,0 +1,103 @@
+INFO 09-09 05:06:08 [utils.py:240] non-default args: {'skip_tokenizer_init': True, 'dtype': 'bfloat16', 'max_model_len': 139, 'enable_prefix_caching': False, 'gpu_memory_utilization': 0.85, 'kv_cache_memory_bytes': 536870912, 'max_num_seqs': 1, 'disable_log_stats': True, 'limit_mm_per_prompt': {'image': 0, 'video': 0}, 'enable_chunked_prefill': False, 'model': '/model-repo/snapshots/995ad96eacd98c81ed38be0c5b274b04031597b0'}
+WARNING 09-09 05:06:08 [envs.py:1866] Unknown vLLM environment variable detected: VLLM_IMAGE_TAG
+WARNING 09-09 05:06:08 [envs.py:1866] Unknown vLLM environment variable detected: VLLM_BUILD_COMMIT
+WARNING 09-09 05:06:08 [envs.py:1866] Unknown vLLM environment variable detected: VLLM_BUILD_URL
+WARNING 09-09 05:06:08 [envs.py:1866] Unknown vLLM environment variable detected: VLLM_BUILD_PIPELINE
+WARNING 09-09 05:06:08 [arg_utils.py:1503] The global random seed is set to 0. Since VLLM_ENABLE_V1_MULTIPROCESSING is set to False, this may affect the random state of the Python process that launched vLLM.
+INFO 09-09 05:06:08 [model.py:568] Resolved architecture: Qwen3_5MoeForConditionalGeneration
+INFO 09-09 05:06:08 [model.py:1697] Using max model len 139
+WARNING 09-09 05:06:08 [arg_utils.py:2318] This model does not officially support disabling chunked prefill. Disabling this manually may cause the engine to crash or produce incorrect outputs.
+INFO 09-09 05:06:08 [vllm.py:886] Asynchronous scheduling is enabled.
+INFO 09-09 05:06:08 [kernel.py:212] Final IR op priority after setting platform defaults: IrOpPriorityConfig(rms_norm=['native'], fused_add_rms_norm=['native'])
+[transformers] `Qwen2VLImageProcessorFast` is deprecated. The `Fast` suffix for image processors has been removed; use `Qwen2VLImageProcessor` instead.
+INFO 09-09 05:06:09 [registry.py:134] All limits of multimodal modalities supported by the model are set to 0, running in text-only mode.
+INFO 09-09 05:06:09 [core.py:109] Initializing a V1 LLM engine (v0.21.0) with config: model='/model-repo/snapshots/995ad96eacd98c81ed38be0c5b274b04031597b0', speculative_config=None, tokenizer='/model-repo/snapshots/995ad96eacd98c81ed38be0c5b274b04031597b0', skip_tokenizer_init=True, tokenizer_mode=auto, revision=None, tokenizer_revision=None, trust_remote_code=False, dtype=torch.bfloat16, max_seq_len=139, download_dir=None, load_format=auto, tensor_parallel_size=1, pipeline_parallel_size=1, data_parallel_size=1, decode_context_parallel_size=1, dcp_comm_backend=ag_rs, disable_custom_all_reduce=False, quantization=None, quantization_config=None, enforce_eager=False, enable_return_routed_experts=False, kv_cache_dtype=auto, device_config=cuda, structured_outputs_config=StructuredOutputsConfig(backend='auto', disable_any_whitespace=False, disable_additional_properties=False, reasoning_parser='', reasoning_parser_plugin='', enable_in_reasoning=False), observability_config=ObservabilityConfig(show_hidden_metrics_for_version=None, otlp_traces_endpoint=None, collect_detailed_traces=None, kv_cache_metrics=False, kv_cache_metrics_sample=0.01, cudagraph_metrics=False, enable_layerwise_nvtx_tracing=False, enable_mfu_metrics=False, enable_mm_processor_stats=False, enable_logging_iteration_details=False), seed=0, served_model_name=/model-repo/snapshots/995ad96eacd98c81ed38be0c5b274b04031597b0, enable_prefix_caching=False, enable_chunked_prefill=False, pooler_config=None, compilation_config={'mode': <CompilationMode.VLLM_COMPILE: 3>, 'debug_dump_path': None, 'cache_dir': '', 'compile_cache_save_format': 'binary', 'backend': 'inductor', 'custom_ops': ['none'], 'ir_enable_torch_wrap': True, 'splitting_ops': ['vllm::unified_attention_with_output', 'vllm::unified_mla_attention_with_output', 'vllm::mamba_mixer2', 'vllm::mamba_mixer', 'vllm::short_conv', 'vllm::linear_attention', 'vllm::plamo2_mamba_mixer', 'vllm::gdn_attention_core', 'vllm::gdn_attention_core_xpu', 'vllm::olmo_hybrid_gdn_full_forward', 'vllm::kda_attention', 'vllm::sparse_attn_indexer', 'vllm::rocm_aiter_sparse_attn_indexer', 'vllm::deepseek_v4_attention', 'vllm::unified_kv_cache_update', 'vllm::unified_mla_kv_cache_update'], 'compile_mm_encoder': False, 'cudagraph_mm_encoder': False, 'encoder_cudagraph_token_budgets': [], 'encoder_cudagraph_max_vision_items_per_batch': 0, 'encoder_cudagraph_max_frames_per_batch': None, 'compile_sizes': [], 'compile_ranges_endpoints': [139], 'inductor_compile_config': {'enable_auto_functionalized_v2': False, 'size_asserts': False, 'alignment_asserts': False, 'scalar_asserts': False, 'combo_kernels': True, 'benchmark_combo_kernel': True}, 'inductor_passes': {}, 'cudagraph_mode': <CUDAGraphMode.FULL_AND_PIECEWISE: (2, 1)>, 'cudagraph_num_of_warmups': 1, 'cudagraph_capture_sizes': [1, 2], 'cudagraph_copy_inputs': False, 'cudagraph_specialize_lora': True, 'use_inductor_graph_partition': False, 'pass_config': {'fuse_norm_quant': False, 'fuse_act_quant': False, 'fuse_attn_quant': False, 'enable_sp': False, 'fuse_gemm_comms': False, 'fuse_allreduce_rms': False, 'fuse_act_padding': False}, 'max_cudagraph_capture_size': 2, 'dynamic_shapes_config': {'type': <DynamicShapesType.BACKED: 'backed'>, 'evaluate_guards': False, 'assume_32_bit_indexing': False}, 'local_cache_dir': None, 'fast_moe_cold_start': False, 'static_all_moe_layers': []}, kernel_config=KernelConfig(ir_op_priority=IrOpPriorityConfig(rms_norm=['native'], fused_add_rms_norm=['native']), enable_flashinfer_autotune=False, moe_backend='auto')
+/usr/local/lib/python3.12/dist-packages/vllm/v1/executor/uniproc_executor.py:70: UserWarning: Failed to get the IP address, using 0.0.0.0 by default. The value can be set by the environment variable VLLM_HOST_IP or HOST_IP.
+  distributed_init_method = get_distributed_init_method(get_ip(), get_open_port())
+INFO 09-09 05:06:09 [parallel_state.py:1410] world_size=1 rank=0 local_rank=0 distributed_init_method=tcp://0.0.0.0:36469 backend=nccl
+[W909 05:06:09.773230924 socket.cpp:207] [c10d] The hostname of the client socket cannot be retrieved. err=-3
+[rank0]:[W909 05:06:09.775925928 ProcessGroupGloo.cpp:524] Warning: Unable to resolve hostname to a (local) address. Using the loopback address as fallback. Manually set the network interface to bind to with GLOO_SOCKET_IFNAME. (function operator())
+INFO 09-09 05:06:09 [parallel_state.py:1723] rank 0 in world size 1 is assigned as DP rank 0, PP rank 0, PCP rank 0, TP rank 0, EP rank 0, EPLB rank N/A
+INFO 09-09 05:06:10 [topk_topp_sampler.py:45] Using FlashInfer for top-p & top-k sampling.
+INFO 09-09 05:06:10 [gpu_model_runner.py:4857] Starting to load model /model-repo/snapshots/995ad96eacd98c81ed38be0c5b274b04031597b0...
+INFO 09-09 05:06:11 [cuda.py:427] Using backend AttentionBackendEnum.FLASH_ATTN for vit attention
+INFO 09-09 05:06:11 [mm_encoder_attention.py:372] Using AttentionBackendEnum.FLASH_ATTN for MMEncoderAttention.
+INFO 09-09 05:06:11 [gdn_linear_attn.py:169] Using Triton/FLA GDN prefill kernel
+INFO 09-09 05:06:11 [unquantized.py:288] Using FlashInfer CUTLASS Unquantized MoE backend out of potential backends: ['FlashInfer TRTLLM', 'FlashInfer CUTLASS', 'TRITON', 'BATCHED_TRITON'].
+INFO 09-09 05:06:11 [cuda.py:372] Using FLASH_ATTN attention backend out of potential backends: ['FLASH_ATTN', 'FLASHINFER', 'TRITON_ATTN', 'FLEX_ATTENTION'].
+INFO 09-09 05:06:11 [flash_attn.py:641] Using FlashAttention version 2
+INFO 09-09 05:06:13 [weight_utils.py:938] Filesystem type for checkpoints: EXT4. Checkpoint size: 66.97 GiB. Available RAM: 48.57 GiB.
+INFO 09-09 05:06:13 [weight_utils.py:968] Auto-prefetch is disabled because the filesystem (EXT4) is not a recognized network FS (NFS/Lustre) and the checkpoint size (66.97 GiB) exceeds 90% of available RAM (48.57 GiB).
+Loading safetensors checkpoint shards:   0% Completed | 0/26 [00:00<?, ?it/s]
+Loading safetensors checkpoint shards:   4% Completed | 1/26 [00:02<01:11,  2.85s/it]
+Loading safetensors checkpoint shards:   8% Completed | 2/26 [00:06<01:19,  3.32s/it]
+Loading safetensors checkpoint shards:  12% Completed | 3/26 [00:18<02:45,  7.21s/it]
+Loading safetensors checkpoint shards:  15% Completed | 4/26 [00:30<03:21,  9.16s/it]
+Loading safetensors checkpoint shards:  19% Completed | 5/26 [00:43<03:38, 10.39s/it]
+Loading safetensors checkpoint shards:  23% Completed | 6/26 [00:47<02:45,  8.29s/it]
+Loading safetensors checkpoint shards:  27% Completed | 7/26 [00:50<02:06,  6.64s/it]
+Loading safetensors checkpoint shards:  31% Completed | 8/26 [00:54<01:43,  5.77s/it]
+Loading safetensors checkpoint shards:  35% Completed | 9/26 [00:59<01:33,  5.50s/it]
+Loading safetensors checkpoint shards:  38% Completed | 10/26 [01:03<01:20,  5.03s/it]
+Loading safetensors checkpoint shards:  42% Completed | 11/26 [01:10<01:26,  5.75s/it]
+Loading safetensors checkpoint shards:  46% Completed | 12/26 [01:14<01:10,  5.03s/it]
+Loading safetensors checkpoint shards:  50% Completed | 13/26 [01:20<01:12,  5.58s/it]
+Loading safetensors checkpoint shards:  54% Completed | 14/26 [01:24<01:01,  5.10s/it]
+Loading safetensors checkpoint shards:  58% Completed | 15/26 [01:31<01:01,  5.61s/it]
+Loading safetensors checkpoint shards:  62% Completed | 16/26 [01:35<00:52,  5.20s/it]
+Loading safetensors checkpoint shards:  65% Completed | 17/26 [01:38<00:39,  4.36s/it]
+Loading safetensors checkpoint shards:  69% Completed | 18/26 [01:42<00:33,  4.22s/it]
+Loading safetensors checkpoint shards:  73% Completed | 19/26 [01:51<00:39,  5.62s/it]
+Loading safetensors checkpoint shards:  77% Completed | 20/26 [01:54<00:30,  5.09s/it]
+Loading safetensors checkpoint shards:  81% Completed | 21/26 [02:01<00:27,  5.57s/it]
+Loading safetensors checkpoint shards:  85% Completed | 22/26 [02:15<00:32,  8.18s/it]
+Loading safetensors checkpoint shards:  88% Completed | 23/26 [02:30<00:29,  9.96s/it]
+Loading safetensors checkpoint shards:  92% Completed | 24/26 [02:44<00:22, 11.27s/it]
+Loading safetensors checkpoint shards:  96% Completed | 25/26 [02:53<00:10, 10.72s/it]
+Loading safetensors checkpoint shards: 100% Completed | 26/26 [03:01<00:00,  9.67s/it]
+Loading safetensors checkpoint shards: 100% Completed | 26/26 [03:01<00:00,  6.96s/it]
+
+INFO 09-09 05:09:15 [default_loader.py:397] Loading weights took 181.20 seconds
+INFO 09-09 05:09:15 [unquantized.py:345] Using MoEPrepareAndFinalizeNoDPEPModular
+INFO 09-09 05:09:16 [gpu_model_runner.py:4959] Model loading took 64.69 GiB memory and 184.191965 seconds
+INFO 09-09 05:09:16 [interface.py:645] Setting attention block size to 1056 tokens to ensure that attention page size is >= mamba page size.
+INFO 09-09 05:09:16 [interface.py:669] Padding mamba page size by 0.76% to ensure that mamba page size and attention page size are exactly equal.
+INFO 09-09 05:09:18 [backends.py:1089] Using cache directory: /root/.cache/vllm/torch_compile_cache/8fee3b0f14/rank_0_0/backbone for vLLM's torch.compile
+INFO 09-09 05:09:18 [backends.py:1148] Dynamo bytecode transform time: 2.09 s
+INFO 09-09 05:09:19 [backends.py:292] Directly load the compiled graph(s) for compile range (1, 139) from the cache, took 1.434 s
+INFO 09-09 05:09:19 [decorators.py:311] Directly load AOT compilation from path /root/.cache/vllm/torch_compile_cache/torch_aot_compile/b2e48f653e911602b0ef854dfc50ac3bde1b95503f884a79adf542ca3ecfc5b1/rank_0_0/model
+INFO 09-09 05:09:19 [monitor.py:53] torch.compile took 3.66 s in total
+INFO 09-09 05:09:54 [monitor.py:81] Initial profiling/warmup run took 34.77 s
+INFO 09-09 05:09:55 [gpu_worker.py:383] Initial free memory 115.02 GiB, reserved 0.5 GiB memory for KV Cache as specified by kv_cache_memory_bytes config and skipped memory profiling. This does not respect the gpu_memory_utilization config. Only use kv_cache_memory_bytes config when you want manual control of KV cache memory size. If OOM'ed, check the difference of initial free memory between the current run and the previous run where kv_cache_memory_bytes is suggested and update it correspondingly.
+INFO 09-09 05:09:55 [kv_cache_utils.py:1710] GPU KV cache size: 834 tokens
+INFO 09-09 05:09:55 [kv_cache_utils.py:1711] Maximum concurrency for 139 tokens per request: 6.00x
+INFO 09-09 05:09:55 [kernel_warmup.py:44] Skipping FlashInfer autotune because it is disabled.
+Capturing CUDA graphs (mixed prefill-decode, PIECEWISE):   0%|          | 0/2 [00:00<?, ?it/s]Capturing CUDA graphs (mixed prefill-decode, PIECEWISE): 100%|██████████| 2/2 [00:00<00:00, 10.38it/s]Capturing CUDA graphs (mixed prefill-decode, PIECEWISE): 100%|██████████| 2/2 [00:00<00:00, 10.37it/s]
+Capturing CUDA graphs (decode, FULL):   0%|          | 0/1 [00:00<?, ?it/s]Capturing CUDA graphs (decode, FULL): 100%|██████████| 1/1 [00:30<00:00, 30.87s/it]Capturing CUDA graphs (decode, FULL): 100%|██████████| 1/1 [00:30<00:00, 30.87s/it]
+INFO 09-09 05:10:26 [gpu_model_runner.py:6243] Graph capturing finished in 32 secs, took 0.32 GiB
+INFO 09-09 05:10:26 [jit_monitor.py:54] Kernel JIT monitor activated — Triton JIT compilations during inference will be logged as warnings.
+INFO 09-09 05:10:26 [core.py:299] init engine (profile, create kv cache, warmup model) took 70.54 s (compilation: 3.66 s)
+{"resolved_gdn_state_dtypes": ["torch.bfloat16", "torch.float32"]}
+WARNING 09-09 05:10:26 [input_processor.py:274] Passing raw prompts to InputProcessor is deprecated and will be removed in v0.18. You should instead pass the outputs of Renderer.render_cmpl() or Renderer.render_chat().
+WARNING 09-09 05:10:26 [base.py:301] Using None for EOS token id because tokenizer is not initialized
+WARNING 09-09 05:10:26 [jit_monitor.py:103] Triton kernel JIT compilation during inference: _zero_kv_blocks_kernel. This causes a latency spike; consider extending warmup to cover this shape/config.
+WARNING 09-09 05:10:27 [jit_monitor.py:103] Triton kernel JIT compilation during inference: _compute_slot_mapping_kernel. This causes a latency spike; consider extending warmup to cover this shape/config.
+WARNING 09-09 05:10:27 [jit_monitor.py:103] Triton kernel JIT compilation during inference: _causal_conv1d_fwd_kernel. This causes a latency spike; consider extending warmup to cover this shape/config.
+WARNING 09-09 05:10:27 [jit_monitor.py:103] Triton kernel JIT compilation during inference: _fused_post_conv_kernel. This causes a latency spike; consider extending warmup to cover this shape/config.
+{"request": 0, "empty_steps": 1, "outputs": 1}
+{"request": 1, "empty_steps": 1, "outputs": 1}
+{"request": 2, "empty_steps": 1, "outputs": 1}
+{"request": 3, "empty_steps": 1, "outputs": 1}
+{"request": 4, "empty_steps": 1, "outputs": 1}
+{"request": 5, "empty_steps": 1, "outputs": 1}
+{"request": 6, "empty_steps": 1, "outputs": 1}
+Capture range started in the application.
+Capture range ended in the application.
+Generating '/tmp/nsys-report-838c.qdstrm'
+[1/1] [0%                          ] decode.nsys-repProcessing events...
+[1/1] [0%                          ] decode.nsys-rep[1/1] [====25%                     ] decode.nsys-rep[1/1] [=========43%                ] decode.nsys-rep[1/1] [==============61%           ] decode.nsys-rep[1/1] [========================100%] decode.nsys-rep[1/1] [========================100%] decode.nsys-rep
+{"request": 100, "empty_steps": 1, "outputs": 37}
+{"metadata": {"vllm": "0.21.0", "torch": "2.11.0+cu130", "transformers": "5.8.1"}, "model": "/model-repo/snapshots/995ad96eacd98c81ed38be0c5b274b04031597b0", "cache_config": {"cache_dtype": "auto", "mamba_cache_dtype": "auto", "mamba_ssm_cache_dtype": "float32", "enable_prefix_caching": "False"}, "execution": {"cuda_profiler_phase": "decode", "precision": "bf16", "mamba_cache_dtype": "auto", "mamba_ssm_cache_dtype": "auto", "resolved_gdn_state_dtypes": ["torch.bfloat16", "torch.float32"], "enforce_eager": false, "sampling": "greedy", "prefix_caching": false, "chunked_prefill": false, "detokenize": false, "stream_interval": 1, "timing": "wall time between token deliveries including empty engine steps", "kv_cache_memory_bytes": 536870912}, "prompt": {"tokens": 102, "base_token_id_fnv1a": "6ca602a4cc15238d"}, "setup_ms": 258712.10574312136, "prefill": {"warmup_ms": [17665.343000087887, 182.8283709473908], "sample_ms": [183.2492952235043, 182.27000907063484, 182.03292391262949, 182.64991091564298, 183.57102293521166], "p50_ms": 182.64991091564298}, "decode": {"warmup_ms": [39.36791606247425, 40.46725109219551, 39.51170691289008, 3.7266910076141357], "sample_ms": [32.278499100357294, 33.93187909387052, 32.45931398123503, 33.273226814344525, 32.4753460008651, 32.49628911726177, 33.29437901265919, 32.53880189731717, 32.87651017308235, 32.93279791250825, 32.62209706008434, 32.56608103401959, 32.54915284924209, 32.60715305805206, 32.56212896667421, 32.49496198259294, 32.605296932160854, 32.61574520729482, 32.57758589461446, 33.23474805802107, 32.558065839111805, 32.59819303639233, 32.587409019470215, 32.55723393522203, 32.636688090860844, 32.61406603269279, 32.66521589830518, 32.597057055681944, 32.628000946715474, 32.58281806483865, 32.64206391759217, 32.57240215316415], "samples": 32, "context_start": 106, "context_end": 138, "p50_ms": 32.59762504603714, "tokens_per_second": 30.58597349337621}, "generated_tokens": [248068, 198, 8160, 579, 264, 7047, 1817, 25, 271, 16, 13, 220, 2972, 2014, 53983, 2570, 5396, 64700, 198, 256, 471, 2972, 25562, 64700, 2500, 264, 41163, 3992, 1558, 10263, 264, 9640, 1083, 279, 1727, 3817, 198]}
+[rank0]:[W909 05:10:48.381243891 ProcessGroupNCCL.cpp:1575] Warning: WARNING: destroy_process_group() was not called before program exit, which can leak resources. For more info, please see https://pytorch.org/docs/stable/distributed.html#shutdown (function operator())
+Generated:
+	/bench/2026-09-09T050426Z-vllm-bf16-decode/decode.nsys-rep

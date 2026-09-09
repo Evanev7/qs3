@@ -519,3 +519,36 @@ The matched vLLM long-context baseline remains 367.629 ms prefill and 30.769
 tok/s decode. The remaining gap is about 1.65 times prefill latency and 23.3%
 lower decode throughput. Obtain the vLLM GPU trace before choosing the next
 projection/MoE change; retaining resources and graph replay remain open.
+
+## Aligned vLLM decode timeline
+
+The [vLLM graph trace](benchmarks/2026-09-09T050426Z-vllm-bf16-decode/README.md)
+and [current qs3 trace](benchmarks/2026-09-09T045948Z-262b4f2-decode/README.md)
+each contain 32 model forwards, verified from 1280 MoE and 960 GDN calls. Their
+first 36 generated IDs match. vLLM delivers the prefill token separately, and
+capture had to begin one delivery earlier than the initial attempt to include
+all 32 forwards. Counts, scripts, settings and precision are recorded together.
+
+qs3 has 95.782 ms without GPU work within its 1379.419 ms kernel span; vLLM has
+14.792 ms within 1049.259 ms. vLLM launches 31,104 of its 31,840 kernels as graph
+nodes, versus eager qs3's 38,948 kernels. Kernel durations overlap in the vLLM
+capture, so summed duration exceeds wall span; do not subtract category sums to
+predict end-to-end improvements. Unprofiled long-context core throughput remains
+23.596 versus 30.769 tok/s.
+
+The next small kernel target is decode convolution: 37.418 ms across 960 qs3
+calls versus 2.683 ms for vLLM. qs3 still assigns all 8192 channels to one CTA;
+channels can be tiled independently without changing convolution arithmetic.
+Warp recurrence is now close in captured duration (13.351 versus 13.022 ms),
+although vLLM fuses additional preparation. MoE projection kernels account for
+392.597 versus 324.712 ms, with different tile shapes and fused work. Packed
+projection and MoE changes need controlled AOT probes.
+
+The LM-head signatures expose another precision mismatch: qs3 uses FP32 input
+and output, while vLLM uses BF16. Both have 32 calls at grid 62,080, consistent
+with the padded 248,320 vocabulary and four outputs per block. Captured durations
+are 197.355 and 164.707 ms. This is a candidate for a controlled precision probe
+and identical-prefix score comparison, not evidence that it causes the sustained
+greedy divergence. Graph mode, projection packing, and output precision differ;
+these traces diagnose architecture choices rather than establish strict numerical
+or isolated performance equivalence. The asset download was active during capture.

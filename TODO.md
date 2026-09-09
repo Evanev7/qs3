@@ -47,7 +47,8 @@
   samples. FP32 recurrence is now available and the loaded-model default; it
   extends the longer matching prefix from 56 to 162 generated IDs with little
   throughput change. Identical-prefix score comparison, sustained quality, a
-  third context, and a vLLM GPU timeline remain open.
+  third context remain open. Aligned qs3/vLLM 32-forward GPU timelines are now
+  recorded, including graph gaps, kernel choices and LM-head precision differences.
 
 ## 2. Remove repeated preparation from decode
 
@@ -107,8 +108,11 @@
   sizes in benchmarks. Keep alternatives named and forceable in Rust. Current
   core JSON records provider paths, workspace sizes, GDN state dtype, and output
   IDs. The BF16 MoE grid has explicit four- and 96-block Rust selections.
-- [ ] Profile attention preparation, dense projections, GDN, and MoE before
-  choosing fusion, projection packing, or replacement provider kernels.
+- [x] Profile attention preparation, dense projections, GDN, and MoE before
+  choosing fusion, projection packing, or replacement provider kernels. Recorded
+  qs3 prefill/decode and aligned vLLM decode traces identify serial convolution,
+  recurrence reductions, MoE tiling, graph gaps and projection precision/packing;
+  convolution and recurrence prefill improvements pass bitwise probes and core runs.
 - [ ] Implement optimized quantized paths, beginning with NVFP4 after BF16
   correctness. Validate packing/scales and actual SM121 kernel support; compare
   matched quantization with vLLM.
