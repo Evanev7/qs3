@@ -282,3 +282,12 @@ The preceding GPU trace also identifies serial router selection as a next target
 and maintains the top eight. Test a parallel warp/block selection while preserving
 lower-ID tie-breaking, softmax/sigmoid behavior and route-weight normalization.
 Reprofile after the MoE grid change before assigning its new share of runtime.
+
+
+The [post-change timeline](benchmarks/2026-09-09T030025Z-95f87e3-decode/README.md)
+confirms all 2560 MoE launches use 96 blocks. Aggregate MoE time falls from
+1533.57 to 393.82 ms; total kernel time falls from 2603.22 to 1465.65 ms with the
+same 38,948 launches. Time without recorded GPU work stays near 98 ms across
+32 steps, supporting reduced GPU execution time as the cause of this gain.
+Dense cuBLAS GEMV now dominates; serial router top-k remains 178.05 ms (12.1%).
+Prioritize those measured kernels alongside persistent metadata and graph work.
