@@ -1,0 +1,25 @@
+# Run from repository root after just uv-sync.
+python = build_tools/.venv/bin/python
+nvcc = nvcc
+probe = .prototypes/b12x_gemv
+artifacts = .prototypes/b12x_gemv/out
+
+rule aot
+  command = $python $probe/compile.py --out $artifacts
+  description = AOT b12x and qs3 vocabulary GEMV
+
+rule native
+  command = $nvcc -std=c++17 -O3 -arch=sm_121 -I. -I$artifacts -DQSFI_ENABLE_CHECKED_VALIDATION=1 $probe/bench.cu qscb.cu -lcuda -lcublasLt -o $artifacts/probe
+  description = BUILD vocabulary GEMV comparison
+
+build $artifacts/kernels.h $artifacts/manifest.json $
+  $artifacts/qs3_row_fp32_w4.cubin $artifacts/qs3_row_fp32_w4.ptx $
+  $artifacts/b12x_row_fp32_w4.cubin $artifacts/b12x_row_fp32_w4.ptx $
+  $artifacts/b12x_row_fp32_w8.cubin $artifacts/b12x_row_fp32_w8.ptx $
+  $artifacts/b12x_loop512_fp32_w4.cubin $artifacts/b12x_loop512_fp32_w4.ptx $
+  $artifacts/qs3_row_bf16_w4.cubin $artifacts/qs3_row_bf16_w4.ptx $
+  $artifacts/b12x_row_bf16_w4.cubin $artifacts/b12x_row_bf16_w4.ptx $
+  $artifacts/b12x_row_bf16_w8.cubin $artifacts/b12x_row_bf16_w8.ptx $
+  $artifacts/b12x_loop512_bf16_w4.cubin $artifacts/b12x_loop512_bf16_w4.ptx: aot $probe/kernel.py $probe/b12x_kernel.py $probe/compile.py build_tools/uv.lock build_tools/pyproject.toml
+build $artifacts/probe: native $probe/bench.cu qscb.cu qscb.h qs_tensor.h qs_info.h qsfi_native_common.h | $artifacts/kernels.h
+default $artifacts/probe

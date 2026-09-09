@@ -1,0 +1,13 @@
+device=NVIDIA GB10 driver=13000 runtime=13000 weights=cudaMalloc eager=true
+validated qkv rows=1 warps=4 max_abs=1.52588e-05
+validated qkv rows=4 warps=4 max_abs=1.52588e-05
+validated qkv rows=8 warps=8 max_abs=0.000976562
+validated z rows=1 warps=4 max_abs=0
+validated z rows=4 warps=4 max_abs=0
+validated z rows=8 warps=8 max_abs=0.000976562
+validated out rows=1 warps=4 max_abs=0
+validated out rows=4 warps=4 max_abs=0
+validated out rows=8 warps=8 max_abs=0
+validated lm_head rows=1 warps=4 max_abs=1.43051e-06
+validated lm_head rows=4 warps=4 max_abs=1.43051e-06
+validated lm_head rows=8 warps=8 max_abs=1.19209e-06

@@ -30,5 +30,5 @@ let
 in
 pythonSet.mkVirtualEnv "qs3_build_tools" {
   qwen36-vectors = [ ];
+  triton = [ ];
 }
-

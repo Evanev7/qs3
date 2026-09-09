@@ -1,6 +1,6 @@
 # qs3 Python build tools
 
-This uv workspace uses Python 3.14 or newer. Run its tools from the repository
+This uv workspace uses Python 3.14. Run its tools from the repository
 root with:
 
 ```sh
@@ -22,5 +22,9 @@ relative to the caller's working directory, so Ninja writes inside `build/`.
 Ninja only runs the installed generator; direct Ninja callers prepare the
 environment first.
 
-`uv.lock` is shared by workspace members. Add a member only once it has its own
-project metadata; the reserved `triton/` directory is not a member yet.
+Triton 3.8.0 is pinned as a build-time compiler dependency. The official wheel
+supplies the compiler; the vendored source checkout is not built by this project.
+The Python upper bound follows this Triton release's supported interpreter range.
+
+`uv.lock` is shared by workspace members. The reserved `triton/` directory is
+not a workspace member; the compiler dependency is the upstream PyPI package.

@@ -1,0 +1,23 @@
+# Run from repository root. CPU Torch is an isolated build-time import dependency.
+python = uv run --no-project --python 3.14 --with triton==3.8.0 --with torch==2.10.0 --index https://download.pytorch.org/whl/cpu python
+nvcc = nvcc
+probe = .prototypes/triton_kernels_gemv
+artifacts = .prototypes/triton_kernels_gemv/out
+
+rule aot
+  command = $python $probe/compile.py --out $artifacts
+  description = AOT upstream triton_kernels matmul and b12x GEMV
+  depfile = $artifacts/kernels.d
+
+rule native
+  command = $nvcc -std=c++17 -O3 -arch=sm_121 -I. -I$artifacts -DQSFI_ENABLE_CHECKED_VALIDATION=1 $probe/bench.cu qscb.cu -lcuda -lcublasLt -o $artifacts/probe
+  description = BUILD triton_kernels comparison
+
+build $artifacts/kernels.h $artifacts/manifest.json $
+  $artifacts/b12x_row.cubin $artifacts/b12x_row.ptx $
+  $artifacts/tk_n256_k64.cubin $artifacts/tk_n256_k64.ptx $
+  $artifacts/tk_n128_k64.cubin $artifacts/tk_n128_k64.ptx $
+  $artifacts/tk_n64_k64.cubin $artifacts/tk_n64_k64.ptx $
+  $artifacts/tk_n32_k128.cubin $artifacts/tk_n32_k128.ptx: aot $probe/compile.py $probe/b12x_kernel.py $probe/build.ninja
+build $artifacts/probe: native $probe/bench.cu qscb.cu qscb.h qs_tensor.h qs_info.h qsfi_native_common.h | $artifacts/kernels.h
+default $artifacts/probe

@@ -1,0 +1,159 @@
+{
+  "triton_version": "3.8.0",
+  "target": "cuda:121:32",
+  "ptxas_path": "/home/sp10/qs3/build_tools/.venv/lib/python3.14/site-packages/triton/backends/nvidia/bin/ptxas-blackwell",
+  "ptxas_version": "ptxas-blackwell: NVIDIA (R) Ptx optimizing assembler\nCopyright (c) 2005-2026 NVIDIA Corporation\nBuilt on Fri_Apr_24_07:23:04_PM_PDT_2026\nCuda compilation tools, release 13.3, V13.3.33\nBuild cuda_13.3.r13.3/compiler.37862127_0\n",
+  "ptxas_sha256": "f9a0a7f1f7f03b402ca222168a8ae4870fdb312354356b444941fbba7754326e",
+  "num_stages": 1,
+  "enable_fp_fusion": false,
+  "source_hashes": {
+    "compile.py": "ecc1630c8ee33d92a96f0b63c6274eece12d6da4d9c697367dd37c8a84b4c96b",
+    "kernel.py": "e3cc9951e7876f9215816117a371e90c9ec54a063d80437675f0a40b7f26db7e"
+  },
+  "kernels": [
+    {
+      "name": "qkv",
+      "n": 8192,
+      "k": 2048,
+      "dtype": "bf16",
+      "rows": 1,
+      "warps": 4,
+      "file": "qkv_r1_w4.cubin",
+      "symbol": "gemv",
+      "shared": 16,
+      "sha256": "0b2e7cfb1c3e8062b4266ffd33e724ca962ab8f5efea948cae6ab0b402877c86"
+    },
+    {
+      "name": "qkv",
+      "n": 8192,
+      "k": 2048,
+      "dtype": "bf16",
+      "rows": 4,
+      "warps": 4,
+      "file": "qkv_r4_w4.cubin",
+      "symbol": "gemv",
+      "shared": 64,
+      "sha256": "f388144f741d69dd377725911caaa98bbc3e838c65623d0623d1e3d21d393f87"
+    },
+    {
+      "name": "qkv",
+      "n": 8192,
+      "k": 2048,
+      "dtype": "bf16",
+      "rows": 8,
+      "warps": 8,
+      "file": "qkv_r8_w8.cubin",
+      "symbol": "gemv",
+      "shared": 128,
+      "sha256": "4580bc8ee64cc05145148c13cc519589cf9386af493256237106300945d554d3"
+    },
+    {
+      "name": "z",
+      "n": 4096,
+      "k": 2048,
+      "dtype": "bf16",
+      "rows": 1,
+      "warps": 4,
+      "file": "z_r1_w4.cubin",
+      "symbol": "gemv",
+      "shared": 16,
+      "sha256": "414429aa1dd9de91b6d548a88415ec9ee5cbe4957006f3952046281328a1166c"
+    },
+    {
+      "name": "z",
+      "n": 4096,
+      "k": 2048,
+      "dtype": "bf16",
+      "rows": 4,
+      "warps": 4,
+      "file": "z_r4_w4.cubin",
+      "symbol": "gemv",
+      "shared": 64,
+      "sha256": "e96e83d8fc23c84281809fc899e7ca4c18b53bb2956c49c9232cc66a5c04c4e9"
+    },
+    {
+      "name": "z",
+      "n": 4096,
+      "k": 2048,
+      "dtype": "bf16",
+      "rows": 8,
+      "warps": 8,
+      "file": "z_r8_w8.cubin",
+      "symbol": "gemv",
+      "shared": 128,
+      "sha256": "b5b1e63268c2c9be9c96014ff18c68560c176591e5bed0a593642e324784ef7e"
+    },
+    {
+      "name": "out",
+      "n": 2048,
+      "k": 4096,
+      "dtype": "bf16",
+      "rows": 1,
+      "warps": 4,
+      "file": "out_r1_w4.cubin",
+      "symbol": "gemv",
+      "shared": 16,
+      "sha256": "678c30992fbc719fb03ea7f35745d05b44520f2ee02ba427e10758d1a01b1716"
+    },
+    {
+      "name": "out",
+      "n": 2048,
+      "k": 4096,
+      "dtype": "bf16",
+      "rows": 4,
+      "warps": 4,
+      "file": "out_r4_w4.cubin",
+      "symbol": "gemv",
+      "shared": 64,
+      "sha256": "7d592d641d9912ef3bdec4cfc654dac094d17207b2fd9693690314438a2c885a"
+    },
+    {
+      "name": "out",
+      "n": 2048,
+      "k": 4096,
+      "dtype": "bf16",
+      "rows": 8,
+      "warps": 8,
+      "file": "out_r8_w8.cubin",
+      "symbol": "gemv",
+      "shared": 128,
+      "sha256": "49846370444b51a10a6071702732adf055c73b1f70fea446ec652337c0ee12b5"
+    },
+    {
+      "name": "lm_head",
+      "n": 248320,
+      "k": 2048,
+      "dtype": "fp32",
+      "rows": 1,
+      "warps": 4,
+      "file": "lm_head_r1_w4.cubin",
+      "symbol": "gemv",
+      "shared": 16,
+      "sha256": "0ce4193e692e0b3f568ec68fa1171f9cd8870b179cd2c3c47f8e76b372e92d50"
+    },
+    {
+      "name": "lm_head",
+      "n": 248320,
+      "k": 2048,
+      "dtype": "fp32",
+      "rows": 4,
+      "warps": 4,
+      "file": "lm_head_r4_w4.cubin",
+      "symbol": "gemv",
+      "shared": 64,
+      "sha256": "a526b934e1131bf4a2158da63dabe66ebcf76aefa5a841866235a30de1da6324"
+    },
+    {
+      "name": "lm_head",
+      "n": 248320,
+      "k": 2048,
+      "dtype": "fp32",
+      "rows": 8,
+      "warps": 8,
+      "file": "lm_head_r8_w8.cubin",
+      "symbol": "gemv",
+      "shared": 128,
+      "sha256": "ba2faa248ca03fa1b57a258f48282b993f545c596ff7d64f78d866da40cc86d2"
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+Wed Sep  9 12:33:27 PM UTC 2026
+nvcc: NVIDIA (R) Cuda compiler driver
+Copyright (c) 2005-2025 NVIDIA Corporation
+Built on Wed_Aug_20_01:57:39_PM_PDT_2025
+Cuda compilation tools, release 13.0, V13.0.88
+Build cuda_13.0.r13.0/compiler.36424714_0
+name, driver_version, utilization.gpu [%]
+NVIDIA GB10, 580.142, 0 %
+fcbbe79948489b8c73240dce8f25c1579a8873d281dd1fbcc88c65049d84e853  qscb.cu
+0a4454244794e4caa10a624ef97b5e7ed75b43202d22d4e9c1d4179602ffd7b8  .prototypes/gemv_aot/bench.cu
+8e02c3f3eca5fd2ac887e72c2d234b13217bd1bc840d9e99417cc0a83be354c1  build_tools/uv.lock

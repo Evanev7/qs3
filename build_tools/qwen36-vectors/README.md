@@ -5,7 +5,7 @@ Qwen3.6-35B-A3B runtime path.
 
 It is a member of the uv workspace in `build_tools/`. Python modules live
 directly beside `pyproject.toml`; the installed package is `qwen36_vectors`
-and its console command is `qwen36-vectors`. The workspace uses Python 3.14+.
+and its console command is `qwen36-vectors`. The workspace uses Python 3.14.
 Ninja invokes `../build_tools/.venv/bin/qwen36-vectors` through its
 `qwen36_vectors` variable. Just's matching variable points to
 `build_tools/.venv/bin/qwen36-vectors` from the repository root.

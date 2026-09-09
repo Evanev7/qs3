@@ -1,0 +1,147 @@
+{
+  "triton_version": "3.8.0",
+  "target": "cuda:121:32",
+  "b12x_revision": "75ffee6375b0577ce2c8d6931ffacefda3ecbdd6",
+  "ptxas_path": "/home/sp10/qs3/build_tools/.venv/lib/python3.14/site-packages/triton/backends/nvidia/bin/ptxas-blackwell",
+  "ptxas_version": "ptxas-blackwell: NVIDIA (R) Ptx optimizing assembler\nCopyright (c) 2005-2026 NVIDIA Corporation\nBuilt on Fri_Apr_24_07:23:04_PM_PDT_2026\nCuda compilation tools, release 13.3, V13.3.33\nBuild cuda_13.3.r13.3/compiler.37862127_0\n",
+  "ptxas_sha256": "f9a0a7f1f7f03b402ca222168a8ae4870fdb312354356b444941fbba7754326e",
+  "num_stages": 1,
+  "enable_fp_fusion": false,
+  "source_hashes": {
+    "compile.py": "15693d9a6617f4e6aae553477c27d7d13a82ef4e4cf80c63f8322de270f2273c",
+    "kernel.py": "e3cc9951e7876f9215816117a371e90c9ec54a063d80437675f0a40b7f26db7e",
+    "b12x_kernel.py": "323b96d33fb7824bdc970315587a4fc9a99bd2709cc26e00e90cd6fc4f94d002"
+  },
+  "kernels": [
+    {
+      "name": "qs3_row",
+      "n": 248320,
+      "k": 2048,
+      "dtype": "fp32",
+      "rows": 1,
+      "warps": 4,
+      "constants": {
+        "N": 248320,
+        "K": 2048,
+        "ROWS": 1
+      },
+      "file": "qs3_row_fp32_w4.cubin",
+      "symbol": "gemv",
+      "shared": 16,
+      "sha256": "0ce4193e692e0b3f568ec68fa1171f9cd8870b179cd2c3c47f8e76b372e92d50"
+    },
+    {
+      "name": "b12x_row",
+      "n": 248320,
+      "k": 2048,
+      "dtype": "fp32",
+      "rows": 1,
+      "warps": 4,
+      "constants": {
+        "K": 2048,
+        "BLOCK_K": 2048
+      },
+      "file": "b12x_row_fp32_w4.cubin",
+      "symbol": "_row_kernel",
+      "shared": 16,
+      "sha256": "c1f5710b949e7db952524e8ffaefb5a72bd5bccb20deae51ed470ed6852922d0"
+    },
+    {
+      "name": "b12x_row",
+      "n": 248320,
+      "k": 2048,
+      "dtype": "fp32",
+      "rows": 1,
+      "warps": 8,
+      "constants": {
+        "K": 2048,
+        "BLOCK_K": 2048
+      },
+      "file": "b12x_row_fp32_w8.cubin",
+      "symbol": "_row_kernel",
+      "shared": 32,
+      "sha256": "bc035ecaa98d46e9db6b723dd2f9415c231890846582c126d03bdd7fc5ff49ad"
+    },
+    {
+      "name": "b12x_loop512",
+      "n": 248320,
+      "k": 2048,
+      "dtype": "fp32",
+      "rows": 1,
+      "warps": 4,
+      "constants": {
+        "K": 2048,
+        "BLOCK_K": 512
+      },
+      "file": "b12x_loop512_fp32_w4.cubin",
+      "symbol": "_row_loop_kernel",
+      "shared": 16,
+      "sha256": "4552d9afac565f77bfb30546deb95f31021d6afca1cbb43b136c9eacd5785726"
+    },
+    {
+      "name": "qs3_row",
+      "n": 248320,
+      "k": 2048,
+      "dtype": "bf16",
+      "rows": 1,
+      "warps": 4,
+      "constants": {
+        "N": 248320,
+        "K": 2048,
+        "ROWS": 1
+      },
+      "file": "qs3_row_bf16_w4.cubin",
+      "symbol": "gemv",
+      "shared": 16,
+      "sha256": "0c4422ea6c131bbbb24961bd9218e03f28d16251cccf1d4b764dabceb69ef126"
+    },
+    {
+      "name": "b12x_row",
+      "n": 248320,
+      "k": 2048,
+      "dtype": "bf16",
+      "rows": 1,
+      "warps": 4,
+      "constants": {
+        "K": 2048,
+        "BLOCK_K": 2048
+      },
+      "file": "b12x_row_bf16_w4.cubin",
+      "symbol": "_row_kernel",
+      "shared": 16,
+      "sha256": "ef07c279cbb0640551efabd1245d7cabccc122b3292520a13bda8428b34bb78e"
+    },
+    {
+      "name": "b12x_row",
+      "n": 248320,
+      "k": 2048,
+      "dtype": "bf16",
+      "rows": 1,
+      "warps": 8,
+      "constants": {
+        "K": 2048,
+        "BLOCK_K": 2048
+      },
+      "file": "b12x_row_bf16_w8.cubin",
+      "symbol": "_row_kernel",
+      "shared": 32,
+      "sha256": "d1ef618b0706666434479a947914022831fd0cf47aa2c06c948d28cd86eadab6"
+    },
+    {
+      "name": "b12x_loop512",
+      "n": 248320,
+      "k": 2048,
+      "dtype": "bf16",
+      "rows": 1,
+      "warps": 4,
+      "constants": {
+        "K": 2048,
+        "BLOCK_K": 512
+      },
+      "file": "b12x_loop512_bf16_w4.cubin",
+      "symbol": "_row_loop_kernel",
+      "shared": 16,
+      "sha256": "e3164874e242cb6245b729a3fb5a8fa760e61140d9f2e65bc814dfbe55993b3d"
+    }
+  ]
+}

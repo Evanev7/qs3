@@ -624,6 +624,47 @@ the tile. Host submission/delivery gaps remain a graph target, and eight device
 allocations/frees remain in the captured decode range. CUDA API duration includes
 waiting and must not be interpreted as independent CPU work.
 
+### Triton AOT GEMV prototype
+
+The [standalone SM121 probe](benchmarks/2026-09-09-triton-gemv-probe/README.md)
+compiles 12 kernels using the pinned Triton 3.8.0 wheel and launches them from
+native C++ without runtime Python or JIT. All pass full-output cuBLASLt checks
+and sampled CPU double references. The wheel's bundled Blackwell ptxas 13.3.33
+works on sp10 with the existing driver; the native harness uses CUDA 13.0.88.
+
+The 248320x2048 vocabulary projection, retaining BF16 inputs/weights and FP32
+output, improves from 5.731 to 4.283 ms for repeated weights and 5.738 to
+4.332 ms after cache eviction with the 1-row/4-warp candidate. A second complete
+run confirms approximately the same LM-head timings; maximum absolute error
+against cuBLASLt is 1.43e-6. Smaller projections are mixed: repeated-weight gains
+for Z/output projections reverse after eviction, while QKV gains are modest.
+These synthetic cudaMalloc timings do not establish real managed-weight or
+end-to-end decode improvement. Real-model LM-head score checks and eager timing
+are the next gate; no production kernel is replaced by this experiment.
+
+The follow-up [copied b12x GEMV comparison](benchmarks/2026-09-09-b12x-gemv-probe/README.md)
+copies the upstream row/loop kernel bodies unchanged and tests both FP32 and
+BF16 output. All eight configurations pass full-output cuBLASLt and sampled
+CPU references. b12x's default row/eight-warps configuration is best tested:
+4.139 ms repeated and 4.186 ms after eviction for FP32 output, versus
+5.697/5.706 ms cuBLASLt. The earlier qs3 row/four-warps control measures
+4.277/4.326 ms in the same run. FP32 maximum absolute difference is 1.19e-6;
+BF16 output has essentially the same timing. Carry the copied b12x row kernel
+into the next real-model trial instead of retaining a separate custom GEMV.
+These remain synthetic kernel measurements, not end-to-end decode results.
+
+The [triton_kernels comparison](benchmarks/2026-09-09-triton-kernels-gemv-probe/README.md)
+imports the unchanged regular matmul from the matching Triton v3.8.0 release
+and tests four tiles with FP32 output. All pass full-output cuBLASLt and sampled
+CPU checks. The best tested tile (16/32/128, four warps) measures 4.293 ms
+repeated and 4.345 ms after eviction, versus 5.687/5.693 ms cuBLASLt. The b12x
+row/eight-warps control remains faster at 4.076/4.123 ms. Keep b12x for the next
+real-model trial. AOT compilation must preserve pointer-alignment hints:
+omitting the normal launcher's 16-byte hints caused a local-memory performance
+cliff in the 256-column matmul tile. The newer vendored triton_kernels HEAD
+also imports an internal helper absent from the pinned compiler wheel; the
+matching release imports and compiles successfully without source changes.
+
 ## Numerical agreement and vLLM comparisons
 
 Current conclusion: FP32 recurrence improves agreement on the sustained

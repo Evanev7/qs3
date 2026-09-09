@@ -1,0 +1,218 @@
+[
+  {
+    "shape": "qkv",
+    "rows": 1,
+    "warps": 4,
+    "cache": "repeated",
+    "cublas_us": 185.856,
+    "triton_us": 136.672,
+    "latency_reduction_pct": 26.463498622589533
+  },
+  {
+    "shape": "qkv",
+    "rows": 1,
+    "warps": 4,
+    "cache": "evicted",
+    "cublas_us": 207.488,
+    "triton_us": 195.264,
+    "latency_reduction_pct": 5.891425046267729
+  },
+  {
+    "shape": "qkv",
+    "rows": 4,
+    "warps": 4,
+    "cache": "repeated",
+    "cublas_us": 139.872,
+    "triton_us": 117.184,
+    "latency_reduction_pct": 16.220544497826594
+  },
+  {
+    "shape": "qkv",
+    "rows": 4,
+    "warps": 4,
+    "cache": "evicted",
+    "cublas_us": 158.416,
+    "triton_us": 147.136,
+    "latency_reduction_pct": 7.120492879507124
+  },
+  {
+    "shape": "qkv",
+    "rows": 8,
+    "warps": 8,
+    "cache": "repeated",
+    "cublas_us": 140.784,
+    "triton_us": 118.48,
+    "latency_reduction_pct": 15.842709398795307
+  },
+  {
+    "shape": "qkv",
+    "rows": 8,
+    "warps": 8,
+    "cache": "evicted",
+    "cublas_us": 155.36,
+    "triton_us": 146.112,
+    "latency_reduction_pct": 5.9526261585993945
+  },
+  {
+    "shape": "z",
+    "rows": 1,
+    "warps": 4,
+    "cache": "repeated",
+    "cublas_us": 18.992,
+    "triton_us": 15.552,
+    "latency_reduction_pct": 18.112889637742214
+  },
+  {
+    "shape": "z",
+    "rows": 1,
+    "warps": 4,
+    "cache": "evicted",
+    "cublas_us": 96.976,
+    "triton_us": 106.208,
+    "latency_reduction_pct": -9.519881207721493
+  },
+  {
+    "shape": "z",
+    "rows": 4,
+    "warps": 4,
+    "cache": "repeated",
+    "cublas_us": 21.056,
+    "triton_us": 15.04,
+    "latency_reduction_pct": 28.57142857142858
+  },
+  {
+    "shape": "z",
+    "rows": 4,
+    "warps": 4,
+    "cache": "evicted",
+    "cublas_us": 95.792,
+    "triton_us": 105.152,
+    "latency_reduction_pct": -9.771170870218814
+  },
+  {
+    "shape": "z",
+    "rows": 8,
+    "warps": 8,
+    "cache": "repeated",
+    "cublas_us": 19.552,
+    "triton_us": 15.04,
+    "latency_reduction_pct": 23.076923076923084
+  },
+  {
+    "shape": "z",
+    "rows": 8,
+    "warps": 8,
+    "cache": "evicted",
+    "cublas_us": 98.016,
+    "triton_us": 108.24,
+    "latency_reduction_pct": -10.430950048971589
+  },
+  {
+    "shape": "out",
+    "rows": 1,
+    "warps": 4,
+    "cache": "repeated",
+    "cublas_us": 19.872,
+    "triton_us": 15.008,
+    "latency_reduction_pct": 24.476650563607095
+  },
+  {
+    "shape": "out",
+    "rows": 1,
+    "warps": 4,
+    "cache": "evicted",
+    "cublas_us": 99.008,
+    "triton_us": 104.128,
+    "latency_reduction_pct": -5.171299288946352
+  },
+  {
+    "shape": "out",
+    "rows": 4,
+    "warps": 4,
+    "cache": "repeated",
+    "cublas_us": 19.024,
+    "triton_us": 13.984,
+    "latency_reduction_pct": 26.492851135407914
+  },
+  {
+    "shape": "out",
+    "rows": 4,
+    "warps": 4,
+    "cache": "evicted",
+    "cublas_us": 100.064,
+    "triton_us": 111.344,
+    "latency_reduction_pct": -11.272785417332898
+  },
+  {
+    "shape": "out",
+    "rows": 8,
+    "warps": 8,
+    "cache": "repeated",
+    "cublas_us": 19.04,
+    "triton_us": 15.008,
+    "latency_reduction_pct": 21.176470588235297
+  },
+  {
+    "shape": "out",
+    "rows": 8,
+    "warps": 8,
+    "cache": "evicted",
+    "cublas_us": 96.032,
+    "triton_us": 106.208,
+    "latency_reduction_pct": -10.596467844051993
+  },
+  {
+    "shape": "lm_head",
+    "rows": 1,
+    "warps": 4,
+    "cache": "repeated",
+    "cublas_us": 5730.784,
+    "triton_us": 4283.392,
+    "latency_reduction_pct": 25.25643960756504
+  },
+  {
+    "shape": "lm_head",
+    "rows": 1,
+    "warps": 4,
+    "cache": "evicted",
+    "cublas_us": 5738.208,
+    "triton_us": 4332.256,
+    "latency_reduction_pct": 24.501586558033438
+  },
+  {
+    "shape": "lm_head",
+    "rows": 4,
+    "warps": 4,
+    "cache": "repeated",
+    "cublas_us": 5684.688,
+    "triton_us": 4307.44,
+    "latency_reduction_pct": 24.22732786742211
+  },
+  {
+    "shape": "lm_head",
+    "rows": 4,
+    "warps": 4,
+    "cache": "evicted",
+    "cublas_us": 5694.672,
+    "triton_us": 4356.832,
+    "latency_reduction_pct": 23.49283681307719
+  },
+  {
+    "shape": "lm_head",
+    "rows": 8,
+    "warps": 8,
+    "cache": "repeated",
+    "cublas_us": 5685.76,
+    "triton_us": 4360.144,
+    "latency_reduction_pct": 23.31466681674921
+  },
+  {
+    "shape": "lm_head",
+    "rows": 8,
+    "warps": 8,
+    "cache": "evicted",
+    "cublas_us": 5695.184,
+    "triton_us": 4412.64,
+    "latency_reduction_pct": 22.51979918471466
+  }
+]

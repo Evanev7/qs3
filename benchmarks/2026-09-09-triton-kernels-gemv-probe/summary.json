@@ -1,0 +1,57 @@
+[
+  {
+    "kernel": "b12x_row",
+    "repeated": {
+      "cublas_ms": 5.702496,
+      "triton_ms": 4.075792
+    },
+    "evicted": {
+      "cublas_ms": 5.71664,
+      "triton_ms": 4.123328000000001
+    }
+  },
+  {
+    "kernel": "tk_n256_k64",
+    "repeated": {
+      "cublas_ms": 5.683631999999999,
+      "triton_ms": 4.447056
+    },
+    "evicted": {
+      "cublas_ms": 5.691072,
+      "triton_ms": 4.503232
+    }
+  },
+  {
+    "kernel": "tk_n128_k64",
+    "repeated": {
+      "cublas_ms": 5.676032,
+      "triton_ms": 4.4138720000000005
+    },
+    "evicted": {
+      "cublas_ms": 5.68544,
+      "triton_ms": 4.46688
+    }
+  },
+  {
+    "kernel": "tk_n64_k64",
+    "repeated": {
+      "cublas_ms": 5.688048,
+      "triton_ms": 4.452544
+    },
+    "evicted": {
+      "cublas_ms": 5.6962399999999995,
+      "triton_ms": 4.5072160000000006
+    }
+  },
+  {
+    "kernel": "tk_n32_k128",
+    "repeated": {
+      "cublas_ms": 5.6866080000000006,
+      "triton_ms": 4.292592
+    },
+    "evicted": {
+      "cublas_ms": 5.692656,
+      "triton_ms": 4.344512
+    }
+  }
+]

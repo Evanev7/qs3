@@ -1,0 +1,146 @@
+[
+  {
+    "kernel": "qs3_row",
+    "warps": 4,
+    "dtype": "fp32",
+    "cache": "repeated",
+    "cublas_us": 5718.656,
+    "triton_us": 4276.544,
+    "latency_reduction_pct": 25.217673523289385
+  },
+  {
+    "kernel": "qs3_row",
+    "warps": 4,
+    "dtype": "fp32",
+    "cache": "evicted",
+    "cublas_us": 5730.464,
+    "triton_us": 4326.112,
+    "latency_reduction_pct": 24.50677641461494
+  },
+  {
+    "kernel": "b12x_row",
+    "warps": 4,
+    "dtype": "fp32",
+    "cache": "repeated",
+    "cublas_us": 5689.648,
+    "triton_us": 4263.888,
+    "latency_reduction_pct": 25.058843710542376
+  },
+  {
+    "kernel": "b12x_row",
+    "warps": 4,
+    "dtype": "fp32",
+    "cache": "evicted",
+    "cublas_us": 5700.832,
+    "triton_us": 4309.76,
+    "latency_reduction_pct": 24.401210209316815
+  },
+  {
+    "kernel": "b12x_row",
+    "warps": 8,
+    "dtype": "fp32",
+    "cache": "repeated",
+    "cublas_us": 5697.328,
+    "triton_us": 4139.296,
+    "latency_reduction_pct": 27.34671410878924
+  },
+  {
+    "kernel": "b12x_row",
+    "warps": 8,
+    "dtype": "fp32",
+    "cache": "evicted",
+    "cublas_us": 5706.464,
+    "triton_us": 4186.416,
+    "latency_reduction_pct": 26.637301137797408
+  },
+  {
+    "kernel": "b12x_loop512",
+    "warps": 4,
+    "dtype": "fp32",
+    "cache": "repeated",
+    "cublas_us": 5692.608,
+    "triton_us": 4225.424,
+    "latency_reduction_pct": 25.773494328083014
+  },
+  {
+    "kernel": "b12x_loop512",
+    "warps": 4,
+    "dtype": "fp32",
+    "cache": "evicted",
+    "cublas_us": 5700.416,
+    "triton_us": 4277.984,
+    "latency_reduction_pct": 24.953126227980547
+  },
+  {
+    "kernel": "qs3_row",
+    "warps": 4,
+    "dtype": "bf16",
+    "cache": "repeated",
+    "cublas_us": 5725.424,
+    "triton_us": 4273.472,
+    "latency_reduction_pct": 25.35972881659071
+  },
+  {
+    "kernel": "qs3_row",
+    "warps": 4,
+    "dtype": "bf16",
+    "cache": "evicted",
+    "cublas_us": 5734.608,
+    "triton_us": 4322.928,
+    "latency_reduction_pct": 24.616852625323304
+  },
+  {
+    "kernel": "b12x_row",
+    "warps": 4,
+    "dtype": "bf16",
+    "cache": "repeated",
+    "cublas_us": 5695.584,
+    "triton_us": 4265.92,
+    "latency_reduction_pct": 25.101271441172667
+  },
+  {
+    "kernel": "b12x_row",
+    "warps": 4,
+    "dtype": "bf16",
+    "cache": "evicted",
+    "cublas_us": 5705.424,
+    "triton_us": 4316.496,
+    "latency_reduction_pct": 24.343992663823055
+  },
+  {
+    "kernel": "b12x_row",
+    "warps": 8,
+    "dtype": "bf16",
+    "cache": "repeated",
+    "cublas_us": 5698.624,
+    "triton_us": 4136.272,
+    "latency_reduction_pct": 27.416302602172028
+  },
+  {
+    "kernel": "b12x_row",
+    "warps": 8,
+    "dtype": "bf16",
+    "cache": "evicted",
+    "cublas_us": 5703.376,
+    "triton_us": 4184.768,
+    "latency_reduction_pct": 26.626475266578954
+  },
+  {
+    "kernel": "b12x_loop512",
+    "warps": 4,
+    "dtype": "bf16",
+    "cache": "repeated",
+    "cublas_us": 5694.768,
+    "triton_us": 4224.24,
+    "latency_reduction_pct": 25.82243912306876
+  },
+  {
+    "kernel": "b12x_loop512",
+    "warps": 4,
+    "dtype": "bf16",
+    "cache": "evicted",
+    "cublas_us": 5703.504,
+    "triton_us": 4274.4,
+    "latency_reduction_pct": 25.056596786817376
+  }
+]

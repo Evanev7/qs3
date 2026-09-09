@@ -1,0 +1,12 @@
+device=NVIDIA GB10 driver=13000 runtime=13000 weights=cudaMalloc eager=true
+shared_memory_per_block_optin=101376
+resources b12x_row local_bytes=0 registers=21 shared_bytes=32
+validated b12x_row rows=1 warps=8 max_abs=1.07288e-06
+resources tk_n256_k64 local_bytes=0 registers=154 shared_bytes=34816
+validated tk_n256_k64 rows=256 warps=2 max_abs=2.14577e-05
+resources tk_n128_k64 local_bytes=0 registers=88 shared_bytes=55296
+validated tk_n128_k64 rows=128 warps=2 max_abs=2.14577e-05
+resources tk_n64_k64 local_bytes=8 registers=56 shared_bytes=30720
+validated tk_n64_k64 rows=64 warps=2 max_abs=2.14577e-05
+resources tk_n32_k128 local_bytes=0 registers=38 shared_bytes=36864
+validated tk_n32_k128 rows=32 warps=4 max_abs=2.14577e-05
