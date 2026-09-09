@@ -655,3 +655,14 @@ the asset download and payload checksum scan had finished. The native change is
 The remaining sustained throughput gap to vLLM is about 21.3%, and prefill is
 about 1.51 times its latency. Competitive performance and sustained quality
 parity are still open.
+
+## Exact 27B GDN native probe
+
+The [27B GDN probe](benchmarks/2026-09-09-qwen27-gdn-probe/README.md) passes checked
+and release builds with 16 Q/K heads, 48 value heads, 128-dimensional heads,
+10240 convolution channels and width four. Analytic decode/prefill checks cover
+BF16 and FP32 state and the final value head's group-three Q/K mapping. Existing
+CPU-reference prep tests cover convolution, Q/K/V split, gate materialization and
+gated RMSNorm. Production integration must replace the fixed 32-head assumptions
+in validation, prep launch specialization, Rust tensor/state views and allocations;
+the warp recurrence already receives its head counts in validated parameters.

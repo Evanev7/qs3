@@ -1,0 +1,94 @@
+/home/sp10/qs3/.prototypes/qwen27_gdn/test.cu(747): warning #177-D: function "<unnamed>::test_batch_decode_attention_matches_cpu_reference" was declared but never referenced
+  void test_batch_decode_attention_matches_cpu_reference()
+       ^
+
+Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+
+/home/sp10/qs3/.prototypes/qwen27_gdn/test.cu(885): warning #177-D: function "<unnamed>::test_batch_prefill_attention_matches_cpu_reference" was declared but never referenced
+  void test_batch_prefill_attention_matches_cpu_reference()
+       ^
+
+/home/sp10/qs3/.prototypes/qwen27_gdn/test.cu(1139): warning #177-D: function "<unnamed>::test_attention_rejects_non_qwen36_full_attention_shapes" was declared but never referenced
+  void test_attention_rejects_non_qwen36_full_attention_shapes()
+       ^
+
+/home/sp10/qs3/.prototypes/qwen27_gdn/test.cu(1169): warning #177-D: function "<unnamed>::test_decode_append_uses_post_append_last_page_len" was declared but never referenced
+  void test_decode_append_uses_post_append_last_page_len()
+       ^
+
+/home/sp10/qs3/.prototypes/qwen27_gdn/test.cu(1252): warning #177-D: function "<unnamed>::test_prefill_append_maps_positions_through_page_table" was declared but never referenced
+  void test_prefill_append_maps_positions_through_page_table()
+       ^
+
+/home/sp10/qs3/.prototypes/qwen27_gdn/test.cu(1593): warning #177-D: function "<unnamed>::test_moe_bf16_staged_grouped_gemm" was declared but never referenced
+  void test_moe_bf16_staged_grouped_gemm(uint32_t gemm_threadblocks)
+       ^
+
+/home/sp10/qs3/.prototypes/qwen27_gdn/test.cu(1720): warning #177-D: function "<unnamed>::test_moe_bf16_top2_weighted_accumulation" was declared but never referenced
+  void test_moe_bf16_top2_weighted_accumulation(uint32_t gemm_threadblocks)
+       ^
+
+/home/sp10/qs3/.prototypes/qwen27_gdn/test.cu(1854): warning #177-D: function "<unnamed>::test_moe_router_logits_plan_is_unsupported" was declared but never referenced
+  void test_moe_router_logits_plan_is_unsupported()
+       ^
+
+/home/sp10/qs3/.prototypes/qwen27_gdn/test.cu(1886): warning #177-D: function "<unnamed>::test_moe_nvfp4_execute_is_declared_unsupported" was declared but never referenced
+  void test_moe_nvfp4_execute_is_declared_unsupported()
+       ^
+
+27B GDN: 16Q/16K/48V/128, conv 10240, BF16/FP32 recurrence and CPU-reference prep tests passed
+/home/sp10/qs3/.prototypes/qwen27_gdn/test.cu(747): warning #177-D: function "<unnamed>::test_batch_decode_attention_matches_cpu_reference" was declared but never referenced
+  void test_batch_decode_attention_matches_cpu_reference()
+       ^
+
+Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+
+/home/sp10/qs3/.prototypes/qwen27_gdn/test.cu(885): warning #177-D: function "<unnamed>::test_batch_prefill_attention_matches_cpu_reference" was declared but never referenced
+  void test_batch_prefill_attention_matches_cpu_reference()
+       ^
+
+/home/sp10/qs3/.prototypes/qwen27_gdn/test.cu(1139): warning #177-D: function "<unnamed>::test_attention_rejects_non_qwen36_full_attention_shapes" was declared but never referenced
+  void test_attention_rejects_non_qwen36_full_attention_shapes()
+       ^
+
+/home/sp10/qs3/.prototypes/qwen27_gdn/test.cu(1169): warning #177-D: function "<unnamed>::test_decode_append_uses_post_append_last_page_len" was declared but never referenced
+  void test_decode_append_uses_post_append_last_page_len()
+       ^
+
+/home/sp10/qs3/.prototypes/qwen27_gdn/test.cu(1252): warning #177-D: function "<unnamed>::test_prefill_append_maps_positions_through_page_table" was declared but never referenced
+  void test_prefill_append_maps_positions_through_page_table()
+       ^
+
+/home/sp10/qs3/.prototypes/qwen27_gdn/test.cu(1593): warning #177-D: function "<unnamed>::test_moe_bf16_staged_grouped_gemm" was declared but never referenced
+  void test_moe_bf16_staged_grouped_gemm(uint32_t gemm_threadblocks)
+       ^
+
+/home/sp10/qs3/.prototypes/qwen27_gdn/test.cu(1720): warning #177-D: function "<unnamed>::test_moe_bf16_top2_weighted_accumulation" was declared but never referenced
+  void test_moe_bf16_top2_weighted_accumulation(uint32_t gemm_threadblocks)
+       ^
+
+/home/sp10/qs3/.prototypes/qwen27_gdn/test.cu(1854): warning #177-D: function "<unnamed>::test_moe_router_logits_plan_is_unsupported" was declared but never referenced
+  void test_moe_router_logits_plan_is_unsupported()
+       ^
+
+/home/sp10/qs3/.prototypes/qwen27_gdn/test.cu(1886): warning #177-D: function "<unnamed>::test_moe_nvfp4_execute_is_declared_unsupported" was declared but never referenced
+  void test_moe_nvfp4_execute_is_declared_unsupported()
+       ^
+
+/home/sp10/qs3/.prototypes/qwen27_gdn/test.cu(1946): warning #177-D: function "<unnamed>::test_checked_append_decode_rejects_invalid_page_id" was declared but never referenced
+  void test_checked_append_decode_rejects_invalid_page_id()
+       ^
+
+/home/sp10/qs3/.prototypes/qwen27_gdn/test.cu(2041): warning #177-D: function "<unnamed>::test_checked_append_prefill_rejects_invalid_position" was declared but never referenced
+  void test_checked_append_prefill_rejects_invalid_position()
+       ^
+
+/home/sp10/qs3/.prototypes/qwen27_gdn/test.cu(2419): warning #177-D: function "<unnamed>::test_checked_moe_rejects_invalid_route_id" was declared but never referenced
+  void test_checked_moe_rejects_invalid_route_id()
+       ^
+
+/home/sp10/qs3/.prototypes/qwen27_gdn/test.cu(2428): warning #177-D: function "<unnamed>::test_checked_moe_rejects_non_finite_route_weight" was declared but never referenced
+  void test_checked_moe_rejects_non_finite_route_weight()
+       ^
+
+27B GDN: 16Q/16K/48V/128, conv 10240, BF16/FP32 recurrence and CPU-reference prep tests passed
