@@ -230,3 +230,18 @@ The first vLLM prefill warmup triggers additional JIT and costs 16.592 seconds;
 the second takes 183.219 ms. Neither is included in steady samples. The harness
 includes empty engine steps in token-delivery intervals, preventing asynchronous
 submission from being mistaken for completed inference latency.
+
+## Wider grouped MoE launch probe
+
+A [two-repetition sweep](benchmarks/2026-09-09-moe-block-sweep/README.md) holds
+CUTLASS arithmetic fixed and tests 4, 12, 24, 48 and 96 blocks. Complete staged
+MoE time for one token falls from 1285–1286 µs to 315–317 µs at 96 blocks. The
+16- and 102-token cases improve about 5x. This supports increasing the launch
+grid before replacing arithmetic or adding fusion. The probe uses zero weights
+and device allocations; numerical tests and managed real-model timing are separate
+gates. 96 is the best tested grid, not an established global optimum.
+
+The subsequent output-recording core run `3bb273e` reproduces 11.908 tok/s and
+83.724 ms decode p50 with the original four-block launch. All 36 generated IDs
+(including warmups) match the first 36 vLLM IDs on the fixed prompt. This supports
+short-run greedy agreement; recurrent precision and sustained quality remain open.

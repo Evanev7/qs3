@@ -13,8 +13,8 @@ Decode measures **30.826 tok/s**, p50 **32.355 ms**, versus qs3 `90b52c4` at
 `6ca602a4cc15238d`, greedy sampling, one request, four decode warmups and 32
 measured decode forwards (contexts 106 through 138). vLLM emits the first token
 at prefill, so the harness requests 37 outputs to measure 36 decode forwards.
-qs3 emits 36 tokens and processes the last one before returning. Generated IDs
-are recorded for later comparison; a full output equivalence check is pending.
+qs3 emits 36 tokens and processes the last one before returning. The [qs3 output-recording run](../2026-09-09T024629.221489010Z-3bb273e.json)
+produces exactly the same first 36 generated IDs, including warmups.
 
 This is **not yet a fully matched-precision comparison**. vLLM resolves its GDN
 convolution state to BF16 and recurrent state to FP32; qs3 stores both in BF16.
@@ -39,5 +39,5 @@ qs3's 1015.461 ms prefill ends with logits and performs no sampling. Setup takes
 JIT compilation. The second warmup is 183.219 ms; both are excluded from the five
 prefill samples. Setup and warmup are not steady decode latency.
 
-Further work: match recurrent precision, compare generated tokens and sustained
+Further work: match recurrent precision, compare sustained
 quality, add several contexts and sustained decode, and capture a vLLM GPU trace.
