@@ -440,3 +440,15 @@ FlashInfer's decode launch dispatch need the 6/8 cases; enabling only planning
 would leave execution unsupported. A TU-local dispatch override suffices,
 without changing vendored headers or introducing JIT. Production Rust/native
 validation and checked-build coverage remain to integrate.
+
+## Prefill GPU cost
+
+The [warmed 1024-token prefill trace](benchmarks/2026-09-09T041450Z-bf86169-prefill/README.md)
+records 962.632 ms in 30 GDN recurrence calls and 497.233 ms in 30 causal-conv
+calls: 78.7% of its 1854.543 ms kernel sum. Grouped MoE takes another 314.039 ms.
+The capture ran alongside the asset download and is a cost diagnostic, not an
+isolated core-throughput result. Parallel convolution across tokens is the next
+local AOT target; initial/final state and aliasing must remain correct. Chunked
+GDN prefill is the larger subsequent target. The trace also shows 40.320 ms of
+pinned allocation/free with no GPU overlap before the main kernel span, so
+retaining provider resources across prefix rebuilds still matters.
