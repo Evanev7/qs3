@@ -473,3 +473,13 @@ The prescribed full suite and real 35B reference pass with BF16 and FP32
 recurrence, including reset/replay. The integrated flat-grid implementation also
 passes the 72-case bitwise probe (14.074 versus 0.188 ms in that repeat). Core
 prefill and sustained token comparisons are the next gate.
+
+The integrated [short core run](benchmarks/2026-09-09T043805.584536766Z-b8a0828.json)
+measures 379.641 ms prefill p50, down from 405.529 ms (6.4%). The
+[1024-token/256-step run](benchmarks/2026-09-09T043903.622466904Z-b8a0828.json)
+measures 1431.271 ms, down from 1922.211 ms (25.5%). Both have identical generated
+IDs to the final-row-projection baseline (36 and 260 IDs). Decode throughput is
+23.256 and 23.220 tok/s, consistent with the previous approximately 23.2 tok/s.
+The asset download was paused for each timing run and resumed between them.
+The 491 ms longer-prefill reduction is consistent with removing the measured
+serial-convolution cost. GDN recurrence is the next larger prefill target.
