@@ -77,8 +77,10 @@
   recorded under `model_manifests/`. An independent host check validates 851
   text tensor shapes; tokenizer bytes match the pinned 35B asset. Production
   Rust dense-manifest validation and payload validation remain open.
-- [ ] Probe native full attention with 24 Q heads, 4 KV heads, head dimension
-  256, and GQA ratio 6. Current dispatch only includes ratio 8.
+- [x] Probe native full attention with 24 Q heads, 4 KV heads, head dimension
+  256, and GQA ratio 6. The isolated AOT probe passes CPU-reference prefill/decode
+  and append cases on sp10; see FINDINGS.md. Production dispatch and Rust shape
+  validation still need to adopt the tested 6/8 dispatch.
 - [ ] Validate GDN with 16 key heads and 48 value heads, head dimensions 128,
   and convolution width 4. Audit fixed 35B constants in native kernels, Rust
   views, scratch allocation, and recurrent state.

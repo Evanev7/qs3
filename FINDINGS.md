@@ -430,3 +430,13 @@ logits-memory reduction and the explicit single-request output contract. All
 The failed asset-download process had exited before these timing runs. Profile
 prefill itself next: removing unused vocabulary rows does not explain or close
 the much larger prefill gap against vLLM.
+
+## 27B attention dispatch probe
+
+The [24Q/4KV AOT probe](benchmarks/2026-09-09-qwen27-attention-probe/README.md)
+passes the existing native CPU-reference prefill/decode and append cases after
+specializing the fixture to GQA ratio six. Both qs3's plan dispatch and
+FlashInfer's decode launch dispatch need the 6/8 cases; enabling only planning
+would leave execution unsupported. A TU-local dispatch override suffices,
+without changing vendored headers or introducing JIT. Production Rust/native
+validation and checked-build coverage remain to integrate.
