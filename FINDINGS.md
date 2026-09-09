@@ -3,6 +3,26 @@
 This is an evidence log for Qwen3.6 on Spark. TODO.md remains the completion
 checklist; competitive performance against vLLM has **not** been established.
 
+## Latest validated measurements
+
+Pinned 35B BF16 weights, BF16 caches/convolution history and FP32 GDN recurrence,
+measured on sp10. qs3 uses eager AOT execution and FP32 logits; vLLM uses graph
+execution and BF16 projection output. Prompt IDs and generation settings match,
+but these implementation and output-precision differences remain explicit.
+
+| System | Prompt/decode samples | Prefill p50 ms | Decode p50 ms | Decode tok/s | Evidence |
+| --- | ---: | ---: | ---: | ---: | --- |
+| qs3 eager | 102/32 | 250.405 | 41.245 | 24.199 | [JSON](benchmarks/2026-09-09T054130.766285819Z-d6ad953.json) |
+| qs3 eager | 1024/256 | 555.079 | 41.260 | 24.217 | [JSON](benchmarks/2026-09-09T054323.171540392Z-affb470.json) |
+| vLLM graphs | 102/32 | 181.369 | 32.355 | 30.826 | [JSON](benchmarks/2026-09-09T023628Z-vllm-bf16-core/result.json) |
+| vLLM graphs | 1024/256 | 367.629 | 32.481 | 30.769 | [JSON](benchmarks/2026-09-09T030615Z-vllm-bf16-core/result.json) |
+
+The latest qs3 changes preserve every generated ID from the preceding runs
+(36 short, 260 sustained). The short vLLM sequence matches; the sustained greedy
+sequences first differ at output index 162. Identical-prefix score comparison,
+27B runtime support, graphs and NVFP4 remain open. The verified 27B snapshot is
+cached on sp10. The following sections retain the measurements behind this state.
+
 ## Measurement contract
 
 Use the gitignored `run_core_benchmark.sh` to transfer the current commit to the
@@ -15,13 +35,15 @@ workloads (defaults 102 and 32). Longer prompts repeat the base prompt's token
 IDs. JSON includes the full prompt fingerprint, generated IDs including warmups,
 and explicit GDN state precision. The default workload remains unchanged.
 
-The current core workload uses the pinned Qwen3.6-35B-A3B BF16 snapshot
+The short core workload uses the pinned Qwen3.6-35B-A3B BF16 snapshot
 `995ad96eacd98c81ed38be0c5b274b04031597b0`, managed weights, eager execution,
 greedy sampling, a 102-token prompt, 4 decode warmups and 32 measured decode
 steps (contexts 106 through 138). Decode wall time includes the public runner
 call and sampled-token delivery. Tokenizer decode validation occurs outside the
-timed interval. This is a short-context regression measurement, not a sustained
-or matched-vLLM comparison. Prefill samples follow resets of the same runner.
+timed interval. The sustained workload uses 1024 prompt IDs and 256 measured
+decode steps. Both now have vLLM baselines and explicit FP32 recurrence. Prefill
+samples follow resets of the same runner. The early table below used BF16
+recurrence; later comparisons record precision changes explicitly.
 
 | Revision | Decode tok/s | Decode p50 ms | Prefill p50 ms | Evidence |
 | --- | ---: | ---: | ---: | --- |
@@ -59,9 +81,9 @@ Workspace requires 256-byte alignment. See the [cuBLASLt reference](https://docs
 
 This removes repeated preparation; it is not yet the final static schedule.
 The first call for each key still selects an algorithm, and Rust still looks
-up a plan on execution. Prefix rebuilding currently creates a fresh Engine,
-which also discards provider handles and prepared plans. That lifetime coupling
-is a separate TODO.
+up a plan on execution. Since `1efaee8`, prefix rebuilding retains the execution
+session and its provider handles/plans while replacing only prefix and recurrent
+state. Late-failure rollback tests cover continued execution with retained plans.
 
 ## Architecture to test next
 
@@ -72,23 +94,24 @@ current cuBLASLt setup query is an intermediate preparation mechanism. Ultimatel
 kernel choices should be explicit prepared schedule entries; graph replay must
 not select algorithms, allocate storage or compile kernels.
 
-1. Preserve execution resources across prefix transactions. Candidate attention
-   and recurrent states may be replaced without replacing the device/stream and
-   provider handles. Keep failure rollback separate from reusable execution
-   resources.
-2. Reuse attention planning storage while retaining exact metadata validation.
-   Page IDs and last-page lengths cannot be dropped from the key. An update path
-   must account for pinned staging still being consumed by asynchronous copies.
-3. Preallocate decode storage and represent changing page metadata, sequence
+Execution resources now survive prefix transactions, and attention planning
+storage is reused with event-protected pinned slots and complete metadata keys.
+The remaining architecture gates are:
+
+1. Preallocate decode storage and represent changing page metadata, sequence
    positions, sampled input IDs and GDN state slots in persistent device buffers.
    Capture only after preparation; page boundaries and prefix resets are
    correctness gates. Alternating recurrence slots need explicit replay parity.
-4. Measure prepared eager CPU submission and GPU timelines before choosing
-   fusion. Then compare graph replay. A short-context wall-time improvement
-   alone does not establish a GPU kernel bottleneck or vLLM parity.
-5. Establish exact 27B BF16 support and matched-vLLM baselines before claiming
-   model coverage. Quantization needs verified NVFP4 packing/scales and SM121
-   kernels; an emulation path is not evidence of competitive quantized execution.
+2. Use the recorded eager/graph timelines to guide projection packing and MoE
+   probes. Compare identical-prefix scores before changing LM-head output
+   precision. Graph replay and GPU kernel improvements address different costs;
+   the current prefill span has little idle time while decode has larger gaps.
+3. Establish exact 27B BF16 support and matched-vLLM baselines. The pinned payload
+   is verified and native attention ratio six is prototyped; Rust shape support,
+   dense materialization, GDN preparation and reference inference remain open.
+4. Implement verified NVFP4 packing/scales and actual SM121 AOT kernels after
+   BF16 correctness. An emulation path does not establish competitive quantized
+   execution.
 
 These are hypotheses and implementation gates, not measured speedup claims.
 
@@ -619,3 +642,16 @@ passes (55,563,006,400 bytes including headers). The network download needed
 resumption after truncated HTTP streams; validation was performed only after
 completion. Rust dense-manifest/materialization and public-runner 27B correctness
 remain open.
+
+
+The integrated [short run](benchmarks/2026-09-09T054130.766285819Z-d6ad953.json)
+measures 24.199 tok/s, 41.245 ms decode p50 and 250.405 ms prefill. The
+[1024-token/256-step run](benchmarks/2026-09-09T054323.171540392Z-affb470.json)
+measures 24.217 tok/s, 41.260 ms decode p50 and 555.079 ms prefill. Against the
+resource-reuse baseline, sustained decode throughput increases 2.9% and p50 falls
+from 42.461 ms. All 36/260 generated IDs remain identical. Both timings ran after
+the asset download and payload checksum scan had finished. The native change is
+`d6ad953`; the sustained run includes only subsequent payload-validation records.
+The remaining sustained throughput gap to vLLM is about 21.3%, and prefill is
+about 1.51 times its latency. Competitive performance and sustained quality
+parity are still open.

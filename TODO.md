@@ -46,7 +46,7 @@
   102- and 1024-token vLLM comparisons are recorded, the latter with 256 decode
   samples. FP32 recurrence is now available and the loaded-model default; it
   extends the longer matching prefix from 56 to 162 generated IDs with little
-  throughput change. Identical-prefix score comparison, sustained quality, a
+  throughput change. Identical-prefix score comparison, sustained quality, and a
   third context remain open. Aligned qs3/vLLM 32-forward GPU timelines are now
   recorded, including graph gaps, kernel choices and LM-head precision differences.
 
