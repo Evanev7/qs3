@@ -583,3 +583,11 @@ outliers and averages 22.754 tok/s, so there is no claimed decode gain. The asse
 download was paused during both timings and resumed afterwards; its HTTP stream
 subsequently failed and the downloader resumed from cached partial data. The
 remaining long-prefill gap to vLLM is about 1.52 times latency.
+
+The [updated prefill trace](benchmarks/2026-09-09T053235Z-85b30b2-prefill/README.md)
+confirms zero pinned-host allocation/free time, versus 40.320 ms previously.
+Its 545.954 ms kernel span contains only 2.367 ms without GPU work. Grouped MoE
+now accounts for 312.996 ms (58.7% of kernel sum), warp recurrence 132.562 ms
+(24.8%), and parallel convolution outputs 6.445 ms. Prefill optimization should
+now focus on MoE/recurrence work; graphs principally address the larger decode
+gaps. This trace had an active asset download and is diagnostic evidence.
