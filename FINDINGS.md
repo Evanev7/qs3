@@ -593,3 +593,19 @@ now accounts for 312.996 ms (58.7% of kernel sum), warp recurrence 132.562 ms
 (24.8%), and parallel convolution outputs 6.445 ms. Prefill optimization should
 now focus on MoE/recurrence work; graphs principally address the larger decode
 gaps. This trace had an active asset download and is diagnostic evidence.
+
+## Tiled decode convolution
+
+The [AOT probe](benchmarks/2026-09-09-conv-decode-probe/README.md) distributes
+independent convolution channels across 256-thread blocks. It preserves all output
+and state bytes in 768 cases covering 8192/10240 channels, BF16/FP32 history,
+multiple sequences, same/separate state slots, disabled updates, negative reads,
+exact input/output alias, activation and bias choices. At the 35B width, event
+mean falls from 18.444 to 4.096 microseconds; the 27B-width probe falls from
+22.522 to 4.100 microseconds. These are standalone measurements.
+
+Integration changes only the decode channel assignment and grid; prefill keeps
+its parallel output/writeback path. The benchmark records `qscu_tiled_channels`.
+The prescribed full suite and native checked/release tests pass, as does the
+loaded 35B regression with both recurrent precisions, including late failed
+rebuild, continuation, reset and replay. Core decode timing follows.

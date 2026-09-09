@@ -579,7 +579,8 @@ __global__ void qwen36_gdn_causal_conv1d_kernel(conv1d_params p, StateT* state)
         ? -1
         : (p.write_indices == nullptr ? read_slot : p.write_indices[seq]);
 
-    for (uint32_t dim = threadIdx.x; dim < p.conv_dim; dim += blockDim.x) {
+    for (uint32_t dim = blockIdx.y * blockDim.x + threadIdx.x;
+         dim < p.conv_dim; dim += blockDim.x * gridDim.y) {
         float h0 = 0.0f;
         float h1 = 0.0f;
         float h2 = 0.0f;
@@ -721,7 +722,8 @@ qsfi_status launch_qwen36_conv1d(
 )
 {
     if (p.seq_indptr == nullptr) {
-        qwen36_gdn_causal_conv1d_kernel<<<batch, 256, 0, stream>>>(p, state);
+        const dim3 grid(batch, (p.conv_dim + 255) / 256);
+        qwen36_gdn_causal_conv1d_kernel<<<grid, 256, 0, stream>>>(p, state);
         return validate_cuda(cudaGetLastError());
     }
     const uint32_t output_blocks

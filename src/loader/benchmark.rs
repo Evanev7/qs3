@@ -324,6 +324,7 @@ pub fn run_core_benchmark() -> JsonValue {
                 ("norm", "flashinfer_gemma_aot".to_owned().into()),
                 ("gdn", "qscu_warp4_row128_bf16".to_owned().into()),
                 ("gdn_prefill_conv", "qscu_parallel_tokens".to_owned().into()),
+                ("gdn_decode_conv", "qscu_tiled_channels".to_owned().into()),
                 ("router", "qscu_warp32_top8_e256".to_owned().into()),
                 (
                     "moe_threadblocks",
