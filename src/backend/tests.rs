@@ -239,24 +239,24 @@ fn qscu_descriptor_builders_validate_shapes_and_modes() {
 
 #[test]
 fn qscb_linear_specializations_encode_the_output_type() {
-    let x = DMat::new(device_ptr(30), 4, 128, 160).unwrap();
+    let x = DMat::<BF16>::new(device_ptr(30), 4, 128, 160).unwrap();
     let weight = DMat::new(device_ptr(31), 256, 128, 128).unwrap();
-    let bf16_out = DMat::new(device_ptr(32), 4, 256, 320).unwrap();
-    let f32_out = DMat::new(device_ptr(33), 4, 256, 320).unwrap();
+    let bf16_out = DMat::<BF16>::new(device_ptr(32), 4, 256, 320).unwrap();
+    let f32_out = DMat::<F32>::new(device_ptr(33), 4, 256, 320).unwrap();
 
-    let bf16 = qscb::linear_bf16_desc(x, weight, bf16_out, Workspace::none()).unwrap();
+    let bf16 = qscb::linear_desc(x, weight, bf16_out, Workspace::none()).unwrap();
     assert_eq!(bf16.out.dtype, ffi::DTYPE_BF16);
     assert_eq!(bf16.out.shape, [4, 256]);
 
-    let f32 = qscb::linear_f32_desc(x, weight, f32_out, Workspace::none()).unwrap();
+    let f32 = qscb::linear_desc(x, weight, f32_out, Workspace::none()).unwrap();
     assert_eq!(f32.out.dtype, ffi::DTYPE_F32);
     assert_eq!(f32.out.shape, [4, 256]);
 
     assert!(matches!(
-        qscb::linear_f32_desc(
+        qscb::linear_desc(
             x,
             weight,
-            DMat::new(device_ptr(34), 4, 128, 128).unwrap(),
+            DMat::<F32>::new(device_ptr(34), 4, 128, 128).unwrap(),
             Workspace::none(),
         ),
         Err(Status::InvalidArgument)

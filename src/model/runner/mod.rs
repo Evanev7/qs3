@@ -8,7 +8,7 @@ use crate::{
     QWEN36_GDN_KEY_DIM, QWEN36_GDN_NUM_K_HEADS, QWEN36_GDN_NUM_Q_HEADS, QWEN36_GDN_NUM_V_HEADS,
     QWEN36_GDN_VALUE_DIM,
     backend::{
-        Bf16Heads, DMat, DVec, FloatStorage,
+        BF16, Bf16Heads, DMat, DVec, F32, FloatStorage,
         qscu::{GdnConvState, GdnRecurrentState},
         qsfi::{FusedAddRmsNormBf16, MoeBf16PlanConfig, MoePlan, RmsNormBf16, Workspace},
     },
@@ -591,10 +591,10 @@ impl ModelRunner {
         };
         let mut ops = self.engine.operators();
         unsafe {
-            ops.qscb().linear_bf16(
+            ops.qscb().linear(
                 DMat::contiguous(input, rows, in_features)?,
                 DMat::contiguous(weight, out_features, in_features)?,
-                DMat::contiguous(output, rows, out_features)?,
+                DMat::<BF16>::contiguous(output, rows, out_features)?,
                 workspace,
             )
         }
@@ -619,10 +619,10 @@ impl ModelRunner {
         };
         let mut ops = self.engine.operators();
         unsafe {
-            ops.qscb().linear_f32(
+            ops.qscb().linear(
                 DMat::contiguous(input, rows, in_features)?,
                 DMat::contiguous(weight, out_features, in_features)?,
-                DMat::contiguous(output, rows, out_features)?,
+                DMat::<F32>::contiguous(output, rows, out_features)?,
                 workspace,
             )
         }

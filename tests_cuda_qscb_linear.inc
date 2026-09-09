@@ -2,6 +2,18 @@
 #error "Include qscb.h before including tests_cuda_qscb_linear.inc inside test.cu."
 #endif
 
+// Numerical cases exercise the prepared API; dedicated reuse checks below keep
+// the same plan alive across launches and layout changes.
+static qsfi_status qscb_test_linear(qscb_context* ctx, const qscb_linear_desc* desc)
+{
+    qscb_linear_plan* plan = nullptr;
+    qsfi_status status = qscb_linear_plan_create(ctx, desc, &plan);
+    if (status == QSFI_STATUS_OK)
+        status = qscb_linear_execute(ctx, plan, desc);
+    qscb_linear_plan_destroy(plan);
+    return status;
+}
+
 static uint16_t qscb_test_f32_to_bf16(float value)
 {
     uint32_t bits = 0;
@@ -311,7 +323,7 @@ static void qscb_test_run_negative_descriptor_validation(qscb_context* ctx)
     desc.out_features = 1;
 
     check_status(
-        qscb_linear(ctx, nullptr),
+        qscb_test_linear(ctx, nullptr),
         QSFI_STATUS_INVALID_ARGUMENT,
         "qscb linear rejects null desc"
     );
@@ -319,7 +331,7 @@ static void qscb_test_run_negative_descriptor_validation(qscb_context* ctx)
     qscb_linear_desc bad_stride = desc;
     bad_stride.x.stride[1] = 2;
     check_status(
-        qscb_linear(ctx, &bad_stride),
+        qscb_test_linear(ctx, &bad_stride),
         QSFI_STATUS_INVALID_ARGUMENT,
         "qscb linear rejects non-row-major x stride"
     );
@@ -327,7 +339,7 @@ static void qscb_test_run_negative_descriptor_validation(qscb_context* ctx)
     qscb_linear_desc bad_dtype = desc;
     bad_dtype.out.dtype = QSFI_DTYPE_F16;
     check_status(
-        qscb_linear(ctx, &bad_dtype),
+        qscb_test_linear(ctx, &bad_dtype),
         QSFI_STATUS_INVALID_ARGUMENT,
         "qscb linear rejects unsupported out dtype"
     );
@@ -336,7 +348,7 @@ static void qscb_test_run_negative_descriptor_validation(qscb_context* ctx)
     bad_workspace.workspace = nullptr;
     bad_workspace.workspace_bytes = 1;
     check_status(
-        qscb_linear(ctx, &bad_workspace),
+        qscb_test_linear(ctx, &bad_workspace),
         QSFI_STATUS_INVALID_ARGUMENT,
         "qscb linear rejects null workspace with nonzero bytes"
     );
@@ -365,7 +377,7 @@ static void test_qscb_context_lifecycle()
     );
 
     check_status(
-        qscb_linear(nullptr, nullptr),
+        qscb_test_linear(nullptr, nullptr),
         QSFI_STATUS_INVALID_ARGUMENT,
         "qscb linear rejects null context"
     );
@@ -456,11 +468,56 @@ static void qscb_test_run_linear_bf16_stream_workspace()
         desc.workspace = d_workspace;
         desc.workspace_bytes = workspace_bytes;
 
-        const bool ran = check_status(
-                             qscb_linear(ctx, &desc),
-                             QSFI_STATUS_OK,
-                             "qscb bf16 linear stream workspace"
-                         )
+        qscb_linear_plan* plan = nullptr;
+        const bool prepared = check_status(
+            qscb_linear_plan_create(ctx, &desc, &plan),
+            QSFI_STATUS_OK,
+            "prepare qscb reuse"
+        );
+        if (prepared) {
+            auto warmup = desc;
+            warmup.alpha = 1.0f;
+            check_status(qscb_linear_execute(ctx, plan, &warmup), QSFI_STATUS_OK, "reuse warmup");
+            auto bad = desc;
+            bad.x.stride[0] += 1;
+            check_status(
+                qscb_linear_execute(ctx, plan, &bad),
+                QSFI_STATUS_INVALID_ARGUMENT,
+                "prepared linear rejects changed stride"
+            );
+            bad = desc;
+            bad.x.data = d_x + 1;
+            check_status(
+                qscb_linear_execute(ctx, plan, &bad),
+                QSFI_STATUS_INVALID_ARGUMENT,
+                "prepared linear rejects weaker alignment before device addressing"
+            );
+            bad = desc;
+            bad.out.dtype = QSFI_DTYPE_F32;
+            check_status(
+                qscb_linear_execute(ctx, plan, &bad),
+                QSFI_STATUS_INVALID_ARGUMENT,
+                "prepared linear rejects changed dtype"
+            );
+            bad = desc;
+            bad.workspace_bytes -= 1;
+            check_status(
+                qscb_linear_execute(ctx, plan, &bad),
+                QSFI_STATUS_INVALID_ARGUMENT,
+                "prepared linear rejects changed workspace capacity"
+            );
+            bad = desc;
+            bad.workspace = d_workspace + 1;
+            check_status(
+                qscb_linear_execute(ctx, plan, &bad),
+                QSFI_STATUS_INVALID_ARGUMENT,
+                "prepared linear rejects unaligned workspace"
+            );
+        }
+        const bool ran = prepared
+            && check_status(qscb_linear_execute(ctx, plan, &desc),
+                            QSFI_STATUS_OK,
+                            "qscb bf16 linear reuses plan with new alpha")
             && check_cuda(cudaMemcpyAsync(
                               h_out.data(),
                               d_out,
@@ -470,6 +527,7 @@ static void qscb_test_run_linear_bf16_stream_workspace()
                           ),
                           "copy qscb stream workspace out back")
             && check_cuda(cudaStreamSynchronize(stream), "sync qscb stream workspace linear");
+        qscb_linear_plan_destroy(plan);
         if (ran) {
             qscb_test_check_bf16_output_scaled(
                 h_out,
@@ -562,7 +620,7 @@ static void test_qscb_linear_bf16_hidden_output_strided()
         desc.out_features = out_features;
 
         const bool ran
-            = check_status(qscb_linear(ctx, &desc), QSFI_STATUS_OK, "qscb hidden bf16 linear")
+            = check_status(qscb_test_linear(ctx, &desc), QSFI_STATUS_OK, "qscb hidden bf16 linear")
             && check_cuda(cudaDeviceSynchronize(), "sync qscb hidden bf16 linear")
             && check_cuda(
                   cudaMemcpy(
@@ -672,7 +730,7 @@ static void test_qscb_linear_bf16_output_beta()
         desc.beta = beta;
 
         const bool ran
-            = check_status(qscb_linear(ctx, &desc), QSFI_STATUS_OK, "qscb bf16 linear beta")
+            = check_status(qscb_test_linear(ctx, &desc), QSFI_STATUS_OK, "qscb bf16 linear beta")
             && check_cuda(cudaDeviceSynchronize(), "sync qscb bf16 linear beta")
             && check_cuda(
                   cudaMemcpy(
@@ -764,7 +822,7 @@ static void qscb_test_run_f32_accumulation_sensitive(qscb_context* ctx)
         desc.out_features = out_features;
 
         const bool ran = check_status(
-                             qscb_linear(ctx, &desc),
+                             qscb_test_linear(ctx, &desc),
                              QSFI_STATUS_OK,
                              "qscb sensitive f32 accumulation linear"
                          )
@@ -875,18 +933,19 @@ static void test_qscb_linear_bf16_logits_f32_output_beta()
         desc.out_features = out_features;
         desc.beta = beta;
 
-        const bool ran
-            = check_status(qscb_linear(ctx, &desc), QSFI_STATUS_OK, "qscb logits f32 linear beta")
+        const bool ran = check_status(
+                             qscb_test_linear(ctx, &desc),
+                             QSFI_STATUS_OK,
+                             "qscb logits f32 linear beta"
+                         )
             && check_cuda(cudaDeviceSynchronize(), "sync qscb logits f32 linear")
-            && check_cuda(
-                  cudaMemcpy(
-                      h_out.data(),
-                      d_out,
-                      h_out.size() * sizeof(float),
-                      cudaMemcpyDeviceToHost
-                  ),
-                  "copy qscb logits out back"
-            );
+            && check_cuda(cudaMemcpy(
+                              h_out.data(),
+                              d_out,
+                              h_out.size() * sizeof(float),
+                              cudaMemcpyDeviceToHost
+                          ),
+                          "copy qscb logits out back");
         if (ran) {
             qscb_test_check_f32_output(
                 h_out,

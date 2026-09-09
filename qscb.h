@@ -49,7 +49,18 @@ void qscb_context_destroy(qscb_context* ctx);
 qsfi_status qscb_context_get_last_error(const qscb_context* ctx, qsfi_error_info* out);
 void qscb_context_clear_last_error(qscb_context* ctx);
 
-qsfi_status qscb_linear(qscb_context* ctx, const qscb_linear_desc* desc);
+typedef struct qscb_linear_plan qscb_linear_plan;
+
+/* Preparation queries cuBLASLt once. Plans belong to ctx and must be destroyed
+ * before it. Execution permits new addresses/scalars with identical dimensions,
+ * row strides, output dtype, capped (256-byte) pointer alignments and workspace
+ * capacity. Workspace pointers must be 256-byte aligned. No device sync occurs.
+ */
+qsfi_status
+qscb_linear_plan_create(qscb_context* ctx, const qscb_linear_desc* desc, qscb_linear_plan** out);
+void qscb_linear_plan_destroy(qscb_linear_plan* plan);
+qsfi_status
+qscb_linear_execute(qscb_context* ctx, const qscb_linear_plan* plan, const qscb_linear_desc* desc);
 
 #ifdef __cplusplus
 }

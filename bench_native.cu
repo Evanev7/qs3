@@ -574,6 +574,14 @@ bool sync_setup(cudaStream_t stream)
     return check_cuda(cudaStreamSynchronize(stream), "cudaStreamSynchronize setup");
 }
 
+struct PreparedLinear {
+    qscb_linear_plan* plan = nullptr;
+    ~PreparedLinear()
+    {
+        qscb_linear_plan_destroy(plan);
+    }
+};
+
 bool bench_linear_bf16(
     BenchState& state,
     const Options& options,
@@ -606,12 +614,17 @@ bool bench_linear_bf16(
     desc.workspace = workspace.ptr;
     desc.workspace_bytes = workspace.count;
 
-    BenchRow row { name, "qscb_linear", tokens, tokens, n, k, 0, 0, 0, 0, 0 };
+    PreparedLinear prepared;
+    if (qscb_linear_plan_create(state.qscb, &desc, &prepared.plan) != QSFI_STATUS_OK) {
+        report_qscb_error(state.qscb);
+        return false;
+    }
+    BenchRow row { name, "qscb_linear_prepared", tokens, tokens, n, k, 0, 0, 0, 0, 0 };
     return run_timed(
         state,
         options,
         row,
-        [&]() { return qscb_linear(state.qscb, &desc); },
+        [&]() { return qscb_linear_execute(state.qscb, prepared.plan, &desc); },
         [&]() { report_qscb_error(state.qscb); }
     );
 }
@@ -635,8 +648,7 @@ bool bench_linear_f32(
         || !weight.alloc(static_cast<size_t>(n) * k, "linear_f32 weight")
         || !out.alloc(static_cast<size_t>(tokens) * n, "linear_f32 out")
         || !workspace.alloc(kLinearWorkspaceBytes, "linear_f32 workspace")
-        || !x.zero(state.stream, "linear_f32 x")
-        || !weight.zero(state.stream, "linear_f32 weight")
+        || !x.zero(state.stream, "linear_f32 x") || !weight.zero(state.stream, "linear_f32 weight")
         || !out.zero(state.stream, "linear_f32 out") || !sync_setup(state.stream)) {
         return false;
     }
@@ -651,12 +663,17 @@ bool bench_linear_f32(
     desc.workspace = workspace.ptr;
     desc.workspace_bytes = workspace.count;
 
-    BenchRow row { name, "qscb_linear", tokens, tokens, n, k, hidden, 0, 0, experts, 0 };
+    PreparedLinear prepared;
+    if (qscb_linear_plan_create(state.qscb, &desc, &prepared.plan) != QSFI_STATUS_OK) {
+        report_qscb_error(state.qscb);
+        return false;
+    }
+    BenchRow row { name, "qscb_linear_prepared", tokens, tokens, n, k, hidden, 0, 0, experts, 0 };
     return run_timed(
         state,
         options,
         row,
-        [&]() { return qscb_linear(state.qscb, &desc); },
+        [&]() { return qscb_linear_execute(state.qscb, prepared.plan, &desc); },
         [&]() { report_qscb_error(state.qscb); }
     );
 }

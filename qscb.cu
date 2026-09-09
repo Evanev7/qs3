@@ -8,7 +8,9 @@
 #include <cstdarg>
 #include <cstdint>
 #include <cstdio>
+#include <memory>
 #include <new>
+#include <tuple>
 
 struct qscb_context {
     cublasLtHandle_t lt;
@@ -16,8 +18,6 @@ struct qscb_context {
     cudaStream_t stream;
     qsfi_error_info last_error;
 };
-
-namespace {
 
 struct linear_descriptors {
     cublasLtMatmulDesc_t matmul;
@@ -48,7 +48,45 @@ struct linear_descriptors {
         if (matmul != nullptr)
             cublasLtMatmulDescDestroy(matmul);
     }
+    linear_descriptors(const linear_descriptors&) = delete;
+    linear_descriptors& operator=(const linear_descriptors&) = delete;
 };
+
+// Only the low 8 address bits matter: cuBLASLt defaults to 256-byte alignment.
+static uint32_t linear_alignment(const void* ptr)
+{
+    const uintptr_t address = reinterpret_cast<uintptr_t>(ptr);
+    uint32_t alignment = 256;
+    while (address % alignment != 0)
+        alignment /= 2;
+    return alignment;
+}
+
+static auto linear_key(const qscb_linear_desc& desc)
+{
+    return std::make_tuple(
+        desc.rows,
+        desc.in_features,
+        desc.out_features,
+        desc.x.stride[0],
+        desc.weight.stride[0],
+        desc.out.stride[0],
+        desc.out.dtype,
+        linear_alignment(desc.x.data),
+        linear_alignment(desc.weight.data),
+        linear_alignment(desc.out.data),
+        desc.workspace_bytes
+    );
+}
+
+struct qscb_linear_plan {
+    linear_descriptors descriptors;
+    cublasLtMatmulAlgo_t algorithm {};
+    decltype(linear_key(qscb_linear_desc {})) key;
+    qscb_context* owner = nullptr;
+};
+
+namespace {
 
 const char* cublas_status_name(cublasStatus_t status)
 {
@@ -229,6 +267,10 @@ qsfi_status validate_linear_desc(qscb_context* ctx, const qscb_linear_desc* desc
         );
     }
 
+    if (desc->workspace != nullptr && linear_alignment(desc->workspace) < 256) {
+        return set_qscb_invalid_arg(ctx, "qscb linear workspace must be 256-byte aligned");
+    }
+
     qsfi_status status = qscb_validate_tensor(ctx, desc->x, "x", QSFI_DTYPE_BF16, 2);
     if (status != QSFI_STATUS_OK)
         return status;
@@ -318,17 +360,42 @@ cublasStatus_t create_descriptors(const qscb_linear_desc* desc, linear_descripto
     status = cublasLtMatmulPreferenceCreate(&out->preference);
     if (status != CUBLAS_STATUS_SUCCESS)
         return status;
-    return cublasLtMatmulPreferenceSetAttribute(
+    status = cublasLtMatmulPreferenceSetAttribute(
         out->preference,
         CUBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES,
         &desc->workspace_bytes,
         sizeof(desc->workspace_bytes)
     );
+    if (status != CUBLAS_STATUS_SUCCESS)
+        return status;
+    const cublasLtMatmulPreferenceAttributes_t attributes[] = {
+        CUBLASLT_MATMUL_PREF_MIN_ALIGNMENT_A_BYTES,
+        CUBLASLT_MATMUL_PREF_MIN_ALIGNMENT_B_BYTES,
+        CUBLASLT_MATMUL_PREF_MIN_ALIGNMENT_C_BYTES,
+        CUBLASLT_MATMUL_PREF_MIN_ALIGNMENT_D_BYTES,
+    };
+    const uint32_t alignments[] = {
+        linear_alignment(desc->weight.data),
+        linear_alignment(desc->x.data),
+        linear_alignment(desc->out.data),
+        linear_alignment(desc->out.data),
+    };
+    for (int i = 0; i < 4; ++i) {
+        status = cublasLtMatmulPreferenceSetAttribute(
+            out->preference,
+            attributes[i],
+            &alignments[i],
+            sizeof(alignments[i])
+        );
+        if (status != CUBLAS_STATUS_SUCCESS)
+            return status;
+    }
+    return CUBLAS_STATUS_SUCCESS;
 }
 
-qsfi_status run_linear(qscb_context* ctx, const qscb_linear_desc* desc)
+qsfi_status prepare_linear(qscb_context* ctx, const qscb_linear_desc* desc, qscb_linear_plan* plan)
 {
-    linear_descriptors descriptors;
+    auto& descriptors = plan->descriptors;
     cublasStatus_t status = create_descriptors(desc, &descriptors);
     if (status != CUBLAS_STATUS_SUCCESS)
         return set_qscb_cublaslt_error(ctx, status, "cublasLt descriptor create");
@@ -359,10 +426,22 @@ qsfi_status run_linear(qscb_context* ctx, const qscb_linear_desc* desc)
         );
     }
 
+    if (heuristic.state != CUBLAS_STATUS_SUCCESS)
+        return set_qscb_cublaslt_error(ctx, heuristic.state, "qscb linear heuristic state");
+    plan->algorithm = heuristic.algo;
+    plan->key = linear_key(*desc);
+    plan->owner = ctx;
+    return QSFI_STATUS_OK;
+}
+
+qsfi_status
+run_linear(qscb_context* ctx, const qscb_linear_plan* plan, const qscb_linear_desc* desc)
+{
+    const auto& descriptors = plan->descriptors;
     const float alpha = qsfi_default_one(desc->alpha);
     const float beta = desc->beta;
     const void* c = beta == 0.0f ? nullptr : desc->out.data;
-    status = cublasLtMatmul(
+    cublasStatus_t status = cublasLtMatmul(
         ctx->lt,
         descriptors.matmul,
         &alpha,
@@ -375,7 +454,7 @@ qsfi_status run_linear(qscb_context* ctx, const qscb_linear_desc* desc)
         descriptors.d,
         desc->out.data,
         descriptors.d,
-        &heuristic.algo,
+        &plan->algorithm,
         desc->workspace,
         desc->workspace_bytes,
         ctx->stream
@@ -454,8 +533,12 @@ void qscb_context_clear_last_error(qscb_context* ctx)
         qsfi_clear_error_info(&ctx->last_error);
 }
 
-qsfi_status qscb_linear(qscb_context* ctx, const qscb_linear_desc* desc)
+qsfi_status
+qscb_linear_plan_create(qscb_context* ctx, const qscb_linear_desc* desc, qscb_linear_plan** out)
 {
+    if (out == nullptr)
+        return QSFI_STATUS_INVALID_ARGUMENT;
+    *out = nullptr;
     if (ctx == nullptr)
         return QSFI_STATUS_INVALID_ARGUMENT;
     qsfi_clear_error_info(&ctx->last_error);
@@ -466,7 +549,38 @@ qsfi_status qscb_linear(qscb_context* ctx, const qscb_linear_desc* desc)
     status = validate_linear_desc(ctx, desc);
     if (status != QSFI_STATUS_OK)
         return status;
-    return run_linear(ctx, desc);
+    std::unique_ptr<qscb_linear_plan> plan(new (std::nothrow) qscb_linear_plan);
+    if (!plan)
+        return QSFI_STATUS_OUT_OF_MEMORY;
+    status = prepare_linear(ctx, desc, plan.get());
+    if (status != QSFI_STATUS_OK)
+        return status;
+    *out = plan.release();
+    return QSFI_STATUS_OK;
+}
+
+void qscb_linear_plan_destroy(qscb_linear_plan* plan)
+{
+    delete plan;
+}
+
+qsfi_status
+qscb_linear_execute(qscb_context* ctx, const qscb_linear_plan* plan, const qscb_linear_desc* desc)
+{
+    if (ctx == nullptr)
+        return QSFI_STATUS_INVALID_ARGUMENT;
+    qsfi_clear_error_info(&ctx->last_error);
+    if (plan == nullptr || plan->owner != ctx)
+        return set_qscb_invalid_arg(ctx, "qscb linear plan must belong to the execution context");
+    qsfi_status status = validate_linear_desc(ctx, desc);
+    if (status != QSFI_STATUS_OK)
+        return status;
+    if (plan->key != linear_key(*desc))
+        return set_qscb_invalid_arg(ctx, "qscb linear plan layout/alignment/workspace mismatch");
+    status = activate_qscb_context(ctx);
+    if (status != QSFI_STATUS_OK)
+        return status;
+    return run_linear(ctx, plan, desc);
 }
 
 } // extern "C"

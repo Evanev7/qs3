@@ -92,8 +92,8 @@ mod backend_contract_tests {
         workspace: Workspace,
     ) -> Result<(), Status> {
         unsafe {
-            qscb.linear_bf16(input, weight, bf16_output, workspace)?;
-            qscb.linear_f32(input, weight, f32_output, workspace)
+            qscb.linear(input, weight, bf16_output, workspace)?;
+            qscb.linear(input, weight, f32_output, workspace)
         }
     }
     fn qsfi_owns_norm(_: &mut Qsfi, _: &RmsNormBf16) {}
