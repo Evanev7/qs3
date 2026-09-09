@@ -30,6 +30,8 @@ or matched-vLLM comparison. Prefill samples follow resets of the same runner.
 | `6a3d39d` (prepared linear) | 7.638 | 131.361 | 1028.085 | [JSON](benchmarks/2026-09-09T013243.445741248Z-6a3d39d.json) |
 | `6bf75db` (norm fix) | 7.515 | 133.235 | 1026.774 | [JSON](benchmarks/2026-09-09T014957.161677547Z-6bf75db.json) |
 | `90b52c4` (attention workspace reuse) | 11.905 | 83.701 | 1015.461 | [JSON](benchmarks/2026-09-09T021833.133622539Z-90b52c4.json) |
+| `95f87e3` (96-block MoE) | 20.724 | 48.252 | 406.284 | [JSON](benchmarks/2026-09-09T025651.359461497Z-95f87e3.json) |
+| `95f87e3` (4-block control) | 11.876 | 83.834 | 1023.041 | [JSON](benchmarks/2026-09-09T025757.341711005Z-95f87e3.json) |
 
 The first prepared-linear run is 1.17% higher in decode throughput than the fresh
 baseline, with prefill 0.43% slower. This is one pair of runs and does not resolve
@@ -263,3 +265,20 @@ four and 96 blocks, including repeated routes and weighted top-2 accumulation.
 The separate pinned 35B BF16 regression also passed, including prefill/first-decode
 logit tolerances, greedy IDs `[5, 6, 24218, 10]`, and reset/replay. End-to-end
 measurements follow.
+
+
+The unprofiled 96-block core run measures **20.724 tok/s**, **48.252 ms decode
+p50**, and **406.284 ms prefill p50**. The four-block control from the same commit
+returns to 11.876 tok/s, 83.834 ms decode p50 and 1023.041 ms prefill p50. Thus
+changing the grid improves throughput by 74.5% in this pair and reduces prefill
+p50 by 60.3%. All 36 generated IDs match between the runs and match the first
+36 IDs from vLLM. This establishes a real-model gain from wider MoE scheduling,
+beyond the zero-weight microbenchmark. The measured eager result remains below
+vLLM's 30.826 tok/s, and FP32-vs-BF16 recurrence is still a comparison limitation.
+
+The preceding GPU trace also identifies serial router selection as a next target:
+`router_topk_kernel` totals 178.34 ms over 32 decode steps (5.57 ms/token).
+`qscu_router_topk` launches one thread per token; that thread scans all 256 experts
+and maintains the top eight. Test a parallel warp/block selection while preserving
+lower-ID tie-breaking, softmax/sigmoid behavior and route-weight normalization.
+Reprofile after the MoE grid change before assigning its new share of runtime.
