@@ -1,233 +1,171 @@
-use super::ModelRunner;
+use super::BatchExecution;
 use crate::{
-    QWEN36_GDN_CONV_WIDTH, QWEN36_GDN_NUM_V_HEADS, QWEN36_GDN_OUTPUT_DIM, QWEN36_GDN_PACKED_DIM,
-    QWEN36_GDN_VALUE_DIM,
-    backend::{DMat, DVec},
+    QWEN36_GDN_CONV_WIDTH, QWEN36_GDN_KEY_DIM, QWEN36_GDN_NUM_K_HEADS, QWEN36_GDN_NUM_Q_HEADS,
+    QWEN36_GDN_NUM_V_HEADS, QWEN36_GDN_OUTPUT_DIM, QWEN36_GDN_PACKED_DIM, QWEN36_GDN_VALUE_DIM,
+    backend::{BF16, DMat},
     engine::Status,
-    ffi,
-    model::{ActiveRunKind, weights::QwenGdnPtrs},
+    model::{ActiveRunKind, weights::QwenGdnWeights},
 };
 
-impl ModelRunner {
+impl BatchExecution<'_> {
     pub(super) fn execute_gdn_layer(
         &mut self,
         gdn_layer_idx: u32,
         rows: u32,
-        hidden: u32,
-        layer_input: ffi::DevicePtr,
-        layer: QwenGdnPtrs,
+        input: DMat<BF16>,
+        layer: &QwenGdnWeights,
         kind: ActiveRunKind,
     ) -> Result<(), Status> {
         if matches!(kind, ActiveRunKind::Decode) && rows != 1 {
             return Err(Status::InvalidArgument);
         }
-        let (_state_pool, live_slot, staged_slot, conv_state, recurrent_state) =
-            self.gdn_state_views(gdn_layer_idx)?;
-        let live_slot_i32 = i32::try_from(live_slot).map_err(|_| Status::InvalidArgument)?;
-        let staged_slot_i32 = i32::try_from(staged_slot).map_err(|_| Status::InvalidArgument)?;
-        self.scratch
-            .gdn_state_indices
-            .upload(self.config.stream, &[live_slot_i32])?;
-        self.scratch
-            .gdn_state_out_indices
-            .upload(self.config.stream, &[staged_slot_i32])?;
-
-        self.linear_bf16(
-            layer_input,
-            rows,
-            hidden,
-            layer.in_proj,
-            self.scratch.gdn_packed.as_device_ptr(),
-            QWEN36_GDN_PACKED_DIM,
+        let hidden = self.config.hidden_size;
+        let state = self.gdn_state.ok_or(Status::InternalError)?;
+        let slots = state.layer_slots(gdn_layer_idx)?;
+        let conv_state = state.conv_view()?;
+        let recurrent_state = state.recurrent_view()?;
+        self.scratch.gdn_state_indices.upload(
+            self.config.stream,
+            &[i32::try_from(slots.live_slot).map_err(|_| Status::InvalidArgument)?],
         )?;
-        self.linear_bf16(
-            layer_input,
-            rows,
-            hidden,
-            layer.a_proj,
-            self.scratch.gdn_a.as_device_ptr(),
-            QWEN36_GDN_NUM_V_HEADS,
+        self.scratch.gdn_state_out_indices.upload(
+            self.config.stream,
+            &[i32::try_from(slots.staged_slot).map_err(|_| Status::InvalidArgument)?],
         )?;
-        self.linear_bf16(
-            layer_input,
-            rows,
-            hidden,
-            layer.b_proj,
-            self.scratch.gdn_b.as_device_ptr(),
-            QWEN36_GDN_NUM_V_HEADS,
-        )?;
-        self.linear_bf16(
-            layer_input,
-            rows,
-            hidden,
-            layer.gate_proj,
-            self.scratch.gdn_gate.as_device_ptr(),
-            QWEN36_GDN_OUTPUT_DIM,
-        )?;
-
         let seq_indptr = if matches!(kind, ActiveRunKind::Append) {
-            let rows_i32 = i32::try_from(rows).map_err(|_| Status::InvalidArgument)?;
-            self.scratch
-                .gdn_seq_indptr
-                .upload(self.config.stream, &[0, rows_i32])?;
-            Some(DVec::contiguous(
-                self.scratch.gdn_seq_indptr.as_device_ptr(),
-                2,
-            )?)
+            self.scratch.gdn_seq_indptr.upload(
+                self.config.stream,
+                &[0, i32::try_from(rows).map_err(|_| Status::InvalidArgument)?],
+            )?;
+            Some(self.scratch.gdn_seq_indptr.vector(2)?)
         } else {
             None
         };
-
-        let packed = DMat::contiguous(
-            self.scratch.gdn_packed.as_device_ptr(),
+        let read_indices = self.scratch.gdn_state_indices.vector(1)?;
+        let write_indices = Some(self.scratch.gdn_state_out_indices.vector(1)?);
+        let packed = self
+            .scratch
+            .gdn_packed
+            .matrix(rows, QWEN36_GDN_PACKED_DIM)?;
+        let conv_out = self
+            .scratch
+            .gdn_conv_out
+            .matrix(rows, QWEN36_GDN_PACKED_DIM)?;
+        let a = self.scratch.gdn_a.matrix(rows, QWEN36_GDN_NUM_V_HEADS)?;
+        let b = self.scratch.gdn_b.matrix(rows, QWEN36_GDN_NUM_V_HEADS)?;
+        let a_log = layer.a_log.vector(QWEN36_GDN_NUM_V_HEADS)?;
+        let dt_bias = layer.dt_bias.vector(QWEN36_GDN_NUM_V_HEADS)?;
+        let q = self
+            .scratch
+            .gdn_q
+            .heads(rows, QWEN36_GDN_NUM_Q_HEADS, QWEN36_GDN_KEY_DIM)?;
+        let k = self
+            .scratch
+            .gdn_k
+            .heads(rows, QWEN36_GDN_NUM_K_HEADS, QWEN36_GDN_KEY_DIM)?;
+        let v = self
+            .scratch
+            .gdn_v
+            .heads(rows, QWEN36_GDN_NUM_V_HEADS, QWEN36_GDN_VALUE_DIM)?;
+        let out = self.scratch.gdn_recurrent_out.heads(
             rows,
-            QWEN36_GDN_PACKED_DIM,
+            QWEN36_GDN_NUM_V_HEADS,
+            QWEN36_GDN_VALUE_DIM,
         )?;
-        let conv_weight = DMat::contiguous(
-            layer.conv_weight,
-            QWEN36_GDN_PACKED_DIM,
-            QWEN36_GDN_CONV_WIDTH,
-        )?;
-        let conv_bias = DVec::contiguous(layer.conv_bias, QWEN36_GDN_PACKED_DIM)?;
-        let state_read_indices = Some(DVec::contiguous(
-            self.scratch.gdn_state_indices.as_device_ptr(),
-            1,
-        )?);
-        let state_write_indices = Some(DVec::contiguous(
-            self.scratch.gdn_state_out_indices.as_device_ptr(),
-            1,
-        )?);
-        let conv_out = DMat::contiguous(
-            self.scratch.gdn_conv_out.as_device_ptr(),
-            rows,
-            QWEN36_GDN_PACKED_DIM,
-        )?;
-        {
-            let mut ops = self.engine.operators();
-            unsafe {
-                ops.qscu().qwen36_gdn_causal_conv1d_bf16(
-                    packed,
-                    conv_weight,
-                    conv_bias,
-                    conv_state,
-                    state_read_indices,
-                    state_write_indices,
-                    seq_indptr,
-                    conv_out,
+        let gate =
+            self.scratch
+                .gdn_gate
+                .heads(rows, QWEN36_GDN_NUM_V_HEADS, QWEN36_GDN_VALUE_DIM)?;
+        let norm_out =
+            self.scratch
+                .gdn_norm_out
+                .heads(rows, QWEN36_GDN_NUM_V_HEADS, QWEN36_GDN_VALUE_DIM)?;
+        let mut ops = self.engine.operators();
+        unsafe {
+            ops.qscb().linear(
+                input,
+                layer.in_proj.matrix(QWEN36_GDN_PACKED_DIM, hidden)?,
+                packed,
+                self.linear_workspace,
+            )?;
+            ops.qscb().linear(
+                input,
+                layer.a_proj.matrix(QWEN36_GDN_NUM_V_HEADS, hidden)?,
+                a,
+                self.linear_workspace,
+            )?;
+            ops.qscb().linear(
+                input,
+                layer.b_proj.matrix(QWEN36_GDN_NUM_V_HEADS, hidden)?,
+                b,
+                self.linear_workspace,
+            )?;
+            ops.qscb().linear(
+                input,
+                layer.gate_proj.matrix(QWEN36_GDN_OUTPUT_DIM, hidden)?,
+                self.scratch.gdn_gate.matrix(rows, QWEN36_GDN_OUTPUT_DIM)?,
+                self.linear_workspace,
+            )?;
+            ops.qscu().qwen36_gdn_causal_conv1d_bf16(
+                packed,
+                layer
+                    .conv_weight
+                    .matrix(QWEN36_GDN_PACKED_DIM, QWEN36_GDN_CONV_WIDTH)?,
+                layer.conv_bias.vector(QWEN36_GDN_PACKED_DIM)?,
+                conv_state,
+                Some(read_indices),
+                write_indices,
+                seq_indptr,
+                conv_out,
+                1,
+            )?;
+            ops.qscu()
+                .qwen36_gdn_post_conv_prepare_bf16(conv_out, a, b, a_log, dt_bias, q, k, v)?;
+            match kind {
+                ActiveRunKind::Append => ops.qscu().qwen36_gdn_prefill_bf16(
+                    q,
+                    k,
+                    v,
+                    a,
+                    b,
+                    a_log,
+                    dt_bias,
+                    recurrent_state,
+                    seq_indptr.ok_or(Status::InternalError)?,
+                    read_indices,
+                    write_indices,
+                    out,
                     1,
-                )?
-            };
-        }
-
-        let a = DMat::contiguous(
-            self.scratch.gdn_a.as_device_ptr(),
-            rows,
-            QWEN36_GDN_NUM_V_HEADS,
-        )?;
-        let b = DMat::contiguous(
-            self.scratch.gdn_b.as_device_ptr(),
-            rows,
-            QWEN36_GDN_NUM_V_HEADS,
-        )?;
-        let a_log = DVec::contiguous(layer.a_log, QWEN36_GDN_NUM_V_HEADS)?;
-        let dt_bias = DVec::contiguous(layer.dt_bias, QWEN36_GDN_NUM_V_HEADS)?;
-        let q = self.gdn_q_heads(self.scratch.gdn_q.as_device_ptr(), rows)?;
-        let k = self.gdn_k_heads(self.scratch.gdn_k.as_device_ptr(), rows)?;
-        let v = self.gdn_v_heads(self.scratch.gdn_v.as_device_ptr(), rows)?;
-        {
-            let mut ops = self.engine.operators();
-            unsafe {
-                ops.qscu()
-                    .qwen36_gdn_post_conv_prepare_bf16(conv_out, a, b, a_log, dt_bias, q, k, v)?
-            };
-        }
-
-        match kind {
-            ActiveRunKind::Append => {
-                let rows_i32 = i32::try_from(rows).map_err(|_| Status::InvalidArgument)?;
+                )?,
+                ActiveRunKind::Decode => ops.qscu().qwen36_gdn_decode_bf16(
+                    q,
+                    k,
+                    v,
+                    a,
+                    b,
+                    a_log,
+                    dt_bias,
+                    recurrent_state,
+                    read_indices,
+                    write_indices,
+                    out,
+                )?,
+            }
+            ops.qscu().qwen36_gdn_gated_rmsnorm_bf16(
+                out,
+                gate,
+                layer.rms_weight.vector(QWEN36_GDN_VALUE_DIM)?,
+                norm_out,
+                self.config.rms_norm_eps,
+            )?;
+            ops.qscb().linear(
                 self.scratch
-                    .gdn_seq_indptr
-                    .upload(self.config.stream, &[0, rows_i32])?;
-                let seq_indptr = DVec::contiguous(self.scratch.gdn_seq_indptr.as_device_ptr(), 2)?;
-                let state_indices =
-                    DVec::contiguous(self.scratch.gdn_state_indices.as_device_ptr(), 1)?;
-                let state_out_indices = Some(DVec::contiguous(
-                    self.scratch.gdn_state_out_indices.as_device_ptr(),
-                    1,
-                )?);
-                let out = self.gdn_v_heads(self.scratch.gdn_recurrent_out.as_device_ptr(), rows)?;
-                let mut ops = self.engine.operators();
-                unsafe {
-                    ops.qscu().qwen36_gdn_prefill_bf16(
-                        q,
-                        k,
-                        v,
-                        a,
-                        b,
-                        a_log,
-                        dt_bias,
-                        recurrent_state,
-                        seq_indptr,
-                        state_indices,
-                        state_out_indices,
-                        out,
-                        1,
-                    )?
-                };
-            }
-            ActiveRunKind::Decode => {
-                let state_indices =
-                    DVec::contiguous(self.scratch.gdn_state_indices.as_device_ptr(), rows)?;
-                let state_out_indices = Some(DVec::contiguous(
-                    self.scratch.gdn_state_out_indices.as_device_ptr(),
-                    rows,
-                )?);
-                let out = self.gdn_v_heads(self.scratch.gdn_recurrent_out.as_device_ptr(), rows)?;
-                let mut ops = self.engine.operators();
-                unsafe {
-                    ops.qscu().qwen36_gdn_decode_bf16(
-                        q,
-                        k,
-                        v,
-                        a,
-                        b,
-                        a_log,
-                        dt_bias,
-                        recurrent_state,
-                        state_indices,
-                        state_out_indices,
-                        out,
-                    )?
-                };
-            }
+                    .gdn_norm_out
+                    .matrix(rows, QWEN36_GDN_OUTPUT_DIM)?,
+                layer.out_proj.matrix(hidden, QWEN36_GDN_OUTPUT_DIM)?,
+                self.scratch.attn_proj.matrix(rows, hidden)?,
+                self.linear_workspace,
+            )
         }
-
-        let recurrent_out =
-            self.gdn_v_heads(self.scratch.gdn_recurrent_out.as_device_ptr(), rows)?;
-        let gate = self.gdn_v_heads(self.scratch.gdn_gate.as_device_ptr(), rows)?;
-        let rms_weight = DVec::contiguous(layer.rms_weight, QWEN36_GDN_VALUE_DIM)?;
-        let norm_out = self.gdn_v_heads(self.scratch.gdn_norm_out.as_device_ptr(), rows)?;
-        {
-            let mut ops = self.engine.operators();
-            unsafe {
-                ops.qscu().qwen36_gdn_gated_rmsnorm_bf16(
-                    recurrent_out,
-                    gate,
-                    rms_weight,
-                    norm_out,
-                    self.config.rms_norm_eps,
-                )?
-            };
-        }
-
-        self.linear_bf16(
-            self.scratch.gdn_norm_out.as_device_ptr(),
-            rows,
-            QWEN36_GDN_OUTPUT_DIM,
-            layer.out_proj,
-            self.scratch.attn_proj.as_device_ptr(),
-            hidden,
-        )?;
-        Ok(())
     }
 }

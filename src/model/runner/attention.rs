@@ -1,95 +1,98 @@
-use super::ModelRunner;
+use super::BatchExecution;
 use crate::{
-    QWEN36_FULL_ATTN_HEAD_DIM, QWEN36_FULL_ATTN_Q_HEADS, QWEN36_FULL_ATTN_Q_HIDDEN,
     QWEN36_FULL_ATTN_Q_PROJ_OUT, QWEN36_FULL_ATTN_ROTARY_DIM,
     backend::{
-        DMat, DVec,
+        BF16, DMat,
         qsfi::{RmsNormBf16, RopeApplyBf16},
     },
     engine::{AttentionLayer, Status},
-    ffi,
-    model::{
-        ActiveRunKind, extract_qwen36_packed_attention_q_and_gate_bf16,
-        weights::QwenAttentionMlpPtrs,
-    },
+    model::{ActiveRunKind, weights::QwenAttentionMlpWeights},
 };
 
-impl ModelRunner {
+impl BatchExecution<'_> {
     pub(super) fn execute_attention_layer(
         &mut self,
         attention_layer_idx: u32,
         rows: u32,
-        hidden: u32,
-        q_hidden: u32,
-        kv_hidden: u32,
-        layer_input: ffi::DevicePtr,
-        layer: QwenAttentionMlpPtrs,
+        input: DMat<BF16>,
+        layer: &QwenAttentionMlpWeights,
         kind: ActiveRunKind,
     ) -> Result<(), Status> {
-        self.linear_bf16(
-            layer_input,
-            rows,
-            hidden,
-            layer.q_proj,
-            self.scratch.q_proj_out.as_device_ptr(),
-            QWEN36_FULL_ATTN_Q_PROJ_OUT,
-        )?;
-        self.extract_attention_q_and_gate(rows)?;
-        self.linear_bf16(
-            layer_input,
-            rows,
-            hidden,
-            layer.k_proj,
-            self.scratch.k.as_device_ptr(),
-            kv_hidden,
-        )?;
-        self.linear_bf16(
-            layer_input,
-            rows,
-            hidden,
-            layer.v_proj,
-            self.scratch.v.as_device_ptr(),
-            kv_hidden,
-        )?;
-        self.qwen_qk_norm_heads(
-            self.scratch.q.as_device_ptr(),
-            layer.q_norm,
-            self.scratch.q.as_device_ptr(),
-            rows,
-            self.config.num_q_heads,
-        )?;
-        self.qwen_qk_norm_heads(
-            self.scratch.k.as_device_ptr(),
-            layer.k_norm,
-            self.scratch.k.as_device_ptr(),
-            rows,
-            self.config.num_kv_heads,
-        )?;
+        let hidden = self.config.hidden_size;
+        let q_hidden = self.config.q_hidden_size()?;
+        let kv_hidden = self.config.kv_hidden_size()?;
+        {
+            let mut ops = self.engine.operators();
+            unsafe {
+                ops.qscb().linear(
+                    input,
+                    layer.q_proj.matrix(QWEN36_FULL_ATTN_Q_PROJ_OUT, hidden)?,
+                    self.scratch
+                        .q_proj_out
+                        .matrix(rows, QWEN36_FULL_ATTN_Q_PROJ_OUT)?,
+                    self.linear_workspace,
+                )?;
+                ops.qscu().qwen36_extract_q_and_gate_bf16(
+                    self.scratch
+                        .q_proj_out
+                        .matrix(rows, QWEN36_FULL_ATTN_Q_PROJ_OUT)?,
+                    self.scratch.q.matrix(rows, q_hidden)?,
+                    self.scratch.attn_gate.matrix(rows, q_hidden)?,
+                )?;
+                ops.qscb().linear(
+                    input,
+                    layer.k_proj.matrix(kv_hidden, hidden)?,
+                    self.scratch.k.matrix(rows, kv_hidden)?,
+                    self.linear_workspace,
+                )?;
+                ops.qscb().linear(
+                    input,
+                    layer.v_proj.matrix(kv_hidden, hidden)?,
+                    self.scratch.v.matrix(rows, kv_hidden)?,
+                    self.linear_workspace,
+                )?;
+                for (buffer, weight, heads) in [
+                    (&self.scratch.q, &layer.q_norm, self.config.num_q_heads),
+                    (&self.scratch.k, &layer.k_norm, self.config.num_kv_heads),
+                ] {
+                    let flattened = buffer.matrix(
+                        rows.checked_mul(heads).ok_or(Status::InvalidArgument)?,
+                        self.config.head_dim,
+                    )?;
+                    let norm = RmsNormBf16::qwen_qk_norm(
+                        flattened,
+                        weight.vector(self.config.head_dim)?,
+                        flattened,
+                        self.config.rms_norm_eps,
+                    )?;
+                    ops.qsfi().rmsnorm_bf16(&norm)?;
+                }
+            }
+        }
         self.apply_attention_rope(rows)?;
-
+        let q = self
+            .scratch
+            .q
+            .heads(rows, self.config.num_q_heads, self.config.head_dim)?;
+        let k = self
+            .scratch
+            .k
+            .heads(rows, self.config.num_kv_heads, self.config.head_dim)?;
+        let v = self
+            .scratch
+            .v
+            .heads(rows, self.config.num_kv_heads, self.config.head_dim)?;
+        let output =
+            self.scratch
+                .attn_out
+                .heads(rows, self.config.num_q_heads, self.config.head_dim)?;
         let engine_layer = AttentionLayer::bf16_attention(
             attention_layer_idx,
-            self.attention_heads(
-                self.scratch.q.as_device_ptr(),
-                rows,
-                self.config.num_q_heads,
-            )?,
-            self.attention_heads(
-                self.scratch.k.as_device_ptr(),
-                rows,
-                self.config.num_kv_heads,
-            )?,
-            self.attention_heads(
-                self.scratch.v.as_device_ptr(),
-                rows,
-                self.config.num_kv_heads,
-            )?,
-            self.attention_heads(
-                self.scratch.attn_out.as_device_ptr(),
-                rows,
-                self.config.num_q_heads,
-            )?,
-            self.scratch.positions.as_device_ptr(),
+            q,
+            k,
+            v,
+            output,
+            self.scratch.positions.vector(rows)?,
         );
         unsafe {
             match kind {
@@ -97,94 +100,41 @@ impl ModelRunner {
                 ActiveRunKind::Decode => self.engine.decode_attention(&engine_layer)?,
             }
         }
-        self.apply_attention_output_gate(rows, q_hidden)?;
-
-        self.linear_bf16(
-            self.scratch.attn_out.as_device_ptr(),
-            rows,
-            q_hidden,
-            layer.o_proj,
-            self.scratch.attn_proj.as_device_ptr(),
-            hidden,
-        )
-    }
-
-    pub(super) fn extract_attention_q_and_gate(&mut self, rows: u32) -> Result<(), Status> {
-        if self.config.num_q_heads != QWEN36_FULL_ATTN_Q_HEADS
-            || self.config.head_dim != QWEN36_FULL_ATTN_HEAD_DIM
-            || self.config.q_hidden_size()? != QWEN36_FULL_ATTN_Q_HIDDEN
-        {
-            return Err(Status::Unsupported);
-        }
+        let out = self.scratch.attn_out.matrix(rows, q_hidden)?;
+        let mut ops = self.engine.operators();
         unsafe {
-            extract_qwen36_packed_attention_q_and_gate_bf16(
-                self.scratch.q_proj_out.as_device_ptr(),
-                self.scratch.q.as_device_ptr(),
-                self.scratch.attn_gate.as_device_ptr(),
-                rows,
-                self.config.stream,
+            ops.qscu().qwen36_full_attention_output_gate_bf16(
+                self.scratch.attn_gate.matrix(rows, q_hidden)?,
+                out,
+            )?;
+            ops.qscb().linear(
+                out,
+                layer.o_proj.matrix(hidden, q_hidden)?,
+                self.scratch.attn_proj.matrix(rows, hidden)?,
+                self.linear_workspace,
             )
         }
     }
 
-    pub(super) fn qwen_qk_norm_heads(
-        &mut self,
-        x: ffi::DevicePtr,
-        weight: ffi::DevicePtr,
-        out: ffi::DevicePtr,
-        rows: u32,
-        heads: u32,
-    ) -> Result<(), Status> {
-        if heads == 0 || self.config.head_dim != QWEN36_FULL_ATTN_HEAD_DIM {
-            return Err(Status::InvalidArgument);
-        }
-        let norm_rows = rows.checked_mul(heads).ok_or(Status::InvalidArgument)?;
-        let desc = RmsNormBf16::qwen_qk_norm(
-            DMat::contiguous(x, norm_rows, self.config.head_dim)?,
-            DVec::contiguous(weight, self.config.head_dim)?,
-            DMat::contiguous(out, norm_rows, self.config.head_dim)?,
-            self.config.rms_norm_eps,
-        )?;
-        let mut ops = self.engine.operators();
-        unsafe { ops.qsfi().rmsnorm_bf16(&desc) }
-    }
-
     pub(super) fn apply_attention_rope(&mut self, rows: u32) -> Result<(), Status> {
-        let q = self.attention_heads(
-            self.scratch.q.as_device_ptr(),
-            rows,
-            self.config.num_q_heads,
-        )?;
-        let k = self.attention_heads(
-            self.scratch.k.as_device_ptr(),
-            rows,
-            self.config.num_kv_heads,
-        )?;
+        let q = self
+            .scratch
+            .q
+            .heads(rows, self.config.num_q_heads, self.config.head_dim)?;
+        let k = self
+            .scratch
+            .k
+            .heads(rows, self.config.num_kv_heads, self.config.head_dim)?;
         let desc = RopeApplyBf16::with_params(
             q,
             k,
             q,
             k,
-            DVec::contiguous(self.scratch.positions.as_device_ptr(), rows)?,
+            self.scratch.positions.vector(rows)?,
             QWEN36_FULL_ATTN_ROTARY_DIM,
             self.config.rope_scale,
             self.config.rope_theta,
         )?;
-        let mut ops = self.engine.operators();
-        unsafe { ops.qsfi().rope_apply_bf16(&desc) }
-    }
-
-    pub(super) fn apply_attention_output_gate(
-        &mut self,
-        rows: u32,
-        q_hidden: u32,
-    ) -> Result<(), Status> {
-        if q_hidden != QWEN36_FULL_ATTN_Q_HIDDEN {
-            return Err(Status::Unsupported);
-        }
-        let gate = DMat::contiguous(self.scratch.attn_gate.as_device_ptr(), rows, q_hidden)?;
-        let out = DMat::contiguous(self.scratch.attn_out.as_device_ptr(), rows, q_hidden)?;
-        let mut ops = self.engine.operators();
-        unsafe { ops.qscu().qwen36_full_attention_output_gate_bf16(gate, out) }
+        unsafe { self.engine.operators().qsfi().rope_apply_bf16(&desc) }
     }
 }

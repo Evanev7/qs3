@@ -28,3 +28,17 @@ impl_dtype!(I32, DTYPE_I32);
 impl_dtype!(U32, DTYPE_U32);
 impl_dtype!(I8, DTYPE_I8);
 impl_dtype!(U8, DTYPE_U8);
+
+// Host storage representations used by the Qwen runner. u16 buffers contain BF16.
+pub(crate) trait DeviceElement: Copy {
+    type DType: DType;
+}
+impl DeviceElement for u16 {
+    type DType = BF16;
+}
+impl DeviceElement for f32 {
+    type DType = F32;
+}
+impl DeviceElement for i32 {
+    type DType = I32;
+}

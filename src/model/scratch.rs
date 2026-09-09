@@ -324,3 +324,131 @@ impl<T> Drop for DeviceBuffer<T> {
         }
     }
 }
+
+// These views retain the allocation's element type and check its extent. Like
+// the backend views, they are non-owning; unsafe launches require the owner to
+// remain alive until stream completion. Batch execution borrows those owners.
+impl<T: crate::backend::DeviceElement> DeviceBuffer<T> {
+    pub(super) fn matrix(
+        &self,
+        rows: u32,
+        cols: u32,
+    ) -> Result<crate::backend::DMat<T::DType>, Status> {
+        self.matrix_at(0, rows, cols)
+    }
+
+    pub(super) fn matrix_at(
+        &self,
+        offset: usize,
+        rows: u32,
+        cols: u32,
+    ) -> Result<crate::backend::DMat<T::DType>, Status> {
+        let len = checked_usize_product(&[rows, cols])?;
+        self.check_view_len(offset.checked_add(len).ok_or(Status::InvalidArgument)?)?;
+        crate::backend::DMat::contiguous(unsafe { self.ptr.add(offset).cast() }, rows, cols)
+    }
+
+    pub(super) fn vector(&self, len: u32) -> Result<crate::backend::DVec<T::DType>, Status> {
+        self.check_view_len(len as usize)?;
+        crate::backend::DVec::contiguous(self.as_device_ptr(), len)
+    }
+
+    pub(super) fn tensor3(
+        &self,
+        a: u32,
+        b: u32,
+        c: u32,
+    ) -> Result<crate::backend::DTensor3<T::DType>, Status> {
+        self.check_view_len(checked_usize_product(&[a, b, c])?)?;
+        crate::backend::DTensor3::contiguous(self.as_device_ptr(), a, b, c)
+    }
+}
+
+impl<T> DeviceBuffer<T> {
+    fn check_view_len(&self, len: usize) -> Result<(), Status> {
+        if self.ptr.is_null() || len == 0 || len > self.cap {
+            return Err(Status::InvalidArgument);
+        }
+        Ok(())
+    }
+}
+
+impl DeviceBuffer<u16> {
+    pub(super) fn heads(
+        &self,
+        rows: u32,
+        heads: u32,
+        dim: u32,
+    ) -> Result<crate::backend::Bf16Heads, Status> {
+        self.check_view_len(checked_usize_product(&[rows, heads, dim])?)?;
+        crate::backend::Bf16Heads::contiguous(self.as_device_ptr(), rows, heads, dim)
+    }
+}
+
+impl DeviceBuffer<u8> {
+    pub(super) fn workspace(&self, bytes: usize) -> Result<crate::backend::Workspace, Status> {
+        if bytes == 0 {
+            return Ok(crate::backend::Workspace::none());
+        }
+        self.check_view_len(bytes)?;
+        crate::backend::Workspace::new(self.as_device_ptr(), bytes)
+    }
+}
+
+#[cfg(test)]
+mod view_tests {
+    use super::*;
+    use crate::backend::{BF16, DMat, F32};
+    use std::mem::ManuallyDrop;
+
+    // Host backing is sufficient for descriptor checks; no kernel is launched.
+    // ManuallyDrop prevents DeviceBuffer from passing host memory to cudaFree.
+    #[test]
+    fn typed_views_check_capacity_offsets_and_shape_overflow() {
+        let mut storage = [0u16; 8];
+        let buffer = ManuallyDrop::new(DeviceBuffer {
+            ptr: storage.as_mut_ptr(),
+            cap: storage.len(),
+            device_ordinal: -1,
+        });
+        let matrix: DMat<BF16> = buffer.matrix(2, 4).unwrap();
+        assert_eq!(matrix.row(1).unwrap(), buffer.matrix_at(4, 1, 4).unwrap());
+        assert!(matrix.row(2).is_err());
+        assert!(buffer.matrix(3, 3).is_err());
+        assert!(buffer.matrix_at(5, 1, 4).is_err());
+        assert!(buffer.matrix_at(usize::MAX, 1, 1).is_err());
+        assert!(buffer.matrix(u32::MAX, u32::MAX).is_err());
+        assert!(buffer.matrix(0, 4).is_err());
+        assert!(buffer.vector(8).is_ok());
+        assert!(buffer.vector(9).is_err());
+        assert!(buffer.tensor3(2, 2, 2).is_ok());
+        assert!(buffer.tensor3(2, 2, 3).is_err());
+        assert!(buffer.heads(1, 2, 4).is_ok());
+        assert!(buffer.heads(2, 2, 4).is_err());
+
+        let mut floats = [0f32; 8];
+        let buffer = ManuallyDrop::new(DeviceBuffer {
+            ptr: floats.as_mut_ptr(),
+            cap: floats.len(),
+            device_ordinal: -1,
+        });
+        let matrix: DMat<F32> = buffer.matrix(2, 4).unwrap();
+        assert_eq!(matrix.row(1).unwrap(), buffer.matrix_at(4, 1, 4).unwrap());
+    }
+
+    #[test]
+    fn workspace_view_checks_requested_bytes_and_empty_storage() {
+        let empty = DeviceBuffer::<u8>::empty(-1);
+        assert!(empty.workspace(0).is_ok());
+        assert!(empty.workspace(1).is_err());
+        let mut bytes = [0u8; 32];
+        let buffer = ManuallyDrop::new(DeviceBuffer {
+            ptr: bytes.as_mut_ptr(),
+            cap: bytes.len(),
+            device_ordinal: -1,
+        });
+        assert!(buffer.workspace(16).is_ok());
+        assert!(buffer.workspace(32).is_ok());
+        assert!(buffer.workspace(33).is_err());
+    }
+}

@@ -83,6 +83,36 @@ resources survive reuse and prefix rebuilds. Transactional failure handling and
 asynchronous staging lifetimes are tested. The norm launch race is fixed without
 serializing launches. These changes do not yet make decode graph-ready.
 
+### Typed model execution
+
+The runner now borrows immutable weights separately from a batch execution
+scope containing scratch, engine access and prepared workspace views. It calls
+the typed backend operations directly: one generic `qscb.linear` accepts BF16
+inputs/weights and a BF16 or FP32 output view. The raw `*Ptrs` snapshots and
+primitive forwarding helpers have been removed. Only model compositions remain
+in the runner; packed Q/gate extraction is a typed backend copy operation.
+
+Buffer views infer dtype from their storage representation and validate capacity,
+shape products and offsets before constructing backend descriptors. In this BF16
+runtime, `u16` storage maps to BF16; byte workspaces have a separate capacity
+check. Final-row projection uses a checked matrix subview. These descriptors
+remain non-owning and launches remain unsafe: dtype and bounds checks do not
+encode asynchronous CUDA completion in Rust lifetimes.
+
+Linear and MoE workspace views are prepared once per batch from their owning
+allocations. Source inspection confirms cuBLASLt receives the descriptor's exact
+pointer/byte count, and the plan key includes workspace capacity and matrix
+alignment; native validation enforces 256-byte linear-workspace alignment. MoE
+checks supplied capacity against the layout for the current token count. GDN
+prefill reuses the same sequence-index upload for convolution and recurrence.
+No allocation policy, recurrent precision or release synchronization was added.
+
+Validation: the full CUDA test script passed (119 library tests, benchmark,
+engine, model and vector tests, and all four native targets). The real 35B BF16
+model regression passed with both BF16 and FP32 GDN state, including its existing
+reference-token and rebuild/reset checks. No performance comparison was run for
+this structural change.
+
 ### Prepared dense projections
 
 Inspection found descriptor creation/destruction and

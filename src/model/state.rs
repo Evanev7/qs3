@@ -156,6 +156,19 @@ impl GdnState {
         self.recurrent.zero(config.stream)
     }
 
+    pub(super) fn conv_view(&self) -> Result<crate::backend::GdnConvState, Status> {
+        self.conv.tensor3(
+            self.slots.state_pool,
+            QWEN36_GDN_PACKED_DIM,
+            QWEN36_GDN_CONV_STATE,
+        )?;
+        crate::backend::GdnConvState::contiguous(
+            self.conv.as_device_ptr(),
+            FloatStorage::Bf16,
+            self.slots.state_pool,
+        )
+    }
+
     pub(super) fn recurrent_view(&self) -> Result<GdnRecurrentState, Status> {
         self.recurrent.view(self.slots.state_pool)
     }

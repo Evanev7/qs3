@@ -11,19 +11,17 @@ use crate::{
         qsfi::{MoeBf16Execute, MoeBf16ExecuteArgs, MoeBf16PlanConfig, Workspace},
     },
     engine::{AppendBatch, AttentionLayer, Commit, Engine, Status},
-    ffi::{self, cuda},
+    ffi::cuda,
     model::{
         ActiveRunKind, QwenBlockKind, QwenConfig, QwenMoeConfig, QwenWeights,
         checked_usize_product,
         config::{QwenGdnShape, QwenLayerPattern, QwenModelShape},
-        constant_bf16_values, device_ptr_byte_offset,
-        extract_qwen36_packed_attention_q_and_gate_bf16,
+        constant_bf16_values,
         scratch::{DeviceBuffer, RunnerScratch},
         state::{GdnSlotMap, GdnState},
         synchronize_stream,
         weights::{
-            QwenAttentionMlpPtrs, QwenAttentionMlpWeights, QwenGdnPtrs, QwenGdnWeights,
-            QwenLayerPtrs, QwenLayerWeights, QwenMlpPtrs, QwenMlpWeights, QwenSharedExpertPtrs,
+            QwenAttentionMlpWeights, QwenGdnWeights, QwenLayerWeights, QwenMlpWeights,
             QwenSharedExpertWeights,
         },
     },
@@ -90,24 +88,6 @@ fn empty_qwen36_moe_mlp_weights() -> QwenMlpWeights {
         down_proj: empty_bf16_buffer(),
         shared: Some(empty_shared_expert_weights()),
     }
-}
-
-fn test_device_ptr(addr: usize) -> ffi::DevicePtr {
-    addr as *mut c_void
-}
-
-fn model_runner_has_f32_linear_output(
-    runner: &mut ModelRunner,
-    input: ffi::DevicePtr,
-    weight: ffi::DevicePtr,
-    output: ffi::DevicePtr,
-) -> Result<(), Status> {
-    runner.linear_f32(input, 2, 8, weight, output, 16)
-}
-
-#[test]
-fn model_linear_helpers_name_the_output_type() {
-    let _ = model_runner_has_f32_linear_output;
 }
 
 unsafe extern "C" {
@@ -683,51 +663,98 @@ fn execute_moe_vector_shared_gate_add(runner: &mut ModelRunner) {
         ),
     )
     .unwrap();
-    let shared_up_proj = device_ptr_byte_offset(
-        shared_gate_up_weight.as_device_ptr(),
-        (MOE_VECTOR_INTERMEDIATE * MOE_VECTOR_HIDDEN) as usize * mem::size_of::<u16>(),
-    )
-    .unwrap();
+    let shared_up_proj = shared_gate_up_weight
+        .matrix_at(
+            (MOE_VECTOR_INTERMEDIATE * MOE_VECTOR_HIDDEN) as usize,
+            MOE_VECTOR_INTERMEDIATE,
+            MOE_VECTOR_HIDDEN,
+        )
+        .unwrap();
 
-    runner
-        .linear_bf16(
-            runner.scratch.attn_proj.as_device_ptr(),
-            MOE_VECTOR_ROWS,
-            MOE_VECTOR_HIDDEN,
-            shared_gate_up_weight.as_device_ptr(),
-            runner.scratch.shared_gate.as_device_ptr(),
-            MOE_VECTOR_INTERMEDIATE,
+    unsafe {
+        runner.engine.operators().qscb().linear(
+            runner
+                .scratch
+                .attn_proj
+                .matrix(MOE_VECTOR_ROWS, MOE_VECTOR_HIDDEN)
+                .unwrap(),
+            shared_gate_up_weight
+                .matrix(MOE_VECTOR_INTERMEDIATE, MOE_VECTOR_HIDDEN)
+                .unwrap(),
+            runner
+                .scratch
+                .shared_gate
+                .matrix(MOE_VECTOR_ROWS, MOE_VECTOR_INTERMEDIATE)
+                .unwrap(),
+            runner
+                .qscb_workspace
+                .workspace(runner.config.qscb_workspace_bytes)
+                .unwrap(),
         )
-        .unwrap();
-    runner
-        .linear_bf16(
-            runner.scratch.attn_proj.as_device_ptr(),
-            MOE_VECTOR_ROWS,
-            MOE_VECTOR_HIDDEN,
+    }
+    .unwrap();
+    unsafe {
+        runner.engine.operators().qscb().linear(
+            runner
+                .scratch
+                .attn_proj
+                .matrix(MOE_VECTOR_ROWS, MOE_VECTOR_HIDDEN)
+                .unwrap(),
             shared_up_proj,
-            runner.scratch.shared_up.as_device_ptr(),
-            MOE_VECTOR_INTERMEDIATE,
+            runner
+                .scratch
+                .shared_up
+                .matrix(MOE_VECTOR_ROWS, MOE_VECTOR_INTERMEDIATE)
+                .unwrap(),
+            runner
+                .qscb_workspace
+                .workspace(runner.config.qscb_workspace_bytes)
+                .unwrap(),
         )
-        .unwrap();
-    runner
-        .silu_and_mul(
-            MOE_VECTOR_ROWS,
-            MOE_VECTOR_INTERMEDIATE,
-            runner.scratch.shared_gate.as_device_ptr(),
-            runner.scratch.shared_up.as_device_ptr(),
-            runner.scratch.shared_mlp.as_device_ptr(),
+    }
+    .unwrap();
+    unsafe {
+        runner.engine.operators().qscu().silu_and_mul_bf16(
+            runner
+                .scratch
+                .shared_gate
+                .matrix(MOE_VECTOR_ROWS, MOE_VECTOR_INTERMEDIATE)
+                .unwrap(),
+            runner
+                .scratch
+                .shared_up
+                .matrix(MOE_VECTOR_ROWS, MOE_VECTOR_INTERMEDIATE)
+                .unwrap(),
+            runner
+                .scratch
+                .shared_mlp
+                .matrix(MOE_VECTOR_ROWS, MOE_VECTOR_INTERMEDIATE)
+                .unwrap(),
         )
-        .unwrap();
-    runner
-        .linear_bf16(
-            runner.scratch.shared_mlp.as_device_ptr(),
-            MOE_VECTOR_ROWS,
-            MOE_VECTOR_INTERMEDIATE,
-            shared_down_weight.as_device_ptr(),
-            runner.scratch.shared_out.as_device_ptr(),
-            MOE_VECTOR_HIDDEN,
+    }
+    .unwrap();
+    unsafe {
+        runner.engine.operators().qscb().linear(
+            runner
+                .scratch
+                .shared_mlp
+                .matrix(MOE_VECTOR_ROWS, MOE_VECTOR_INTERMEDIATE)
+                .unwrap(),
+            shared_down_weight
+                .matrix(MOE_VECTOR_HIDDEN, MOE_VECTOR_INTERMEDIATE)
+                .unwrap(),
+            runner
+                .scratch
+                .shared_out
+                .matrix(MOE_VECTOR_ROWS, MOE_VECTOR_HIDDEN)
+                .unwrap(),
+            runner
+                .qscb_workspace
+                .workspace(runner.config.qscb_workspace_bytes)
+                .unwrap(),
         )
-        .unwrap();
+    }
+    .unwrap();
     runner
         .scratch
         .shared_gate_logits
@@ -736,14 +763,36 @@ fn execute_moe_vector_shared_gate_add(runner: &mut ModelRunner) {
             &read_moe_f32_vector("shared_gate_logits.f32", MOE_VECTOR_ROWS as usize),
         )
         .unwrap();
-    runner
-        .shared_expert_gate_add(MOE_VECTOR_ROWS, MOE_VECTOR_HIDDEN)
-        .unwrap();
+    unsafe {
+        runner
+            .engine
+            .operators()
+            .qscu()
+            .qwen36_shared_expert_gate_add_bf16(
+                runner
+                    .scratch
+                    .shared_gate_logits
+                    .matrix(MOE_VECTOR_ROWS, 1)
+                    .unwrap(),
+                runner
+                    .scratch
+                    .shared_out
+                    .matrix(MOE_VECTOR_ROWS, MOE_VECTOR_HIDDEN)
+                    .unwrap(),
+                runner
+                    .scratch
+                    .mlp_out
+                    .matrix(MOE_VECTOR_ROWS, MOE_VECTOR_HIDDEN)
+                    .unwrap(),
+            )
+    }
+    .unwrap();
     synchronize_stream(runner.config.stream).unwrap();
 }
 
 fn full_attention_vector_runner() -> ModelRunner {
-    let config = full_attention_vector_config();
+    let mut config = full_attention_vector_config();
+    config.qscb_workspace_bytes = 0; // This fixture runs only attention prep kernels.
     let engine = Engine::new(config.engine_config()).unwrap();
     ModelRunner {
         config,
@@ -762,7 +811,8 @@ fn full_attention_vector_runner() -> ModelRunner {
 }
 
 fn full_attention_block_vector_runner() -> ModelRunner {
-    let config = full_attention_vector_config();
+    let mut config = full_attention_vector_config();
+    config.qscb_workspace_bytes = 0; // This fixture runs only attention prep kernels.
     let engine = Engine::new(config.engine_config()).unwrap();
     let mut qscb_workspace = DeviceBuffer::empty(config.device_ordinal);
     qscb_workspace.ensure(config.qscb_workspace_bytes).unwrap();
@@ -845,10 +895,10 @@ struct FullAttentionBlockMoeLayer {
 }
 
 impl FullAttentionBlockMoeLayer {
-    fn ptrs(&self) -> QwenAttentionMlpPtrs {
-        match self.layer.ptrs() {
-            QwenLayerPtrs::AttentionMlp(layer) => layer,
-            QwenLayerPtrs::Gdn(_) => unreachable!("full-attention block fixture is not GDN"),
+    fn weights(&self) -> &QwenAttentionMlpWeights {
+        match &self.layer {
+            QwenLayerWeights::AttentionMlp(layer) => layer,
+            QwenLayerWeights::Gdn(_) => unreachable!("full-attention block fixture is not GDN"),
         }
     }
 }
@@ -1069,10 +1119,10 @@ struct GdnDecoderLayerFixture {
 }
 
 impl GdnDecoderLayerFixture {
-    fn ptrs(&self) -> QwenGdnPtrs {
-        match self.layer.ptrs() {
-            QwenLayerPtrs::Gdn(layer) => layer,
-            QwenLayerPtrs::AttentionMlp(_) => {
+    fn weights(&self) -> &QwenGdnWeights {
+        match &self.layer {
+            QwenLayerWeights::Gdn(layer) => layer,
+            QwenLayerWeights::AttentionMlp(_) => {
                 unreachable!("GDN decoder-layer fixture is not full attention")
             }
         }
@@ -1567,14 +1617,22 @@ fn qwen36_packed_attention_q_gate_extraction_preserves_rows_heads_and_lanes() {
     gate_device.ensure(expected_gate.len()).unwrap();
 
     unsafe {
-        extract_qwen36_packed_attention_q_and_gate_bf16(
-            packed_device.as_device_ptr(),
-            q_device.as_device_ptr(),
-            gate_device.as_device_ptr(),
-            ROWS as u32,
-            stream,
-        )
-        .unwrap();
+        crate::engine::Engine::new(full_attention_vector_config().engine_config())
+            .unwrap()
+            .operators()
+            .qscu()
+            .qwen36_extract_q_and_gate_bf16(
+                packed_device
+                    .matrix(ROWS as u32, QWEN36_FULL_ATTN_Q_PROJ_OUT)
+                    .unwrap(),
+                q_device
+                    .matrix(ROWS as u32, QWEN36_FULL_ATTN_Q_HIDDEN)
+                    .unwrap(),
+                gate_device
+                    .matrix(ROWS as u32, QWEN36_FULL_ATTN_Q_HIDDEN)
+                    .unwrap(),
+            )
+            .unwrap();
     }
     synchronize_stream(stream).unwrap();
 
@@ -1606,7 +1664,30 @@ fn qwen36_full_attention_vectors_validate_packed_q_gate_extraction() {
     );
     runner.scratch.q_proj_out.upload(stream, &packed).unwrap();
 
-    runner.extract_attention_q_and_gate(rows).unwrap();
+    unsafe {
+        runner
+            .engine
+            .operators()
+            .qscu()
+            .qwen36_extract_q_and_gate_bf16(
+                runner
+                    .scratch
+                    .q_proj_out
+                    .matrix(rows, QWEN36_FULL_ATTN_Q_PROJ_OUT)
+                    .unwrap(),
+                runner
+                    .scratch
+                    .q
+                    .matrix(rows, QWEN36_FULL_ATTN_Q_HIDDEN)
+                    .unwrap(),
+                runner
+                    .scratch
+                    .attn_gate
+                    .matrix(rows, QWEN36_FULL_ATTN_Q_HIDDEN)
+                    .unwrap(),
+            )
+    }
+    .unwrap();
     synchronize_stream(stream).unwrap();
 
     let got_q = download_bf16(&runner.scratch.q, stream, q_len);
@@ -1646,7 +1727,30 @@ fn qwen36_full_attention_vectors_validate_qk_norm_and_rope_pipeline() {
     runner.scratch.k.upload(stream, &k_input).unwrap();
     runner.scratch.positions.upload(stream, &positions).unwrap();
 
-    runner.extract_attention_q_and_gate(rows).unwrap();
+    unsafe {
+        runner
+            .engine
+            .operators()
+            .qscu()
+            .qwen36_extract_q_and_gate_bf16(
+                runner
+                    .scratch
+                    .q_proj_out
+                    .matrix(rows, QWEN36_FULL_ATTN_Q_PROJ_OUT)
+                    .unwrap(),
+                runner
+                    .scratch
+                    .q
+                    .matrix(rows, QWEN36_FULL_ATTN_Q_HIDDEN)
+                    .unwrap(),
+                runner
+                    .scratch
+                    .attn_gate
+                    .matrix(rows, QWEN36_FULL_ATTN_Q_HIDDEN)
+                    .unwrap(),
+            )
+    }
+    .unwrap();
 
     let q_norm_weight = DeviceBuffer::from_slice(
         device,
@@ -1661,26 +1765,40 @@ fn qwen36_full_attention_vectors_validate_qk_norm_and_rope_pipeline() {
     )
     .unwrap();
 
-    let q_ptr = runner.scratch.q.as_device_ptr();
-    runner
-        .qwen_qk_norm_heads(
-            q_ptr,
-            q_norm_weight.as_device_ptr(),
-            q_ptr,
-            rows,
-            runner.config.num_q_heads,
-        )
+    let q_ptr = runner
+        .scratch
+        .q
+        .matrix(rows * runner.config.num_q_heads, runner.config.head_dim)
         .unwrap();
-    let k_ptr = runner.scratch.k.as_device_ptr();
-    runner
-        .qwen_qk_norm_heads(
-            k_ptr,
-            k_norm_weight.as_device_ptr(),
-            k_ptr,
-            rows,
-            runner.config.num_kv_heads,
+    unsafe {
+        runner.engine.operators().qsfi().rmsnorm_bf16(
+            &crate::backend::qsfi::RmsNormBf16::qwen_qk_norm(
+                q_ptr,
+                q_norm_weight.vector(runner.config.head_dim).unwrap(),
+                q_ptr,
+                runner.config.rms_norm_eps,
+            )
+            .unwrap(),
         )
+    }
+    .unwrap();
+    let k_ptr = runner
+        .scratch
+        .k
+        .matrix(rows * runner.config.num_kv_heads, runner.config.head_dim)
         .unwrap();
+    unsafe {
+        runner.engine.operators().qsfi().rmsnorm_bf16(
+            &crate::backend::qsfi::RmsNormBf16::qwen_qk_norm(
+                k_ptr,
+                k_norm_weight.vector(runner.config.head_dim).unwrap(),
+                k_ptr,
+                runner.config.rms_norm_eps,
+            )
+            .unwrap(),
+        )
+    }
+    .unwrap();
     synchronize_stream(stream).unwrap();
 
     let got_q_norm = download_bf16(&runner.scratch.q, stream, q_len);
@@ -1698,7 +1816,12 @@ fn qwen36_full_attention_vectors_validate_qk_norm_and_rope_pipeline() {
         &expected_k_norm,
     );
 
-    runner.apply_attention_rope(rows).unwrap();
+    runner
+        .execution()
+        .unwrap()
+        .1
+        .apply_attention_rope(rows)
+        .unwrap();
     synchronize_stream(stream).unwrap();
 
     let got_q_rope = download_bf16(&runner.scratch.q, stream, q_len);
@@ -1744,9 +1867,25 @@ fn qwen36_full_attention_vectors_validate_output_gate() {
         .upload(stream, &out_initial)
         .unwrap();
 
-    runner
-        .apply_attention_output_gate(rows, QWEN36_FULL_ATTN_Q_HIDDEN)
-        .unwrap();
+    unsafe {
+        runner
+            .engine
+            .operators()
+            .qscu()
+            .qwen36_full_attention_output_gate_bf16(
+                runner
+                    .scratch
+                    .attn_gate
+                    .matrix(rows, QWEN36_FULL_ATTN_Q_HIDDEN)
+                    .unwrap(),
+                runner
+                    .scratch
+                    .attn_out
+                    .matrix(rows, QWEN36_FULL_ATTN_Q_HIDDEN)
+                    .unwrap(),
+            )
+    }
+    .unwrap();
     synchronize_stream(stream).unwrap();
 
     let got = download_bf16(&runner.scratch.attn_out, stream, q_len);
@@ -1849,16 +1988,20 @@ fn qwen36_full_attention_block_vector_validates_attention_residual_norm_composit
     )
     .unwrap();
 
-    let residual_ptr = runner.scratch.residual.as_device_ptr();
-    let norm_ptr = runner.scratch.norm.as_device_ptr();
-    runner
-        .rmsnorm(
-            residual_ptr,
-            attn_norm_weight.as_device_ptr(),
-            norm_ptr,
-            rows,
+    let residual_ptr = runner.scratch.residual.matrix(rows, hidden).unwrap();
+    let norm_ptr = runner.scratch.norm.matrix(rows, hidden).unwrap();
+    unsafe {
+        runner.engine.operators().qsfi().rmsnorm_bf16(
+            &crate::backend::qsfi::RmsNormBf16::qwen_decoder_norm(
+                residual_ptr,
+                attn_norm_weight.vector(runner.config.hidden_size).unwrap(),
+                norm_ptr,
+                runner.config.rms_norm_eps,
+            )
+            .unwrap(),
         )
-        .unwrap();
+    }
+    .unwrap();
     synchronize_stream(stream).unwrap();
     let got_attn_norm = download_bf16(&runner.scratch.norm, stream, hidden_len);
     assert_bf16_close_to_f32_oracle(
@@ -1869,37 +2012,72 @@ fn qwen36_full_attention_block_vector_validates_attention_residual_norm_composit
         BF16_BLOCK_NORM_ABS_TOL,
     );
 
-    runner
-        .linear_bf16(
+    unsafe {
+        runner.engine.operators().qscb().linear(
             norm_ptr,
-            rows,
-            hidden,
-            q_proj_weight.as_device_ptr(),
-            runner.scratch.q_proj_out.as_device_ptr(),
-            QWEN36_FULL_ATTN_Q_PROJ_OUT,
+            q_proj_weight
+                .matrix(QWEN36_FULL_ATTN_Q_PROJ_OUT, hidden)
+                .unwrap(),
+            runner
+                .scratch
+                .q_proj_out
+                .matrix(rows, QWEN36_FULL_ATTN_Q_PROJ_OUT)
+                .unwrap(),
+            runner
+                .qscb_workspace
+                .workspace(runner.config.qscb_workspace_bytes)
+                .unwrap(),
         )
-        .unwrap();
-    runner.extract_attention_q_and_gate(rows).unwrap();
-    runner
-        .linear_bf16(
+    }
+    .unwrap();
+    unsafe {
+        runner
+            .engine
+            .operators()
+            .qscu()
+            .qwen36_extract_q_and_gate_bf16(
+                runner
+                    .scratch
+                    .q_proj_out
+                    .matrix(rows, QWEN36_FULL_ATTN_Q_PROJ_OUT)
+                    .unwrap(),
+                runner
+                    .scratch
+                    .q
+                    .matrix(rows, QWEN36_FULL_ATTN_Q_HIDDEN)
+                    .unwrap(),
+                runner
+                    .scratch
+                    .attn_gate
+                    .matrix(rows, QWEN36_FULL_ATTN_Q_HIDDEN)
+                    .unwrap(),
+            )
+    }
+    .unwrap();
+    unsafe {
+        runner.engine.operators().qscb().linear(
             norm_ptr,
-            rows,
-            hidden,
-            k_proj_weight.as_device_ptr(),
-            runner.scratch.k.as_device_ptr(),
-            kv_hidden,
+            k_proj_weight.matrix(kv_hidden, hidden).unwrap(),
+            runner.scratch.k.matrix(rows, kv_hidden).unwrap(),
+            runner
+                .qscb_workspace
+                .workspace(runner.config.qscb_workspace_bytes)
+                .unwrap(),
         )
-        .unwrap();
-    runner
-        .linear_bf16(
+    }
+    .unwrap();
+    unsafe {
+        runner.engine.operators().qscb().linear(
             norm_ptr,
-            rows,
-            hidden,
-            v_proj_weight.as_device_ptr(),
-            runner.scratch.v.as_device_ptr(),
-            kv_hidden,
+            v_proj_weight.matrix(kv_hidden, hidden).unwrap(),
+            runner.scratch.v.matrix(rows, kv_hidden).unwrap(),
+            runner
+                .qscb_workspace
+                .workspace(runner.config.qscb_workspace_bytes)
+                .unwrap(),
         )
-        .unwrap();
+    }
+    .unwrap();
     synchronize_stream(stream).unwrap();
 
     let got_q_proj = download_bf16(&runner.scratch.q_proj_out, stream, q_proj_len);
@@ -1935,26 +2113,40 @@ fn qwen36_full_attention_block_vector_validates_attention_residual_norm_composit
         BF16_BLOCK_PROJ_ABS_TOL,
     );
 
-    let q_ptr = runner.scratch.q.as_device_ptr();
-    runner
-        .qwen_qk_norm_heads(
-            q_ptr,
-            q_norm_weight.as_device_ptr(),
-            q_ptr,
-            rows,
-            runner.config.num_q_heads,
-        )
+    let q_ptr = runner
+        .scratch
+        .q
+        .matrix(rows * runner.config.num_q_heads, runner.config.head_dim)
         .unwrap();
-    let k_ptr = runner.scratch.k.as_device_ptr();
-    runner
-        .qwen_qk_norm_heads(
-            k_ptr,
-            k_norm_weight.as_device_ptr(),
-            k_ptr,
-            rows,
-            runner.config.num_kv_heads,
+    unsafe {
+        runner.engine.operators().qsfi().rmsnorm_bf16(
+            &crate::backend::qsfi::RmsNormBf16::qwen_qk_norm(
+                q_ptr,
+                q_norm_weight.vector(runner.config.head_dim).unwrap(),
+                q_ptr,
+                runner.config.rms_norm_eps,
+            )
+            .unwrap(),
         )
+    }
+    .unwrap();
+    let k_ptr = runner
+        .scratch
+        .k
+        .matrix(rows * runner.config.num_kv_heads, runner.config.head_dim)
         .unwrap();
+    unsafe {
+        runner.engine.operators().qsfi().rmsnorm_bf16(
+            &crate::backend::qsfi::RmsNormBf16::qwen_qk_norm(
+                k_ptr,
+                k_norm_weight.vector(runner.config.head_dim).unwrap(),
+                k_ptr,
+                runner.config.rms_norm_eps,
+            )
+            .unwrap(),
+        )
+    }
+    .unwrap();
     synchronize_stream(stream).unwrap();
     assert_bf16_close_to_f32_oracle(
         "full-attention block q Gemma RMSNorm",
@@ -1971,7 +2163,12 @@ fn qwen36_full_attention_block_vector_validates_attention_residual_norm_composit
         BF16_BLOCK_NORM_ABS_TOL,
     );
 
-    runner.apply_attention_rope(rows).unwrap();
+    runner
+        .execution()
+        .unwrap()
+        .1
+        .apply_attention_rope(rows)
+        .unwrap();
     synchronize_stream(stream).unwrap();
     assert_bf16_close_to_f32_oracle(
         "full-attention block q partial RoPE",
@@ -2001,34 +2198,26 @@ fn qwen36_full_attention_block_vector_validates_attention_residual_norm_composit
     let engine_layer = AttentionLayer::bf16_attention(
         0,
         runner
-            .attention_heads(
-                runner.scratch.q.as_device_ptr(),
-                rows,
-                runner.config.num_q_heads,
-            )
+            .scratch
+            .q
+            .heads(rows, runner.config.num_q_heads, runner.config.head_dim)
             .unwrap(),
         runner
-            .attention_heads(
-                runner.scratch.k.as_device_ptr(),
-                rows,
-                runner.config.num_kv_heads,
-            )
+            .scratch
+            .k
+            .heads(rows, runner.config.num_kv_heads, runner.config.head_dim)
             .unwrap(),
         runner
-            .attention_heads(
-                runner.scratch.v.as_device_ptr(),
-                rows,
-                runner.config.num_kv_heads,
-            )
+            .scratch
+            .v
+            .heads(rows, runner.config.num_kv_heads, runner.config.head_dim)
             .unwrap(),
         runner
-            .attention_heads(
-                runner.scratch.attn_out.as_device_ptr(),
-                rows,
-                runner.config.num_q_heads,
-            )
+            .scratch
+            .attn_out
+            .heads(rows, runner.config.num_q_heads, runner.config.head_dim)
             .unwrap(),
-        runner.scratch.positions.as_device_ptr(),
+        runner.scratch.positions.vector(rows).unwrap(),
     );
     unsafe { runner.engine.append_attention(&engine_layer) }.unwrap();
     synchronize_stream(stream).unwrap();
@@ -2040,9 +2229,25 @@ fn qwen36_full_attention_block_vector_validates_attention_residual_norm_composit
         BF16_BLOCK_ATTN_ABS_TOL,
     );
 
-    runner
-        .apply_attention_output_gate(rows, QWEN36_FULL_ATTN_Q_HIDDEN)
-        .unwrap();
+    unsafe {
+        runner
+            .engine
+            .operators()
+            .qscu()
+            .qwen36_full_attention_output_gate_bf16(
+                runner
+                    .scratch
+                    .attn_gate
+                    .matrix(rows, QWEN36_FULL_ATTN_Q_HIDDEN)
+                    .unwrap(),
+                runner
+                    .scratch
+                    .attn_out
+                    .matrix(rows, QWEN36_FULL_ATTN_Q_HIDDEN)
+                    .unwrap(),
+            )
+    }
+    .unwrap();
     synchronize_stream(stream).unwrap();
     assert_bf16_close_to_f32_oracle(
         "full-attention block sigmoid output gate",
@@ -2052,16 +2257,18 @@ fn qwen36_full_attention_block_vector_validates_attention_residual_norm_composit
         BF16_BLOCK_ATTN_ABS_TOL,
     );
 
-    runner
-        .linear_bf16(
-            runner.scratch.attn_out.as_device_ptr(),
-            rows,
-            q_hidden,
-            o_proj_weight.as_device_ptr(),
-            runner.scratch.attn_proj.as_device_ptr(),
-            hidden,
+    unsafe {
+        runner.engine.operators().qscb().linear(
+            runner.scratch.attn_out.matrix(rows, q_hidden).unwrap(),
+            o_proj_weight.matrix(hidden, q_hidden).unwrap(),
+            runner.scratch.attn_proj.matrix(rows, hidden).unwrap(),
+            runner
+                .qscb_workspace
+                .workspace(runner.config.qscb_workspace_bytes)
+                .unwrap(),
         )
-        .unwrap();
+    }
+    .unwrap();
     synchronize_stream(stream).unwrap();
     assert_bf16_close_to_f32_oracle(
         "full-attention block output projection",
@@ -2071,14 +2278,26 @@ fn qwen36_full_attention_block_vector_validates_attention_residual_norm_composit
         BF16_BLOCK_PROJ_ABS_TOL,
     );
 
-    runner
-        .fused_add_rmsnorm(
-            runner.scratch.attn_proj.as_device_ptr(),
-            runner.scratch.residual.as_device_ptr(),
-            post_norm_weight.as_device_ptr(),
-            rows,
+    unsafe {
+        runner.engine.operators().qsfi().fused_add_rmsnorm_bf16(
+            &crate::backend::qsfi::FusedAddRmsNormBf16::qwen_decoder_norm(
+                runner
+                    .scratch
+                    .attn_proj
+                    .matrix(rows, runner.config.hidden_size)
+                    .unwrap(),
+                runner
+                    .scratch
+                    .residual
+                    .matrix(rows, runner.config.hidden_size)
+                    .unwrap(),
+                post_norm_weight.vector(runner.config.hidden_size).unwrap(),
+                runner.config.rms_norm_eps,
+            )
+            .unwrap(),
         )
-        .unwrap();
+    }
+    .unwrap();
     synchronize_stream(stream).unwrap();
     assert_bf16_close_to_f32_oracle(
         "full-attention block residual after attention add",
@@ -2115,14 +2334,11 @@ fn qwen36_full_attention_decoder_slice_chains_attention_into_moe_and_next_norm()
     let device = runner.config.device_ordinal;
     let rows = FULL_ATTN_BLOCK_VECTOR_ROWS;
     let hidden = QWEN36_HIDDEN_SIZE;
-    let q_hidden = QWEN36_FULL_ATTN_Q_HIDDEN;
-    let kv_hidden = QWEN36_FULL_ATTN_KV_HIDDEN;
-    let intermediate = FULL_ATTN_BLOCK_MOE_INTERMEDIATE;
     let hidden_len = full_attention_block_hidden_len();
     runner.scratch.ensure(&runner.config, rows).unwrap();
 
     let layer = full_attention_block_moe_layer(device, stream);
-    let layer_ptrs = layer.ptrs();
+    let layer_weights = layer.weights();
     runner
         .scratch
         .residual
@@ -2140,11 +2356,23 @@ fn qwen36_full_attention_decoder_slice_chains_attention_into_moe_and_next_norm()
         )
         .unwrap();
 
-    let residual_ptr = runner.scratch.residual.as_device_ptr();
-    let norm_ptr = runner.scratch.norm.as_device_ptr();
-    runner
-        .rmsnorm(residual_ptr, layer_ptrs.attn_norm, norm_ptr, rows)
-        .unwrap();
+    let residual_ptr = runner.scratch.residual.matrix(rows, hidden).unwrap();
+    let norm_ptr = runner.scratch.norm.matrix(rows, hidden).unwrap();
+    unsafe {
+        runner.engine.operators().qsfi().rmsnorm_bf16(
+            &crate::backend::qsfi::RmsNormBf16::qwen_decoder_norm(
+                residual_ptr,
+                layer_weights
+                    .attn_norm
+                    .vector(runner.config.hidden_size)
+                    .unwrap(),
+                norm_ptr,
+                runner.config.rms_norm_eps,
+            )
+            .unwrap(),
+        )
+    }
+    .unwrap();
 
     let tokens = [101, 102, 103, 104, 105, 106];
     let token_indptr = [0, rows as i32];
@@ -2158,14 +2386,14 @@ fn qwen36_full_attention_decoder_slice_chains_attention_into_moe_and_next_norm()
         .unwrap();
     let attention_layer_idx = runner.config.attention_layer_index(0).unwrap();
     runner
+        .execution()
+        .unwrap()
+        .1
         .execute_attention_layer(
             attention_layer_idx,
             rows,
-            hidden,
-            q_hidden,
-            kv_hidden,
             norm_ptr,
-            layer_ptrs,
+            layer_weights,
             ActiveRunKind::Append,
         )
         .unwrap();
@@ -2179,13 +2407,14 @@ fn qwen36_full_attention_decoder_slice_chains_attention_into_moe_and_next_norm()
     );
 
     runner
+        .execution()
+        .unwrap()
+        .1
         .execute_post_attention_mlp(
             rows,
-            hidden,
-            intermediate,
-            layer_ptrs.mlp_norm,
-            layer_ptrs.mlp,
-            layer.next_norm.as_device_ptr(),
+            &layer_weights.mlp_norm,
+            &layer_weights.mlp,
+            &layer.next_norm,
         )
         .unwrap();
     synchronize_stream(stream).unwrap();
@@ -2229,7 +2458,6 @@ fn qwen36_gdn_decoder_layer_vector_chains_gdn_into_moe_and_next_norm() {
     let device = runner.config.device_ordinal;
     let rows = GDN_DECODER_LAYER_VECTOR_ROWS;
     let hidden = QWEN36_HIDDEN_SIZE;
-    let intermediate = GDN_DECODER_LAYER_MOE_INTERMEDIATE;
     let hidden_len = gdn_decoder_layer_hidden_len();
     let gdn_out_len = checked_usize_product(&[rows, QWEN36_GDN_OUTPUT_DIM]).unwrap();
     let topk_len = gdn_decoder_layer_topk_len();
@@ -2253,10 +2481,13 @@ fn qwen36_gdn_decoder_layer_vector_chains_gdn_into_moe_and_next_norm() {
         .unwrap();
 
     let layer = gdn_decoder_layer_fixture(device, stream);
-    let layer_ptrs = layer.ptrs();
-    let norm_ptr = runner.scratch.norm.as_device_ptr();
+    let layer_weights = layer.weights();
+    let norm_ptr = runner.scratch.norm.matrix(rows, hidden).unwrap();
     runner
-        .execute_gdn_layer(0, rows, hidden, norm_ptr, layer_ptrs, ActiveRunKind::Append)
+        .execution()
+        .unwrap()
+        .1
+        .execute_gdn_layer(0, rows, norm_ptr, layer_weights, ActiveRunKind::Append)
         .unwrap();
     synchronize_stream(stream).unwrap();
 
@@ -2282,13 +2513,14 @@ fn qwen36_gdn_decoder_layer_vector_chains_gdn_into_moe_and_next_norm() {
     );
 
     runner
+        .execution()
+        .unwrap()
+        .1
         .execute_post_attention_mlp(
             rows,
-            hidden,
-            intermediate,
-            layer_ptrs.mlp_norm,
-            layer_ptrs.mlp,
-            layer.next_norm.as_device_ptr(),
+            &layer_weights.mlp_norm,
+            &layer_weights.mlp,
+            &layer.next_norm,
         )
         .unwrap();
     synchronize_stream(stream).unwrap();
@@ -2392,7 +2624,6 @@ fn qwen36_full_attention_block_vector_validates_oracle_seeded_moe_shared_and_nex
     let stream = runner.config.stream;
     let device = runner.config.device_ordinal;
     let rows = FULL_ATTN_BLOCK_VECTOR_ROWS;
-    let hidden = QWEN36_HIDDEN_SIZE;
     let hidden_len = full_attention_block_hidden_len();
     let topk_len = full_attention_block_moe_topk_len();
     runner.scratch.ensure(&runner.config, rows).unwrap();
@@ -2418,19 +2649,22 @@ fn qwen36_full_attention_block_vector_validates_oracle_seeded_moe_shared_and_nex
         .unwrap();
 
     let layer = full_attention_block_moe_layer(device, stream);
-    let layer_ptrs = layer.ptrs();
-    let (router_proj, gate_up_proj, down_proj, shared) = match layer_ptrs.mlp {
-        QwenMlpPtrs::Moe {
+    let layer_weights = layer.weights();
+    let (router_proj, gate_up_proj, down_proj, shared) = match &layer_weights.mlp {
+        QwenMlpWeights::Moe {
             router_proj,
             gate_up_proj,
             down_proj,
             shared,
-        } => (router_proj, gate_up_proj, down_proj, shared),
-        QwenMlpPtrs::Dense { .. } => unreachable!("block fixture must use MoE"),
+        } => (router_proj, gate_up_proj, down_proj, shared.as_ref()),
+        QwenMlpWeights::Dense { .. } => unreachable!("block fixture must use MoE"),
     };
 
     runner
-        .execute_moe_mlp(rows, hidden, router_proj, gate_up_proj, down_proj, shared)
+        .execution()
+        .unwrap()
+        .1
+        .execute_moe_mlp(rows, router_proj, gate_up_proj, down_proj, shared)
         .unwrap();
     synchronize_stream(stream).unwrap();
 
@@ -2479,14 +2713,26 @@ fn qwen36_full_attention_block_vector_validates_oracle_seeded_moe_shared_and_nex
         BF16_BLOCK_MOE_ABS_TOL,
     );
 
-    runner
-        .fused_add_rmsnorm(
-            runner.scratch.mlp_out.as_device_ptr(),
-            runner.scratch.residual.as_device_ptr(),
-            layer.next_norm.as_device_ptr(),
-            rows,
+    unsafe {
+        runner.engine.operators().qsfi().fused_add_rmsnorm_bf16(
+            &crate::backend::qsfi::FusedAddRmsNormBf16::qwen_decoder_norm(
+                runner
+                    .scratch
+                    .mlp_out
+                    .matrix(rows, runner.config.hidden_size)
+                    .unwrap(),
+                runner
+                    .scratch
+                    .residual
+                    .matrix(rows, runner.config.hidden_size)
+                    .unwrap(),
+                layer.next_norm.vector(runner.config.hidden_size).unwrap(),
+                runner.config.rms_norm_eps,
+            )
+            .unwrap(),
         )
-        .unwrap();
+    }
+    .unwrap();
     synchronize_stream(stream).unwrap();
     assert_bf16_close_to_f32_oracle(
         "full-attention block residual after MoE/shared expert",
@@ -2994,99 +3240,14 @@ fn qwen36_gdn_weights_carry_post_attention_shared_moe() {
         QwenLayerWeights::AttentionMlp(_) => unreachable!(),
     }
 
-    match layer.ptrs() {
-        QwenLayerPtrs::Gdn(gdn) => match gdn.mlp {
-            QwenMlpPtrs::Moe {
+    match &layer {
+        QwenLayerWeights::Gdn(gdn) => match gdn.mlp {
+            QwenMlpWeights::Moe {
                 shared: Some(_), ..
             } => {}
             _ => panic!("GDN layers must carry shared MoE post-attention weights"),
         },
-        QwenLayerPtrs::AttentionMlp(_) => unreachable!(),
-    }
-}
-
-#[test]
-fn layer_ptrs_make_post_attention_mlp_common_after_attention_and_gdn_core() {
-    let attention = QwenLayerPtrs::AttentionMlp(QwenAttentionMlpPtrs {
-        attn_norm: test_device_ptr(1),
-        q_norm: test_device_ptr(2),
-        k_norm: test_device_ptr(3),
-        q_proj: test_device_ptr(4),
-        k_proj: test_device_ptr(5),
-        v_proj: test_device_ptr(6),
-        o_proj: test_device_ptr(7),
-        mlp_norm: test_device_ptr(8),
-        mlp: QwenMlpPtrs::Dense {
-            gate_proj: test_device_ptr(9),
-            up_proj: test_device_ptr(10),
-            down_proj: test_device_ptr(11),
-        },
-    });
-    match attention {
-        QwenLayerPtrs::AttentionMlp(layer) => {
-            assert_eq!(layer.q_norm, test_device_ptr(2));
-            assert_eq!(layer.k_norm, test_device_ptr(3));
-        }
-        QwenLayerPtrs::Gdn(_) => unreachable!(),
-    }
-    let post = attention.post_attention_mlp();
-    assert_eq!(post.norm, test_device_ptr(8));
-    match post.mlp {
-        QwenMlpPtrs::Dense {
-            gate_proj,
-            up_proj,
-            down_proj,
-        } => {
-            assert_eq!(gate_proj, test_device_ptr(9));
-            assert_eq!(up_proj, test_device_ptr(10));
-            assert_eq!(down_proj, test_device_ptr(11));
-        }
-        QwenMlpPtrs::Moe { .. } => panic!("attention layer post-MLP payload changed shape"),
-    }
-
-    let gdn = QwenLayerPtrs::Gdn(QwenGdnPtrs {
-        norm: test_device_ptr(10),
-        in_proj: test_device_ptr(11),
-        gate_proj: test_device_ptr(12),
-        a_proj: test_device_ptr(13),
-        b_proj: test_device_ptr(14),
-        conv_weight: test_device_ptr(15),
-        conv_bias: test_device_ptr(16),
-        a_log: test_device_ptr(17),
-        dt_bias: test_device_ptr(18),
-        rms_weight: test_device_ptr(19),
-        out_proj: test_device_ptr(20),
-        mlp_norm: test_device_ptr(21),
-        mlp: QwenMlpPtrs::Moe {
-            router_proj: test_device_ptr(22),
-            gate_up_proj: test_device_ptr(23),
-            down_proj: test_device_ptr(24),
-            shared: Some(QwenSharedExpertPtrs {
-                gate_proj: test_device_ptr(25),
-                up_proj: test_device_ptr(26),
-                down_proj: test_device_ptr(27),
-                shared_expert_gate: test_device_ptr(28),
-            }),
-        },
-    });
-    let post = gdn.post_attention_mlp();
-    assert_eq!(post.norm, test_device_ptr(21));
-    match post.mlp {
-        QwenMlpPtrs::Moe {
-            router_proj,
-            gate_up_proj,
-            down_proj,
-            shared: Some(shared),
-        } => {
-            assert_eq!(router_proj, test_device_ptr(22));
-            assert_eq!(gate_up_proj, test_device_ptr(23));
-            assert_eq!(down_proj, test_device_ptr(24));
-            assert_eq!(shared.gate_proj, test_device_ptr(25));
-            assert_eq!(shared.up_proj, test_device_ptr(26));
-            assert_eq!(shared.down_proj, test_device_ptr(27));
-            assert_eq!(shared.shared_expert_gate, test_device_ptr(28));
-        }
-        _ => panic!("GDN post-MLP payload must keep shared MoE pointers"),
+        QwenLayerWeights::AttentionMlp(_) => unreachable!(),
     }
 }
 
@@ -3131,14 +3292,10 @@ fn shared_moe_execution_produces_routed_and_shared_outputs() {
     );
 
     runner
-        .execute_moe_mlp(
-            rows,
-            hidden,
-            router_proj.as_device_ptr(),
-            gate_up_proj.as_device_ptr(),
-            down_proj.as_device_ptr(),
-            None,
-        )
+        .execution()
+        .unwrap()
+        .1
+        .execute_moe_mlp(rows, &router_proj, &gate_up_proj, &down_proj, None)
         .unwrap();
     let routed = download_bf16(&runner.scratch.mlp_out, config.stream, hidden_len);
     assert!(has_nonzero_bf16(&routed));
@@ -3168,22 +3325,18 @@ fn shared_moe_execution_produces_routed_and_shared_outputs() {
     );
     let shared_expert_gate =
         filled_bf16_buffer(config.device_ordinal, config.stream, hidden_len, 0.02);
-    let shared = QwenSharedExpertPtrs {
-        gate_proj: shared_gate_proj.as_device_ptr(),
-        up_proj: shared_up_proj.as_device_ptr(),
-        down_proj: shared_down_proj.as_device_ptr(),
-        shared_expert_gate: shared_expert_gate.as_device_ptr(),
+    let shared = QwenSharedExpertWeights {
+        gate_proj: shared_gate_proj,
+        up_proj: shared_up_proj,
+        down_proj: shared_down_proj,
+        shared_expert_gate: shared_expert_gate,
     };
 
     runner
-        .execute_moe_mlp(
-            rows,
-            hidden,
-            router_proj.as_device_ptr(),
-            gate_up_proj.as_device_ptr(),
-            down_proj.as_device_ptr(),
-            Some(shared),
-        )
+        .execution()
+        .unwrap()
+        .1
+        .execute_moe_mlp(rows, &router_proj, &gate_up_proj, &down_proj, Some(&shared))
         .unwrap();
 
     let shared_out = download_bf16(&runner.scratch.shared_out, config.stream, hidden_len);

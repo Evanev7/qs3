@@ -70,9 +70,11 @@
   prefix state so rebuilds preserve reusable execution resources. PrefixState
   now owns replaceable core/KV state; AttentionSession keeps providers, plans and
   metadata. Late-failure rollback and real BF16/FP32 continuation regressions pass.
-- [ ] Simplify bindings as these paths are changed: typed Rust tensor views into
-  one lowering/launch method, removing redundant descriptor wrappers and
-  forwarding methods. Preserve validation before device addressing.
+- [x] Simplify model execution bindings: borrow weights separately from batch
+  execution resources, construct typed views with allocation-bound checks, and
+  call backend operations directly. Raw weight snapshots and primitive forwarding
+  helpers are removed; workspace views are prepared once per batch. Native
+  lowering retains validation before device addressing.
 - [ ] Re-measure CPU preparation, GPU idle gaps, and end-to-end decode after
   each substantive change.
 

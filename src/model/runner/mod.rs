@@ -5,23 +5,15 @@ mod mlp;
 mod tests;
 
 use crate::{
-    QWEN36_GDN_KEY_DIM, QWEN36_GDN_NUM_K_HEADS, QWEN36_GDN_NUM_Q_HEADS, QWEN36_GDN_NUM_V_HEADS,
-    QWEN36_GDN_VALUE_DIM,
-    backend::{
-        BF16, Bf16Heads, DMat, DVec, F32, FloatStorage,
-        qscu::{GdnConvState, GdnRecurrentState},
-        qsfi::{FusedAddRmsNormBf16, MoeBf16PlanConfig, MoePlan, RmsNormBf16, Workspace},
-    },
+    backend::qsfi::{MoeBf16PlanConfig, MoePlan, RmsNormBf16, Workspace},
     engine::{AppendBatch, Commit, DecodeBatch, Engine, RequestId, Status},
     ext::{SafeVec, try_clone_slice},
-    ffi,
     model::{
         ActiveRunKind, BatchRun, QwenConfig, QwenWeights,
-        checked_usize_product, device_ptr_byte_offset,
         scratch::{DeviceBuffer, RunnerScratch},
         state::GdnState,
         validate_token_ids,
-        weights::QwenLayerPtrs,
+        weights::QwenLayerWeights,
     },
 };
 
@@ -368,87 +360,31 @@ impl ModelRunner {
         self.scratch.ensure(&self.config, rows)?;
         self.upload_batch_inputs(run.tokens, run.start_pos)?;
 
-        self.embedding_gather(rows)?;
-
-        let hidden = self.config.hidden_size;
-        let q_hidden = self.config.q_hidden_size()?;
-        let intermediate = self.config.intermediate_size;
-        let mut layer_input = self.scratch.norm.as_device_ptr();
-        let layer0 = self
-            .weights
-            .layers
-            .first()
-            .ok_or(Status::InternalError)?
-            .ptrs();
-        self.rmsnorm(
-            self.scratch.residual.as_device_ptr(),
-            layer0.input_norm(),
-            self.scratch.norm.as_device_ptr(),
-            rows,
-        )?;
-
-        for layer_idx in 0..self.config.num_layers {
-            let layer = self.weights.layers[layer_idx as usize].ptrs();
-            let next_weight = if layer_idx + 1 == self.config.num_layers {
-                self.weights.final_norm.as_device_ptr()
-            } else {
-                self.weights.layers[(layer_idx + 1) as usize]
-                    .ptrs()
-                    .input_norm()
-            };
-            match layer {
-                QwenLayerPtrs::AttentionMlp(layer) => {
-                    let attention_layer_idx = self.config.attention_layer_index(layer_idx)?;
-                    let kv_hidden = self.config.kv_hidden_size()?;
-                    self.execute_attention_layer(
-                        attention_layer_idx,
-                        rows,
-                        hidden,
-                        q_hidden,
-                        kv_hidden,
-                        layer_input,
-                        layer,
-                        run.kind,
-                    )?;
-                }
-                QwenLayerPtrs::Gdn(layer) => {
-                    let gdn_layer_idx = self.config.gdn_layer_index(layer_idx)?;
-                    self.execute_gdn_layer(
-                        gdn_layer_idx,
-                        rows,
-                        hidden,
-                        layer_input,
-                        layer,
-                        run.kind,
-                    )?;
-                }
-            }
-            let post_mlp = layer.post_attention_mlp();
-            self.execute_post_attention_mlp(
-                rows,
-                hidden,
-                intermediate,
-                post_mlp.norm,
-                post_mlp.mlp,
-                next_weight,
-            )?;
-            layer_input = self.scratch.mlp_out.as_device_ptr();
-        }
-
-        // This runner executes one request. Only its final token predicts the
-        // continuation; earlier rows have already updated attention/GDN state.
-        let last_row_bytes = checked_usize_product(&[rows - 1, hidden])?
-            .checked_mul(mem::size_of::<u16>())
-            .ok_or(Status::InvalidArgument)?;
-        self.linear_f32(
-            device_ptr_byte_offset(layer_input, last_row_bytes)?,
-            1,
-            hidden,
-            self.weights.lm_head.as_device_ptr(),
-            self.scratch.logits.as_device_ptr(),
-            self.config.vocab_size,
-        )?;
+        let (weights, mut execution) = self.execution()?;
+        execution.run(weights, rows, run.kind)?;
         self.sample_logits(1)
+    }
+
+    fn execution(&mut self) -> Result<(&QwenWeights, BatchExecution<'_>), Status> {
+        let linear_workspace = self
+            .qscb_workspace
+            .workspace(self.config.qscb_workspace_bytes)?;
+        let moe_workspace = self
+            .scratch
+            .moe_workspace
+            .workspace(self.scratch.moe_workspace.cap)?;
+        Ok((
+            &self.weights,
+            BatchExecution {
+                config: &self.config,
+                engine: &mut self.engine,
+                scratch: &mut self.scratch,
+                gdn_state: self.gdn_state.as_ref(),
+                moe_plan: self.moe_plan.as_ref(),
+                linear_workspace,
+                moe_workspace,
+            },
+        ))
     }
 
     fn upload_batch_inputs(&mut self, tokens: &[i32], start_pos: u32) -> Result<(), Status> {
@@ -463,48 +399,6 @@ impl ModelRunner {
         self.scratch
             .positions
             .upload(self.config.stream, &positions)
-    }
-
-    fn attention_heads(
-        &self,
-        data: ffi::DevicePtr,
-        rows: u32,
-        heads: u32,
-    ) -> Result<Bf16Heads, Status> {
-        Bf16Heads::contiguous(data, rows, heads, self.config.head_dim)
-    }
-
-    fn gdn_q_heads(&self, data: ffi::DevicePtr, rows: u32) -> Result<Bf16Heads, Status> {
-        Bf16Heads::contiguous(data, rows, QWEN36_GDN_NUM_Q_HEADS, QWEN36_GDN_KEY_DIM)
-    }
-
-    fn gdn_k_heads(&self, data: ffi::DevicePtr, rows: u32) -> Result<Bf16Heads, Status> {
-        Bf16Heads::contiguous(data, rows, QWEN36_GDN_NUM_K_HEADS, QWEN36_GDN_KEY_DIM)
-    }
-
-    fn gdn_v_heads(&self, data: ffi::DevicePtr, rows: u32) -> Result<Bf16Heads, Status> {
-        Bf16Heads::contiguous(data, rows, QWEN36_GDN_NUM_V_HEADS, QWEN36_GDN_VALUE_DIM)
-    }
-
-    fn gdn_state_views(
-        &self,
-        gdn_layer_idx: u32,
-    ) -> Result<(u32, u32, u32, GdnConvState, GdnRecurrentState), Status> {
-        let state = self.gdn_state.as_ref().ok_or(Status::InternalError)?;
-        let slots = state.layer_slots(gdn_layer_idx)?;
-        let conv_state = GdnConvState::contiguous(
-            state.conv.as_device_ptr(),
-            FloatStorage::Bf16,
-            state.slots.state_pool,
-        )?;
-        let recurrent_state = state.recurrent_view()?;
-        Ok((
-            state.slots.state_pool,
-            slots.live_slot,
-            slots.staged_slot,
-            conv_state,
-            recurrent_state,
-        ))
     }
 
     fn commit_gdn_state(&mut self) {
@@ -526,148 +420,8 @@ impl ModelRunner {
         let _ = self.engine.abort_batch();
     }
 
-    fn embedding_gather(&mut self, rows: u32) -> Result<(), Status> {
-        let token_ids = DVec::contiguous(self.scratch.token_ids.as_device_ptr(), rows)?;
-        let embedding = DMat::contiguous(
-            self.weights.token_embedding.as_device_ptr(),
-            self.config.vocab_size,
-            self.config.hidden_size,
-        )?;
-        let out = DMat::contiguous(
-            self.scratch.residual.as_device_ptr(),
-            rows,
-            self.config.hidden_size,
-        )?;
-        let mut ops = self.engine.operators();
-        unsafe {
-            ops.qscu()
-                .embedding_gather_bf16(token_ids, embedding, out, None, true)
-        }
-    }
-
-    fn rmsnorm(
-        &mut self,
-        x: ffi::DevicePtr,
-        weight: ffi::DevicePtr,
-        out: ffi::DevicePtr,
-        rows: u32,
-    ) -> Result<(), Status> {
-        let desc = RmsNormBf16::qwen_decoder_norm(
-            DMat::contiguous(x, rows, self.config.hidden_size)?,
-            DVec::contiguous(weight, self.config.hidden_size)?,
-            DMat::contiguous(out, rows, self.config.hidden_size)?,
-            self.config.rms_norm_eps,
-        )?;
-        let mut ops = self.engine.operators();
-        unsafe { ops.qsfi().rmsnorm_bf16(&desc) }
-    }
-
-    fn fused_add_rmsnorm(
-        &mut self,
-        x: ffi::DevicePtr,
-        residual: ffi::DevicePtr,
-        weight: ffi::DevicePtr,
-        rows: u32,
-    ) -> Result<(), Status> {
-        let desc = FusedAddRmsNormBf16::qwen_decoder_norm(
-            DMat::contiguous(x, rows, self.config.hidden_size)?,
-            DMat::contiguous(residual, rows, self.config.hidden_size)?,
-            DVec::contiguous(weight, self.config.hidden_size)?,
-            self.config.rms_norm_eps,
-        )?;
-        let mut ops = self.engine.operators();
-        unsafe { ops.qsfi().fused_add_rmsnorm_bf16(&desc) }
-    }
-
-    fn linear_bf16(
-        &mut self,
-        input: ffi::DevicePtr,
-        rows: u32,
-        in_features: u32,
-        weight: ffi::DevicePtr,
-        output: ffi::DevicePtr,
-        out_features: u32,
-    ) -> Result<(), Status> {
-        let workspace = if self.config.qscb_workspace_bytes == 0 {
-            Workspace::none()
-        } else {
-            Workspace::new(
-                self.qscb_workspace.as_device_ptr(),
-                self.config.qscb_workspace_bytes,
-            )?
-        };
-        let mut ops = self.engine.operators();
-        unsafe {
-            ops.qscb().linear(
-                DMat::contiguous(input, rows, in_features)?,
-                DMat::contiguous(weight, out_features, in_features)?,
-                DMat::<BF16>::contiguous(output, rows, out_features)?,
-                workspace,
-            )
-        }
-    }
-
-    fn linear_f32(
-        &mut self,
-        input: ffi::DevicePtr,
-        rows: u32,
-        in_features: u32,
-        weight: ffi::DevicePtr,
-        output: ffi::DevicePtr,
-        out_features: u32,
-    ) -> Result<(), Status> {
-        let workspace = if self.config.qscb_workspace_bytes == 0 {
-            Workspace::none()
-        } else {
-            Workspace::new(
-                self.qscb_workspace.as_device_ptr(),
-                self.config.qscb_workspace_bytes,
-            )?
-        };
-        let mut ops = self.engine.operators();
-        unsafe {
-            ops.qscb().linear(
-                DMat::contiguous(input, rows, in_features)?,
-                DMat::contiguous(weight, out_features, in_features)?,
-                DMat::<F32>::contiguous(output, rows, out_features)?,
-                workspace,
-            )
-        }
-    }
-
-    fn silu_and_mul(
-        &mut self,
-        rows: u32,
-        intermediate: u32,
-        gate: ffi::DevicePtr,
-        up: ffi::DevicePtr,
-        out: ffi::DevicePtr,
-    ) -> Result<(), Status> {
-        let gate = DMat::contiguous(gate, rows, intermediate)?;
-        let up = DMat::contiguous(up, rows, intermediate)?;
-        let out = DMat::contiguous(out, rows, intermediate)?;
-        let mut ops = self.engine.operators();
-        unsafe { ops.qscu().silu_and_mul_bf16(gate, up, out) }
-    }
-
-    fn shared_expert_gate_add(&mut self, rows: u32, hidden: u32) -> Result<(), Status> {
-        let gate_logits =
-            DMat::contiguous(self.scratch.shared_gate_logits.as_device_ptr(), rows, 1)?;
-        let shared = DMat::contiguous(self.scratch.shared_out.as_device_ptr(), rows, hidden)?;
-        let out = DMat::contiguous(self.scratch.mlp_out.as_device_ptr(), rows, hidden)?;
-        let mut ops = self.engine.operators();
-        unsafe {
-            ops.qscu()
-                .qwen36_shared_expert_gate_add_bf16(gate_logits, shared, out)
-        }
-    }
-
     fn sample_logits(&mut self, rows: u32) -> Result<Vec<i32>, Status> {
-        let logits = DMat::contiguous(
-            self.scratch.logits.as_device_ptr(),
-            rows,
-            self.config.vocab_size,
-        )?;
+        let logits = self.scratch.logits.matrix(rows, self.config.vocab_size)?;
         if self.config.logits_soft_cap > 0.0 {
             let mut ops = self.engine.operators();
             unsafe {
@@ -675,7 +429,7 @@ impl ModelRunner {
                     .logits_soft_cap_f32(logits, self.config.logits_soft_cap)?
             };
         }
-        let next_token_ids = DVec::contiguous(self.scratch.next_token_ids.as_device_ptr(), rows)?;
+        let next_token_ids = self.scratch.next_token_ids.vector(rows)?;
         {
             let mut ops = self.engine.operators();
             unsafe { ops.qscu().greedy_argmax_f32(logits, next_token_ids)? };
@@ -694,5 +448,80 @@ impl ModelRunner {
         self.last_logits_rows = rows;
         self.last_logits_vocab_size = self.config.vocab_size;
         Ok(sampled)
+    }
+}
+
+// Borrow execution resources independently of immutable weights. Views are
+// prepared after scratch allocation; the scope borrows their owners while enqueueing.
+struct BatchExecution<'a> {
+    config: &'a QwenConfig,
+    engine: &'a mut Engine,
+    scratch: &'a mut RunnerScratch,
+    gdn_state: Option<&'a GdnState>,
+    moe_plan: Option<&'a MoePlan>,
+    linear_workspace: Workspace,
+    moe_workspace: Workspace,
+}
+
+impl BatchExecution<'_> {
+    fn run(&mut self, weights: &QwenWeights, rows: u32, kind: ActiveRunKind) -> Result<(), Status> {
+        let hidden = self.config.hidden_size;
+        let mut input = self.scratch.norm.matrix(rows, hidden)?;
+        let layer0 = weights.layers.first().ok_or(Status::InternalError)?;
+        let norm = RmsNormBf16::qwen_decoder_norm(
+            self.scratch.residual.matrix(rows, hidden)?,
+            layer0.input_norm().vector(hidden)?,
+            input,
+            self.config.rms_norm_eps,
+        )?;
+        {
+            let mut ops = self.engine.operators();
+            unsafe {
+                ops.qscu().embedding_gather_bf16(
+                    self.scratch.token_ids.vector(rows)?,
+                    weights
+                        .token_embedding
+                        .matrix(self.config.vocab_size, hidden)?,
+                    self.scratch.residual.matrix(rows, hidden)?,
+                    None,
+                    true,
+                )?;
+                ops.qsfi().rmsnorm_bf16(&norm)?;
+            }
+        }
+        for (index, layer) in weights.layers.iter().enumerate() {
+            match layer {
+                QwenLayerWeights::AttentionMlp(layer) => self.execute_attention_layer(
+                    self.config.attention_layer_index(index as u32)?,
+                    rows,
+                    input,
+                    layer,
+                    kind,
+                )?,
+                QwenLayerWeights::Gdn(layer) => self.execute_gdn_layer(
+                    self.config.gdn_layer_index(index as u32)?,
+                    rows,
+                    input,
+                    layer,
+                    kind,
+                )?,
+            }
+            let next_norm = weights
+                .layers
+                .get(index + 1)
+                .map_or(&weights.final_norm, |next| next.input_norm());
+            let (norm, mlp) = layer.post_attention_mlp();
+            self.execute_post_attention_mlp(rows, norm, mlp, next_norm)?;
+            input = self.scratch.mlp_out.matrix(rows, hidden)?;
+        }
+        let mut ops = self.engine.operators();
+        unsafe {
+            ops.qscb().linear(
+                input.row(rows - 1)?,
+                weights.lm_head.matrix(self.config.vocab_size, hidden)?,
+                self.scratch.logits.matrix(1, self.config.vocab_size)?,
+                self.linear_workspace,
+            )
+        }
     }
 }

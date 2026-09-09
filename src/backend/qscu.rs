@@ -26,6 +26,49 @@ impl<'a> Qscu<'a> {
         Self { stream, qsfi }
     }
 
+    pub(crate) unsafe fn qwen36_extract_q_and_gate_bf16(
+        &mut self,
+        packed: DMat<BF16>,
+        q: DMat<BF16>,
+        gate: DMat<BF16>,
+    ) -> Result<(), Status> {
+        let width = crate::QWEN36_FULL_ATTN_HEAD_DIM as usize * 2;
+        if packed.rows != q.rows
+            || !q.same_shape(gate)
+            || packed.cols != crate::QWEN36_FULL_ATTN_Q_PROJ_OUT
+            || q.cols != crate::QWEN36_FULL_ATTN_Q_HIDDEN
+        {
+            return Err(Status::InvalidArgument);
+        }
+        packed.require_contiguous()?;
+        q.require_contiguous()?;
+        gate.require_contiguous()?;
+        let height = (packed.rows as usize)
+            .checked_mul(crate::QWEN36_FULL_ATTN_Q_HEADS as usize)
+            .ok_or(Status::InvalidArgument)?;
+        let source = packed.tensor().data.cast::<u8>();
+        for (target, offset) in [(q.tensor().data, 0), (gate.tensor().data, width)] {
+            let status = unsafe {
+                ffi::cuda::cudaMemcpy2DAsync(
+                    target,
+                    width,
+                    source.add(offset).cast(),
+                    width * 2,
+                    width,
+                    height,
+                    ffi::cuda::CUDA_MEMCPY_DEVICE_TO_DEVICE,
+                    *self.stream,
+                )
+            };
+            match status {
+                ffi::cuda::CUDA_SUCCESS => (),
+                ffi::cuda::CUDA_ERROR_MEMORY_ALLOCATION => return Err(Status::OutOfMemory),
+                _ => return Err(Status::CudaError),
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) unsafe fn embedding_gather_bf16(
         &mut self,
         token_ids: DVec<I32>,

@@ -5,7 +5,7 @@ use super::{
 use crate::{
     QWEN36_FULL_ATTN_Q_PROJ_OUT, QWEN36_GDN_CONV_WIDTH, QWEN36_GDN_NUM_V_HEADS,
     QWEN36_GDN_OUTPUT_DIM, QWEN36_GDN_PACKED_DIM, QWEN36_GDN_VALUE_DIM, engine::Status,
-    ext::SafeVec, ffi,
+    ext::SafeVec,
 };
 
 pub struct QwenWeights {
@@ -479,29 +479,6 @@ pub(super) struct QwenSharedExpertWeights {
     pub(super) shared_expert_gate: DeviceBuffer<u16>,
 }
 
-#[derive(Clone, Copy)]
-pub(super) enum QwenMlpPtrs {
-    Dense {
-        gate_proj: ffi::DevicePtr,
-        up_proj: ffi::DevicePtr,
-        down_proj: ffi::DevicePtr,
-    },
-    Moe {
-        router_proj: ffi::DevicePtr,
-        gate_up_proj: ffi::DevicePtr,
-        down_proj: ffi::DevicePtr,
-        shared: Option<QwenSharedExpertPtrs>,
-    },
-}
-
-#[derive(Clone, Copy)]
-pub(super) struct QwenSharedExpertPtrs {
-    pub(super) gate_proj: ffi::DevicePtr,
-    pub(super) up_proj: ffi::DevicePtr,
-    pub(super) down_proj: ffi::DevicePtr,
-    pub(super) shared_expert_gate: ffi::DevicePtr,
-}
-
 impl QwenMlpWeights {
     pub(super) fn validate_for(&self, moe: Option<QwenMoeConfig>) -> Result<(), Status> {
         match (self, moe) {
@@ -516,131 +493,20 @@ impl QwenMlpWeights {
             _ => Err(Status::InvalidArgument),
         }
     }
-
-    pub(super) fn ptrs(&self) -> QwenMlpPtrs {
-        match self {
-            Self::Dense {
-                gate_proj,
-                up_proj,
-                down_proj,
-            } => QwenMlpPtrs::Dense {
-                gate_proj: gate_proj.as_device_ptr(),
-                up_proj: up_proj.as_device_ptr(),
-                down_proj: down_proj.as_device_ptr(),
-            },
-            Self::Moe {
-                router_proj,
-                gate_up_proj,
-                down_proj,
-                shared,
-            } => QwenMlpPtrs::Moe {
-                router_proj: router_proj.as_device_ptr(),
-                gate_up_proj: gate_up_proj.as_device_ptr(),
-                down_proj: down_proj.as_device_ptr(),
-                shared: shared.as_ref().map(|shared| QwenSharedExpertPtrs {
-                    gate_proj: shared.gate_proj.as_device_ptr(),
-                    up_proj: shared.up_proj.as_device_ptr(),
-                    down_proj: shared.down_proj.as_device_ptr(),
-                    shared_expert_gate: shared.shared_expert_gate.as_device_ptr(),
-                }),
-            },
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
-pub(super) enum QwenLayerPtrs {
-    AttentionMlp(QwenAttentionMlpPtrs),
-    Gdn(QwenGdnPtrs),
-}
-
-#[derive(Clone, Copy)]
-pub(super) struct QwenAttentionMlpPtrs {
-    pub(super) attn_norm: ffi::DevicePtr,
-    pub(super) q_norm: ffi::DevicePtr,
-    pub(super) k_norm: ffi::DevicePtr,
-    pub(super) q_proj: ffi::DevicePtr,
-    pub(super) k_proj: ffi::DevicePtr,
-    pub(super) v_proj: ffi::DevicePtr,
-    pub(super) o_proj: ffi::DevicePtr,
-    pub(super) mlp_norm: ffi::DevicePtr,
-    pub(super) mlp: QwenMlpPtrs,
 }
 
 impl QwenLayerWeights {
-    pub(super) fn ptrs(&self) -> QwenLayerPtrs {
+    pub(super) fn input_norm(&self) -> &DeviceBuffer<u16> {
         match self {
-            Self::AttentionMlp(layer) => QwenLayerPtrs::AttentionMlp(QwenAttentionMlpPtrs {
-                attn_norm: layer.attn_norm.as_device_ptr(),
-                q_norm: layer.q_norm.as_device_ptr(),
-                k_norm: layer.k_norm.as_device_ptr(),
-                q_proj: layer.q_proj.as_device_ptr(),
-                k_proj: layer.k_proj.as_device_ptr(),
-                v_proj: layer.v_proj.as_device_ptr(),
-                o_proj: layer.o_proj.as_device_ptr(),
-                mlp_norm: layer.mlp_norm.as_device_ptr(),
-                mlp: layer.mlp.ptrs(),
-            }),
-            Self::Gdn(layer) => QwenLayerPtrs::Gdn(QwenGdnPtrs {
-                norm: layer.norm.as_device_ptr(),
-                in_proj: layer.in_proj.as_device_ptr(),
-                gate_proj: layer.gate_proj.as_device_ptr(),
-                a_proj: layer.a_proj.as_device_ptr(),
-                b_proj: layer.b_proj.as_device_ptr(),
-                conv_weight: layer.conv_weight.as_device_ptr(),
-                conv_bias: layer.conv_bias.as_device_ptr(),
-                a_log: layer.a_log.as_device_ptr(),
-                dt_bias: layer.dt_bias.as_device_ptr(),
-                rms_weight: layer.rms_weight.as_device_ptr(),
-                out_proj: layer.out_proj.as_device_ptr(),
-                mlp_norm: layer.mlp_norm.as_device_ptr(),
-                mlp: layer.mlp.ptrs(),
-            }),
-        }
-    }
-}
-
-impl QwenLayerPtrs {
-    pub(super) fn input_norm(self) -> ffi::DevicePtr {
-        match self {
-            Self::AttentionMlp(layer) => layer.attn_norm,
-            Self::Gdn(layer) => layer.norm,
+            Self::AttentionMlp(layer) => &layer.attn_norm,
+            Self::Gdn(layer) => &layer.norm,
         }
     }
 
-    pub(super) fn post_attention_mlp(self) -> QwenPostAttentionMlpPtrs {
+    pub(super) fn post_attention_mlp(&self) -> (&DeviceBuffer<u16>, &QwenMlpWeights) {
         match self {
-            Self::AttentionMlp(layer) => QwenPostAttentionMlpPtrs {
-                norm: layer.mlp_norm,
-                mlp: layer.mlp,
-            },
-            Self::Gdn(layer) => QwenPostAttentionMlpPtrs {
-                norm: layer.mlp_norm,
-                mlp: layer.mlp,
-            },
+            Self::AttentionMlp(layer) => (&layer.mlp_norm, &layer.mlp),
+            Self::Gdn(layer) => (&layer.mlp_norm, &layer.mlp),
         }
     }
-}
-
-#[derive(Clone, Copy)]
-pub(super) struct QwenGdnPtrs {
-    pub(super) norm: ffi::DevicePtr,
-    pub(super) in_proj: ffi::DevicePtr,
-    pub(super) gate_proj: ffi::DevicePtr,
-    pub(super) a_proj: ffi::DevicePtr,
-    pub(super) b_proj: ffi::DevicePtr,
-    pub(super) conv_weight: ffi::DevicePtr,
-    pub(super) conv_bias: ffi::DevicePtr,
-    pub(super) a_log: ffi::DevicePtr,
-    pub(super) dt_bias: ffi::DevicePtr,
-    pub(super) rms_weight: ffi::DevicePtr,
-    pub(super) out_proj: ffi::DevicePtr,
-    pub(super) mlp_norm: ffi::DevicePtr,
-    pub(super) mlp: QwenMlpPtrs,
-}
-
-#[derive(Clone, Copy)]
-pub(super) struct QwenPostAttentionMlpPtrs {
-    pub(super) norm: ffi::DevicePtr,
-    pub(super) mlp: QwenMlpPtrs,
 }

@@ -258,7 +258,7 @@ impl AttentionLayer {
         k: crate::backend::Bf16Heads,
         v: crate::backend::Bf16Heads,
         o: crate::backend::Bf16Heads,
-        q_rope_offset: ffi::DevicePtr,
+        q_rope_offset: crate::backend::DVec<crate::backend::I32>,
     ) -> Self {
         Self {
             layer_idx,
@@ -266,7 +266,7 @@ impl AttentionLayer {
             k: k.tensor(),
             v: v.tensor(),
             o: o.tensor(),
-            q_rope_offset,
+            q_rope_offset: q_rope_offset.tensor().data,
             lse: std::ptr::null_mut(),
             q_scale: 0.0,
             k_scale: 0.0,

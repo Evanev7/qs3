@@ -1,10 +1,8 @@
 use crate::engine::Status;
 use crate::ext::SafeVec;
-use crate::ffi::{self, cuda};
-use crate::{QWEN36_FULL_ATTN_HEAD_DIM, QWEN36_FULL_ATTN_Q_HEADS};
+use crate::ffi::cuda;
 
 use std::ffi::c_void;
-use std::mem;
 
 mod config;
 mod runner;
@@ -79,48 +77,6 @@ fn constant_bf16_values(count: usize, value: f32) -> Result<Vec<u16>, Status> {
     Ok(out)
 }
 
-/// Extract Qwen3.6 full-attention Q and output-gate heads from packed BF16
-/// q_proj output laid out as `[q0, gate0, q1, gate1, ...]`.
-///
-/// # Safety
-///
-/// `packed`, `q`, and `gate` must be valid device pointers on `stream`'s device.
-/// `packed` must have at least `rows * FULL_ATTN_Q_HEADS * 2 * FULL_ATTN_HEAD_DIM`
-/// BF16 elements, and `q` and `gate` must each have at least
-/// `rows * FULL_ATTN_Q_HEADS * FULL_ATTN_HEAD_DIM` BF16 elements.
-unsafe fn extract_qwen36_packed_attention_q_and_gate_bf16(
-    packed: ffi::DevicePtr,
-    q: ffi::DevicePtr,
-    gate: ffi::DevicePtr,
-    rows: u32,
-    stream: *mut c_void,
-) -> Result<(), Status> {
-    let head_bytes = checked_usize_product(&[
-        QWEN36_FULL_ATTN_HEAD_DIM,
-        u32::try_from(mem::size_of::<u16>()).map_err(|_| Status::InvalidArgument)?,
-    ])?;
-    let packed_head_bytes = head_bytes.checked_mul(2).ok_or(Status::InvalidArgument)?;
-    let height = checked_usize_product(&[rows, QWEN36_FULL_ATTN_Q_HEADS])?;
-    device_copy_2d_on_stream(
-        q,
-        head_bytes,
-        packed,
-        packed_head_bytes,
-        head_bytes,
-        height,
-        stream,
-    )?;
-    device_copy_2d_on_stream(
-        gate,
-        head_bytes,
-        device_ptr_byte_offset(packed, head_bytes)?,
-        packed_head_bytes,
-        head_bytes,
-        height,
-        stream,
-    )
-}
-
 fn f32_to_bf16_bits(value: f32) -> u16 {
     let bits = value.to_bits();
     let lsb = (bits >> 16) & 1;
@@ -145,47 +101,6 @@ fn checked_usize_product(values: &[u32]) -> Result<usize, Status> {
             .ok_or(Status::InvalidArgument)?;
     }
     Ok(product)
-}
-
-fn device_ptr_byte_offset(ptr: ffi::DevicePtr, bytes: usize) -> Result<ffi::DevicePtr, Status> {
-    if ptr.is_null() {
-        return Err(Status::InvalidArgument);
-    }
-    Ok(unsafe { ptr.cast::<u8>().add(bytes).cast() })
-}
-
-fn device_copy_2d_on_stream(
-    dst: ffi::DevicePtr,
-    dst_pitch_bytes: usize,
-    src: ffi::DevicePtr,
-    src_pitch_bytes: usize,
-    width_bytes: usize,
-    height: usize,
-    stream: *mut c_void,
-) -> Result<(), Status> {
-    if dst.is_null()
-        || src.is_null()
-        || dst_pitch_bytes == 0
-        || src_pitch_bytes == 0
-        || width_bytes == 0
-        || height == 0
-        || width_bytes > dst_pitch_bytes
-        || width_bytes > src_pitch_bytes
-    {
-        return Err(Status::InvalidArgument);
-    }
-    result_from_cuda(unsafe {
-        cuda::cudaMemcpy2DAsync(
-            dst,
-            dst_pitch_bytes,
-            src.cast_const(),
-            src_pitch_bytes,
-            width_bytes,
-            height,
-            cuda::CUDA_MEMCPY_DEVICE_TO_DEVICE,
-            stream,
-        )
-    })
 }
 
 fn activate_device(device_ordinal: i32) -> Result<(), Status> {

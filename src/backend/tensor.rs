@@ -38,7 +38,7 @@ impl<DT: DType> DVec<DT> {
         })
     }
 
-    pub(super) fn tensor(self) -> ffi::Tensor1 {
+    pub(crate) fn tensor(self) -> ffi::Tensor1 {
         ffi::Tensor1 {
             data: self.data,
             dtype: DT::RAW,
@@ -92,6 +92,28 @@ impl<DT: DType> DMat<DT> {
             row_stride,
             _p: PhantomData,
         })
+    }
+
+    pub(crate) fn row(self, index: u32) -> Result<Self, Status> {
+        if index >= self.rows {
+            return Err(Status::InvalidArgument);
+        }
+        let elements = (index as usize)
+            .checked_mul(self.row_stride as usize)
+            .ok_or(Status::InvalidArgument)?;
+        let bytes = elements
+            .checked_mul(match DT::RAW {
+                ffi::DTYPE_BF16 => 2,
+                ffi::DTYPE_F32 | ffi::DTYPE_I32 => 4,
+                _ => return Err(Status::Unsupported),
+            })
+            .ok_or(Status::InvalidArgument)?;
+        Self::new(
+            unsafe { self.data.cast::<u8>().add(bytes).cast() },
+            1,
+            self.cols,
+            self.row_stride,
+        )
     }
 
     pub(super) fn tensor(self) -> ffi::Tensor2 {
