@@ -125,9 +125,10 @@
 - [x] Revisit managed versus pinned weight-load performance on the new host,
   including the previously interrupted four-buffer, 1 GiB-per-buffer run.
   Five full-snapshot tests pass. With zero resident shard pages verified before
-  both cold runs, setup + load is 63.342 s managed and 58.467 s pinned. First GPU
-  use and inference from each allocation type remain a backend decision gate;
-  the load-only comparison does not change the production default.
+  both cold runs, setup + load is 63.342 s managed and 58.467 s pinned. Subsequent
+  prototype load/inference comparisons show a startup/runtime tradeoff. The core
+  benchmark now uses the existing all-device backend and records 28.504 tok/s;
+  see FINDINGS.md for the matched Nix result and loading-timer caveat.
 
 ## Triton AOT builder
 
@@ -135,9 +136,10 @@
   and Ninja, and integrate the generated Rust LM-head wrapper into the runner.
   Full real-model logits and reference tokens pass; managed-weight eager timing
   is essentially flat (24.716 to 24.791 tok/s). See FINDINGS.md.
-- [ ] Trial device allocation for just the LM-head weights. The same Triton
-  cubin takes 4.17 ms with cudaMalloc and 6.10 ms with managed weights; measure
-  the real-model decode gain and loader cost before expanding this allocation policy.
+- [x] Trial device allocation for the LM-head weights and compare full backends.
+  The prototype shows a 3.94% decode gain for the LM head alone. The existing
+  all-device backend captures a larger gain; the core benchmark confirms 14.97%
+  higher throughput while retaining the same generated IDs. No mixed policy added.
 - [ ] Test further Triton GEMVs with real allocation behavior, starting with
   GDN QKV; prototype routed-expert GEMV separately against the tested MoE path.
 - [ ] Generate provider build availability from Nix without removing handwritten

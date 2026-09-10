@@ -10,6 +10,13 @@ counts and pass claims describe the cited change, not every subsequent revision.
 
 ## Latest validated measurements
 
+The latest short core benchmark uses device-backed weights loaded through the
+existing pinned ring: **28.504 tok/s**, 35.052 ms decode p50 and 196.498 ms prefill
+p50 at `8849854`, versus 24.791 tok/s with managed weights. All 36 generated IDs
+match. See [the JSON](benchmarks/2026-09-10T094105.966130733Z-8849854.json) and the
+all-device section below. The following table retains the earlier comparison
+across contexts; it predates this allocation change.
+
 Pinned 35B BF16 weights, BF16 caches/convolution history and FP32 GDN recurrence,
 measured on sp10. These measurements precede the uniform BF16 router-logit switch
 and used FP32 router logits. qs3 uses eager AOT execution and FP32 logits; vLLM uses graph
@@ -47,7 +54,8 @@ IDs. JSON includes the full prompt fingerprint, generated IDs including warmups,
 and explicit GDN state precision. The default workload remains unchanged.
 
 The short core workload uses the pinned Qwen3.6-35B-A3B BF16 snapshot
-`995ad96eacd98c81ed38be0c5b274b04031597b0`, managed weights, eager execution,
+`995ad96eacd98c81ed38be0c5b274b04031597b0`, device weights loaded through pinned
+staging (since `8849854`; earlier runs used managed weights), eager execution,
 greedy sampling, a 102-token prompt, 4 decode warmups and 32 measured decode
 steps (contexts 106 through 138). Decode wall time includes the public runner
 call and sampled-token delivery. Tokenizer decode validation occurs outside the
@@ -713,6 +721,33 @@ but needs a separate correctness/performance prototype against FlashInfer.
 Keep Q/K norm plus partial-RoPE fusion as a smaller launch-reduction candidate,
 with KV append separate. Avoid treating every cuBLAS GEMV as an automatic
 Triton win.
+
+### All-device core benchmark
+
+The core benchmark now constructs the existing `PinnedUploadBackend`: final
+weights use `cudaMalloc`, file reads pass through four event-protected 1 GiB
+pinned buffers, and materialization releases the staging ring. The load timer
+starts before backend construction so it includes ring setup. JSON reports
+`weight_backend: pinned_upload`. This changes the benchmark's loader selection;
+it introduces no new loading backend or tensor-specific configuration.
+
+The [Nix release result](benchmarks/2026-09-10T094105.966130733Z-8849854.json)
+at `8849854` reaches **28.504 tok/s**, versus the preceding
+[managed/Triton result](benchmarks/2026-09-10T031951.967883789Z-1395050.json)
+at **24.791 tok/s**, a **14.97%** throughput increase. Decode p50 falls from
+40.303 to 35.052 ms, p95 from 40.461 to 35.276 ms, and prefill p50 from 239.421
+to 196.498 ms. All 36 generated IDs and prompt metadata match. Both runs use
+Rust 1.95.0, Nix CUDA 13.0, driver 580.142, FP32 GDN recurrence, the 32-row MoE
+tile and the same Triton LM head; weight backing is the only changed execution
+metadata. Four existing benchmark contract tests pass through the test script.
+
+This confirms the allocation gain in the core benchmark's Nix environment,
+following the separate prototype comparisons. It is one short core measurement,
+not a fresh multi-context or matched vLLM comparison. Its load time is not a
+controlled loader A/B: file-cache residency was not fixed, and the older timer
+excluded backend setup. The independent prototype measurements found faster
+managed loading but faster device-backed inference; kernel timing alone must
+not be used to infer loading cost.
 
 ## Numerical agreement and vLLM comparisons
 
