@@ -145,6 +145,8 @@
           cargoArtifacts = craneLib.buildDepsOnly (commonArgs // { buildInputs = cudaLibs; });
           strictDeps = true;
           buildInputs = cudaLibs ++ [ qsNative ];
+          # Link Driver API symbols with the toolkit stub; load the host driver at runtime.
+          LIBRARY_PATH = "${cudaPackages.cuda_cudart}/lib/stubs";
           nativeBuildInputs = with pkgs; [
             rustPlatform.bindgenHook
           ];
