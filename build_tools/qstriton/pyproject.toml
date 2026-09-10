@@ -1,5 +1,5 @@
 [project]
-name = "qs3-triton"
+name = "qstriton"
 version = "0.1.0"
 description = "Triton AOT compilation and Rust launcher generation for qs3"
 readme = "README.md"
@@ -7,16 +7,16 @@ requires-python = ">=3.14,<3.15"
 dependencies = ["triton==3.8.0"]
 
 [project.scripts]
-qs3-triton = "qs3_triton.builder:main"
+qstriton = "qstriton.builder:main"
 
 [build-system]
 requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["qs3_triton"]
-package-dir = { qs3_triton = "." }
+packages = ["qstriton"]
+package-dir = { qstriton = "." }
 include-package-data = false
 
 [tool.setuptools.package-data]
-qs3_triton = ["kernels/*.py", "kernels/LICENSE.b12x"]
+qstriton = ["kernels/*.py", "kernels/LICENSE.b12x"]

@@ -47,7 +47,7 @@ Triton 3.8.0 is pinned as a build-time compiler dependency. The official wheel
 supplies the compiler; the vendored source checkout is not built by this project.
 The Python upper bound follows this Triton release's supported interpreter range.
 
-`uv.lock` is shared by workspace members. `qs3_triton/` is the `qs3-triton` member,
-with a `qs3-triton` CLI and the `qs3_triton` Python package. It owns the upstream
+`uv.lock` is shared by workspace members. `qstriton/` is the `qstriton` member,
+with a `qstriton` CLI and the `qstriton` Python package. It owns the upstream
 Triton compiler dependency and ships the kernel sources; see
-[its README](qs3_triton/README.md).
+[its README](qstriton/README.md).

@@ -29,4 +29,4 @@ python-test: check
 triton-test:
         mkdir -p ../build/triton-test
         nix eval --json --file ../models/config.nix > ../build/triton-test/config.json
-        LIBRARY_PATH="{{cuda_lib_path}}:${LIBRARY_PATH:-}" .venv/bin/python qs3_triton/test.py ../build/triton-test/config.json
+        LIBRARY_PATH="{{cuda_lib_path}}:${LIBRARY_PATH:-}" .venv/bin/python qstriton/test.py ../build/triton-test/config.json

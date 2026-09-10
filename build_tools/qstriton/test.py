@@ -7,12 +7,12 @@ import subprocess
 import sys
 from pathlib import Path
 
-from qs3_triton.builder import build
+from qstriton.builder import BuildConfig, build
 
 
-def main():
+def main() -> None:
     config_path = Path(sys.argv[1]).resolve()
-    config = json.loads(config_path.read_text())
+    config: BuildConfig = json.loads(config_path.read_text())
     output = config_path.parent
     source = Path(__file__).resolve().parent
     for name in ("full", "tail"):

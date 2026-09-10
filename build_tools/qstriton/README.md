@@ -4,12 +4,12 @@ Run from the repository root after `just build_tools/uv-sync`:
 
 ```sh
 nix eval --json --file models/config.nix > build/triton-config.json
-build_tools/.venv/bin/qs3-triton \
+build_tools/.venv/bin/qstriton \
   --config build/triton-config.json --out build/triton \
-  build_tools/qs3_triton/kernels/lm_head.py
+  build_tools/qstriton/kernels/lm_head.py
 ```
 
-`qs3-triton` is a uv workspace member, installed as `qs3_triton` to avoid
+`qstriton` is a uv workspace member, installed as `qstriton` to avoid
 shadowing the upstream `triton` compiler package. The shared workspace lock pins
 its compiler dependency. Kernel sources and their license ship as package data.
 
@@ -17,7 +17,8 @@ Each source file contains one locally defined `@triton.jit` kernel. Its filename
 stem selects `config.kernels.<stem>`; the builder discovers the function itself.
 There is no build hook, argument list, or symbol name to maintain separately.
 
-Unannotated parameters are device pointers. Their names select element formats
+Parameters annotated `tl.tensor` (or left unannotated) are device pointers.
+Their names select element formats
 from the entry's `precision` attrset, which references the model's precision
 policy. Scalar annotations use Triton's type metadata. `tl.constexpr` parameters
 select values from `constants`; `{ dtype = "f32"; }` denotes a dtype-valued

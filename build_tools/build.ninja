@@ -3,6 +3,7 @@ ninja_required_version = 1.10
 flashinfer = ../3pty/flashinfer
 src = ..
 qwen36_vectors = ../build_tools/.venv/bin/qwen36-vectors
+qstriton = ../build_tools/.venv/bin/qstriton
 
 fi_includes = $
   -I$flashinfer/3rdparty/cccl/libcudacxx/include $
@@ -44,6 +45,14 @@ rule link_test_checked
 rule ar
   command = ar -rs $out $in
   description = ARCHIVE $out
+
+rule nix_eval
+  command = nix eval --json --file $in > $out
+  description = NIX EVAL $out
+
+rule qstriton
+  command = $qstriton --config $in --out triton $kernel
+  description = QSTRITON $kernel
 
 rule qwen36_vectors
   command = rm -f $out && $qwen36_vectors generate-all --output-root vectors/qwen36_semantics --clean && $qwen36_vectors check-oracles --depfile $out.d --depfile-target $out --input-root vectors/qwen36_semantics && touch $out
@@ -158,6 +167,15 @@ build qsfi_bench_native: link_test $src/bench_native.cu qsfi.o qscu_gdn.o qscu.o
     $src/qscu.h $
     $src/qscb.h
   libs = -lcublas -lcublasLt
+
+build triton/config.json: nix_eval $src/models/config.nix
+build triton/lm_head.rs | triton/lm_head.cubin triton/lm_head.ptx triton/lm_head.json: qstriton triton/config.json |$
+    $src/build_tools/qstriton/kernels/lm_head.py $
+    $src/build_tools/qstriton/builder.py $
+    $src/build_tools/qstriton/pyproject.toml $
+    $src/build_tools/uv.lock
+  kernel = $src/build_tools/qstriton/kernels/lm_head.py
+
 
 build qsfi_test: phony qsfi_test_release qsfi_test_checked
 build tests: phony qsfi_test qsfi_test_qwen27_release qsfi_test_qwen27_checked

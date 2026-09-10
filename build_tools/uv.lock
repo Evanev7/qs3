@@ -5,7 +5,7 @@ requires-python = "==3.14.*"
 [manifest]
 members = [
     "build-tools",
-    "qs3-triton",
+    "qstriton",
     "qwen36-vectors",
 ]
 
@@ -14,7 +14,7 @@ name = "build-tools"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
-    { name = "qs3-triton" },
+    { name = "qstriton" },
     { name = "qwen36-vectors" },
 ]
 
@@ -28,7 +28,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "qs3-triton", editable = "qs3_triton" },
+    { name = "qstriton", editable = "qstriton" },
     { name = "qwen36-vectors", editable = "qwen36_vectors" },
 ]
 
@@ -114,9 +114,9 @@ wheels = [
 ]
 
 [[package]]
-name = "qs3-triton"
+name = "qstriton"
 version = "0.1.0"
-source = { editable = "qs3_triton" }
+source = { editable = "qstriton" }
 dependencies = [
     { name = "triton" },
 ]

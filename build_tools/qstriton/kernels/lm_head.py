@@ -9,13 +9,13 @@ import triton.language as tl
 
 @triton.jit
 def row_kernel(
-    activation,
-    weight,
-    output,
+    activation: tl.tensor,
+    weight: tl.tensor,
+    output: tl.tensor,
     K: tl.constexpr,
     BLOCK_K: tl.constexpr,
     ACC: tl.constexpr,
-):
+) -> None:
     row = tl.program_id(0)
     offsets = tl.arange(0, BLOCK_K)
     mask = offsets < K
