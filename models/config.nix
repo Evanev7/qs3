@@ -116,7 +116,6 @@ let
       convHistory = text.linear_conv_kernel_dim - 1;
     };
   };
-
 in
 assert text.num_key_value_heads > 0;
 assert mod text.num_attention_heads text.num_key_value_heads == 0;

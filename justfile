@@ -89,3 +89,7 @@ real-model-test: copy-ninja
 copy-ninja:
         mkdir -p build
         cp build_tools/build.ninja build/build.ninja
+
+render-benchmark-history:
+        python3 benchmarks/render_history.py
+        firefox benchmarks/performance.html

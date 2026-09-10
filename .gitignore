@@ -9,3 +9,4 @@ target
 run_cuda_test.sh
 run_core_benchmark.sh
 .prototypes
+benchmarks/performance.html
