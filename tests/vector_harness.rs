@@ -984,7 +984,7 @@ fn required_vector_root() -> PathBuf {
     assert!(
         root.is_dir(),
         "required Qwen3.6 correctness vector root is missing: {}. \
-         Generate it with `just generate-vectors`.",
+         Generate it with `just build_tools/generate-vectors`.",
         root.display()
     );
     root
@@ -994,7 +994,7 @@ fn require_manifest(manifest: &Path) {
     assert!(
         manifest.is_file(),
         "required Qwen3.6 correctness vector manifest is missing: {}. \
-         Generate vectors with `just generate-vectors`.",
+         Generate vectors with `just build_tools/generate-vectors`.",
         manifest.display()
     );
 }

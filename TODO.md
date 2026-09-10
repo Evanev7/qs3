@@ -80,12 +80,6 @@
 
 ## 3. Add the exact 27B path
 
-- [ ] Pin and validate the 27B config, tokenizer, and safetensors manifest.
-  Revision `6a9e13bd6fc8f0983b9b99948120bc37f49c13e9` and all shard headers are
-  recorded under `model_manifests/`. An independent host check validates 851
-  text tensor shapes; tokenizer bytes match the pinned 35B asset. All 15 full
-  shards are now cached on sp10 and match their Hub SHA256 hashes and pinned
-  headers. Production Rust dense-manifest validation remains open.
 - [x] Probe native full attention with 24 Q heads, 4 KV heads, head dimension
   256, and GQA ratio 6. The isolated AOT probe passes CPU-reference prefill/decode
   and append cases on sp10; see FINDINGS.md. Production native dispatch now
@@ -134,6 +128,21 @@
   both cold runs, setup + load is 63.342 s managed and 58.467 s pinned. First GPU
   use and inference from each allocation type remain a backend decision gate;
   the load-only comparison does not change the production default.
+
+## Triton AOT builder
+
+- [ ] Wire the Nix configuration and selected kernel files into a derivation,
+  then integrate the generated Rust LM-head wrapper into the runner. Validate
+  real-model scores and managed-weight eager timing before selecting it.
+- [ ] Extend launch generation when adding kernels needing scratch allocations,
+  CTA clusters, cooperative launches, PDL, or dynamic grids. The first launcher
+  uses ordinary cuLaunchKernel with zero scratch, as required by the row GEMV.
+- [ ] Add alignment/divisibility hints and their Rust pointer contracts when
+  bringing in kernels that need them; retain the existing probe evidence.
+- [ ] Extend argument handling for descriptors/TMA, tuple arguments, scalar half
+  types and multiple exported kernels per file as those cases are introduced.
+- [ ] Track imported helper dependencies in the build graph, and exercise graph
+  capture/module lifetimes when integrating the generated wrappers.
 
 ## Model configuration references
 

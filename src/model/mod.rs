@@ -7,9 +7,9 @@ use std::ffi::c_void;
 mod config;
 mod runner;
 
+pub use crate::backend::qsfi::MoeBf16Kernel;
 use config::QwenBlockKind;
 pub use config::{GdnRecurrentPrecision, QwenConfig, QwenMoeConfig};
-pub use crate::backend::qsfi::MoeBf16Kernel;
 pub use runner::{ModelRunner, QwenRequest, QwenResult};
 mod weights;
 

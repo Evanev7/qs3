@@ -38,13 +38,12 @@ decision gate; no production backend default changes here.
 Reproduction, with the prescribed gitignored script at this revision:
 
 ```sh
-QS3_TEST_MODE=load_compare ./run_cuda_test.sh
-# Install cold_files.py at sp10:~/qs3-weight-load/cold_files.py first.
-QS3_TEST_MODE=load_cold ./run_cuda_test.sh
+./run_cuda_test.sh just weight-loader-compare
+./run_cuda_test.sh just weight-loader-cold-bench /home/sp10/.cache/huggingface/hub/models--Qwen--Qwen3.6-35B-A3B/snapshots/995ad96eacd98c81ed38be0c5b274b04031597b0
 ```
 
-`load_compare` runs the ignored managed, pinned and managed tests sequentially;
-`load_cold` prepares the shard cache before each managed/pinned test. Both invoke
+`weight-loader-compare` runs the ignored managed, pinned and managed tests sequentially;
+`weight-loader-cold-bench` prepares the shard cache before each managed/pinned test. Both invoke
 `cargo test --lib bench_real_qwen36_bf16_<backend>_load -- --ignored --nocapture
 --test-threads=1`. Raw logs, residency records and extracted `results.json` are
 included. `collect.py` regenerates that JSON from the logs.

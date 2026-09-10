@@ -1,4 +1,4 @@
-# Run from repository root after just uv-sync.
+# Run from repository root after just build_tools/uv-sync.
 python = build_tools/.venv/bin/python
 nvcc = nvcc
 probe = .prototypes/gemv_aot

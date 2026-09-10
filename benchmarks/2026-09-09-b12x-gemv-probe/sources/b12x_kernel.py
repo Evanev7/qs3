@@ -51,4 +51,3 @@ def _row_loop_kernel(
         ).to(tl.float32)
         accumulator += tl.sum(values * weights, axis=0)
     tl.store(output + row, accumulator)
-

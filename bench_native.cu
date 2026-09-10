@@ -1976,30 +1976,9 @@ bool run_all(BenchState& state, const Options& options)
         "case\tapi\ttokens\tm\tn\tk\thidden\theads\tdim\texperts\ttop_k\twarmups\titers\tavg_us\n"
     );
     for (uint32_t tokens : options.tokens) {
-        if (!bench_linear_bf16(
-                state,
-                options,
-                "linear_q_proj_gate_n8192_k2048",
-                tokens,
-                8192,
-                2048
-            )
-            || !bench_linear_bf16(
-                state,
-                options,
-                "linear_kv_proj_n512_k2048",
-                tokens,
-                512,
-                2048
-            )
-            || !bench_linear_bf16(
-                state,
-                options,
-                "linear_o_proj_n2048_k4096",
-                tokens,
-                2048,
-                4096
-            )
+        if (!bench_linear_bf16(state, options, "linear_q_proj_gate_n8192_k2048", tokens, 8192, 2048)
+            || !bench_linear_bf16(state, options, "linear_kv_proj_n512_k2048", tokens, 512, 2048)
+            || !bench_linear_bf16(state, options, "linear_o_proj_n2048_k4096", tokens, 2048, 4096)
             || !bench_linear_f32(
                 state,
                 options,

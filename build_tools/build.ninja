@@ -56,14 +56,14 @@ build qsfi_macros.h: run $src/build_tools/generate_macros.c
 build vectors/qwen36_semantics/.oracle-ok: qwen36_vectors $
     $src/build_tools/pyproject.toml $
     $src/build_tools/uv.lock $
-    $src/build_tools/qwen36-vectors/pyproject.toml $
-    $src/build_tools/qwen36-vectors/oracle_hashes/full_attention_block.oracle.json $
-    $src/build_tools/qwen36-vectors/oracle_hashes/full_attention_primitives.oracle.json $
-    $src/build_tools/qwen36-vectors/oracle_hashes/gdn_decoder_layer.oracle.json $
-    $src/build_tools/qwen36-vectors/oracle_hashes/gdn_post_conv_prep.oracle.json $
-    $src/build_tools/qwen36-vectors/oracle_hashes/model_logits.oracle.json $
-    $src/build_tools/qwen36-vectors/oracle_hashes/moe_shared_expert.oracle.json $
-    $src/build_tools/qwen36-vectors/oracle_hashes/norms.oracle.json
+    $src/build_tools/qwen36_vectors/pyproject.toml $
+    $src/build_tools/qwen36_vectors/oracle_hashes/full_attention_block.oracle.json $
+    $src/build_tools/qwen36_vectors/oracle_hashes/full_attention_primitives.oracle.json $
+    $src/build_tools/qwen36_vectors/oracle_hashes/gdn_decoder_layer.oracle.json $
+    $src/build_tools/qwen36_vectors/oracle_hashes/gdn_post_conv_prep.oracle.json $
+    $src/build_tools/qwen36_vectors/oracle_hashes/model_logits.oracle.json $
+    $src/build_tools/qwen36_vectors/oracle_hashes/moe_shared_expert.oracle.json $
+    $src/build_tools/qwen36_vectors/oracle_hashes/norms.oracle.json
 
 build qscu_gdn.o: nvcc $src/qscu_gdn.cu | $
     $src/qs_info.h $src/qs_tensor.h $src/qsfi.h $src/qscu.h $src/qsfi_internal.h $src/qsfi_native_common.h qsfi_macros.h

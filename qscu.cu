@@ -585,8 +585,8 @@ __global__ void qwen36_gdn_causal_conv1d_kernel(conv1d_params p, StateT* state)
         ? -1
         : (p.write_indices == nullptr ? read_slot : p.write_indices[seq]);
 
-    for (uint32_t dim = blockIdx.y * blockDim.x + threadIdx.x;
-         dim < p.conv_dim; dim += blockDim.x * gridDim.y) {
+    for (uint32_t dim = blockIdx.y * blockDim.x + threadIdx.x; dim < p.conv_dim;
+         dim += blockDim.x * gridDim.y) {
         float h0 = 0.0f;
         float h1 = 0.0f;
         float h2 = 0.0f;
@@ -1138,11 +1138,9 @@ qsfi_status validate_conv_desc(const qscu_qwen36_gdn_causal_conv1d_desc* desc)
         return QSFI_STATUS_INVALID_ARGUMENT;
 
     if (desc->x.shape[0] != static_cast<int64_t>(desc->num_tokens)
-        || desc->weight.shape[0] != packed_dim
-        || desc->weight.shape[1] != kQwen36GdnConvWidth
+        || desc->weight.shape[0] != packed_dim || desc->weight.shape[1] != kQwen36GdnConvWidth
         || (tensor_present(desc->bias) && desc->bias.shape[0] != packed_dim)
-        || desc->state.shape[1] != packed_dim
-        || desc->state.shape[2] != kQwen36GdnConvState
+        || desc->state.shape[1] != packed_dim || desc->state.shape[2] != kQwen36GdnConvState
         || desc->out.shape[0] != static_cast<int64_t>(desc->num_tokens)
         || desc->out.shape[1] != packed_dim
         || (tensor_present(desc->state_read_indices)
@@ -1902,17 +1900,22 @@ qsfi_status qscu_qwen36_gdn_post_conv_prepare_bf16(
     params.apply_qk_l2norm = desc->apply_qk_l2norm != 0 ? 1u : 0u;
 
     const uint32_t value_heads = static_cast<uint32_t>(desc->v.shape[1]);
-    const uint64_t items = static_cast<uint64_t>(desc->num_tokens) * (kQwen36GdnNumKHeads + value_heads);
+    const uint64_t items
+        = static_cast<uint64_t>(desc->num_tokens) * (kQwen36GdnNumKHeads + value_heads);
     if (items > std::numeric_limits<uint32_t>::max())
         return QSFI_STATUS_UNSUPPORTED;
     if (value_heads == 32) {
-        qwen36_gdn_post_conv_prepare_kernel<32><<<
-            static_cast<uint32_t>(items), kQwen36GdnThreads, 0,
-            static_cast<cudaStream_t>(stream)>>>(params);
+        qwen36_gdn_post_conv_prepare_kernel<32>
+            <<<static_cast<uint32_t>(items),
+               kQwen36GdnThreads,
+               0,
+               static_cast<cudaStream_t>(stream)>>>(params);
     } else {
-        qwen36_gdn_post_conv_prepare_kernel<48><<<
-            static_cast<uint32_t>(items), kQwen36GdnThreads, 0,
-            static_cast<cudaStream_t>(stream)>>>(params);
+        qwen36_gdn_post_conv_prepare_kernel<48>
+            <<<static_cast<uint32_t>(items),
+               kQwen36GdnThreads,
+               0,
+               static_cast<cudaStream_t>(stream)>>>(params);
     }
     return validate_cuda(cudaGetLastError());
 }
@@ -1951,13 +1954,17 @@ qsfi_status qscu_qwen36_gdn_rmsnorm_gated_bf16(
     if (items > std::numeric_limits<uint32_t>::max())
         return QSFI_STATUS_UNSUPPORTED;
     if (value_heads == 32) {
-        qwen36_gdn_rmsnorm_gated_kernel<32><<<
-            static_cast<uint32_t>(items), kQwen36GdnThreads, 0,
-            static_cast<cudaStream_t>(stream)>>>(params);
+        qwen36_gdn_rmsnorm_gated_kernel<32>
+            <<<static_cast<uint32_t>(items),
+               kQwen36GdnThreads,
+               0,
+               static_cast<cudaStream_t>(stream)>>>(params);
     } else {
-        qwen36_gdn_rmsnorm_gated_kernel<48><<<
-            static_cast<uint32_t>(items), kQwen36GdnThreads, 0,
-            static_cast<cudaStream_t>(stream)>>>(params);
+        qwen36_gdn_rmsnorm_gated_kernel<48>
+            <<<static_cast<uint32_t>(items),
+               kQwen36GdnThreads,
+               0,
+               static_cast<cudaStream_t>(stream)>>>(params);
     }
     return validate_cuda(cudaGetLastError());
 }

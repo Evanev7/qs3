@@ -15,6 +15,7 @@ let
   overlay = workspace.mkPyprojectOverlay {
     sourcePreference = "wheel";
     dependencies.qwen36-vectors = [ ];
+    dependencies.qs3-triton = [ ];
   };
 
   pythonSet =
@@ -30,5 +31,5 @@ let
 in
 pythonSet.mkVirtualEnv "qs3_build_tools" {
   qwen36-vectors = [ ];
-  triton = [ ];
+  qs3-triton = [ ];
 }

@@ -6,8 +6,8 @@ every decode: 261 positions. The vLLM hook preserves raw logits before forcing
 the sampler's choice. qs3 uses its actual `decode_one` path, not one-token append
 or repeated whole-prefix prefill. This is a numerical diagnostic, not a timed run.
 
-qs3 diagnostic source: `c2fef72`; runtime kernels: `0dc68a2`. The gitignored
-`run_cuda_test.sh` ran mode `scores` with `QS3_SCORE_RUN=2026-09-09-long-forced`.
+qs3 diagnostic source: `c2fef72`; runtime kernels: `0dc68a2`. The corresponding
+command is now `./run_cuda_test.sh just scores-test 2026-09-09-long-forced`.
 Its Rust test loads `~/qs3-scores/<run>/input.json` and writes `<run>/qs3/`.
 The full diagnostic passed. The pinned vLLM image is recorded in `image.txt`;
 its versions and model revision are also in `vllm/scores.json`. Both use BF16

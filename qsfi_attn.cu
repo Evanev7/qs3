@@ -258,8 +258,10 @@ qsfi_status validate_attention(qsfi_context* ctx, const qsfi_attention_desc* att
         return set_unsupported(ctx, "different qk/vo head dimensions are not wired yet");
     }
     if (attention->head_dim_qk != 256
-        || !((attention->num_qo_heads == 16 && attention->num_kv_heads == 2)
-             || (attention->num_qo_heads == 24 && attention->num_kv_heads == 4))) {
+        || !(
+            (attention->num_qo_heads == 16 && attention->num_kv_heads == 2)
+            || (attention->num_qo_heads == 24 && attention->num_kv_heads == 4)
+        )) {
         return set_unsupported(
             ctx,
             "compiled Qwen3.6 attention supports qo/kv heads 16/2 (35B) or 24/4 (27B), "

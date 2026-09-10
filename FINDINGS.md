@@ -156,7 +156,7 @@ shapes fit the default shared-memory allowance; oversized fused norms fail befor
 launch. No mutex or stream synchronization was added. CUDA requires explicit
 opt-in for dynamic shared memory above 48 KiB; see the [CUDA programming guide](https://docs.nvidia.com/cuda/cuda-programming-guide/03-advanced/advanced-kernel-programming.html).
 
-Validation through `QS3_TEST_MODE=norm_validation ./run_cuda_test.sh` passed:
+Validation (now `./run_cuda_test.sh just norm-validation`) passed:
 115 library tests (3 ignored), 1 benchmark test, 3 engine tests, 16 model tests,
 14 vector tests including 16,000 concurrent norm launches, both native suites,
 and a build of `qsfi_bench_native`. Twenty additional normal-parallelism model
@@ -844,38 +844,6 @@ prefixes; their timing is not an identical-prefix comparison. The earlier
 1024-token forced-prefix diagnostic does not resolve this case. Several-context
 performance is now recorded, but matched precision, sustained quality and
 competitive performance remain unfinished.
-
-## 27B assets and native support
-
-Current conclusion: the complete pinned BF16 payload is verified on sp10, and
-native ratio-six attention and 48-value-head GDN pass checked/release tests.
-Production Rust shape validation, state views, dense loading and reference
-inference remain open.
-
-### Pinned 27B assets
-
-The [27B manifest](model_manifests/qwen3.6-27b/6a9e13bd6fc8f0983b9b99948120bc37f49c13e9/README.md)
-pins revision `6a9e13bd6fc8f0983b9b99948120bc37f49c13e9`. All 15 shard headers
-and their physical sizes were read with bounded HTTP range requests. Independent
-host validation finds 1199 BF16 tensors, including 851 exact-shape text tensors
-(53.792 GB). It checks index/header agreement, dtype/shape byte sizes, duplicate
-names, and contiguous nonoverlapping ranges. This is asset evidence, not proof
-of Rust loader or inference support.
-
-The 27B tokenizer SHA-256 matches the pinned 35B tokenizer exactly. Config and
-headers confirm 24 Q/four KV attention heads, 48 GDN value heads, separate dense
-MLP gate/up/down tensors, and FP32 recurrent-state intent. The exact metadata and
-validation scripts are committed; payload download, production dense manifest
-support and native shape validation are separate steps.
-
-The complete 27B snapshot is now cached on sp10. Independent
-[payload validation](model_manifests/qwen3.6-27b/6a9e13bd6fc8f0983b9b99948120bc37f49c13e9/payload_validation.json)
-checks all 15 shard SHA256 hashes against their Hub blob names, exact file lengths,
-headers/config/index against pinned records, and tokenizer SHA256. Every check
-passes (55,563,006,400 bytes including headers). The network download needed
-resumption after truncated HTTP streams; validation was performed only after
-completion. Rust dense-manifest/materialization and public-runner 27B correctness
-remain open.
 
 ### 27B attention dispatch probe
 

@@ -565,7 +565,9 @@ impl AttentionSession {
     }
 
     pub(crate) fn prepare_decode(&mut self, batch: DecodeBatch<'_>) -> Result<(), Status> {
-        self.prefix.core.begin_decode(batch.request_ids, batch.tokens)?;
+        self.prefix
+            .core
+            .begin_decode(batch.request_ids, batch.tokens)?;
         if let Err(status) = self
             .upload_active_batch()
             .and_then(|_| self.ensure_decode_plan())

@@ -146,7 +146,7 @@ fn read_vector_bytes_at(group: &str, file: &str, elem_size: usize, elements: usi
     let bytes = std::fs::read(&path).unwrap_or_else(|err| {
         panic!(
             "failed to read required Qwen3.6 vector {}: {err}. \
-             Generate vectors with `just generate-vectors`.",
+             Generate vectors with `just build_tools/generate-vectors`.",
             path.display()
         );
     });

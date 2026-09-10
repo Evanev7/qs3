@@ -236,7 +236,10 @@ qsfi_status validate_plan_desc(qsfi_context* ctx, const qsfi_moe_plan_desc* desc
         if (desc->bf16_kernel != QSFI_MOE_BF16_TILE128_BLOCKS4
             && desc->bf16_kernel != QSFI_MOE_BF16_TILE128_BLOCKS96
             && desc->bf16_kernel != QSFI_MOE_BF16_TILE32_BLOCKS96)
-            return set_invalid_arg(ctx, "staged BF16 MoE bf16_kernel must name a compiled tile/grid");
+            return set_invalid_arg(
+                ctx,
+                "staged BF16 MoE bf16_kernel must name a compiled tile/grid"
+            );
         if (desc->local_expert_offset != 0 || desc->local_num_experts != desc->num_experts) {
             return set_unsupported(
                 ctx,

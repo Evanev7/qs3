@@ -9,8 +9,8 @@ use crate::backend::result_from_raw;
 use crate::ffi::sys;
 
 mod ops;
-pub use ops::MoeBf16Kernel;
 pub(crate) use crate::backend::Workspace;
+pub use ops::MoeBf16Kernel;
 pub(crate) use ops::{
     FusedAddRmsNormBf16, MoeBf16Execute, MoeBf16ExecuteArgs, MoeBf16PlanConfig, RmsNormBf16,
     RopeApplyBf16,
@@ -1347,7 +1347,6 @@ impl Drop for MoePlan {
 
 #[cfg(test)]
 mod tests {
-    use crate::ffi::sys;
     use super::{
         AppendDecode, AppendPrefill, AttentionDesc, BatchDecodeExecuteDesc,
         BatchPrefillExecuteDesc, DTYPE_BF16, DTYPE_F16, DTYPE_F32, DTYPE_FP8_E4M3, DTYPE_I32,
@@ -1364,6 +1363,7 @@ mod tests {
         validate_prefill_plan_execute, validate_qo_plan_desc, validate_qo_plan_slices,
         validate_rmsnorm_desc, validate_rope_apply_desc, validate_tensor,
     };
+    use crate::ffi::sys;
     use crate::ffi::{KvLayoutRaw, MOE_ROUTE_ROUTER_LOGITS, StatusRaw};
     use crate::{
         QWEN36_FULL_ATTN_HEAD_DIM, QWEN36_FULL_ATTN_KV_HEADS, QWEN36_FULL_ATTN_KV_HIDDEN,

@@ -339,8 +339,8 @@ __global__ void validate_gdn_prefill_metadata_kernel(
 qsfi_status require_exact_shape(qsfi_context* ctx, const gdn_shape& shape)
 {
     if (shape.num_q_heads != kDefaultNumQHeads || shape.num_k_heads != kDefaultNumKHeads
-        || (shape.num_v_heads != kDefaultNumVHeads && shape.num_v_heads != 48) || shape.key_dim != kDefaultKeyDim
-        || shape.value_dim != kDefaultValueDim) {
+        || (shape.num_v_heads != kDefaultNumVHeads && shape.num_v_heads != 48)
+        || shape.key_dim != kDefaultKeyDim || shape.value_dim != kDefaultValueDim) {
         return set_unsupported(
             ctx,
             "only qwen3.6 GDN shapes q=%u k=%u v=%u/48 key_dim=%u value_dim=%u are wired",
@@ -601,12 +601,11 @@ launch_gdn_decode(qsfi_context* ctx, const qscu_gdn_decode_desc* desc, const gdn
 {
     const uint64_t items = work_items(desc->num_tokens, shape);
     gdn_kernel_params params = make_params(desc, shape, desc->num_tokens, nullptr);
-    qwen36_gdn_warp_kernel<StateT, false><<<
-        static_cast<uint32_t>((items + kWarpsPerBlock - 1) / kWarpsPerBlock),
-        kThreads, 0, ctx->stream>>>(
-        params,
-        static_cast<StateT*>(desc->state.data)
-    );
+    qwen36_gdn_warp_kernel<StateT, false>
+        <<<static_cast<uint32_t>((items + kWarpsPerBlock - 1) / kWarpsPerBlock),
+           kThreads,
+           0,
+           ctx->stream>>>(params, static_cast<StateT*>(desc->state.data));
     return cudaGetLastError();
 }
 
@@ -617,12 +616,11 @@ launch_gdn_prefill(qsfi_context* ctx, const qscu_gdn_prefill_desc* desc, const g
     const uint64_t items = work_items(desc->batch_size, shape);
     gdn_kernel_params params
         = make_params(desc, shape, desc->batch_size, static_cast<const int32_t*>(desc->seq_indptr));
-    qwen36_gdn_warp_kernel<StateT, true><<<
-        static_cast<uint32_t>((items + kWarpsPerBlock - 1) / kWarpsPerBlock),
-        kThreads, 0, ctx->stream>>>(
-        params,
-        static_cast<StateT*>(desc->state.data)
-    );
+    qwen36_gdn_warp_kernel<StateT, true>
+        <<<static_cast<uint32_t>((items + kWarpsPerBlock - 1) / kWarpsPerBlock),
+           kThreads,
+           0,
+           ctx->stream>>>(params, static_cast<StateT*>(desc->state.data));
     return cudaGetLastError();
 }
 

@@ -10,8 +10,8 @@
 #include <cstdio>
 #include <cstring>
 #include <limits>
-#include <vector>
 #include <type_traits>
+#include <vector>
 
 namespace {
 
@@ -1140,7 +1140,8 @@ void expect_attention_plan_unsupported(
         ctx,
         qsfi_batch_decode_plan_prepare(ctx, &attention, &plan_table, &plan),
         QSFI_STATUS_UNSUPPORTED,
-        "compiled Qwen3.6 attention supports qo/kv heads 16/2 (35B) or 24/4 (27B), with head_dim=256",
+        "compiled Qwen3.6 attention supports qo/kv heads 16/2 (35B) or 24/4 (27B), with "
+        "head_dim=256",
         label
     );
     qsfi_batch_decode_plan_destroy(plan);
@@ -1364,8 +1365,7 @@ void test_prefill_append_maps_positions_through_page_table()
 
 template <typename StateT>
 void check_gdn_state_single_nonzero(
-    const std::vector<StateT>& state, size_t active, float value,
-    float tolerance, const char* label
+    const std::vector<StateT>& state, size_t active, float value, float tolerance, const char* label
 )
 {
     for (size_t i = 0; i < state.size(); ++i) {
@@ -1383,8 +1383,7 @@ void check_gdn_state_single_nonzero(
     }
 }
 
-template <typename StateT>
-void test_gdn_decode_one_hot_recurrence()
+template <typename StateT> void test_gdn_decode_one_hot_recurrence()
 {
     qsfi_context* ctx = nullptr;
     if (!make_context(&ctx))
@@ -1504,8 +1503,7 @@ void test_gdn_decode_one_hot_recurrence()
     qsfi_context_destroy(ctx);
 }
 
-template <typename StateT>
-void test_gdn_prefill_two_token_recurrence()
+template <typename StateT> void test_gdn_prefill_two_token_recurrence()
 {
     qsfi_context* ctx = nullptr;
     if (!make_context(&ctx))

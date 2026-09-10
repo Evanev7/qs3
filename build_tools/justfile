@@ -1,0 +1,32 @@
+cuda_root := env_var_or_default("CUDA_HOME", "/usr/local/cuda")
+cuda_lib_path := cuda_root + "/lib64:" + cuda_root + "/lib:"
+qwen36_vectors := ".venv/bin/qwen36-vectors"
+
+fmt:
+        .venv/bin/ruff format .
+
+check:
+        .venv/bin/ruff check --fix .
+        .venv/bin/ty check --project .
+
+uv-sync:
+        uv sync --locked
+
+generate-vectors:
+        mkdir -p ../build
+        cp build.ninja ../build/build.ninja
+        ninja -C ../build vectors/qwen36_semantics/.oracle-ok
+
+refresh-vector-oracles:
+        {{qwen36_vectors}} generate-all --output-root ../build/vectors/qwen36_semantics --clean
+        {{qwen36_vectors}} write-oracles --input-root ../build/vectors/qwen36_semantics --oracle-root qwen36_vectors/oracle_hashes
+
+python-test: check
+        .venv/bin/ruff format --check .
+        {{qwen36_vectors}} generate-all --output-root ../build/vectors/python-test --clean
+        {{qwen36_vectors}} check-oracles --input-root ../build/vectors/python-test
+
+triton-test:
+        mkdir -p ../build/triton-test
+        nix eval --json --file ../models/config.nix > ../build/triton-test/config.json
+        LIBRARY_PATH="{{cuda_lib_path}}:${LIBRARY_PATH:-}" .venv/bin/python qs3_triton/test.py ../build/triton-test/config.json
