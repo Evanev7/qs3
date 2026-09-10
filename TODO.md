@@ -152,6 +152,10 @@
   higher throughput while retaining the same generated IDs. No mixed policy added.
 - [ ] Test further Triton GEMVs with real allocation behavior, starting with
   GDN QKV; prototype routed-expert GEMV separately against the tested MoE path.
+  The real-weight QKV probe passes 54 cases across three layers and allocation
+  modes. With shared device allocations, row/eight-warps saves 13.312 µs (6.7%)
+  after eviction; managed gains are small. Full-model integration/timing and the
+  routed-expert probe remain open; see FINDINGS.md.
 - [ ] Generate provider build availability from Nix without removing handwritten
   Rust APIs. The initial integration builds the LM-head specialization unconditionally.
 - [ ] Extend launch generation when adding kernels needing scratch allocations,

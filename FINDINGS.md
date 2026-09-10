@@ -771,6 +771,34 @@ Keep Q/K norm plus partial-RoPE fusion as a smaller launch-reduction candidate,
 with KV append separate. Avoid treating every cuBLAS GEMV as an automatic
 Triton win.
 
+### Real-weight Triton GDN QKV candidates
+
+The [GDN QKV probe](benchmarks/2026-09-10-triton-gdn-qkv-probe/README.md) compares
+six AOT SM121 reductions on real 8192x2048 BF16 tensors from layers 0, 18 and 38,
+with synthetic BF16 activations. All 54 cases pass full-output cuBLASLt and
+sampled CPU double references. Maximum absolute output difference is 0.000488281
+across variants, 0.000244141 for the row/eight-warp candidate.
+
+With input/weight/output allocations and one prepared cuBLASLt plan shared
+across candidates, the b12x-derived row/eight-warp kernel is best tested for
+device weights: 198.400 to 185.056 µs after eviction, with median paired saving
+13.312 µs (6.7%) and range 12.288–14.336 µs across nine pairs. Managed CPU-copy
+and managed-upload medians save about 2 µs; CPU-copy pairs include regressions.
+Several multirow variants regress. Repeated device weights show a larger gain,
+but the evicted comparison is the more relevant gate for the model schedule.
+
+The initial sweep recreated allocations and plans between variants; its device
+control shifted from about 197 to 156–157 µs. The shared-allocation repeat keeps
+it near 198–199 µs and changes some rankings. Both sweeps and sources are retained;
+this does not establish the cause of the allocation-sensitive timings.
+
+Thirty GDN layers times the device saving suggest about 0.399 ms/token, an isolated
+kernel extrapolation, not measured end-to-end improvement. Production dispatch
+is unchanged. Loaded-model logits/continuation and timing remain integration
+gates; routed-expert GEMV against the complete existing MoE path is the next
+larger-budget candidate. The prescribed test script ran both probe sweeps
+sequentially on sp10; this prototype-only change did not rerun production tests.
+
 ### All-device core benchmark
 
 The core benchmark now constructs the existing `PinnedUploadBackend`: final

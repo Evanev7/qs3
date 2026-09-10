@@ -1,0 +1,20 @@
+{
+  "snapshot": "/home/sp10/.cache/huggingface/hub/models--Qwen--Qwen3.6-35B-A3B/snapshots/995ad96eacd98c81ed38be0c5b274b04031597b0",
+  "tensors": [
+    {
+      "name": "model.language_model.layers.0.linear_attn.in_proj_qkv.weight",
+      "shard": "model-00001-of-00026.safetensors",
+      "sha256": "b06edcc9973be74f862d072f89a195e2eecea067ee615144be8510656122401f"
+    },
+    {
+      "name": "model.language_model.layers.18.linear_attn.in_proj_qkv.weight",
+      "shard": "model-00012-of-00026.safetensors",
+      "sha256": "5a582a8b538c27ba0f5759d2a627b4e2d2f4c201023ebb4adfb2891484f21070"
+    },
+    {
+      "name": "model.language_model.layers.38.linear_attn.in_proj_qkv.weight",
+      "shard": "model-00025-of-00026.safetensors",
+      "sha256": "a59760a9ca645083447581f330a41c58dbcea8716e6155187ff2d4a642f291b6"
+    }
+  ]
+}

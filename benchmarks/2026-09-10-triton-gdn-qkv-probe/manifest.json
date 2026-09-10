@@ -1,0 +1,118 @@
+{
+  "triton_version": "3.8.0",
+  "target": "cuda:121:32",
+  "ptxas_path": "/home/sp10/qs3/build_tools/.venv/lib/python3.14/site-packages/triton/backends/nvidia/bin/ptxas-blackwell",
+  "ptxas_version": "ptxas-blackwell: NVIDIA (R) Ptx optimizing assembler\nCopyright (c) 2005-2026 NVIDIA Corporation\nBuilt on Fri_Apr_24_07:23:04_PM_PDT_2026\nCuda compilation tools, release 13.3, V13.3.33\nBuild cuda_13.3.r13.3/compiler.37862127_0\n",
+  "ptxas_sha256": "f9a0a7f1f7f03b402ca222168a8ae4870fdb312354356b444941fbba7754326e",
+  "num_stages": 1,
+  "enable_fp_fusion": false,
+  "source_hashes": {
+    "compile.py": "2fa56fb24ea89f117e1806fa9860829e2d8629a57e4ddf5c8649008d13acbd7b",
+    "kernel.py": "d37227f316e6f7b12f35e576c4139a197b89108c3c11c611c11f17d61ea7eef4",
+    "lm_head.py": "fbf580585cdce85c1004309dcd5b514399939e50b8c0c746a35e982b13c956b7"
+  },
+  "kernels": [
+    {
+      "name": "row",
+      "n": 8192,
+      "k": 2048,
+      "dtype": "bf16",
+      "rows": 1,
+      "warps": 4,
+      "file": "row_r1_w4.cubin",
+      "symbol": "row_kernel",
+      "shared": 16,
+      "constexprs": {
+        "K": 2048,
+        "BLOCK_K": 2048,
+        "ACC": "tl.float32"
+      },
+      "sha256": "017bf467e8d31889fd1977dcc2db6ccb3b3e720c794070fe9e0e34a3e053c2ed"
+    },
+    {
+      "name": "row",
+      "n": 8192,
+      "k": 2048,
+      "dtype": "bf16",
+      "rows": 1,
+      "warps": 8,
+      "file": "row_r1_w8.cubin",
+      "symbol": "row_kernel",
+      "shared": 32,
+      "constexprs": {
+        "K": 2048,
+        "BLOCK_K": 2048,
+        "ACC": "tl.float32"
+      },
+      "sha256": "794032a45b0df5d325e8048518cd12037cef0b4d02004ef534c654fde4914e67"
+    },
+    {
+      "name": "tile",
+      "n": 8192,
+      "k": 2048,
+      "dtype": "bf16",
+      "rows": 4,
+      "warps": 4,
+      "file": "tile_r4_w4.cubin",
+      "symbol": "gemv",
+      "shared": 64,
+      "constexprs": {
+        "N": 8192,
+        "K": 2048,
+        "ROWS": 4
+      },
+      "sha256": "6ba3da3cfed61792157646465db9e53096c4dd37980b90305067df456f5d18e4"
+    },
+    {
+      "name": "tile",
+      "n": 8192,
+      "k": 2048,
+      "dtype": "bf16",
+      "rows": 8,
+      "warps": 8,
+      "file": "tile_r8_w8.cubin",
+      "symbol": "gemv",
+      "shared": 128,
+      "constexprs": {
+        "N": 8192,
+        "K": 2048,
+        "ROWS": 8
+      },
+      "sha256": "5b55f7ad620dab8e9719ead1cc440e819cd2329fa594c892e305ed5ab912a4c2"
+    },
+    {
+      "name": "tile",
+      "n": 8192,
+      "k": 2048,
+      "dtype": "bf16",
+      "rows": 4,
+      "warps": 8,
+      "file": "tile_r4_w8.cubin",
+      "symbol": "gemv",
+      "shared": 128,
+      "constexprs": {
+        "N": 8192,
+        "K": 2048,
+        "ROWS": 4
+      },
+      "sha256": "6ca5d516a087bd388f55282bb09cfd590cd0d3606cb055604d60541270a6d260"
+    },
+    {
+      "name": "tile",
+      "n": 8192,
+      "k": 2048,
+      "dtype": "bf16",
+      "rows": 8,
+      "warps": 4,
+      "file": "tile_r8_w4.cubin",
+      "symbol": "gemv",
+      "shared": 128,
+      "constexprs": {
+        "N": 8192,
+        "K": 2048,
+        "ROWS": 8
+      },
+      "sha256": "f795199995002ffa56bc8ecf1e1a9b25b8d87f53f08b98dfcd8c5ddc05938408"
+    }
+  ]
+}

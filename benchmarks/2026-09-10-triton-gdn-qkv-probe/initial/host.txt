@@ -1,0 +1,23 @@
+Thu Sep 10 04:24:44 PM UTC 2026
+1f39b0bddec48132a3dc2ed420ddbb323ab665a3
+nvcc: NVIDIA (R) Cuda compiler driver
+Copyright (c) 2005-2025 NVIDIA Corporation
+Built on Wed_Aug_20_01:57:39_PM_PDT_2025
+Cuda compilation tools, release 13.0, V13.0.88
+Build cuda_13.0.r13.0/compiler.36424714_0
+name, driver_version, utilization.gpu [%]
+NVIDIA GB10, 580.142, 0 %
+	linux-vdso.so.1 (0x0000eb07a7bac000)
+	libcuda.so.1 => /lib/aarch64-linux-gnu/libcuda.so.1 (0x0000eb07a1e00000)
+	libcublasLt.so.13 => /usr/local/cuda/targets/sbsa-linux/lib/libcublasLt.so.13 (0x0000eb0777100000)
+	libstdc++.so.6 => /lib/aarch64-linux-gnu/libstdc++.so.6 (0x0000eb0776e70000)
+	libgcc_s.so.1 => /lib/aarch64-linux-gnu/libgcc_s.so.1 (0x0000eb0776e30000)
+	libc.so.6 => /lib/aarch64-linux-gnu/libc.so.6 (0x0000eb0776c70000)
+	/lib/ld-linux-aarch64.so.1 (0x0000eb07a7b70000)
+	libm.so.6 => /lib/aarch64-linux-gnu/libm.so.6 (0x0000eb0776bc0000)
+	libdl.so.2 => /lib/aarch64-linux-gnu/libdl.so.2 (0x0000eb0776b90000)
+	librt.so.1 => /lib/aarch64-linux-gnu/librt.so.1 (0x0000eb0776b60000)
+	libpthread.so.0 => /lib/aarch64-linux-gnu/libpthread.so.0 (0x0000eb0776b30000)
+fcbbe79948489b8c73240dce8f25c1579a8873d281dd1fbcc88c65049d84e853  qscb.cu
+2230e306920ec0918b638e60af697c67d91b3f317d2a8d9ed6ef1c6126612220  .prototypes/gdn_qkv_aot/bench.cu
+5d449da26503de3176f8199bf4de646712c850f7f19c1f6e3bfb9619d5d376b3  build_tools/uv.lock

@@ -1,0 +1,7 @@
+device=NVIDIA GB10 driver=13000 runtime=13000 weights=managed_cpu eager=true
+validated row rows=1 warps=4 max_abs=7.62939e-06
+validated row rows=1 warps=8 max_abs=4.76837e-07
+validated tile rows=4 warps=4 max_abs=7.62939e-06
+validated tile rows=8 warps=8 max_abs=4.76837e-07
+validated tile rows=4 warps=8 max_abs=4.76837e-07
+validated tile rows=8 warps=4 max_abs=7.62939e-06
