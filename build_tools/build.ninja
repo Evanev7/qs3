@@ -168,7 +168,11 @@ build qsfi_bench_native: link_test $src/bench_native.cu qsfi.o qscu_gdn.o qscu.o
     $src/qscb.h
   libs = -lcublas -lcublasLt
 
-build triton/config.json: nix_eval $src/models/config.nix
+build triton/config.json: nix_eval $src/models/config.nix | $
+    $src/models/qwen3.6-35b-a3b/model.json $
+    $src/models/qwen3.6-35b-a3b/source.nix $
+    $src/models/qwen3.6-27b/model.json $
+    $src/models/qwen3.6-27b/source.nix
 build triton/lm_head.rs | triton/lm_head.cubin triton/lm_head.ptx triton/lm_head.json: qstriton triton/config.json |$
     $src/build_tools/qstriton/kernels/lm_head.py $
     $src/build_tools/qstriton/builder.py $
@@ -180,6 +184,6 @@ build triton/lm_head.rs | triton/lm_head.cubin triton/lm_head.ptx triton/lm_head
 build qsfi_test: phony qsfi_test_release qsfi_test_checked
 build tests: phony qsfi_test qsfi_test_qwen27_release qsfi_test_qwen27_checked
 build bench: phony qsfi_bench_native
-build all: phony libqs_native.a
+build all: phony libqs_native.a triton/lm_head.rs
 
 default all

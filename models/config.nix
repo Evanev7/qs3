@@ -1,4 +1,4 @@
-# Engine build sketch; not connected to the build yet.
+# Engine build configuration; Triton LM-head compilation consumes this today.
 # nix eval --json --file models/config.nix
 #
 # Select one model and target per engine. This is a place to record facts and
@@ -152,7 +152,7 @@ assert
           provider = "cublaslt";
         };
         lm_head = {
-          provider = "cublaslt"; # Runtime integration of the Triton kernel is pending.
+          provider = "triton";
           precision = precision.lm_head;
           constants = {
             K = text.hidden_size;

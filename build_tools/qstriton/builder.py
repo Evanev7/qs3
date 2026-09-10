@@ -113,8 +113,17 @@ def signature(
 
 
 def rust_source(
-    stem: str, meta: KernelMetadata, grid: list[int], arguments: list[Argument]
+    stem: str,
+    meta: KernelMetadata,
+    grid: list[int],
+    arguments: list[Argument],
+    constants: dict[str, Scalar | tl.dtype],
 ) -> str:
+    integer_constants = "\n".join(
+        f"    pub const {name}: i64 = {value};"
+        for name, value in constants.items()
+        if isinstance(value, int) and not isinstance(value, bool)
+    )
     params = ", ".join(f"mut arg_{a['name']}: {a['rust']}" for a in arguments)
     pointers = ", ".join(
         f"(&mut arg_{a['name']} as *mut {a['rust']}).cast::<c_void>()"
@@ -145,6 +154,11 @@ fn check(code: i32) -> Result<(), i32> {{
 pub const GRID: [u32; 3] = {json.dumps(grid)};
 pub const BLOCK: [u32; 3] = [{meta.num_warps * meta.warp_size}, 1, 1];
 pub const SHARED_BYTES: u32 = {meta.shared};
+
+/// Integer constexprs used to compile this specialization.
+pub mod constants {{
+{integer_constants}
+}}
 
 /// A module owned by the current CUDA context. Neither Send nor Sync.
 /// Keep it alive until all queued launches and graphs referencing it are done.
@@ -224,7 +238,7 @@ def build(path: Path, config: BuildConfig, output: Path) -> None:
     meta = compiled.metadata
     cubin = compiled.asm["cubin"]
     # Triton constructs its metadata namedtuple dynamically at compilation time.
-    rust = rust_source(stem, cast("KernelMetadata", meta), grid, arguments)
+    rust = rust_source(stem, cast("KernelMetadata", meta), grid, arguments, constants)
     manifest = {
         "source": str(path),
         "source_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),

@@ -6,6 +6,7 @@ mod tests;
 
 use crate::{
     backend::qsfi::{MoeBf16PlanConfig, MoePlan, RmsNormBf16, Workspace},
+    backend::qstriton::LmHead,
     engine::{AppendBatch, Commit, DecodeBatch, Engine, RequestId, Status},
     ext::{SafeVec, try_clone_slice},
     model::{
@@ -45,6 +46,7 @@ pub struct ModelRunner {
     gdn_state: Option<GdnState>,
     scratch: RunnerScratch,
     qscb_workspace: DeviceBuffer<u8>,
+    lm_head: Option<LmHead>,
     live_request_id: Option<RequestId>,
     live_tokens: Vec<i32>,
     last_next_tokens: Vec<i32>,
@@ -88,7 +90,14 @@ impl ModelRunner {
         } else {
             None
         };
+        let lm_head = if LmHead::supports(config.hidden_size, config.vocab_size) {
+            // Engine construction and allocations establish the primary context.
+            Some(unsafe { LmHead::load()? })
+        } else {
+            None
+        };
         Ok(Self {
+            lm_head,
             scratch,
             qscb_workspace,
             config,
@@ -142,6 +151,14 @@ impl ModelRunner {
 
     pub fn live_tokens(&self) -> &[i32] {
         &self.live_tokens
+    }
+
+    pub(crate) fn lm_head_provider(&self) -> &'static str {
+        if self.lm_head.is_some() {
+            "triton"
+        } else {
+            "cublaslt"
+        }
     }
 
     #[cfg(test)]
@@ -384,6 +401,7 @@ impl ModelRunner {
                 scratch: &mut self.scratch,
                 gdn_state: self.gdn_state.as_ref(),
                 moe_plan: self.moe_plan.as_ref(),
+                lm_head: self.lm_head.as_ref(),
                 linear_workspace,
                 moe_workspace,
             },
@@ -468,6 +486,7 @@ struct BatchExecution<'a> {
     scratch: &'a mut RunnerScratch,
     gdn_state: Option<&'a GdnState>,
     moe_plan: Option<&'a MoePlan>,
+    lm_head: Option<&'a LmHead>,
     linear_workspace: Workspace,
     moe_workspace: Workspace,
 }
@@ -530,14 +549,18 @@ impl BatchExecution<'_> {
             unsafe { self.execute_post_attention_mlp(rows, norm, mlp, next_norm)? };
             input = self.scratch.mlp_out.matrix(rows, hidden)?;
         }
-        let mut ops = self.engine.operators();
         unsafe {
-            ops.qscb().linear(
-                input.row(rows - 1)?,
-                weights.lm_head.matrix(self.config.vocab_size, hidden)?,
-                self.scratch.logits.matrix(1, self.config.vocab_size)?,
-                self.linear_workspace,
-            )
+            let input = input.row(rows - 1)?;
+            let weight = weights.lm_head.matrix(self.config.vocab_size, hidden)?;
+            let output = self.scratch.logits.matrix(1, self.config.vocab_size)?;
+            if let Some(lm_head) = self.lm_head {
+                lm_head.launch(self.config.stream, input, weight, output)
+            } else {
+                self.engine
+                    .operators()
+                    .qscb()
+                    .linear(input, weight, output, self.linear_workspace)
+            }
         }
     }
 }

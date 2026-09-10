@@ -134,6 +134,10 @@
             runHook postInstall
           '';
         };
+        buildTools = pkgs.callPackage nix/venv.nix {
+          inherit (inputs) uv2nix pyproject-nix pyproject-build-systems;
+        };
+        qsTriton = pkgs.callPackage build_tools/qstriton { inherit buildTools; };
         commonArgs = {
           inherit src;
           inherit (craneLib.crateNameFromCargoToml { inherit src; }) version;
@@ -148,6 +152,7 @@
           preBuild = ''
             mkdir -p build
             ln -s ${qsNative}/lib/libqs_native.a build/libqs_native.a
+            ln -s ${qsTriton} build/triton
           '';
         };
       in
@@ -155,6 +160,7 @@
         packages = {
           default = craneLib.buildPackage (commonArgs // { cargoBuildExtraArgs = "--lib"; });
           native = qsNative;
+          triton = qsTriton;
           benchmark = craneLib.buildPackage (
             commonArgs
             // {
@@ -163,7 +169,7 @@
               meta.mainProgram = "qs3-bench";
             }
           );
-          venv = pkgs.callPackage nix/venv.nix { inherit (inputs) uv2nix pyproject-nix pyproject-build-systems;};
+          venv = buildTools;
         };
         devShells.default = pkgs.mkShell rec {
           buildInputs = with pkgs; [

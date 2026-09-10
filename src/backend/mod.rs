@@ -11,6 +11,7 @@ mod dtype;
 pub(crate) mod qscb;
 pub(crate) mod qscu;
 pub(crate) mod qsfi;
+pub(crate) mod qstriton;
 mod tensor;
 
 pub(crate) use dtype::{BF16, DeviceElement, F32, I32};

@@ -494,6 +494,7 @@ fn moe_vector_runner() -> ModelRunner {
     qscb_workspace.ensure(config.qscb_workspace_bytes).unwrap();
 
     ModelRunner {
+        lm_head: None,
         config,
         weights: empty_weights_for_config(config),
         engine,
@@ -795,6 +796,7 @@ fn full_attention_vector_runner() -> ModelRunner {
     config.qscb_workspace_bytes = 0; // This fixture runs only attention prep kernels.
     let engine = Engine::new(config.engine_config()).unwrap();
     ModelRunner {
+        lm_head: None,
         config,
         weights: empty_weights_for_config(config),
         engine,
@@ -817,6 +819,7 @@ fn full_attention_block_vector_runner() -> ModelRunner {
     let mut qscb_workspace = DeviceBuffer::empty(config.device_ordinal);
     qscb_workspace.ensure(config.qscb_workspace_bytes).unwrap();
     ModelRunner {
+        lm_head: None,
         config,
         weights: empty_weights_for_config(config),
         engine,
@@ -874,6 +877,7 @@ fn full_attention_block_moe_vector_runner() -> ModelRunner {
     let mut qscb_workspace = DeviceBuffer::empty(config.device_ordinal);
     qscb_workspace.ensure(config.qscb_workspace_bytes).unwrap();
     ModelRunner {
+        lm_head: None,
         config,
         weights: empty_weights_for_config(config),
         engine,
@@ -1098,6 +1102,7 @@ fn gdn_decoder_layer_vector_runner() -> ModelRunner {
     let gdn_state = Some(GdnState::new(&config).unwrap());
 
     ModelRunner {
+        lm_head: None,
         config,
         weights: empty_weights_for_config(config),
         engine,
@@ -3481,6 +3486,48 @@ fn failed_rebuild_after_final_layer_preserves_prefix_and_continuation() {
 }
 
 impl ModelRunner {
+    pub(crate) fn assert_lm_head_matches_cublaslt(&mut self, rows: u32) {
+        assert_eq!(self.lm_head_provider(), "triton");
+        let vocab = self.config.vocab_size;
+        let hidden = self.config.hidden_size;
+        let mut reference = DeviceBuffer::<f32>::empty(self.config.device_ordinal);
+        reference.ensure(vocab as usize).unwrap();
+        unsafe {
+            self.engine
+                .operators()
+                .qscb()
+                .linear(
+                    self.scratch
+                        .mlp_out
+                        .matrix(rows, hidden)
+                        .unwrap()
+                        .row(rows - 1)
+                        .unwrap(),
+                    self.weights.lm_head.matrix(vocab, hidden).unwrap(),
+                    reference.matrix(1, vocab).unwrap(),
+                    self.qscb_workspace
+                        .workspace(self.config.qscb_workspace_bytes)
+                        .unwrap(),
+                )
+                .unwrap();
+        }
+        let mut expected = vec![0.0; vocab as usize];
+        reference
+            .download(self.config.stream, &mut expected)
+            .unwrap();
+        let actual = self.last_logits_row_for_test().unwrap();
+        let mut max_error = 0.0_f32;
+        for (index, (&actual, &expected)) in actual.iter().zip(&expected).enumerate() {
+            let error = (actual - expected).abs();
+            assert!(
+                error <= 1e-3 + 1e-5 * expected.abs(),
+                "LM head logit {index}: Triton {actual}, cuBLASLt {expected}"
+            );
+            max_error = max_error.max(error);
+        }
+        eprintln!("Triton LM head vs cuBLASLt: {vocab} logits, max abs error {max_error}");
+    }
+
     pub(crate) fn decode_forced_token_for_test(&mut self, token: i32) -> Result<(), Status> {
         let request_id = self.live_request_id.ok_or(Status::InvalidArgument)?;
         super::validate_token_ids(&[token], self.config.vocab_size)?;

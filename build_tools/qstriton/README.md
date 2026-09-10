@@ -33,6 +33,8 @@ Outputs per file are a cubin, PTX, a JSON compilation manifest, and a standalone
 Rust module. Rust embeds the cubin and packs runtime arguments in the inspected
 order, excluding constexprs. Pointer types describe storage (`u16` for BF16);
 this is an unsafe launch wrapper, not a tensor shape/aliasing checker.
+Integer constexprs are exposed in `constants` so the typed Rust adapter can
+check the compiled dimensions without repeating configuration values.
 
 Load `Kernel` in the caller's existing CUDA context before capture or timing;
 launch on that context's stream. Keep the module alive until queued work and
@@ -40,9 +42,13 @@ graphs using it are finished, and keep its context current through destruction.
 The generated module links `libcuda`; inference needs neither Python nor JIT.
 
 The current launcher covers this ordinary single-CTA row GEMV with no scratch
-allocations. Further argument and launch forms, dependency tracking, the Nix
-derivation, and runner integration are listed in `TODO.md`. The runtime still
-uses cuBLASLt for the LM head; invoking this builder only produces artifacts.
+allocations. Further argument and launch forms are listed in `TODO.md`.
+
+`ninja -C build` builds the LM head alongside the native archive. `nix build
+.#triton` produces the same artifacts through `default.nix`; the Rust Nix packages
+include that output. `backend::qstriton::LmHead` checks typed tensor dimensions
+and layout, and the runner loads it once for the compiled model shape. Other
+shapes (including the small randomized fixtures) use the existing cuBLASLt path.
 
 `just build_tools/triton-test` builds and exercises generated Rust, including a BF16-output
 specialization with a masked reduction tail. Run it on sp10 with

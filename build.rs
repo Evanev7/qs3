@@ -33,6 +33,8 @@ fn main() {
     println!("cargo:rerun-if-changed=build_tools/build.ninja");
     println!("cargo:rerun-if-changed=build_tools/generate_macros.c");
     println!("cargo:rerun-if-changed=build/libqs_native.a");
+    println!("cargo:rerun-if-changed=build/triton/lm_head.rs");
+    println!("cargo:rerun-if-changed=build/triton/lm_head.cubin");
 
     println!("cargo:rustc-link-search=build");
     println!("cargo:rustc-link-lib=static=qs_native");

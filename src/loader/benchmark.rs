@@ -323,6 +323,7 @@ pub fn run_core_benchmark() -> JsonValue {
                 ("cuda_profiler_range", (profile_phase != "none").into()),
                 ("cuda_profiler_phase", profile_phase.to_owned().into()),
                 ("linear", "cublaslt_prepared_f32_accum".to_owned().into()),
+                ("lm_head", runner.lm_head_provider().to_owned().into()),
                 ("attention", "flashinfer_paged_hd256_gqa8".to_owned().into()),
                 ("norm", "flashinfer_gemma_aot".to_owned().into()),
                 ("gdn", "qscu_warp4_row128_bf16".to_owned().into()),

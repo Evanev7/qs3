@@ -931,6 +931,7 @@ fn check_real_bf16_reference(precision: crate::model::GdnRecurrentPrecision) {
         })
         .unwrap();
     assert!(prefill.generated_tokens.is_empty());
+    runner.assert_lm_head_matches_cublaslt(REAL_PROMPT.len() as u32);
     assert_real_top_logits(
         "real prefill",
         &runner.last_logits_row_for_test().unwrap(),
@@ -948,6 +949,7 @@ fn check_real_bf16_reference(precision: crate::model::GdnRecurrentPrecision) {
         })
         .unwrap();
     assert_eq!(first.generated_tokens, vec![REAL_GENERATED[0]]);
+    runner.assert_lm_head_matches_cublaslt(1);
     assert_real_top_logits(
         "real first decode",
         &runner.last_logits_row_for_test().unwrap(),
