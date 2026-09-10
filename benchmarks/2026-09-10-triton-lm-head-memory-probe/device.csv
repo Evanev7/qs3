@@ -1,0 +1,7 @@
+kernel,n,k,dtype,rows,warps,cache,repeat,cublas_p50_us,triton_p50_us
+row,248320,2048,fp32,1,8,repeated,0,5689.824,4121.984
+row,248320,2048,fp32,1,8,repeated,1,5687.216,4121.456
+row,248320,2048,fp32,1,8,repeated,2,5688.016,4122.112
+row,248320,2048,fp32,1,8,evicted,0,5698.272,4167.392
+row,248320,2048,fp32,1,8,evicted,1,5701.344,4167.392
+row,248320,2048,fp32,1,8,evicted,2,5698.336,4168.416

@@ -131,9 +131,17 @@
 
 ## Triton AOT builder
 
-- [ ] Wire the Nix configuration and selected kernel files into a derivation,
-  then integrate the generated Rust LM-head wrapper into the runner. Validate
-  real-model scores and managed-weight eager timing before selecting it.
+- [x] Wire the Nix configuration and selected kernel files into a derivation
+  and Ninja, and integrate the generated Rust LM-head wrapper into the runner.
+  Full real-model logits and reference tokens pass; managed-weight eager timing
+  is essentially flat (24.716 to 24.791 tok/s). See FINDINGS.md.
+- [ ] Trial device allocation for just the LM-head weights. The same Triton
+  cubin takes 4.17 ms with cudaMalloc and 6.10 ms with managed weights; measure
+  the real-model decode gain and loader cost before expanding this allocation policy.
+- [ ] Test further Triton GEMVs with real allocation behavior, starting with
+  GDN QKV; prototype routed-expert GEMV separately against the tested MoE path.
+- [ ] Generate provider build availability from Nix without removing handwritten
+  Rust APIs. The initial integration builds the LM-head specialization unconditionally.
 - [ ] Extend launch generation when adding kernels needing scratch allocations,
   CTA clusters, cooperative launches, PDL, or dynamic grids. The first launcher
   uses ordinary cuLaunchKernel with zero scratch, as required by the row GEMV.

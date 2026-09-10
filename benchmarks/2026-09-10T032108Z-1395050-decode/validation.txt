@@ -1,0 +1,19 @@
+Runtime validation via run_cuda_test.sh; CUDA bin/stub directories supplied explicitly.
+Standalone generated launcher: full FP32 and masked-tail BF16 tests both passed.
+test result: ok. 119 passed; 0 failed; 4 ignored; 0 measured; 0 filtered out; finished in 3.90s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.63s
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.45s
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.52s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+real BF16 model with bf16 GDN recurrence
+Triton LM head vs cuBLASLt: 248320 logits, max abs error 0.000002861023
+Triton LM head vs cuBLASLt: 248320 logits, max abs error 0.0000019073486
+real BF16 model with f32 GDN recurrence
+Triton LM head vs cuBLASLt: 248320 logits, max abs error 0.000002861023
+Triton LM head vs cuBLASLt: 248320 logits, max abs error 0.000002861023
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 122 filtered out; finished in 118.11s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 16 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out; finished in 0.00s

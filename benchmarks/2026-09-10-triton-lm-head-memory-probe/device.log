@@ -1,0 +1,2 @@
+device=NVIDIA GB10 driver=13000 runtime=13000 weights=device eager=true
+validated row rows=1 warps=8 max_abs=1.19209e-06

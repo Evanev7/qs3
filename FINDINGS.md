@@ -665,6 +665,55 @@ cliff in the 256-column matmul tile. The newer vendored triton_kernels HEAD
 also imports an internal helper absent from the pinned compiler wheel; the
 matching release imports and compiles successfully without source changes.
 
+### Integrated Triton LM head: allocation controls the result
+
+The runtime now loads the generated row/eight-warp LM-head module once and uses
+it for final-token logits in prefill and decode. Both Ninja and Nix build the
+AOT artifacts; Python is absent from inference. The typed Rust adapter checks
+dimensions against generated integer constexprs and grid dimensions. Small
+fixture shapes retain cuBLASLt. Validation passed 153 Rust tests, two standalone
+launcher tests, and the real 35B reference test with both BF16 and FP32 GDN state.
+All 248,320 logits were compared against cuBLASLt on identical actual activations
+at prefill and first decode; maximum absolute difference was 2.861023e-6.
+
+The [core result](benchmarks/2026-09-10T031951.967883789Z-1395050.json) at
+`1395050` measures **24.791 tok/s**, versus the immediately preceding
+[cuBLASLt baseline](benchmarks/2026-09-10T030755.492864205Z-77fbfaf.json) at
+**24.716 tok/s**. Decode p50 is 40.303 versus 40.421 ms; prefill p50 is 239.421
+versus 241.164 ms. Workload, generated IDs, driver 580.142, Nix CUDA 13.0 and
+Rust toolchain match. The 0.3% difference is not a meaningful established gain.
+
+The [new trace](benchmarks/2026-09-10T032108Z-1395050-decode/README.md)
+shows the Triton LM head at **6.043 ms**, other dense GEMVs at **18.218 ms** and
+grouped MoE GEMMs at **11.214 ms** per token. GPU idle time within the kernel
+span remains about **2.974 ms/token**. The earlier isolated 4.2 ms result did
+not describe this runtime allocation path.
+
+A [controlled allocation probe](benchmarks/2026-09-10-triton-lm-head-memory-probe/README.md)
+uses the identical cubin and varies only weight allocation/initialization:
+
+| Allocation, after eviction | cuBLASLt | Triton |
+| --- | ---: | ---: |
+| cudaMalloc, GPU initialized | 5.698 ms | **4.167 ms** |
+| Managed, GPU initialized | 6.089 ms | 6.110 ms |
+| Managed, CPU initialized | 6.094 ms | 6.105 ms |
+
+Each value is the median of three 50-sample event p50s, with alternating
+candidate/control order. Full-output cuBLASLt and sampled CPU checks pass.
+Managed allocation removes this kernel's advantage even after warmup; changing
+initialization processor does not recover it. This establishes an allocation
+effect in the probe, not a specific page-size, translation, or cache mechanism.
+
+Next: trial device backing for just the real LM-head weight and measure load
+cost as well as eager decode. For further Triton kernels, GDN QKV is the narrow
+next GEMV candidate, but must be tested with actual managed/device weights;
+the previous synthetic gains were modest and smaller gate/output shapes
+regressed after eviction. Routed-expert GEMV has a larger 11.2 ms MoE budget
+but needs a separate correctness/performance prototype against FlashInfer.
+Keep Q/K norm plus partial-RoPE fusion as a smaller launch-reduction candidate,
+with KV append separate. Avoid treating every cuBLAS GEMV as an automatic
+Triton win.
+
 ## Numerical agreement and vLLM comparisons
 
 Current conclusion: FP32 recurrence improves agreement on the sustained

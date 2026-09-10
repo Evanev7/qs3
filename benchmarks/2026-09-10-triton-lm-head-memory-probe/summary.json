@@ -1,0 +1,38 @@
+[
+  {
+    "allocation": "device",
+    "cache": "repeated",
+    "cublas_p50_us": 5688.016,
+    "triton_p50_us": 4121.984
+  },
+  {
+    "allocation": "device",
+    "cache": "evicted",
+    "cublas_p50_us": 5698.336,
+    "triton_p50_us": 4167.392
+  },
+  {
+    "allocation": "managed_gpu",
+    "cache": "repeated",
+    "cublas_p50_us": 6107.6,
+    "triton_p50_us": 6093.328
+  },
+  {
+    "allocation": "managed_gpu",
+    "cache": "evicted",
+    "cublas_p50_us": 6089.44,
+    "triton_p50_us": 6109.92
+  },
+  {
+    "allocation": "managed_cpu",
+    "cache": "repeated",
+    "cublas_p50_us": 6105.44,
+    "triton_p50_us": 6090.224
+  },
+  {
+    "allocation": "managed_cpu",
+    "cache": "evicted",
+    "cublas_p50_us": 6093.52,
+    "triton_p50_us": 6104.768
+  }
+]
