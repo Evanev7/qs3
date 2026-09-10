@@ -48,6 +48,55 @@ disposable `sp10@sp10:qs3` checkout and record release JSON in `benchmarks/`.
 Do not run it concurrently with the test script: both replace that checkout.
 Tests run through the gitignored `run_cuda_test.sh`.
 
+The core benchmark now runs both an unprofiled measurement and a separate
+Nsight Systems pass. The existing `run_core_benchmark.sh` / `nix run .#benchmark`
+entrypoint emits one JSON: `measurement` retains the unprofiled timings, while
+`nsight` contains the profiled measurement, kernel timings grouped by full name
+and launch configuration, CUDA API timings, memory totals, and GPU interval-union
+statistics. Both passes must match model, execution settings, prompt, decode
+context and every generated token. Nsight warnings/errors are retained in
+`nsight.diagnostics`; a failed capture or export fails the command.
+
+Nsight is supplied by the GPU host; the Rust benchmark reads the SQLite export
+through `rusqlite` using one read-only connection. SQLite is bundled into the binary.
+Capture now includes process-tree CPU sampling with DWARF backtraces and thread
+scheduling events. The host must permit process-tree perf sampling (on sp10,
+`kernel.perf_event_paranoid=2`); the benchmark checks Nsight's environment before
+loading weights and does not request sudo or change host settings. The Nix
+benchmark retains debug symbols. Raw reports, SQLite and process logs remain in a
+timestamped `.prototypes/profiles/` directory on the execution host, recorded in
+`nsight.artifact_directory`. `QS3_BENCH_ARTIFACT_DIR` changes that parent directory.
+The old separate decode capture/collection scripts are superseded by this path.
+
+`nsight.cpu` reports sampled functions, thread states and scheduling counts within
+the first-to-last GPU kernel span, including samples observed without GPU work.
+Leaf counts refer to stack depth zero; inclusive counts count each sample once
+per function even with recursion. Inclusive counts overlap across functions and
+sample counts are not elapsed durations. Missing CPU samples or stacks fail the
+benchmark instead of silently emitting a GPU-only result. Queries use typed
+`rusqlite` rows; timestamps stay integer nanoseconds until JSON serialization.
+
+Kernel and API totals are sums of recorded durations. GPU activity unions include
+kernels, copies and memsets, clipped to the first-to-last-kernel span; the
+uncovered portion is labelled time without GPU work, not CPU preparation time.
+`ms_per_decode` divides aggregate time by the measured step count, not a latency
+percentile. Host API time can include waits for GPU work, so these columns must
+not be added together. Use `measurement.decode` for throughput comparisons.
+
+Working-tree validation passed five benchmark tests and the combined Nix run,
+including process-tree CPU samples, resolved Rust stacks and matching generated
+IDs. Temporary validation captures live under gitignored
+`.prototypes/benchmark-validation/`; they are not benchmark history entries.
+Record the next official result with `run_core_benchmark.sh` after committing.
+The static archive inspection found no SQLite/rusqlite objects or defined symbols.
+
+Nsight reports unsupported Unified Memory tracing and a possible missing-event
+warning, also present in the earlier `1395050` trace. At paranoid level 2 it also
+warns that kernel-space CPU stacks are unavailable; user-space sampling works.
+Driver-internal symbols often remain unresolved. Diagnostics are printed and
+retained, and unprofiled throughput is measured separately. The host perf setting
+is temporary until reboot; the benchmark checks sampling availability on each run.
+
 `QS3_BENCH_CONTEXT_TOKENS` and `QS3_BENCH_DECODE_SAMPLES` select longer core
 workloads (defaults 102 and 32). Longer prompts repeat the base prompt's token
 IDs. JSON includes the full prompt fingerprint, generated IDs including warmups,

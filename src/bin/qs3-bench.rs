@@ -6,6 +6,9 @@ use std::{
 
 use tinyjson::JsonValue;
 
+#[path = "qs3_bench/profile.rs"]
+mod profile;
+
 unsafe extern "C" {
     fn cudaRuntimeGetVersion(version: *mut i32) -> i32;
 }
@@ -126,10 +129,30 @@ fn utc_timestamps_preserve_subseconds_and_calendar_boundaries() {
     );
 }
 
-fn main() {
-    let result = record(qs3::run_core_benchmark);
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let args: Vec<_> = std::env::args_os().skip(1).collect();
+    // Private subprocess entrypoint: the parent owns the uninstrumented and
+    // instrumented passes, so neither can recursively launch another profiler.
+    let result = if args == ["--measure-pass"] {
+        record(qs3::run_core_benchmark)
+    } else if args == ["--help"] {
+        println!(
+            "qs3-bench: run the core benchmark, then capture warmed decode with Nsight Systems.\n\
+             Emits one JSON result; measurement contains unprofiled throughput and nsight\n\
+             contains GPU timelines and CPU samples. Requires host nsys and process-tree\n\
+             perf sampling permissions (perf_event_paranoid <= 2). No sudo is used.\n\
+             Raw artifacts: QS3_BENCH_ARTIFACT_DIR (default .prototypes/profiles), in a new\n\
+             timestamped directory per run. Existing QS3_BENCH_* workload controls apply."
+        );
+        return Ok(());
+    } else if args.is_empty() {
+        profile::run()?
+    } else {
+        return Err("unexpected arguments; use --help".into());
+    };
     println!(
         "{}",
         result.stringify().expect("benchmark result is valid JSON")
     );
+    Ok(())
 }

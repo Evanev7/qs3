@@ -169,6 +169,8 @@
               pnameSuffix = "-benchmark";
               cargoBuildExtraArgs = "--bin qs3-bench";
               meta.mainProgram = "qs3-bench";
+              CARGO_PROFILE_RELEASE_DEBUG = "1";
+              dontStrip = true;
             }
           );
           venv = buildTools;

@@ -75,8 +75,18 @@
   call backend operations directly. Raw weight snapshots and primitive forwarding
   helpers are removed; workspace views are prepared once per batch. Native
   lowering retains validation before device addressing.
-- [ ] Re-measure CPU preparation, GPU idle gaps, and end-to-end decode after
-  each substantive change.
+- [x] Automate end-to-end decode measurement and GPU timeline collection in the
+  core benchmark. An unprofiled pass followed by a warmed-decode Nsight capture
+  emits one JSON with kernel/launch, CUDA API, memory and interval-union summaries.
+  The initial GPU capture passed four benchmark tests and a full Nix run.
+  Process-tree CPU sampling and stack/scheduling summaries are validated in the
+  same JSON: five benchmark tests and a full Nix run pass, with 1,437 CPU samples
+  and resolved Rust stacks. Re-run after substantive changes.
+- [ ] Attribute the remaining GPU gaps to specific CPU preparation or delivery
+  work. The benchmark reports time without recorded GPU activity, but CUDA API
+  durations alone do not explain its cause. Use the CPU samples and stacks to
+  investigate; the current Nsight capture diagnostics include a possible
+  missing-event warning.
 
 ## 3. Add the exact 27B path
 
