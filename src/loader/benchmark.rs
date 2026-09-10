@@ -4,7 +4,7 @@ use tinyjson::JsonValue;
 
 use super::{
     plan::{QwenBf16LoadPlan, execute_qwen36_bf16_load_plan},
-    transfer::{ManagedUmaBackend, result_from_cuda},
+    transfer::{PinnedUploadBackend, result_from_cuda},
 };
 use crate::test_assets::require_real_qwen36_model_dir;
 use crate::{
@@ -231,8 +231,8 @@ pub fn run_core_benchmark() -> JsonValue {
             .expect("benchmark sequence length overflow"),
     )
     .expect("fixed benchmark sequence length exceeds u32");
-    let backend = ManagedUmaBackend::new(0).expect("failed to create managed-UMA backend");
     let started = Instant::now();
+    let backend = PinnedUploadBackend::new(0).expect("failed to create pinned-upload backend");
     let loaded = execute_qwen36_bf16_load_plan(&plan, backend, ptr::null_mut())
         .expect("failed to load BF16 tensors");
     let weight_load = started.elapsed();
@@ -371,7 +371,7 @@ pub fn run_core_benchmark() -> JsonValue {
                     "attention_host_workspace_bytes",
                     (config.qsfi_host_int_workspace_bytes as f64).into(),
                 ),
-                ("weight_backend", "managed_uma".to_owned().into()),
+                ("weight_backend", "pinned_upload".to_owned().into()),
                 ("sampling", "greedy".to_owned().into()),
                 ("logits_rows", "final_token".to_owned().into()),
             ]),
