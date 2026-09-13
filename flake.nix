@@ -85,7 +85,13 @@
             path: type:
             baseNameOf path != "3pty"
             && (
-              craneLib.filterCargoSources path type || builtins.match ".*\\.(c|cu|h|inc|ninja)$" path != null
+              craneLib.filterCargoSources path type
+              || builtins.elem path [
+                "${toString ./.}/build_tools/pyproject.toml"
+                "${toString ./.}/build_tools/uv.lock"
+              ]
+              || (lib.hasPrefix "${toString ./.}/triton_kernels/" path && lib.hasSuffix ".py" path)
+              || builtins.match ".*\\.(c|cu|h|inc|ninja)$" path != null
             );
         };
         flashinferSrc = pkgs.fetchFromGitHub {
@@ -108,7 +114,7 @@
               (type == "directory" && (path == toString ./. || relative == "build_tools"))
               || builtins.match "[^/]*\\.(c|cu|h|inc)" relative != null
               || builtins.elem relative [
-                "build_tools/build.ninja"
+                "build_tools/cuda.ninja"
                 "build_tools/generate_macros.c"
               ];
           };
@@ -124,7 +130,7 @@
             runHook preBuild
             mkdir -p 3pty build
             ln -s ${flashinferSrc} 3pty/flashinfer
-            cp build_tools/build.ninja build/build.ninja
+            cp build_tools/cuda.ninja build/build.ninja
             ninja -C build -j "$NIX_BUILD_CORES" libqs_native.a
             runHook postBuild
           '';
@@ -137,24 +143,35 @@
         buildTools = pkgs.callPackage nix/venv.nix {
           inherit (inputs) uv2nix pyproject-nix pyproject-build-systems;
         };
-        qsTriton = pkgs.callPackage build_tools/qstriton { inherit buildTools; };
+        kernelNinja = pkgs.writeText "qs3-kernels.ninja" (
+          "qstriton = ${buildTools}/bin/qstriton\n" + import ./build_tools/nixsrc/ninja.nix
+        );
         commonArgs = {
           inherit src;
           inherit (craneLib.crateNameFromCargoToml { inherit src; }) version;
           CARGO_PROFILE = "release";
-          cargoArtifacts = craneLib.buildDepsOnly (commonArgs // { buildInputs = cudaLibs; });
+          cargoArtifacts = craneLib.buildDepsOnly (
+            commonArgs
+            // {
+              buildInputs = cudaLibs;
+              # Crane's dummy sources contain no kernels to compile.
+              preBuild = "";
+            }
+          );
           strictDeps = true;
           buildInputs = cudaLibs ++ [ qsNative ];
           # Link Driver API symbols with the toolkit stub; load the host driver at runtime.
           LIBRARY_PATH = "${cudaPackages.cuda_cudart}/lib/stubs";
           nativeBuildInputs = with pkgs; [
             rustPlatform.bindgenHook
+            ninja
           ];
           doCheck = false;
           preBuild = ''
             mkdir -p build
             ln -s ${qsNative}/lib/libqs_native.a build/libqs_native.a
-            ln -s ${qsTriton} build/triton
+            export TRITON_CACHE_DIR="$TMPDIR/triton-cache"
+            ninja -C build -f ${kernelNinja} triton/kernels
           '';
         };
       in
@@ -162,7 +179,6 @@
         packages = {
           default = craneLib.buildPackage (commonArgs // { cargoBuildExtraArgs = "--lib"; });
           native = qsNative;
-          triton = qsTriton;
           benchmark = craneLib.buildPackage (
             commonArgs
             // {

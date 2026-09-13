@@ -7,12 +7,15 @@ fmt:
         just build_tools/fmt
 check:
         just build_tools/check
-build: copy-ninja
+build: ninja
         ninja -C build
         cargo build --lib
 
-test: build cargo-test cuda-test
-cuda-test: copy-ninja
+test:
+        just build_tools/python-test triton-test
+        just cargo-test cuda-test
+
+cuda-test: ninja
         ninja -C build tests
         build/qsfi_test_checked
         build/qsfi_test_release
@@ -70,25 +73,38 @@ weight-loader-cold-bench snapshot: build _generate-vectors
             cargo test --lib "bench_real_qwen36_bf16_${backend}_load" -- --ignored --nocapture --test-threads=1
         done
 
-bench *args: copy-ninja
+bench *args: ninja
         ninja -C build bench
         build/qsfi_bench_native {{args}}
 
-model-tps: copy-ninja
+model-tps: ninja
         ninja -C build
         LIBRARY_PATH="{{cuda_lib_path}}:${LIBRARY_PATH:-}" cargo run --release --bin qs3-bench
 
-weight-loader-bench: copy-ninja
+benchmark:
+        #!/usr/bin/env bash
+        set -euo pipefail
+        driver_libs=$(mktemp -d)
+        trap 'rm -rf "$driver_libs"' EXIT
+        ln -s /lib/aarch64-linux-gnu/libcuda.so* /lib/aarch64-linux-gnu/libnvidia-*.so* "$driver_libs/"
+        # Keep host CUDA and system libraries out of the Nix runtime's search path.
+        QS3_BENCH_CONTEXT_TOKENS=102 QS3_BENCH_DECODE_SAMPLES=32 \
+        QS3_BENCH_MOE_KERNEL=tile32_blocks96 QS3_BENCH_GDN_STATE=f32 \
+        LD_LIBRARY_PATH="$driver_libs" nix run --impure .#benchmark
+
+weight-loader-bench: ninja
         ninja -C build
         LIBRARY_PATH="{{cuda_lib_path}}:${LIBRARY_PATH:-}" cargo test --release bench_real_qwen36_bf16_ -- --ignored --nocapture --test-threads=1
 
-real-model-test: copy-ninja
+real-model-test: ninja
         ninja -C build
         LIBRARY_PATH="{{cuda_lib_path}}:${LIBRARY_PATH:-}" cargo test --release loader::tests::real_qwen36_bf16_generates_reference_tokens -- --ignored --exact --nocapture --test-threads=1
 
-copy-ninja:
-        mkdir -p build
+ninja:
+        mkdir -p build/triton
+        nix eval --offline --raw --file build_tools/nixsrc/ninja.nix > build/triton/kernels.ninja
         cp build_tools/build.ninja build/build.ninja
+        cp build_tools/cuda.ninja build/cuda.ninja
 
 render-benchmark-history:
         python3 benchmarks/render_history.py

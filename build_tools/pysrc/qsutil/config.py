@@ -1,0 +1,39 @@
+"""Typed compiler inputs; Nix owns model facts and build planning."""
+
+import json
+from dataclasses import dataclass
+from typing import Literal
+
+import dacite
+
+
+@dataclass
+class ComputeCapability:
+    major: int
+    minor: int
+
+
+@dataclass
+class CudaTarget:
+    backend: Literal["cuda"]
+    computeCapability: ComputeCapability
+    warpSize: int
+
+
+@dataclass
+class DtypeConstant:
+    dtype: str
+
+
+@dataclass
+class TritonSpec:
+    precision: dict[str, str]
+    # todo: type these
+    constants: dict[str, bool | int | float | str | None | DtypeConstant]
+    grid: list[int]
+    # todo: type these
+    options: dict[str, bool | int | float | str]
+
+
+def parse[T](source: str, ty: type[T]) -> T:
+    return dacite.from_dict(ty, json.loads(source), config=dacite.Config(strict=True))

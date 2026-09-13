@@ -1,189 +1,22 @@
 ninja_required_version = 1.10
 
-flashinfer = ../3pty/flashinfer
-src = ..
-qwen36_vectors = ../build_tools/.venv/bin/qwen36-vectors
 qstriton = ../build_tools/.venv/bin/qstriton
 
-fi_includes = $
-  -I$flashinfer/3rdparty/cccl/libcudacxx/include $
-  -I$flashinfer/3rdparty/cccl/cub $
-  -I$flashinfer/3rdparty/cccl/thrust $
-  -I$flashinfer/3rdparty/cccl/cudax/include $
-  -I$flashinfer/3rdparty/cutlass/include $
-  -I$flashinfer/3rdparty/cutlass/tools/util/include $
-  -I$flashinfer/3rdparty/spdlog/include $
-  -I$flashinfer/include $
-  -I$flashinfer/csrc $
-  -I$flashinfer/csrc/nv_internal $
-  -I$flashinfer/csrc/nv_internal/include
+rule regenerate
+  command = nix eval --offline --raw --file ../build_tools/nixsrc/ninja.nix > triton/kernels.ninja && $
+    cp ../build_tools/build.ninja build.ninja && cp ../build_tools/cuda.ninja cuda.ninja
+  generator = 1
+  description = REGENERATE
 
-nvcc_common_flags = -std=c++17 -arch=sm_121 --expt-relaxed-constexpr -diag-suppress 20012 -I.
-nvccflags = $nvcc_common_flags -DQSFI_ENABLE_CHECKED_VALIDATION=0
-nvcc_checked_flags = $nvcc_common_flags -DQSFI_ENABLE_CHECKED_VALIDATION=1
+build build.ninja cuda.ninja triton/kernels.ninja: regenerate | $
+    ../build_tools/build.ninja ../build_tools/cuda.ninja $
+    ../build_tools/nixsrc/ninja.nix $
+    ../models/config.nix $
+    ../models/qwen3.6-35b-a3b/model.json ../models/qwen3.6-35b-a3b/source.nix $
+    ../models/qwen3.6-27b/model.json ../models/qwen3.6-27b/source.nix
 
-rule run
-  command = $in > $out
-  description = GEN $out
+subninja cuda.ninja
+subninja triton/kernels.ninja
 
-rule nvcc
-  command = nvcc $nvccflags $extraflags -c $in -o $out
-  description = NVCC $out
-
-rule nvcc_checked
-  command = nvcc $nvcc_checked_flags $extraflags -c $in -o $out
-  description = NVCC CHECKED $out
-
-rule link_test
-  command = nvcc $nvccflags $extraflags $in -o $out -lcuda $libs
-  description = LINK $out
-
-rule link_test_checked
-  command = nvcc $nvcc_checked_flags $extraflags $in -o $out -lcuda $libs
-  description = LINK CHECKED $out
-
-rule ar
-  command = ar -rs $out $in
-  description = ARCHIVE $out
-
-rule nix_eval
-  command = nix eval --json --file $in > $out
-  description = NIX EVAL $out
-
-rule qstriton
-  command = $qstriton --config $in --out triton $kernel
-  description = QSTRITON $kernel
-
-rule qwen36_vectors
-  command = rm -f $out && $qwen36_vectors generate-all --output-root vectors/qwen36_semantics --clean && $qwen36_vectors check-oracles --depfile $out.d --depfile-target $out --input-root vectors/qwen36_semantics && touch $out
-  depfile = $out.d
-  deps = gcc
-  description = VECTORS qwen36_semantics
-
-build qsfi_macros.h: run $src/build_tools/generate_macros.c
-
-build vectors/qwen36_semantics/.oracle-ok: qwen36_vectors $
-    $src/build_tools/pyproject.toml $
-    $src/build_tools/uv.lock $
-    $src/build_tools/qwen36_vectors/pyproject.toml $
-    $src/build_tools/qwen36_vectors/oracle_hashes/full_attention_block.oracle.json $
-    $src/build_tools/qwen36_vectors/oracle_hashes/full_attention_primitives.oracle.json $
-    $src/build_tools/qwen36_vectors/oracle_hashes/gdn_decoder_layer.oracle.json $
-    $src/build_tools/qwen36_vectors/oracle_hashes/gdn_post_conv_prep.oracle.json $
-    $src/build_tools/qwen36_vectors/oracle_hashes/model_logits.oracle.json $
-    $src/build_tools/qwen36_vectors/oracle_hashes/moe_shared_expert.oracle.json $
-    $src/build_tools/qwen36_vectors/oracle_hashes/norms.oracle.json
-
-build qscu_gdn.o: nvcc $src/qscu_gdn.cu | $
-    $src/qs_info.h $src/qs_tensor.h $src/qsfi.h $src/qscu.h $src/qsfi_internal.h $src/qsfi_native_common.h qsfi_macros.h
-build qscu_gdn_checked.o: nvcc_checked $src/qscu_gdn.cu | $
-    $src/qs_info.h $src/qs_tensor.h $src/qsfi.h $src/qscu.h $src/qsfi_internal.h $src/qsfi_native_common.h qsfi_macros.h
-build qscu.o: nvcc $src/qscu.cu | $
-    $src/qs_info.h $src/qs_tensor.h $src/qsfi_native_common.h $src/qscu.h qsfi_macros.h
-build qscu_checked.o: nvcc_checked $src/qscu.cu | $
-    $src/qs_info.h $src/qs_tensor.h $src/qsfi_native_common.h $src/qscu.h qsfi_macros.h
-build qscb.o: nvcc $src/qscb.cu | $
-    $src/qs_info.h $src/qs_tensor.h $src/qscb.h $src/qsfi_native_common.h
-build qsfi.o: nvcc $src/qsfi.cu | $
-    $src/qs_info.h $
-    $src/qs_tensor.h $
-    $src/qsfi.h $
-    $src/qsfi_internal.h $
-    $src/qsfi_native_common.h $
-    qsfi_macros.h $
-    $src/qsfi_context.cu $
-    $src/qsfi_attn.cu $
-    $src/qsfi_norm_rope.cu $
-    $src/qsfi_moe.cu
-  extraflags = $fi_includes
-build qsfi_checked.o: nvcc_checked $src/qsfi.cu | $
-    $src/qs_info.h $
-    $src/qs_tensor.h $
-    $src/qsfi.h $
-    $src/qsfi_internal.h $
-    $src/qsfi_native_common.h $
-    qsfi_macros.h $
-    $src/qsfi_context.cu $
-    $src/qsfi_attn.cu $
-    $src/qsfi_norm_rope.cu $
-    $src/qsfi_moe.cu
-  extraflags = $fi_includes
-build libqs_native.a: ar qsfi.o qscu_gdn.o qscu.o qscb.o
-
-build qsfi_test_release: link_test $src/test.cu qsfi.o qscu_gdn.o qscu.o qscb.o | $
-    $src/qs_tensor.h $
-    $src/qs_info.h $
-    $src/qsfi.h $
-    $src/qscu.h $
-    $src/qscb.h $
-    $src/tests_cuda_flashinfer_norm_rope.inc $
-    $src/tests_cuda_qscb_linear.inc $
-    $src/tests_cuda_qscu_utils.inc $
-    $src/tests_cuda_qscu_gdn_router.inc
-  libs = -lcublas -lcublasLt
-
-build qsfi_test_checked: link_test_checked $src/test.cu qsfi_checked.o qscu_gdn_checked.o qscu_checked.o qscb.o | $
-    $src/qs_tensor.h $
-    $src/qs_info.h $
-    $src/qsfi.h $
-    $src/qscu.h $
-    $src/qscb.h $
-    $src/tests_cuda_flashinfer_norm_rope.inc $
-    $src/tests_cuda_qscb_linear.inc $
-    $src/tests_cuda_qscu_utils.inc $
-    $src/tests_cuda_qscu_gdn_router.inc
-  libs = -lcublas -lcublasLt
-
-build qsfi_test_qwen27_release: link_test $src/test.cu qsfi.o qscu_gdn.o qscu.o qscb.o | $
-    $src/qs_tensor.h $
-    $src/qs_info.h $
-    $src/qsfi.h $
-    $src/qscu.h $
-    $src/qscb.h $
-    $src/tests_cuda_flashinfer_norm_rope.inc $
-    $src/tests_cuda_qscb_linear.inc $
-    $src/tests_cuda_qscu_utils.inc $
-    $src/tests_cuda_qscu_gdn_router.inc
-  libs = -lcublas -lcublasLt
-  extraflags = -DQS3_TEST_QWEN27 -diag-suppress 177
-
-build qsfi_test_qwen27_checked: link_test_checked $src/test.cu qsfi_checked.o qscu_gdn_checked.o qscu_checked.o qscb.o | $
-    $src/qs_tensor.h $
-    $src/qs_info.h $
-    $src/qsfi.h $
-    $src/qscu.h $
-    $src/qscb.h $
-    $src/tests_cuda_flashinfer_norm_rope.inc $
-    $src/tests_cuda_qscb_linear.inc $
-    $src/tests_cuda_qscu_utils.inc $
-    $src/tests_cuda_qscu_gdn_router.inc
-  libs = -lcublas -lcublasLt
-  extraflags = -DQS3_TEST_QWEN27 -diag-suppress 177
-
-build qsfi_bench_native: link_test $src/bench_native.cu qsfi.o qscu_gdn.o qscu.o qscb.o | $
-    $src/qs_tensor.h $
-    $src/qs_info.h $
-    $src/qsfi.h $
-    $src/qscu.h $
-    $src/qscb.h
-  libs = -lcublas -lcublasLt
-
-build triton/config.json: nix_eval $src/models/config.nix | $
-    $src/models/qwen3.6-35b-a3b/model.json $
-    $src/models/qwen3.6-35b-a3b/source.nix $
-    $src/models/qwen3.6-27b/model.json $
-    $src/models/qwen3.6-27b/source.nix
-build triton/lm_head.rs | triton/lm_head.cubin triton/lm_head.ptx triton/lm_head.json: qstriton triton/config.json |$
-    $src/build_tools/qstriton/kernels/lm_head.py $
-    $src/build_tools/qstriton/builder.py $
-    $src/build_tools/qstriton/pyproject.toml $
-    $src/build_tools/uv.lock
-  kernel = $src/build_tools/qstriton/kernels/lm_head.py
-
-
-build qsfi_test: phony qsfi_test_release qsfi_test_checked
-build tests: phony qsfi_test qsfi_test_qwen27_release qsfi_test_qwen27_checked
-build bench: phony qsfi_bench_native
-build all: phony libqs_native.a triton/lm_head.rs
-
+build all: phony libqs_native.a triton/kernels
 default all

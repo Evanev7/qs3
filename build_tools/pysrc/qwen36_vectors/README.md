@@ -3,9 +3,9 @@
 This subproject generates synthetic correctness vectors for qs3's narrow
 Qwen3.6-35B-A3B runtime path.
 
-It is a member of the uv workspace in `build_tools/`. Python modules live
-directly beside `pyproject.toml`; the installed package is `qwen36_vectors`
-and its console command is `qwen36-vectors`. The workspace uses Python 3.14.
+It is an import package in the `build-tools` distribution, under
+`build_tools/pysrc/qwen36_vectors/`. Its console command is `qwen36-vectors`;
+the shared project uses Python 3.14 and `uv_build`.
 Ninja invokes `../build_tools/.venv/bin/qwen36-vectors` through its
 `qwen36_vectors` variable. The build-tools justfile uses
 `.venv/bin/qwen36-vectors` from `build_tools/`.
@@ -24,7 +24,7 @@ with optional executable-vLLM comparison only if the environment can support it.
 
 Generated artifacts live under `build/vectors/qwen36_semantics/` by default and
 are not committed. Byte-level oracle hashes live next to this generator under
-`build_tools/qwen36_vectors/oracle_hashes/`.
+`build_tools/pysrc/qwen36_vectors/oracle_hashes/`.
 
 ## Artifact format
 
@@ -110,9 +110,9 @@ just build_tools/generate-vectors
 
 That recipe writes all groups under `build/vectors/qwen36_semantics/` and checks
 the generated file set, byte lengths, and SHA256 hashes against
-`build_tools/qwen36_vectors/oracle_hashes/*.oracle.json`.
+`build_tools/pysrc/qwen36_vectors/oracle_hashes/*.oracle.json`.
 
-The Ninja stamp tracks the workspace and member metadata, uv lockfile, committed
+The Ninja stamp tracks the project metadata, uv lockfile, committed
 oracle hashes, and the installed Python generator files through its depfile.
 When replacing a Nix-built generator, remove the `.oracle-ok` stamp
 to force regeneration: Nix store timestamps do not represent source edit times.

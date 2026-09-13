@@ -8,5 +8,6 @@ target
 .ninja_log
 run_cuda_test.sh
 run_core_benchmark.sh
+remote.sh
 .prototypes
 benchmarks/performance.html

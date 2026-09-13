@@ -8,7 +8,7 @@ import triton.language as tl
 
 
 @triton.jit
-def row_kernel(
+def kernel(
     activation: tl.tensor,
     weight: tl.tensor,
     output: tl.tensor,

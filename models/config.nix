@@ -6,12 +6,7 @@
 # options API. build_tools/ will hold the generators and compiler adapters.
 let
   mod = a: b: a - (builtins.div a b) * b;
-  nextPowerOfTwo =
-    n:
-    let
-      go = x: if x >= n then x else go (x * 2);
-    in
-    go 1;
+  nextPowerOfTwo = n: x: if x >= n then x else nextPowerOfTwo n (x * 2);
   readModel = directory: {
     source = import (directory + "/source.nix");
     config = (builtins.fromJSON (builtins.readFile (directory + "/model.json"))).text_config;
@@ -20,7 +15,6 @@ in
 let
   engine = {
     model = "qwen3.6-35b-a3b";
-    target = "sm121";
     mtp = false;
   };
 
@@ -33,22 +27,16 @@ let
   model = models.${engine.model};
   text = model.config;
 
-  targets = {
-    sm121 = {
-      backend = "cuda";
-      computeCapability = {
-        major = 12;
-        minor = 1;
-      };
-      warpSize = 32; # Hardware fact, not a kernel tuning parameter.
+  # This runtime targets SM121. Keep its hardware facts together; no host
+  # detection or target selection. Warp size is required by the AOT compiler.
+  target = {
+    backend = "cuda";
+    computeCapability = {
+      major = 12;
+      minor = 1;
     };
-    # Backend placeholder. Add concrete Apple GPU requirements and kernel
-    # choices when implementing Metal; do not inherit CUDA hardware facts.
-    metal = {
-      backend = "metal";
-    };
+    warpSize = 32;
   };
-  target = targets.${engine.target};
 
   # Normalize upstream dtype names once. Language-specific type spellings and
   # formatted compiler target strings belong in the respective build adapters.
@@ -144,32 +132,47 @@ assert
   };
 
   kernels =
-    if target.backend == "cuda" then
+      let
+        gemv = overrides: {
+          provider = "triton";
+          source = "triton_kernels/gemv.py";
+          spec = {
+            precision = precision.projections;
+            constants = {
+              K = text.hidden_size;
+              BLOCK_K = nextPowerOfTwo text.hidden_size 1;
+              ACC = {
+                dtype = precision.projections.accumulation;
+              };
+            };
+            options = {
+              num_warps = 8;
+              num_stages = 1;
+              enable_fp_fusion = false;
+            };
+          }
+          // overrides;
+        };
+      in
       {
         # Sketch of existing provider choices, not a claim of completed 27B support.
         projections = {
           provider = "cublaslt";
         };
-        lm_head = {
-          provider = "triton";
+        lm_head = gemv {
           precision = precision.lm_head;
-          constants = {
-            K = text.hidden_size;
-            BLOCK_K = nextPowerOfTwo text.hidden_size;
-            ACC = {
-              dtype = precision.lm_head.accumulation;
-            };
-          };
           grid = [
             text.vocab_size
             1
             1
           ];
-          options = {
-            num_warps = 8;
-            num_stages = 1;
-            enable_fp_fusion = false;
-          };
+        };
+        gdn_qkv = gemv {
+          grid = [
+            dimensions.gdn.packedWidth
+            1
+            1
+          ];
         };
         attention = {
           provider = "flashinfer";
@@ -204,9 +207,7 @@ assert
           else
             { provider = "cublaslt"; };
 
-      }
-    else
-      null; # Metal implementation recipes still to come.
+      };
 
   # Quantized recipes will also need concrete packing and scale layouts.
   # Compiler dependencies stay pinned in flake.lock and build_tools/uv.lock.

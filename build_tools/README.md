@@ -1,53 +1,57 @@
-# qs3 Python build tools
+# qs3 build tools
 
-This uv workspace uses Python 3.14. Run its tools from the repository
-root with:
+Just provides entrypoint commands that always run. Ninja handles rebuilds and
+invokes compilers on source files. Nix generates Ninja manifests; Ninja tracks
+the Nix inputs and reloads the generated manifests.
+
+From the repository root:
 
 ```sh
 just build_tools/uv-sync
-build_tools/.venv/bin/qwen36-vectors list-groups
+just ninja
+ninja -C build triton/kernels
 ```
 
-`qwen36-vectors` is a standard-library-only workspace member in `qwen36_vectors/`.
-Its Python modules live directly beside its `pyproject.toml`; setuptools maps that directory to
-the installed `qwen36_vectors` package. Oracle hashes ship as package data.
-Ninja's `qwen36_vectors` variable points to
-`../build_tools/.venv/bin/qwen36-vectors` from its `build/` working directory.
-The recipes in `build_tools/justfile` run from `build_tools/` and use
-`.venv/bin/qwen36-vectors`. Vector output paths are
-relative to the caller's working directory, so Ninja writes inside `build/`.
+`build_tools/` is one uv project; `pysrc/` contains `qstriton`, `qsutil`, and
+`qwen36_vectors`. Raw kernels live in `triton_kernels/`. In `models/config.nix`,
+each Triton recipe's attribute name determines output filenames; `source` is
+repository-relative and `spec` supplies compiler inputs.
 
-`just build_tools/uv-sync` explicitly runs `uv sync --locked` in this directory.
-Prepare the environment before invoking tests or generators; those commands
-use the installed tools without installing or updating packages.
+See [qstriton](pysrc/qstriton/README.md) for the compiler interface and
+[qwen36_vectors](pysrc/qwen36_vectors/README.md) for vector generation.
 
-The root `just check` and `just fmt` delegate Python work to this justfile.
-ty uses `--project .` here to find the workspace's Python 3.14 environment and
-installed compiler dependencies. The
-default checks exclude vendored code and archived benchmark experiments.
-
-`just build_tools/python-test` also regenerates the vectors and checks their pinned oracle
-hashes. `just build_tools/triton-test` evaluates the Nix configuration, compiles the kernels,
-and runs the generated Rust launchers on CUDA.
-
-The gitignored remote runner syncs the checkout and executes its arguments:
+The gitignored `remote.sh` prepares the remote CUDA/Python environment and runs
+named workflows:
 
 ```sh
-./run_cuda_test.sh just build_tools/python-test triton-test
-./run_cuda_test.sh just test
-./run_cuda_test.sh just model-test 20 --test-threads=1
+./remote.sh test
+./remote.sh benchmark
+./remote.sh prototype my-probe
 ```
 
-With no arguments it runs `just test`. It does not install tools or packages.
-Remote test and benchmark invocations share a disposable checkout; run them
-sequentially. Use `just --list` for runtime recipes and
-`just --justfile build_tools/justfile --list` for build-tool recipes.
+`remote.sh` shares one CUDA/Python setup and then invokes Just. The root `test`
+recipe runs the Python, Triton launcher, Rust and native CUDA suites against the
+current working tree. The root `benchmark` recipe builds through Nix and emits
+release/Nsight JSON. The remote benchmark action requires committed tracked changes,
+transfers the exact commit, and saves that JSON under `benchmarks/`.
+The benchmark uses 102 context tokens, 32 decode samples, FP32 GDN state and
+`tile32_blocks96` MoE. See `./remote.sh --help`.
 
-Triton 3.8.0 is pinned as a build-time compiler dependency. The official wheel
-supplies the compiler; the vendored source checkout is not built by this project.
-The Python upper bound follows this Triton release's supported interpreter range.
+Every runnable prototype needs a named, no-argument recipe in
+`.prototypes/justfile`. `./remote.sh prototype my-probe` invokes its `my-probe`
+recipe with `.prototypes/` as the working directory. The runner uploads
+`.prototypes/` and retrieves `.prototypes/out/` after a successful run. Uploads
+exclude `out/`, `.venv/`, `__pycache__/` and `.git/`. Source deletions are mirrored,
+and the recipe owns cleaning/rebuilding its outputs. For example:
 
-`uv.lock` is shared by workspace members. `qstriton/` is the `qstriton` member,
-with a `qstriton` CLI and the `qstriton` Python package. It owns the upstream
-Triton compiler dependency and ships the kernel sources; see
-[its README](qstriton/README.md).
+```just
+my-probe:
+    mkdir -p out/my-probe
+    nvcc -arch=sm_121 my-probe/bench.cu -o out/my-probe/bench
+    out/my-probe/bench > out/my-probe/results.txt
+```
+
+The remote interface accepts no shell command or arbitrary recipe arguments.
+
+The original `run_cuda_test.sh` and `run_core_benchmark.sh` remain for comparison.
+All runners share the disposable checkout; run them sequentially.

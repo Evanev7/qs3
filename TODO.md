@@ -157,16 +157,20 @@
   after eviction; managed gains are small. Full-model integration/timing and the
   routed-expert probe remain open; see FINDINGS.md.
 - [ ] Generate provider build availability from Nix without removing handwritten
-  Rust APIs. The initial integration builds the LM-head specialization unconditionally.
+  Rust APIs. Artifact generation now follows named Nix specializations; the
+  handwritten Rust LM-head adapter still includes its module unconditionally.
+- [x] Compile explicit sources from `triton_kernels/`, each exposing `kernel`.
+  Nix attribute names determine output filenames; LM head and GDN QKV share GEMV.
 - [ ] Extend launch generation when adding kernels needing scratch allocations,
   CTA clusters, cooperative launches, PDL, or dynamic grids. The first launcher
   uses ordinary cuLaunchKernel with zero scratch, as required by the row GEMV.
 - [ ] Add alignment/divisibility hints and their Rust pointer contracts when
   bringing in kernels that need them; retain the existing probe evidence.
 - [ ] Extend argument handling for descriptors/TMA, tuple arguments, scalar half
-  types and multiple exported kernels per file as those cases are introduced.
-- [ ] Track imported helper dependencies in the build graph, and exercise graph
-  capture/module lifetimes when integrating the generated wrappers.
+  types as those cases are introduced.
+- [ ] Revalidate source/helper edits, missing cubins, unchanged rebuilds,
+  Nix package builds, and GPU launchers after the explicit-source refactor.
+- [ ] Exercise graph capture/module lifetimes when integrating generated wrappers.
 
 ## Model configuration references
 

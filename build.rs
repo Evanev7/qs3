@@ -31,6 +31,7 @@ fn main() {
     println!("cargo:rerun-if-changed=qscu.cu");
     println!("cargo:rerun-if-changed=qscb.cu");
     println!("cargo:rerun-if-changed=build_tools/build.ninja");
+    println!("cargo:rerun-if-changed=build_tools/cuda.ninja");
     println!("cargo:rerun-if-changed=build_tools/generate_macros.c");
     println!("cargo:rerun-if-changed=build/libqs_native.a");
     println!("cargo:rerun-if-changed=build/triton/lm_head.rs");

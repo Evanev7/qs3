@@ -7,6 +7,9 @@ mod full {
 mod tail {
     include!(concat!(env!("QS3_TRITON_OUTPUT"), "/tail/lm_head.rs"));
 }
+mod qkv {
+    include!(concat!(env!("QS3_TRITON_OUTPUT"), "/full/gdn_qkv.rs"));
+}
 
 #[link(name = "cudart")]
 unsafe extern "C" {
@@ -127,6 +130,19 @@ fn masked_tail_bf16() {
     exercise(
         93,
         tail::GRID[0] as usize,
+        |x, w, y| unsafe { kernel.launch(ptr::null_mut(), x, w, y).unwrap() },
+        |x| f32::from_bits((x as u32) << 16),
+        |x| f32::from_bits((bf16(x) as u32) << 16),
+    );
+}
+
+#[test]
+fn gdn_qkv_bf16() {
+    let _context = Buffer::new(1);
+    let kernel = unsafe { qkv::Kernel::load().unwrap() };
+    exercise(
+        qkv::constants::K as usize,
+        qkv::GRID[0] as usize,
         |x, w, y| unsafe { kernel.launch(ptr::null_mut(), x, w, y).unwrap() },
         |x| f32::from_bits((x as u32) << 16),
         |x| f32::from_bits((bf16(x) as u32) << 16),
