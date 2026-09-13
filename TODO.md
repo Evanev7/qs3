@@ -27,12 +27,14 @@
   correctness comparisons, and repeatable provider experiments. These complete
   useful BF16 functionality and carry into NVFP4 without requiring a generic DAG
   runner or an exhaustive BF16 kernel-tuning campaign.
-- [ ] Beat the recorded vLLM 35B BF16 **102/32** result: **30.573 tok/s**,
+- [x] Beat the recorded vLLM 35B BF16 **102/32** result: **30.573 tok/s**,
   **32.640 ms/token p50**. The separate **500/200** baseline is **30.396 tok/s**,
   **32.892 ms/token p50**. Throughput uses mean latency, not p50. Reference
   artifacts: `.prototypes/out/vllm-2026-09-13T103506Z-AIU8cb/`.
-  Attribute current decode gaps before assuming graph replay can recover them;
-  record execution mode.
+  Eager qs3 now measures **31.735 tok/s** at 102/32 and **31.642 tok/s** at
+  1024/256 after kernel-only MoE/argmax changes (`efc9444`, 2026-09-13);
+  a short same-commit repeat reaches **31.714 tok/s**. See FINDINGS.md for
+  traces, precision differences, and the sustained common-prefix comparison.
 - Keep the routine core benchmark independently runnable through
   `./remote.sh benchmark`: **102/32**, then **1024/256**, with separate results.
   Restore the sustained workload for continuity with the September 9 results;

@@ -1,7 +1,8 @@
 # Findings and direction
 
 This is an evidence log for Qwen3.6 on Spark. TODO.md remains the completion
-checklist; competitive performance against vLLM has **not** been established.
+checklist; the 35B BF16 eager decode target of **31 tok/s** is now measured
+at both routine core workloads. Broader cross-runtime correctness remains open.
 
 The current measurements are first; detailed investigations are grouped by
 topic below. Within each topic, observations retain their historical context: an
@@ -422,6 +423,18 @@ checks through the prescribed script. The loaded 35B reference regression passes
 with both BF16 and FP32 recurrence, historical score tolerances, greedy IDs
 `[5, 6, 24218, 10]`, late-failure continuation and reset/replay. Real-model
 performance and sustained identical-prefix comparisons follow separately.
+
+A same-commit **control → candidate** repeat at `efc9444`, using the existing
+unprofiled `--measure-pass` subprocess through the prescribed remote script,
+measures **30.034 → 31.714 tok/s** at 102/32. Both include the new argmax;
+only `QS3_BENCH_MOE_KERNEL` differs (`tile32_blocks96` versus `decode_gemv64`).
+MoE's isolated end-to-end throughput gain in this pair is **5.59%**. All 36 IDs
+match, and the candidate repeat is within 0.07% of the full core measurement.
+[Repeat artifacts](benchmarks/2026-09-13-decode-kernels/repeat/decode_gemv64.json),
+[control](benchmarks/2026-09-13-decode-kernels/repeat/tile32_blocks96.json), and
+[recipe](benchmarks/2026-09-13-decode-kernels/repeat/run.sh) retain exact metadata,
+commit and an empty source diff. These additional unprofiled passes complement
+the complete two-workload Nsight records; they are not separate trace captures.
 
 ### First steady-decode GPU timeline
 
