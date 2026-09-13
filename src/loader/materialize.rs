@@ -15,27 +15,37 @@ impl<B: WeightLoadBackend> LoadedWeightPlan<B> {
         stream: *mut c_void,
         max_seq_len: u32,
     ) -> LoadResult<(QwenConfig, QwenWeights)> {
+        self.config.validate_compiled_model()?;
+        let config = QwenConfig::new(self.backend.device_ordinal(), stream, max_seq_len).map_err(
+            |status| {
+                WeightLoadError::invalid_config(format!("invalid runtime resources: {status:?}"))
+            },
+        )?;
+        self.into_model_with_config(config)
+    }
+
+    #[cfg(test)]
+    pub(super) fn into_fixture_model(
+        self,
+        stream: *mut c_void,
+        max_seq_len: u32,
+    ) -> LoadResult<(QwenConfig, QwenWeights)> {
+        let config = QwenConfig::loaded_fixture(
+            self.backend.device_ordinal(),
+            stream,
+            self.config.num_hidden_layers,
+            self.config.vocab_size,
+            max_seq_len,
+        );
+        self.into_model_with_config(config)
+    }
+
+    fn into_model_with_config(self, config: QwenConfig) -> LoadResult<(QwenConfig, QwenWeights)> {
         let LoadedWeightPlan {
-            config: text,
             tensors,
             mut backend,
+            ..
         } = self;
-
-        let config = QwenConfig::qwen36_bf16_runtime(
-            backend.device_ordinal(),
-            stream,
-            text.num_hidden_layers,
-            text.vocab_size,
-            text.rms_norm_eps,
-            text.rope_theta,
-            text.logits_soft_cap,
-            max_seq_len,
-        )
-        .map_err(|status| {
-            WeightLoadError::invalid_config(format!(
-                "validated config does not build a runtime config: {status:?}"
-            ))
-        })?;
 
         if tensors.len() != backend.allocations().len() {
             return Err(WeightLoadError::tensor_table(format!(

@@ -112,6 +112,7 @@ pub(super) fn validate_qwen36_bf16_dir(
 ) -> LoadResult<ValidatedQwen36> {
     let model_dir = model_dir.as_ref();
     let config = Qwen36TextConfig::read_with_limit(model_dir, max_json_bytes)?;
+    config.validate_compiled_model()?;
     let index = SafetensorsIndex::read_with_limit(model_dir, max_json_bytes)?;
     let table = read_indexed_safetensors_table(model_dir, &index, max_header_bytes)?;
     let tensors = validate_qwen36_bf16_tensor_table(&table, &config)?;
@@ -449,6 +450,40 @@ impl Qwen36TextConfig {
         };
         config.validate_supported()?;
         Ok(config)
+    }
+
+    /// Check the supplied checkpoint against this engine before any weight allocation.
+    /// Source revisions and weight values may differ; architecture and math must match.
+    pub(super) fn validate_compiled_model(&self) -> LoadResult<()> {
+        use crate::constants::{attention, model};
+        self.validate_supported()?;
+        if self.num_hidden_layers != model::NUM_HIDDEN_LAYERS
+            || self.vocab_size != model::VOCAB_SIZE
+            || self.rms_norm_eps != model::RMS_NORM_EPS
+            || self.rope_theta != attention::ROPE_THETA
+            || self.logits_soft_cap != 0.0
+        {
+            return Err(WeightLoadError::invalid_config(
+                "checkpoint layers, vocabulary, normalization, or RoPE do not match the compiled model",
+            ));
+        }
+        for (actual, expected) in self.layer_types.iter().zip(model::LAYER_TYPES) {
+            let expected = match expected {
+                "full_attention" => QwenLayerKind::FullAttention,
+                "linear_attention" => QwenLayerKind::LinearAttention,
+                _ => {
+                    return Err(WeightLoadError::invalid_config(
+                        "unsupported compiled layer type",
+                    ));
+                }
+            };
+            if *actual != expected {
+                return Err(WeightLoadError::invalid_config(
+                    "checkpoint layer order differs from the compiled model",
+                ));
+            }
+        }
+        Ok(())
     }
 
     pub(super) fn validate_supported(&self) -> LoadResult<()> {

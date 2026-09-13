@@ -28,7 +28,7 @@ pub use engine::{
     EngineConfig, KvLayout, RequestId, Status,
 };
 pub use loader::benchmark::run_core_benchmark;
-pub use model::{ModelRunner, QwenConfig, QwenMoeConfig, QwenRequest, QwenResult, QwenWeights};
+pub use model::{ModelRunner, QwenConfig, QwenRequest, QwenResult, QwenWeights};
 pub use tokenizer::{QwenTokenizer, TokenizerError};
 
 #[cfg(test)]

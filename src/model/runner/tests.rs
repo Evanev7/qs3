@@ -8,17 +8,13 @@ use crate::{
     constants::{
         attention::{HEAD_DIM, KV_WIDTH, NUM_KV_HEADS, NUM_Q_HEADS, PACKED_Q_GATE_WIDTH, Q_WIDTH},
         gdn::{CONV_WIDTH, NUM_VALUE_HEADS, OUTPUT_WIDTH, PACKED_QKV_CHANNELS, VALUE_HEAD_DIM},
-        mlp::{
-            INTERMEDIATE_SIZE, NUM_EXPERTS, NUM_EXPERTS_PER_TOKEN, SHARED_EXPERT_INTERMEDIATE_SIZE,
-        },
+        mlp::{NUM_EXPERTS, NUM_EXPERTS_PER_TOKEN},
         model::HIDDEN_SIZE,
     },
     engine::{AppendBatch, AttentionLayer, Commit, Engine, Status},
     ffi::cuda,
     model::{
-        ActiveRunKind, QwenBlockKind, QwenConfig, QwenMoeConfig, QwenWeights,
-        checked_usize_product,
-        config::{QwenGdnShape, QwenLayerPattern, QwenModelShape},
+        ActiveRunKind, MoeShape, QwenBlockKind, QwenConfig, QwenWeights, checked_usize_product,
         constant_bf16_values,
         scratch::{DeviceBuffer, RunnerScratch},
         state::{GdnSlotMap, GdnState},
@@ -67,7 +63,7 @@ const MODEL_LOGITS_REL_TOL: f32 = 0.03;
 
 fn qwen36_hybrid_fixture_with_supported_attention(num_layers: u32) -> QwenConfig {
     let mut config = QwenConfig::randomized_qwen36_moe_gdn_one_block_fixture(-1);
-    config.num_layers = num_layers;
+    config.fixture_mut().num_layers = num_layers;
     config
 }
 
@@ -437,13 +433,15 @@ fn assert_bf16_close_to_f32_oracle(
 
 fn full_attention_vector_config() -> QwenConfig {
     let mut config = QwenConfig::randomized_dense_tiny_fixture(0);
-    config.num_layers = 1;
+    config.fixture_mut().num_layers = 1;
     config
 }
 
 fn empty_weights_for_config(config: QwenConfig) -> QwenWeights {
     QwenWeights {
-        config,
+        device_ordinal: config.device_ordinal,
+        stream: config.stream,
+        fixture: config.fixture,
         token_embedding: empty_bf16_buffer(),
         final_norm: empty_bf16_buffer(),
         lm_head: empty_bf16_buffer(),
@@ -453,19 +451,19 @@ fn empty_weights_for_config(config: QwenConfig) -> QwenWeights {
 
 fn moe_vector_config() -> QwenConfig {
     let mut config = QwenConfig::randomized_dense_tiny_fixture(0);
-    config.num_layers = 1;
+    config.fixture_mut().num_layers = 1;
     config.max_seq_len = MOE_VECTOR_ROWS;
     config.max_pages = 2;
     config.page_size = 4;
-    config.hidden_size = MOE_VECTOR_HIDDEN;
-    config.intermediate_size = MOE_VECTOR_INTERMEDIATE;
-    config.moe = Some(QwenMoeConfig {
+    config.fixture_mut().hidden_size = MOE_VECTOR_HIDDEN;
+    config.fixture_mut().intermediate_size = MOE_VECTOR_INTERMEDIATE;
+    config.fixture_mut().moe = Some(MoeShape {
         num_experts: NUM_EXPERTS,
         num_experts_per_tok: NUM_EXPERTS_PER_TOKEN,
         moe_intermediate_size: MOE_VECTOR_INTERMEDIATE,
         shared_expert_intermediate_size: MOE_VECTOR_INTERMEDIATE,
     });
-    config.vocab_size = 16;
+    config.fixture_mut().vocab_size = 16;
     config
 }
 
@@ -478,9 +476,9 @@ fn moe_vector_runner() -> ModelRunner {
         let plan = unsafe {
             ops.qsfi()
                 .create_moe_bf16_plan(MoeBf16PlanConfig {
-                    kernel: config.moe_bf16_kernel,
+                    kernel: crate::backend::qsfi::MoeBf16Kernel::COMPILED,
                     max_num_tokens: config.max_seq_len,
-                    hidden_size: config.hidden_size,
+                    hidden_size: config.hidden_size(),
                     intermediate_size: moe.moe_intermediate_size,
                     num_experts: moe.num_experts,
                     top_k: moe.num_experts_per_tok,
@@ -849,8 +847,8 @@ fn full_attention_block_moe_vector_config() -> QwenConfig {
     config.max_seq_len = FULL_ATTN_BLOCK_VECTOR_ROWS;
     config.max_pages = 2;
     config.page_size = 4;
-    config.intermediate_size = FULL_ATTN_BLOCK_MOE_INTERMEDIATE;
-    config.moe = Some(QwenMoeConfig {
+    config.fixture_mut().intermediate_size = FULL_ATTN_BLOCK_MOE_INTERMEDIATE;
+    config.fixture_mut().moe = Some(MoeShape {
         num_experts: NUM_EXPERTS,
         num_experts_per_tok: NUM_EXPERTS_PER_TOKEN,
         moe_intermediate_size: FULL_ATTN_BLOCK_MOE_INTERMEDIATE,
@@ -868,9 +866,9 @@ fn full_attention_block_moe_vector_runner() -> ModelRunner {
         let plan = unsafe {
             ops.qsfi()
                 .create_moe_bf16_plan(MoeBf16PlanConfig {
-                    kernel: config.moe_bf16_kernel,
+                    kernel: crate::backend::qsfi::MoeBf16Kernel::COMPILED,
                     max_num_tokens: config.max_seq_len,
-                    hidden_size: config.hidden_size,
+                    hidden_size: config.hidden_size(),
                     intermediate_size: moe.moe_intermediate_size,
                     num_experts: moe.num_experts,
                     top_k: moe.num_experts_per_tok,
@@ -1066,14 +1064,14 @@ fn gdn_decoder_layer_vector_config() -> QwenConfig {
     config.max_seq_len = GDN_DECODER_LAYER_VECTOR_ROWS;
     config.max_pages = 2;
     config.page_size = 4;
-    config.intermediate_size = GDN_DECODER_LAYER_MOE_INTERMEDIATE;
-    config.moe = Some(QwenMoeConfig {
+    config.fixture_mut().intermediate_size = GDN_DECODER_LAYER_MOE_INTERMEDIATE;
+    config.fixture_mut().moe = Some(MoeShape {
         num_experts: NUM_EXPERTS,
         num_experts_per_tok: NUM_EXPERTS_PER_TOKEN,
         moe_intermediate_size: GDN_DECODER_LAYER_MOE_INTERMEDIATE,
         shared_expert_intermediate_size: GDN_DECODER_LAYER_MOE_INTERMEDIATE,
     });
-    config.vocab_size = 16;
+    config.fixture_mut().vocab_size = 16;
     config
 }
 
@@ -1086,9 +1084,9 @@ fn gdn_decoder_layer_vector_runner() -> ModelRunner {
         let plan = unsafe {
             ops.qsfi()
                 .create_moe_bf16_plan(MoeBf16PlanConfig {
-                    kernel: config.moe_bf16_kernel,
+                    kernel: crate::backend::qsfi::MoeBf16Kernel::COMPILED,
                     max_num_tokens: config.max_seq_len,
-                    hidden_size: config.hidden_size,
+                    hidden_size: config.hidden_size(),
                     intermediate_size: moe.moe_intermediate_size,
                     num_experts: moe.num_experts,
                     top_k: moe.num_experts_per_tok,
@@ -1314,28 +1312,28 @@ fn gdn_decoder_layer_fixture(device: i32, stream: *mut c_void) -> GdnDecoderLaye
 
 fn model_logits_vector_config() -> QwenConfig {
     let mut config = QwenConfig::randomized_dense_tiny_fixture(0);
-    config.num_layers = 1;
+    config.fixture_mut().num_layers = 1;
     config.max_seq_len = MODEL_LOGITS_TOTAL_ROWS as u32;
     config.max_pages = 2;
     config.page_size = MODEL_LOGITS_PROMPT_LEN as u32;
-    config.intermediate_size = MODEL_LOGITS_INTERMEDIATE;
-    config.moe = Some(QwenMoeConfig {
+    config.fixture_mut().intermediate_size = MODEL_LOGITS_INTERMEDIATE;
+    config.fixture_mut().moe = Some(MoeShape {
         num_experts: NUM_EXPERTS,
         num_experts_per_tok: NUM_EXPERTS_PER_TOKEN,
         moe_intermediate_size: MODEL_LOGITS_INTERMEDIATE,
         shared_expert_intermediate_size: MODEL_LOGITS_INTERMEDIATE,
     });
-    config.vocab_size = MODEL_LOGITS_VOCAB;
+    config.fixture_mut().vocab_size = MODEL_LOGITS_VOCAB;
     config
 }
 
 fn model_logits_vector_weights(config: QwenConfig) -> QwenWeights {
     let device = config.device_ordinal;
     let stream = config.stream;
-    let hidden = config.hidden_size;
+    let hidden = config.hidden_size();
     let q_hidden = config.q_hidden_size().unwrap();
     let kv_hidden = config.kv_hidden_size().unwrap();
-    let vocab = config.vocab_size;
+    let vocab = config.vocab_size();
     let moe = config.moe_config().unwrap();
 
     let token_embedding = DeviceBuffer::from_slice(
@@ -1374,7 +1372,7 @@ fn model_logits_vector_weights(config: QwenConfig) -> QwenWeights {
             stream,
             &read_model_logits_bf16_vector(
                 "model_q_norm_raw_weight.bf16",
-                config.head_dim as usize,
+                config.head_dim() as usize,
             ),
         )
         .unwrap(),
@@ -1383,7 +1381,7 @@ fn model_logits_vector_weights(config: QwenConfig) -> QwenWeights {
             stream,
             &read_model_logits_bf16_vector(
                 "model_k_norm_raw_weight.bf16",
-                config.head_dim as usize,
+                config.head_dim() as usize,
             ),
         )
         .unwrap(),
@@ -1504,7 +1502,9 @@ fn model_logits_vector_weights(config: QwenConfig) -> QwenWeights {
     });
 
     QwenWeights {
-        config,
+        device_ordinal: config.device_ordinal,
+        stream: config.stream,
+        fixture: config.fixture,
         token_embedding,
         final_norm,
         lm_head,
@@ -1729,15 +1729,15 @@ fn qwen36_full_attention_vectors_validate_qk_norm_and_rope_pipeline() {
     let q_ptr = runner
         .scratch
         .q
-        .matrix(rows * runner.config.num_q_heads, runner.config.head_dim)
+        .matrix(rows * runner.config.num_q_heads(), runner.config.head_dim())
         .unwrap();
     unsafe {
         runner.engine.operators().qsfi().rmsnorm_bf16(
             &crate::backend::qsfi::RmsNormBf16::qwen_qk_norm(
                 q_ptr,
-                q_norm_weight.vector(runner.config.head_dim).unwrap(),
+                q_norm_weight.vector(runner.config.head_dim()).unwrap(),
                 q_ptr,
-                runner.config.rms_norm_eps,
+                runner.config.rms_norm_eps(),
             )
             .unwrap(),
         )
@@ -1746,15 +1746,18 @@ fn qwen36_full_attention_vectors_validate_qk_norm_and_rope_pipeline() {
     let k_ptr = runner
         .scratch
         .k
-        .matrix(rows * runner.config.num_kv_heads, runner.config.head_dim)
+        .matrix(
+            rows * runner.config.num_kv_heads(),
+            runner.config.head_dim(),
+        )
         .unwrap();
     unsafe {
         runner.engine.operators().qsfi().rmsnorm_bf16(
             &crate::backend::qsfi::RmsNormBf16::qwen_qk_norm(
                 k_ptr,
-                k_norm_weight.vector(runner.config.head_dim).unwrap(),
+                k_norm_weight.vector(runner.config.head_dim()).unwrap(),
                 k_ptr,
-                runner.config.rms_norm_eps,
+                runner.config.rms_norm_eps(),
             )
             .unwrap(),
         )
@@ -1943,9 +1946,11 @@ fn qwen36_full_attention_block_vector_validates_attention_residual_norm_composit
         runner.engine.operators().qsfi().rmsnorm_bf16(
             &crate::backend::qsfi::RmsNormBf16::qwen_decoder_norm(
                 residual_ptr,
-                attn_norm_weight.vector(runner.config.hidden_size).unwrap(),
+                attn_norm_weight
+                    .vector(runner.config.hidden_size())
+                    .unwrap(),
                 norm_ptr,
-                runner.config.rms_norm_eps,
+                runner.config.rms_norm_eps(),
             )
             .unwrap(),
         )
@@ -2055,15 +2060,15 @@ fn qwen36_full_attention_block_vector_validates_attention_residual_norm_composit
     let q_ptr = runner
         .scratch
         .q
-        .matrix(rows * runner.config.num_q_heads, runner.config.head_dim)
+        .matrix(rows * runner.config.num_q_heads(), runner.config.head_dim())
         .unwrap();
     unsafe {
         runner.engine.operators().qsfi().rmsnorm_bf16(
             &crate::backend::qsfi::RmsNormBf16::qwen_qk_norm(
                 q_ptr,
-                q_norm_weight.vector(runner.config.head_dim).unwrap(),
+                q_norm_weight.vector(runner.config.head_dim()).unwrap(),
                 q_ptr,
-                runner.config.rms_norm_eps,
+                runner.config.rms_norm_eps(),
             )
             .unwrap(),
         )
@@ -2072,15 +2077,18 @@ fn qwen36_full_attention_block_vector_validates_attention_residual_norm_composit
     let k_ptr = runner
         .scratch
         .k
-        .matrix(rows * runner.config.num_kv_heads, runner.config.head_dim)
+        .matrix(
+            rows * runner.config.num_kv_heads(),
+            runner.config.head_dim(),
+        )
         .unwrap();
     unsafe {
         runner.engine.operators().qsfi().rmsnorm_bf16(
             &crate::backend::qsfi::RmsNormBf16::qwen_qk_norm(
                 k_ptr,
-                k_norm_weight.vector(runner.config.head_dim).unwrap(),
+                k_norm_weight.vector(runner.config.head_dim()).unwrap(),
                 k_ptr,
-                runner.config.rms_norm_eps,
+                runner.config.rms_norm_eps(),
             )
             .unwrap(),
         )
@@ -2141,22 +2149,22 @@ fn qwen36_full_attention_block_vector_validates_attention_residual_norm_composit
         runner
             .scratch
             .q
-            .heads(rows, runner.config.num_q_heads, runner.config.head_dim)
+            .heads(rows, runner.config.num_q_heads(), runner.config.head_dim())
             .unwrap(),
         runner
             .scratch
             .k
-            .heads(rows, runner.config.num_kv_heads, runner.config.head_dim)
+            .heads(rows, runner.config.num_kv_heads(), runner.config.head_dim())
             .unwrap(),
         runner
             .scratch
             .v
-            .heads(rows, runner.config.num_kv_heads, runner.config.head_dim)
+            .heads(rows, runner.config.num_kv_heads(), runner.config.head_dim())
             .unwrap(),
         runner
             .scratch
             .attn_out
-            .heads(rows, runner.config.num_q_heads, runner.config.head_dim)
+            .heads(rows, runner.config.num_q_heads(), runner.config.head_dim())
             .unwrap(),
         runner.scratch.positions.vector(rows).unwrap(),
     );
@@ -2217,15 +2225,17 @@ fn qwen36_full_attention_block_vector_validates_attention_residual_norm_composit
                 runner
                     .scratch
                     .attn_proj
-                    .matrix(rows, runner.config.hidden_size)
+                    .matrix(rows, runner.config.hidden_size())
                     .unwrap(),
                 runner
                     .scratch
                     .residual
-                    .matrix(rows, runner.config.hidden_size)
+                    .matrix(rows, runner.config.hidden_size())
                     .unwrap(),
-                post_norm_weight.vector(runner.config.hidden_size).unwrap(),
-                runner.config.rms_norm_eps,
+                post_norm_weight
+                    .vector(runner.config.hidden_size())
+                    .unwrap(),
+                runner.config.rms_norm_eps(),
             )
             .unwrap(),
         )
@@ -2297,10 +2307,10 @@ fn qwen36_full_attention_decoder_slice_chains_attention_into_moe_and_next_norm()
                 residual_ptr,
                 layer_weights
                     .attn_norm
-                    .vector(runner.config.hidden_size)
+                    .vector(runner.config.hidden_size())
                     .unwrap(),
                 norm_ptr,
-                runner.config.rms_norm_eps,
+                runner.config.rms_norm_eps(),
             )
             .unwrap(),
         )
@@ -2393,7 +2403,7 @@ fn qwen36_gdn_qkv_triton_decode_matches_cublaslt() {
     let mut runner = gdn_decoder_layer_vector_runner();
     let stream = runner.config.stream;
     let device = runner.config.device_ordinal;
-    let hidden = runner.config.hidden_size;
+    let hidden = runner.config.hidden_size();
     let packed = PACKED_QKV_CHANNELS;
     runner.scratch.ensure(&runner.config, 1).unwrap();
     runner.gdn_qkv = Some(unsafe { crate::backend::qstriton::GdnQkv::load().unwrap() });
@@ -2734,15 +2744,15 @@ fn qwen36_full_attention_block_vector_validates_oracle_seeded_moe_shared_and_nex
                 runner
                     .scratch
                     .mlp_out
-                    .matrix(rows, runner.config.hidden_size)
+                    .matrix(rows, runner.config.hidden_size())
                     .unwrap(),
                 runner
                     .scratch
                     .residual
-                    .matrix(rows, runner.config.hidden_size)
+                    .matrix(rows, runner.config.hidden_size())
                     .unwrap(),
-                layer.next_norm.vector(runner.config.hidden_size).unwrap(),
-                runner.config.rms_norm_eps,
+                layer.next_norm.vector(runner.config.hidden_size()).unwrap(),
+                runner.config.rms_norm_eps(),
             )
             .unwrap(),
         )
@@ -2999,166 +3009,30 @@ fn qwen36_moe_vectors_validate_shared_expert_gate_add_output() {
 }
 
 #[test]
-fn public_moe_config_validation_rejects_invalid_config_json_shapes() {
-    assert_eq!(
-        QwenMoeConfig::qwen36_35b_a3b(),
-        QwenMoeConfig {
-            num_experts: NUM_EXPERTS,
-            num_experts_per_tok: NUM_EXPERTS_PER_TOKEN,
-            moe_intermediate_size: INTERMEDIATE_SIZE,
-            shared_expert_intermediate_size: SHARED_EXPERT_INTERMEDIATE_SIZE,
-        }
-    );
-    assert_eq!(
-        QwenMoeConfig {
-            num_experts: 4,
-            num_experts_per_tok: 0,
-            moe_intermediate_size: 64,
-            shared_expert_intermediate_size: 0,
-        }
-        .validate(128),
-        Err(Status::InvalidArgument)
-    );
-    assert_eq!(
-        QwenMoeConfig {
-            num_experts: 4,
-            num_experts_per_tok: 5,
-            moe_intermediate_size: 64,
-            shared_expert_intermediate_size: 0,
-        }
-        .validate(128),
-        Err(Status::InvalidArgument)
-    );
-    assert_eq!(
-        QwenMoeConfig {
-            num_experts: 32,
-            num_experts_per_tok: 17,
-            moe_intermediate_size: 64,
-            shared_expert_intermediate_size: 0,
-        }
-        .validate(128),
-        Err(Status::Unsupported)
-    );
-    assert_eq!(
-        QwenMoeConfig {
-            num_experts: 4097,
-            num_experts_per_tok: 2,
-            moe_intermediate_size: 64,
-            shared_expert_intermediate_size: 0,
-        }
-        .validate(128),
-        Err(Status::Unsupported)
-    );
-    assert_eq!(
-        QwenMoeConfig {
-            num_experts: 4,
-            num_experts_per_tok: 2,
-            moe_intermediate_size: 66,
-            shared_expert_intermediate_size: 0,
-        }
-        .validate(128),
-        Err(Status::InvalidArgument)
-    );
-    assert_eq!(
-        QwenMoeConfig {
-            num_experts: 4,
-            num_experts_per_tok: 2,
-            moe_intermediate_size: 64,
-            shared_expert_intermediate_size: 66,
-        }
-        .validate(128),
-        Err(Status::InvalidArgument)
-    );
-}
-
-#[test]
-fn private_qwen36_gdn_validation_is_fixed_to_supported_moe_shape() {
-    let mut dense_gdn = QwenConfig::randomized_qwen36_moe_gdn_one_block_fixture(-1);
-    dense_gdn.moe = None;
-    dense_gdn.hidden_size = 10240;
-    dense_gdn.intermediate_size = 17408;
-    dense_gdn.model_shape = QwenModelShape {
-        layer_pattern: QwenLayerPattern::Qwen36HybridGdn {
-            gdn: QwenGdnShape::qwen36_dense_27b(),
-        },
-    };
-    assert_eq!(dense_gdn.validate(), Err(Status::Unsupported));
-
-    let mut wrong_hidden = QwenConfig::randomized_qwen36_moe_gdn_one_block_fixture(-1);
-    wrong_hidden.hidden_size = 4096;
-    assert_eq!(wrong_hidden.validate(), Err(Status::InvalidArgument));
-
-    let mut missing_full_attention = QwenConfig::randomized_qwen36_moe_gdn_one_block_fixture(-1);
-    missing_full_attention.num_layers = 1;
-    assert_eq!(
-        missing_full_attention.validate(),
-        Err(Status::InvalidArgument)
-    );
-
-    let introduces_full_attention = QwenConfig::randomized_qwen36_moe_gdn_one_block_fixture(-1);
-    assert_eq!(introduces_full_attention.validate(), Ok(()));
-
-    let mut missing_shared = QwenConfig::randomized_qwen36_moe_gdn_one_block_fixture(-1);
-    missing_shared.moe = Some(QwenMoeConfig {
-        shared_expert_intermediate_size: 0,
-        ..QwenMoeConfig::qwen36_35b_a3b()
-    });
-    assert_eq!(missing_shared.validate(), Err(Status::Unsupported));
-}
-
-#[test]
-fn qwen36_no_full_attention_config_is_invalid() {
-    let mut config = QwenConfig::randomized_qwen36_moe_gdn_one_block_fixture(-1);
-    config.num_layers = 1;
-    assert_eq!(config.attention_layer_count(), 0);
-    assert_eq!(config.gdn_layer_count(), 1);
-    assert_eq!(config.validate(), Err(Status::InvalidArgument));
-}
-
-#[test]
-fn qwen36_incomplete_hybrid_schedule_is_invalid() {
-    let mut config = QwenConfig::randomized_qwen36_moe_gdn_one_block_fixture(-1);
-    config.num_layers = 5;
-    assert_eq!(config.attention_layer_count(), 1);
-    assert_eq!(config.gdn_layer_count(), 4);
-    assert_eq!(config.validate(), Err(Status::InvalidArgument));
-}
-
-#[test]
 fn qwen36_one_schedule_block_engine_config_uses_real_attention_dimensions() {
     let config = QwenConfig::randomized_qwen36_moe_gdn_one_block_fixture(-1);
     assert_eq!(config.validate(), Ok(()));
     assert_eq!(config.attention_layer_count(), 1);
     assert_eq!(config.gdn_layer_count(), 3);
-    assert_eq!(config.hidden_size, HIDDEN_SIZE);
-    assert_eq!(config.num_q_heads, NUM_Q_HEADS);
-    assert_eq!(config.num_kv_heads, NUM_KV_HEADS);
-    assert_eq!(config.head_dim, HEAD_DIM);
+    assert_eq!(config.hidden_size(), HIDDEN_SIZE);
+    assert_eq!(config.num_q_heads(), NUM_Q_HEADS);
+    assert_eq!(config.num_kv_heads(), NUM_KV_HEADS);
+    assert_eq!(config.head_dim(), HEAD_DIM);
     assert_eq!(config.q_hidden_size(), Ok(Q_WIDTH));
     assert_eq!(config.kv_hidden_size(), Ok(KV_WIDTH));
 
     let engine = config.engine_config();
     assert_eq!(engine.num_layers, 1);
-    assert_eq!(engine.num_q_heads, config.num_q_heads);
-    assert_eq!(engine.num_kv_heads, config.num_kv_heads);
-    assert_eq!(engine.head_dim, config.head_dim);
+    assert_eq!(engine.num_q_heads, config.num_q_heads());
+    assert_eq!(engine.num_kv_heads, config.num_kv_heads());
+    assert_eq!(engine.head_dim, config.head_dim());
 }
 
 #[test]
 fn loaded_qwen36_factories_request_every_manifest_target_once() {
     use std::collections::BTreeSet;
 
-    let config = QwenConfig::qwen36_bf16_runtime(
-        0,
-        ptr::null_mut(),
-        40,
-        248_320,
-        1.0e-6,
-        10_000_000.0,
-        0.0,
-        8,
-    )
-    .unwrap();
+    let config = QwenConfig::new(0, ptr::null_mut(), 8).unwrap();
     let mut seen = BTreeSet::new();
     let weights = QwenWeights::from_bf16_buffers(config, |layer, slot| {
         assert!(
@@ -3187,8 +3061,8 @@ fn randomized_full_attention_weights_seed_qwen_norm_raw_weights_as_zero() {
 
     let config = QwenConfig::randomized_dense_tiny_fixture(0);
     let weights = QwenWeights::random_bf16(&config, 0x5153_3300_7177_6e6b).unwrap();
-    let hidden = config.hidden_size as usize;
-    let head_dim = config.head_dim as usize;
+    let hidden = config.hidden_size() as usize;
+    let head_dim = config.head_dim() as usize;
 
     assert_eq!(weights.final_norm.cap, hidden);
     assert_eq!(
@@ -3204,7 +3078,7 @@ fn randomized_full_attention_weights_seed_qwen_norm_raw_weights_as_zero() {
             assert_eq!(layer.k_norm.cap, head_dim);
             assert_eq!(
                 layer.q_proj.cap,
-                checked_usize_product(&[PACKED_Q_GATE_WIDTH, config.hidden_size]).unwrap()
+                checked_usize_product(&[PACKED_Q_GATE_WIDTH, config.hidden_size()]).unwrap()
             );
             assert_eq!(
                 download_bf16(&layer.attn_norm, config.stream, hidden),
@@ -3247,10 +3121,7 @@ fn qwen36_gdn_weights_carry_post_attention_shared_moe() {
 
     match &layer {
         QwenLayerWeights::Gdn(gdn) => {
-            assert_eq!(
-                gdn.mlp.validate_for(Some(QwenMoeConfig::qwen36_35b_a3b())),
-                Ok(())
-            );
+            assert_eq!(gdn.mlp.validate_for(Some(MoeShape::compiled())), Ok(()));
         }
         QwenLayerWeights::AttentionMlp(_) => unreachable!(),
     }
@@ -3275,7 +3146,7 @@ fn shared_moe_execution_produces_routed_and_shared_outputs() {
     let config = QwenConfig::randomized_shared_moe_tiny_fixture(0);
     let mut runner = ModelRunner::random_bf16(config, 0x5153_3300_5a5a_5a5a).unwrap();
     let rows = 1;
-    let hidden = config.hidden_size;
+    let hidden = config.hidden_size();
     let hidden_len = hidden as usize;
     let moe = config.moe_config().unwrap();
     runner.scratch.ensure(&config, rows).unwrap();
@@ -3396,11 +3267,11 @@ fn qwen36_hybrid_schedule_maps_model_layers_to_attention_and_gdn_indices() {
 
     let engine = config.engine_config();
     assert_eq!(engine.num_layers, 2);
-    assert_eq!(engine.num_q_heads, config.num_q_heads);
-    assert_eq!(engine.num_kv_heads, config.num_kv_heads);
-    assert_eq!(engine.head_dim, config.head_dim);
-    assert_eq!(config.num_q_heads, NUM_Q_HEADS);
-    assert_eq!(config.num_kv_heads, NUM_KV_HEADS);
+    assert_eq!(engine.num_q_heads, config.num_q_heads());
+    assert_eq!(engine.num_kv_heads, config.num_kv_heads());
+    assert_eq!(engine.head_dim, config.head_dim());
+    assert_eq!(config.num_q_heads(), NUM_Q_HEADS);
+    assert_eq!(config.num_kv_heads(), NUM_KV_HEADS);
 }
 
 #[test]
@@ -3442,7 +3313,7 @@ fn sampling_rejects_padded_tokenizer_ids() {
     let mut runner = ModelRunner::random_bf16(config, 78).unwrap();
     // Exercise sampling directly with synthetic full-width logits; no model
     // execution uses these tiny weights with the larger vocabulary.
-    runner.config.vocab_size = 248320;
+    runner.config.fixture_mut().vocab_size = 248320;
     runner.scratch.ensure(&runner.config, 1).unwrap();
     runner
         .scratch
@@ -3582,8 +3453,8 @@ fn failed_rebuild_after_final_layer_preserves_prefix_and_continuation() {
 impl ModelRunner {
     pub(crate) fn assert_lm_head_matches_cublaslt(&mut self, rows: u32) {
         assert_eq!(self.lm_head_provider(), "triton");
-        let vocab = self.config.vocab_size;
-        let hidden = self.config.hidden_size;
+        let vocab = self.config.vocab_size();
+        let hidden = self.config.hidden_size();
         let mut reference = DeviceBuffer::<f32>::empty(self.config.device_ordinal);
         reference.ensure(vocab as usize).unwrap();
         unsafe {
@@ -3624,7 +3495,7 @@ impl ModelRunner {
 
     pub(crate) fn decode_forced_token_for_test(&mut self, token: i32) -> Result<(), Status> {
         let request_id = self.live_request_id.ok_or(Status::InvalidArgument)?;
-        super::validate_token_ids(&[token], self.config.vocab_size)?;
+        super::validate_token_ids(&[token], self.config.vocab_size())?;
         self.decode_one(request_id, token)
     }
 

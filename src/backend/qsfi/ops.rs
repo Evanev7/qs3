@@ -52,6 +52,14 @@ pub enum MoeBf16Kernel {
 }
 
 impl MoeBf16Kernel {
+    pub(crate) const COMPILED: Self = match crate::constants::mlp::BF16_KERNEL.as_bytes() {
+        b"tile128_blocks4" => Self::CutlassTile128Blocks4,
+        b"tile128_blocks96" => Self::CutlassTile128Blocks96,
+        b"tile32_blocks96" => Self::CutlassTile32Blocks96,
+        b"decode_gemv64" => Self::DecodeGemv64,
+        _ => panic!("unsupported compiled BF16 MoE kernel"),
+    };
+
     /// Grouped path launch size (prefill and narrow fixtures).
     pub const fn threadblocks(self) -> u32 {
         match self {

@@ -1,38 +1,74 @@
-use super::{
-    DeterministicRng, QwenBlockKind, QwenConfig, QwenMoeConfig, checked_usize_product,
-    constant_bf16_values, random_bf16_values, scratch::DeviceBuffer,
+#[cfg(test)]
+use super::{DeterministicRng, checked_usize_product, constant_bf16_values, random_bf16_values};
+use super::{QwenBlockKind, QwenConfig, scratch::DeviceBuffer};
+#[cfg(test)]
+use crate::constants::{
+    attention::PACKED_Q_GATE_WIDTH,
+    gdn::{CONV_WIDTH, NUM_VALUE_HEADS, OUTPUT_WIDTH, PACKED_QKV_CHANNELS, VALUE_HEAD_DIM},
 };
-use crate::{
-    constants::{
-        attention::PACKED_Q_GATE_WIDTH,
-        gdn::{CONV_WIDTH, NUM_VALUE_HEADS, OUTPUT_WIDTH, PACKED_QKV_CHANNELS, VALUE_HEAD_DIM},
-    },
-    engine::Status,
-    ext::SafeVec,
-};
+use crate::{engine::Status, ext::SafeVec};
+
+/// Dimensions needed to bind routed and shared expert tensors.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct MoeShape {
+    pub num_experts: u32,
+    pub num_experts_per_tok: u32,
+    pub moe_intermediate_size: u32,
+    pub shared_expert_intermediate_size: u32,
+}
+
+impl MoeShape {
+    pub(super) const fn compiled() -> Self {
+        use crate::constants::mlp;
+        Self {
+            num_experts: mlp::NUM_EXPERTS,
+            num_experts_per_tok: mlp::NUM_EXPERTS_PER_TOKEN,
+            moe_intermediate_size: mlp::INTERMEDIATE_SIZE,
+            shared_expert_intermediate_size: mlp::SHARED_EXPERT_INTERMEDIATE_SIZE,
+        }
+    }
+}
 
 pub struct QwenWeights {
-    pub(super) config: QwenConfig,
+    pub(super) device_ordinal: i32,
+    pub(super) stream: crate::ffi::CudaStream,
+    #[cfg(test)]
+    pub(super) fixture: Option<super::fixtures::FixtureShape>,
     pub(super) token_embedding: DeviceBuffer<u16>,
     pub(super) final_norm: DeviceBuffer<u16>,
     pub(super) lm_head: DeviceBuffer<u16>,
     pub(super) layers: Vec<QwenLayerWeights>,
 }
 
-fn loaded_qwen36_moe_weights<F>(layer: u32, take: &mut F) -> Result<QwenMlpWeights, Status>
+fn loaded_mlp_weights<F>(
+    layer: u32,
+    moe: Option<MoeShape>,
+    take: &mut F,
+) -> Result<QwenMlpWeights, Status>
 where
     F: FnMut(Option<u32>, &'static str) -> Result<DeviceBuffer<u16>, Status>,
 {
+    let Some(moe) = moe else {
+        return Ok(QwenMlpWeights::Dense {
+            gate_proj: take(Some(layer), "mlp.gate")?,
+            up_proj: take(Some(layer), "mlp.up")?,
+            down_proj: take(Some(layer), "mlp.down")?,
+        });
+    };
     Ok(QwenMlpWeights::Moe {
         router_proj: take(Some(layer), "mlp.router")?,
         gate_up_proj: take(Some(layer), "mlp.experts.gate_up")?,
         down_proj: take(Some(layer), "mlp.experts.down")?,
-        shared: Some(QwenSharedExpertWeights {
-            gate_proj: take(Some(layer), "mlp.shared.gate")?,
-            up_proj: take(Some(layer), "mlp.shared.up")?,
-            down_proj: take(Some(layer), "mlp.shared.down")?,
-            shared_expert_gate: take(Some(layer), "mlp.shared.gate_score")?,
-        }),
+        shared: if moe.shared_expert_intermediate_size == 0 {
+            None
+        } else {
+            Some(QwenSharedExpertWeights {
+                gate_proj: take(Some(layer), "mlp.shared.gate")?,
+                up_proj: take(Some(layer), "mlp.shared.up")?,
+                down_proj: take(Some(layer), "mlp.shared.down")?,
+                shared_expert_gate: take(Some(layer), "mlp.shared.gate_score")?,
+            })
+        },
     })
 }
 
@@ -45,12 +81,12 @@ impl QwenWeights {
         let token_embedding = take(None, "token_embedding")?;
         let final_norm = take(None, "final_norm")?;
         let lm_head = take(None, "lm_head")?;
-        let mut layers = Vec::safe_new(config.num_layers as usize)?;
+        let mut layers = Vec::safe_new(config.num_layers() as usize)?;
 
-        for layer_idx in 0..config.num_layers {
+        for layer_idx in 0..config.num_layers() {
             let input_norm = take(Some(layer_idx), "input_layernorm")?;
             let mlp_norm = take(Some(layer_idx), "post_attention_layernorm")?;
-            let mlp = loaded_qwen36_moe_weights(layer_idx, &mut take)?;
+            let mlp = loaded_mlp_weights(layer_idx, config.moe_config(), &mut take)?;
             let layer = match config.layer_kind(layer_idx) {
                 QwenBlockKind::FullAttention => {
                     QwenLayerWeights::AttentionMlp(QwenAttentionMlpWeights {
@@ -85,7 +121,10 @@ impl QwenWeights {
         }
 
         Ok(Self {
-            config,
+            device_ordinal: config.device_ordinal,
+            stream: config.stream,
+            #[cfg(test)]
+            fixture: config.fixture,
             token_embedding,
             final_norm,
             lm_head,
@@ -93,15 +132,16 @@ impl QwenWeights {
         })
     }
 
-    pub fn random_bf16(config: &QwenConfig, seed: u64) -> Result<Self, Status> {
+    #[cfg(test)]
+    pub(crate) fn random_bf16(config: &QwenConfig, seed: u64) -> Result<Self, Status> {
         config.validate()?;
         let config = config.resolved_device_config()?;
         let mut rng = DeterministicRng::new(seed);
         let device = config.device_ordinal;
         let stream = config.stream;
-        let hidden = config.hidden_size;
+        let hidden = config.hidden_size();
         let q_hidden = config.q_hidden_size()?;
-        let vocab = config.vocab_size;
+        let vocab = config.vocab_size();
 
         let token_embedding = DeviceBuffer::from_slice(
             device,
@@ -116,8 +156,8 @@ impl QwenWeights {
             &random_bf16_values(&mut rng, checked_usize_product(&[vocab, hidden])?, 0.04)?,
         )?;
 
-        let mut layers = Vec::safe_new(config.num_layers as usize)?;
-        for layer_idx in 0..config.num_layers {
+        let mut layers = Vec::safe_new(config.num_layers() as usize)?;
+        for layer_idx in 0..config.num_layers() {
             let mlp_norm = DeviceBuffer::from_slice(
                 device,
                 stream,
@@ -224,12 +264,12 @@ impl QwenWeights {
                 q_norm: DeviceBuffer::from_slice(
                     device,
                     stream,
-                    &constant_bf16_values(config.head_dim as usize, 0.0)?,
+                    &constant_bf16_values(config.head_dim() as usize, 0.0)?,
                 )?,
                 k_norm: DeviceBuffer::from_slice(
                     device,
                     stream,
-                    &constant_bf16_values(config.head_dim as usize, 0.0)?,
+                    &constant_bf16_values(config.head_dim() as usize, 0.0)?,
                 )?,
                 q_proj: DeviceBuffer::from_slice(
                     device,
@@ -273,7 +313,10 @@ impl QwenWeights {
         }
 
         Ok(Self {
-            config,
+            device_ordinal: config.device_ordinal,
+            stream: config.stream,
+            #[cfg(test)]
+            fixture: config.fixture,
             token_embedding,
             final_norm,
             lm_head,
@@ -281,14 +324,15 @@ impl QwenWeights {
         })
     }
 
+    #[cfg(test)]
     pub(super) fn random_mlp_weights(
         config: &QwenConfig,
         rng: &mut DeterministicRng,
     ) -> Result<QwenMlpWeights, Status> {
         let device = config.device_ordinal;
         let stream = config.stream;
-        let hidden = config.hidden_size;
-        let intermediate = config.intermediate_size;
+        let hidden = config.hidden_size();
+        let intermediate = config.intermediate_size();
         if let Some(moe) = config.moe_config() {
             let shared = if moe.shared_expert_intermediate_size == 0 {
                 None
@@ -401,15 +445,14 @@ impl QwenWeights {
     }
 
     pub(crate) fn validate_for(&self, config: &QwenConfig) -> Result<(), Status> {
-        if !self.config.same_model_shape(config) {
+        #[cfg(test)]
+        if self.fixture != config.fixture {
             return Err(Status::InvalidArgument);
         }
-        if self.config.device_ordinal != config.device_ordinal
-            || self.config.stream != config.stream
-        {
+        if self.device_ordinal != config.device_ordinal || self.stream != config.stream {
             return Err(Status::InvalidArgument);
         }
-        let expected_layers = config.num_layers as usize;
+        let expected_layers = config.num_layers() as usize;
         if self.layers.len() != expected_layers {
             return Err(Status::InvalidArgument);
         }
@@ -483,7 +526,7 @@ pub(super) struct QwenSharedExpertWeights {
 }
 
 impl QwenMlpWeights {
-    pub(super) fn validate_for(&self, moe: Option<QwenMoeConfig>) -> Result<(), Status> {
+    pub(super) fn validate_for(&self, moe: Option<MoeShape>) -> Result<(), Status> {
         match (self, moe) {
             (Self::Dense { .. }, None) => Ok(()),
             (Self::Moe { shared, .. }, Some(moe)) => {

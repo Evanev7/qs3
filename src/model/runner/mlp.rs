@@ -17,13 +17,13 @@ impl BatchExecution<'_> {
         mlp: &QwenMlpWeights,
         next_norm: &DeviceBuffer<u16>,
     ) -> Result<(), Status> {
-        let hidden = self.config.hidden_size;
+        let hidden = self.config.hidden_size();
         let residual = self.scratch.residual.matrix(rows, hidden)?;
         let before = FusedAddRmsNormBf16::qwen_decoder_norm(
             self.scratch.attn_proj.matrix(rows, hidden)?,
             residual,
             norm.vector(hidden)?,
-            self.config.rms_norm_eps,
+            self.config.rms_norm_eps(),
         )?;
         unsafe {
             self.engine
@@ -37,7 +37,7 @@ impl BatchExecution<'_> {
                 up_proj,
                 down_proj,
             } => {
-                let intermediate = self.config.intermediate_size;
+                let intermediate = self.config.intermediate_size();
                 let input = self.scratch.attn_proj.matrix(rows, hidden)?;
                 let gate = self.scratch.gate.matrix(rows, intermediate)?;
                 let up = self.scratch.up.matrix(rows, intermediate)?;
@@ -78,7 +78,7 @@ impl BatchExecution<'_> {
             self.scratch.mlp_out.matrix(rows, hidden)?,
             residual,
             next_norm.vector(hidden)?,
-            self.config.rms_norm_eps,
+            self.config.rms_norm_eps(),
         )?;
         unsafe {
             self.engine
@@ -96,7 +96,7 @@ impl BatchExecution<'_> {
         down_proj: &DeviceBuffer<u16>,
         shared: Option<&QwenSharedExpertWeights>,
     ) -> Result<(), Status> {
-        let hidden = self.config.hidden_size;
+        let hidden = self.config.hidden_size();
         let moe = self.config.moe_config().ok_or(Status::InternalError)?;
         let input = self.scratch.attn_proj.matrix(rows, hidden)?;
         let logits = self.scratch.router_logits.matrix(rows, moe.num_experts)?;
@@ -158,7 +158,7 @@ impl BatchExecution<'_> {
         intermediate: u32,
         shared: &QwenSharedExpertWeights,
     ) -> Result<(), Status> {
-        let hidden = self.config.hidden_size;
+        let hidden = self.config.hidden_size();
         let input = self.scratch.attn_proj.matrix(rows, hidden)?;
         let gate = self.scratch.shared_gate.matrix(rows, intermediate)?;
         let up = self.scratch.shared_up.matrix(rows, intermediate)?;

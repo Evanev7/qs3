@@ -1,4 +1,5 @@
 use crate::engine::Status;
+#[cfg(test)]
 use crate::ext::SafeVec;
 use crate::ffi::cuda;
 
@@ -9,9 +10,14 @@ mod runner;
 mod sampling;
 pub use sampling::SamplingParams;
 
-pub use crate::backend::qsfi::MoeBf16Kernel;
 use config::QwenBlockKind;
-pub use config::{GdnRecurrentPrecision, QwenConfig, QwenMoeConfig};
+pub use config::QwenConfig;
+#[cfg(test)]
+use weights::MoeShape;
+#[cfg(test)]
+mod fixtures;
+#[cfg(test)]
+mod lifecycle_tests;
 pub use runner::{ModelRunner, QwenRequest, QwenResult};
 mod weights;
 
@@ -34,10 +40,12 @@ mod state;
 mod scratch;
 
 pub(crate) use scratch::DeviceBuffer;
+#[cfg(test)]
 struct DeterministicRng {
     state: u64,
 }
 
+#[cfg(test)]
 impl DeterministicRng {
     fn new(seed: u64) -> Self {
         Self {
@@ -60,6 +68,7 @@ impl DeterministicRng {
     }
 }
 
+#[cfg(test)]
 fn random_bf16_values(
     rng: &mut DeterministicRng,
     count: usize,
@@ -73,12 +82,14 @@ fn random_bf16_values(
     Ok(out)
 }
 
+#[cfg(test)]
 fn constant_bf16_values(count: usize, value: f32) -> Result<Vec<u16>, Status> {
     let mut out = Vec::safe_new(count)?;
     out.resize(count, f32_to_bf16_bits(value));
     Ok(out)
 }
 
+#[cfg(test)]
 fn f32_to_bf16_bits(value: f32) -> u16 {
     let bits = value.to_bits();
     let lsb = (bits >> 16) & 1;

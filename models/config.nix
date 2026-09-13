@@ -239,18 +239,24 @@ assert
         softplusThreshold = 20.0;
       };
       mlp =
-        if hasExperts then
-          {
-            provider = "flashinfer-cutlass";
-            bf16Kernel = "tile32-blocks96";
-            router = {
-              score = "softmax";
-              renormalize = true;
-              scalingFactor = 1.0;
-            };
-          }
-        else
-          { provider = "cublaslt"; };
+        # Keep the MoE choice defined for both Rust paths to type-check. Dense
+        # execution ignores it; hasExperts selects the active implementation.
+        {
+          bf16Kernel = "decode_gemv64";
+        }
+        // (
+          if hasExperts then
+            {
+              provider = "flashinfer-cutlass";
+              router = {
+                score = "softmax";
+                renormalize = true;
+                scalingFactor = 1.0;
+              };
+            }
+          else
+            { provider = "cublaslt"; }
+        );
 
     };
 

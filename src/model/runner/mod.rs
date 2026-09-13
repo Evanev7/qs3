@@ -72,9 +72,9 @@ impl ModelRunner {
                 let mut ops = engine.operators();
                 let plan = unsafe {
                     ops.qsfi().create_moe_bf16_plan(MoeBf16PlanConfig {
-                        kernel: config.moe_bf16_kernel,
+                        kernel: crate::backend::qsfi::MoeBf16Kernel::COMPILED,
                         max_num_tokens: config.max_seq_len,
-                        hidden_size: config.hidden_size,
+                        hidden_size: config.hidden_size(),
                         intermediate_size: moe.moe_intermediate_size,
                         num_experts: moe.num_experts,
                         top_k: moe.num_experts_per_tok,
@@ -96,11 +96,11 @@ impl ModelRunner {
             .then(|| GdnState::new(&config))
             .transpose()?;
         let gdn_qkv = (gdn_state.is_some()
-            && GdnQkv::supports(config.hidden_size, PACKED_QKV_CHANNELS))
+            && GdnQkv::supports(config.hidden_size(), PACKED_QKV_CHANNELS))
         .then(|| unsafe { GdnQkv::load() })
         .transpose()?;
         // Engine construction and allocations establish the primary context.
-        let lm_head = LmHead::supports(config.hidden_size, config.vocab_size)
+        let lm_head = LmHead::supports(config.hidden_size(), config.vocab_size())
             .then(|| unsafe { LmHead::load() })
             .transpose()?;
         Ok(Self {
@@ -122,7 +122,8 @@ impl ModelRunner {
         })
     }
 
-    pub fn random_bf16(config: QwenConfig, seed: u64) -> Result<Self, Status> {
+    #[cfg(test)]
+    pub(crate) fn random_bf16(config: QwenConfig, seed: u64) -> Result<Self, Status> {
         let weights = QwenWeights::random_bf16(&config, seed)?;
         Self::new(config, weights)
     }
@@ -131,7 +132,7 @@ impl ModelRunner {
     /// this configuration and workspace; the same seed/position repeats draws.
     /// The default is greedy and does not allocate/load stochastic kernels.
     pub fn set_sampling(&mut self, params: SamplingParams) -> Result<(), Status> {
-        params.validate(self.config.vocab_size)?;
+        params.validate(self.config.vocab_size())?;
         if self.live_request_id.is_some() {
             return Err(Status::InvalidArgument);
         }
@@ -141,7 +142,7 @@ impl ModelRunner {
             Some(Sampler::new(
                 self.config.device_ordinal,
                 self.config.stream,
-                self.config.vocab_size,
+                self.config.vocab_size(),
                 params,
             )?)
         };
@@ -202,10 +203,10 @@ impl ModelRunner {
 
     #[cfg(test)]
     pub(crate) fn last_logits_row_for_test(&self) -> Result<Vec<f32>, Status> {
-        if self.last_logits_rows == 0 || self.last_logits_vocab_size != self.config.vocab_size {
+        if self.last_logits_rows == 0 || self.last_logits_vocab_size != self.config.vocab_size() {
             return Err(Status::InvalidArgument);
         }
-        let vocab = self.config.vocab_size as usize;
+        let vocab = self.config.vocab_size() as usize;
         let offset = (self.last_logits_rows as usize - 1)
             .checked_mul(vocab)
             .ok_or(Status::InvalidArgument)?;
@@ -238,7 +239,7 @@ impl ModelRunner {
         self.sync_prefix(request.request_id, request.tokens, total_tokens)?;
         for _ in 0..request.max_new_tokens {
             let next = *self.last_next_tokens.last().ok_or(Status::InternalError)?;
-            validate_token_ids(&[next], self.config.vocab_size)?;
+            validate_token_ids(&[next], self.config.vocab_size())?;
             generated_tokens.push(next);
             self.decode_one(request.request_id, next)?;
         }
@@ -284,7 +285,7 @@ impl ModelRunner {
         tokens: &[i32],
         total_tokens: u32,
     ) -> Result<(), Status> {
-        validate_token_ids(tokens, self.config.vocab_size)?;
+        validate_token_ids(tokens, self.config.vocab_size())?;
         let rows = u32::try_from(tokens.len()).map_err(|_| Status::InvalidArgument)?;
         self.scratch.ensure(&self.config, rows)?;
 
@@ -331,7 +332,7 @@ impl ModelRunner {
         if tokens.is_empty() {
             return Err(Status::InvalidArgument);
         }
-        validate_token_ids(tokens, self.config.vocab_size)?;
+        validate_token_ids(tokens, self.config.vocab_size())?;
         let start_pos =
             u32::try_from(self.live_tokens.len()).map_err(|_| Status::InvalidArgument)?;
         let end_pos = start_pos
@@ -412,7 +413,7 @@ impl ModelRunner {
         if rows == 0 {
             return Err(Status::InvalidArgument);
         }
-        validate_token_ids(run.tokens, self.config.vocab_size)?;
+        validate_token_ids(run.tokens, self.config.vocab_size())?;
         self.scratch.ensure(&self.config, rows)?;
         self.upload_batch_inputs(run.tokens, run.start_pos)?;
 
@@ -485,14 +486,7 @@ impl ModelRunner {
     // logits production, sampling and the synchronizing download share a stream.
     fn sample_logits(&mut self, position_index: u32) -> Result<Vec<i32>, Status> {
         let rows = 1;
-        let logits = self.scratch.logits.matrix(rows, self.config.vocab_size)?;
-        if self.config.logits_soft_cap > 0.0 {
-            let mut ops = self.engine.operators();
-            unsafe {
-                ops.qscu()
-                    .logits_soft_cap_f32(logits, self.config.logits_soft_cap)?
-            };
-        }
+        let logits = self.scratch.logits.matrix(rows, self.config.vocab_size())?;
         let next_token_ids = self.scratch.next_token_ids.vector(rows)?;
         if let Some(sampler) = self.sampler.as_mut() {
             sampler.launch(
@@ -514,11 +508,11 @@ impl ModelRunner {
             .next_token_ids
             .download(self.config.stream, &mut sampled)?;
         for token in &sampled {
-            validate_token_ids(&[*token], self.config.vocab_size.min(248070))
+            validate_token_ids(&[*token], self.config.vocab_size().min(248070))
                 .map_err(|_| Status::InternalError)?;
         }
         self.last_logits_rows = rows;
-        self.last_logits_vocab_size = self.config.vocab_size;
+        self.last_logits_vocab_size = self.config.vocab_size();
         Ok(sampled)
     }
 }
@@ -548,14 +542,14 @@ impl BatchExecution<'_> {
         rows: u32,
         kind: ActiveRunKind,
     ) -> Result<(), Status> {
-        let hidden = self.config.hidden_size;
+        let hidden = self.config.hidden_size();
         let mut input = self.scratch.norm.matrix(rows, hidden)?;
         let layer0 = weights.layers.first().ok_or(Status::InternalError)?;
         let norm = RmsNormBf16::qwen_decoder_norm(
             self.scratch.residual.matrix(rows, hidden)?,
             layer0.input_norm().vector(hidden)?,
             input,
-            self.config.rms_norm_eps,
+            self.config.rms_norm_eps(),
         )?;
         {
             let mut ops = self.engine.operators();
@@ -564,7 +558,7 @@ impl BatchExecution<'_> {
                     self.scratch.token_ids.vector(rows)?,
                     weights
                         .token_embedding
-                        .matrix(self.config.vocab_size, hidden)?,
+                        .matrix(self.config.vocab_size(), hidden)?,
                     self.scratch.residual.matrix(rows, hidden)?,
                     None,
                     true,
@@ -601,8 +595,8 @@ impl BatchExecution<'_> {
         }
         unsafe {
             let input = input.row(rows - 1)?;
-            let weight = weights.lm_head.matrix(self.config.vocab_size, hidden)?;
-            let output = self.scratch.logits.matrix(1, self.config.vocab_size)?;
+            let weight = weights.lm_head.matrix(self.config.vocab_size(), hidden)?;
+            let output = self.scratch.logits.matrix(1, self.config.vocab_size())?;
             if let Some(lm_head) = self.lm_head {
                 lm_head.launch(self.config.stream, input, weight, output)
             } else {

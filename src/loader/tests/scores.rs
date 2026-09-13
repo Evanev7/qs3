@@ -1,5 +1,6 @@
 // Included as a child of loader::tests; diagnostic output is explicitly requested.
 use super::*;
+use crate::constants::{mlp::BF16_KERNEL, precision::GDN_RECURRENT_STATE};
 use tinyjson::JsonValue;
 
 fn object(fields: impl IntoIterator<Item = (&'static str, JsonValue)>) -> JsonValue {
@@ -51,10 +52,7 @@ fn real_qwen36_same_prefix_scores() {
             u32::try_from(prompt.len() + forced.len() + 1).unwrap(),
         )
         .unwrap();
-    assert_eq!(
-        config.gdn_recurrent_precision,
-        crate::model::GdnRecurrentPrecision::F32
-    );
+    assert_eq!(GDN_RECURRENT_STATE, "f32");
     let mut runner = crate::model::ModelRunner::new(config, weights).unwrap();
     assert_eq!(runner.gdn_qkv_provider(), "triton");
     const REQUEST: u64 = 0x53434f5245;
@@ -148,12 +146,9 @@ fn real_qwen36_same_prefix_scores() {
         ),
         (
             "gdn_recurrent_state_dtype",
-            config.gdn_recurrent_precision.as_str().to_owned().into(),
+            GDN_RECURRENT_STATE.to_owned().into(),
         ),
-        (
-            "moe_kernel",
-            config.moe_bf16_kernel.as_str().to_owned().into(),
-        ),
+        ("moe_kernel", BF16_KERNEL.to_owned().into()),
     ]);
     std::fs::write(output.join("scores.json"), result.stringify().unwrap()).unwrap();
 }

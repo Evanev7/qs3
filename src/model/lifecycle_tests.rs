@@ -1,4 +1,4 @@
-use qs3::{ModelRunner, QwenConfig, QwenMoeConfig, QwenRequest, QwenResult, QwenWeights, Status};
+use crate::{ModelRunner, QwenConfig, QwenRequest, QwenResult, QwenWeights, Status};
 
 use std::ffi::{CStr, c_char};
 
@@ -98,7 +98,7 @@ fn randomized_dense_model_runs_prefill_and_two_decodes() {
         runner
             .run(QwenRequest {
                 request_id: 11,
-                tokens: &[config.vocab_size as i32],
+                tokens: &[config.vocab_size() as i32],
                 max_new_tokens: 0,
             })
             .unwrap_err(),
@@ -116,9 +116,9 @@ fn randomized_dense_model_runs_prefill_and_two_decodes() {
     assert_eq!(result.live_tokens.len(), 5);
     assert_eq!(&result.live_tokens[..3], &[1, 7, 13]);
     assert_eq!(result.logits_rows, 1);
-    assert_eq!(result.logits_vocab_size, config.vocab_size);
+    assert_eq!(result.logits_vocab_size, config.vocab_size());
     for token in &result.generated_tokens {
-        assert!(*token >= 0 && *token < config.vocab_size as i32);
+        assert!(*token >= 0 && *token < config.vocab_size() as i32);
     }
 
     let live = result.live_tokens.clone();
@@ -184,35 +184,6 @@ fn exact_prefix_extension_accepts_caller_suffix_tokens() {
 }
 
 #[test]
-fn qwen36_gdn_configs_require_full_attention_and_shared_expert() {
-    let mut no_attention = QwenConfig::randomized_qwen36_moe_gdn_one_block_fixture(-1);
-    no_attention.num_layers = 1;
-    assert_eq!(no_attention.validate(), Err(Status::InvalidArgument));
-    assert_eq!(
-        ModelRunner::random_bf16(no_attention, RANDOM_MODEL_SEED).err(),
-        Some(Status::InvalidArgument)
-    );
-
-    let config = QwenConfig::randomized_qwen36_moe_gdn_one_block_fixture(-1);
-    assert_eq!(config.validate(), Ok(()));
-
-    let mut incomplete_schedule = config;
-    incomplete_schedule.num_layers = 5;
-    assert_eq!(incomplete_schedule.validate(), Err(Status::InvalidArgument));
-    assert_eq!(
-        ModelRunner::random_bf16(incomplete_schedule, RANDOM_MODEL_SEED).err(),
-        Some(Status::InvalidArgument)
-    );
-
-    let mut missing_shared = config;
-    missing_shared.moe = Some(QwenMoeConfig {
-        shared_expert_intermediate_size: 0,
-        ..QwenMoeConfig::qwen36_35b_a3b()
-    });
-    assert_eq!(missing_shared.validate(), Err(Status::Unsupported));
-}
-
-#[test]
 fn randomized_moe_model_runs_prefill_decode_rebuild_and_failed_rewrite() {
     if !cuda_device_available() {
         return;
@@ -231,7 +202,7 @@ fn randomized_moe_model_runs_prefill_decode_rebuild_and_failed_rewrite() {
     assert!(prefill.generated_tokens.is_empty());
     assert_eq!(prefill.live_tokens, vec![1, 7, 13]);
     assert_eq!(prefill.logits_rows, 1);
-    assert_eq!(prefill.logits_vocab_size, config.vocab_size);
+    assert_eq!(prefill.logits_vocab_size, config.vocab_size());
 
     let decoded = runner
         .run(QwenRequest {
@@ -247,7 +218,7 @@ fn randomized_moe_model_runs_prefill_decode_rebuild_and_failed_rewrite() {
         [1, 7, 13]
     );
     for token in &decoded.generated_tokens {
-        assert!(*token >= 0 && *token < config.vocab_size as i32);
+        assert!(*token >= 0 && *token < config.vocab_size() as i32);
     }
 
     let first = run_random_model(config, 73, &[3, 5, 8, 13], 2);
@@ -283,7 +254,7 @@ fn randomized_moe_model_runs_prefill_decode_rebuild_and_failed_rewrite() {
         runner
             .run(QwenRequest {
                 request_id: 79,
-                tokens: &[2, config.vocab_size as i32, 9, 8],
+                tokens: &[2, config.vocab_size() as i32, 9, 8],
                 max_new_tokens: 1,
             })
             .unwrap_err(),
@@ -330,38 +301,14 @@ fn randomized_shared_moe_model_runs_prefill_and_decode() {
     assert_eq!(result.live_tokens.len(), 5);
     assert_eq!(&result.live_tokens[..3], &[1, 7, 13]);
     assert_eq!(result.logits_rows, 1);
-    assert_eq!(result.logits_vocab_size, config.vocab_size);
+    assert_eq!(result.logits_vocab_size, config.vocab_size());
     for token in &result.generated_tokens {
-        assert!(*token >= 0 && *token < config.vocab_size as i32);
+        assert!(*token >= 0 && *token < config.vocab_size() as i32);
     }
 
     assert_cuda(
         unsafe { cudaDeviceSynchronize() },
         "sync randomized shared MoE model test",
-    );
-}
-
-#[test]
-fn randomized_dense_model_runs_with_logits_soft_cap() {
-    if !cuda_device_available() {
-        return;
-    }
-
-    let mut config = QwenConfig::randomized_dense_tiny_fixture(0);
-    config.logits_soft_cap = 2.0;
-
-    let first = run_random_model(config, 25, &[3, 5, 8, 13], 2);
-    let second = run_random_model(config, 25, &[3, 5, 8, 13], 2);
-
-    assert_eq!(first, second);
-    assert_eq!(first.generated_tokens.len(), 2);
-    assert_eq!(first.live_tokens.len(), 6);
-    assert_eq!(first.logits_rows, 1);
-    assert_eq!(first.logits_vocab_size, config.vocab_size);
-
-    assert_cuda(
-        unsafe { cudaDeviceSynchronize() },
-        "sync soft-capped randomized model test",
     );
 }
 
@@ -380,7 +327,7 @@ fn randomized_dense_model_is_repeatable_for_same_seed_and_request() {
     assert_eq!(first.live_tokens.len(), 7);
     assert_eq!(&first.live_tokens[..4], &[3, 5, 8, 13]);
     assert_eq!(first.logits_rows, 1);
-    assert_eq!(first.logits_vocab_size, config.vocab_size);
+    assert_eq!(first.logits_vocab_size, config.vocab_size());
 
     assert_cuda(
         unsafe { cudaDeviceSynchronize() },
@@ -451,7 +398,7 @@ fn failed_prompt_rewrite_keeps_previous_live_state() {
         runner
             .run(QwenRequest {
                 request_id: 37,
-                tokens: &[1, config.vocab_size as i32, 3],
+                tokens: &[1, config.vocab_size() as i32, 3],
                 max_new_tokens: 1,
             })
             .unwrap_err(),
@@ -524,170 +471,6 @@ fn oversized_run_request_is_rejected_without_mutating_live_state() {
         unsafe { cudaDeviceSynchronize() },
         "sync oversized run rejection randomized model test",
     );
-}
-
-#[test]
-fn qwen_config_rejects_unsupported_dense_runner_shapes() {
-    let config = QwenConfig::randomized_dense_tiny_fixture(-1);
-    assert_eq!(config.validate(), Ok(()));
-    assert_eq!(config.hidden_size, 2048);
-    assert_eq!(config.num_q_heads * config.head_dim, 4096);
-
-    let mut config = QwenConfig::randomized_dense_tiny_fixture(-1);
-    config.hidden_size = 97;
-    assert_eq!(config.validate(), Err(Status::InvalidArgument));
-
-    let mut config = QwenConfig::randomized_dense_tiny_fixture(-1);
-    config.max_batch_rows = 2;
-    assert_eq!(config.validate(), Err(Status::Unsupported));
-
-    let mut config = QwenConfig::randomized_dense_tiny_fixture(-1);
-    config.head_dim = 80;
-    assert_eq!(config.validate(), Err(Status::Unsupported));
-
-    for head_dim in [64, 128, 512] {
-        let mut config = QwenConfig::randomized_dense_tiny_fixture(-1);
-        config.head_dim = head_dim;
-        assert_eq!(config.validate(), Err(Status::Unsupported));
-    }
-
-    let mut config = QwenConfig::randomized_dense_tiny_fixture(-1);
-    config.num_q_heads = 4;
-    config.num_kv_heads = 2;
-    assert_eq!(config.validate(), Err(Status::Unsupported));
-
-    let mut config = QwenConfig::randomized_dense_tiny_fixture(-1);
-    config.num_q_heads = 8;
-    config.num_kv_heads = 1;
-    assert_eq!(config.validate(), Err(Status::Unsupported));
-
-    let mut config = QwenConfig::randomized_dense_tiny_fixture(-1);
-    config.num_q_heads = 32;
-    config.num_kv_heads = 4;
-    assert_eq!(config.validate(), Err(Status::Unsupported));
-
-    let mut config = QwenConfig::randomized_dense_tiny_fixture(-1);
-    config.rope_theta = 0.0;
-    assert_eq!(config.validate(), Err(Status::InvalidArgument));
-
-    let mut config = QwenConfig::randomized_dense_tiny_fixture(-1);
-    config.rope_scale = 0.0;
-    assert_eq!(config.validate(), Err(Status::InvalidArgument));
-
-    let mut config = QwenConfig::randomized_dense_tiny_fixture(-1);
-    config.logits_soft_cap = -1.0;
-    assert_eq!(config.validate(), Err(Status::InvalidArgument));
-
-    let mut config = QwenConfig::randomized_dense_tiny_fixture(-1);
-    config.logits_soft_cap = f32::INFINITY;
-    assert_eq!(config.validate(), Err(Status::InvalidArgument));
-}
-
-#[test]
-fn qwen_config_validates_public_moe_config_json_fields() {
-    let tiny = QwenConfig::randomized_moe_tiny_fixture(-1);
-    assert_eq!(
-        tiny.moe,
-        Some(QwenMoeConfig {
-            num_experts: 4,
-            num_experts_per_tok: 2,
-            moe_intermediate_size: 64,
-            shared_expert_intermediate_size: 0,
-        })
-    );
-
-    let qwen36 = QwenConfig::randomized_qwen36_moe_gdn_one_block_fixture(-1);
-    assert_eq!(qwen36.moe, Some(QwenMoeConfig::qwen36_35b_a3b()));
-    assert_eq!(qwen36.hidden_size, 2048);
-    assert_eq!(qwen36.num_q_heads, 16);
-    assert_eq!(qwen36.num_kv_heads, 2);
-    assert_eq!(qwen36.head_dim, 256);
-    assert_eq!(qwen36.num_q_heads * qwen36.head_dim, 4096);
-
-    let shared_tiny = QwenConfig::randomized_shared_moe_tiny_fixture(-1);
-    assert_eq!(
-        shared_tiny.moe,
-        Some(QwenMoeConfig {
-            num_experts: 4,
-            num_experts_per_tok: 2,
-            moe_intermediate_size: 64,
-            shared_expert_intermediate_size: 32,
-        })
-    );
-
-    let mut config = QwenConfig::randomized_moe_tiny_fixture(-1);
-    config.moe = Some(QwenMoeConfig {
-        num_experts: 4,
-        num_experts_per_tok: 0,
-        moe_intermediate_size: 64,
-        shared_expert_intermediate_size: 0,
-    });
-    assert_eq!(config.validate(), Err(Status::InvalidArgument));
-
-    let mut config = QwenConfig::randomized_moe_tiny_fixture(-1);
-    config.moe = Some(QwenMoeConfig {
-        num_experts: 4,
-        num_experts_per_tok: 5,
-        moe_intermediate_size: 64,
-        shared_expert_intermediate_size: 0,
-    });
-    assert_eq!(config.validate(), Err(Status::InvalidArgument));
-
-    let mut config = QwenConfig::randomized_moe_tiny_fixture(-1);
-    config.moe = Some(QwenMoeConfig {
-        num_experts: 32,
-        num_experts_per_tok: 17,
-        moe_intermediate_size: 64,
-        shared_expert_intermediate_size: 0,
-    });
-    assert_eq!(config.validate(), Err(Status::Unsupported));
-
-    let mut config = QwenConfig::randomized_moe_tiny_fixture(-1);
-    config.moe = Some(QwenMoeConfig {
-        num_experts: 4097,
-        num_experts_per_tok: 2,
-        moe_intermediate_size: 64,
-        shared_expert_intermediate_size: 0,
-    });
-    assert_eq!(config.validate(), Err(Status::Unsupported));
-
-    let mut config = QwenConfig::randomized_moe_tiny_fixture(-1);
-    config.moe = Some(QwenMoeConfig {
-        num_experts: 4,
-        num_experts_per_tok: 2,
-        moe_intermediate_size: 66,
-        shared_expert_intermediate_size: 0,
-    });
-    assert_eq!(config.validate(), Err(Status::InvalidArgument));
-
-    let mut config = QwenConfig::randomized_moe_tiny_fixture(-1);
-    config.moe = Some(QwenMoeConfig {
-        num_experts: 4,
-        num_experts_per_tok: 2,
-        moe_intermediate_size: 64,
-        shared_expert_intermediate_size: 66,
-    });
-    assert_eq!(config.validate(), Err(Status::InvalidArgument));
-
-    let mut config = QwenConfig::randomized_moe_tiny_fixture(-1);
-    config.intermediate_size = 256;
-    assert_eq!(config.validate(), Err(Status::InvalidArgument));
-
-    let mut config = QwenConfig::randomized_moe_tiny_fixture(-1);
-    config.moe = Some(QwenMoeConfig {
-        num_experts: 4,
-        num_experts_per_tok: 2,
-        moe_intermediate_size: 64,
-        shared_expert_intermediate_size: 64,
-    });
-    assert_eq!(config.validate(), Ok(()));
-
-    let mut qwen36_without_shared = qwen36;
-    qwen36_without_shared.moe = Some(QwenMoeConfig {
-        shared_expert_intermediate_size: 0,
-        ..QwenMoeConfig::qwen36_35b_a3b()
-    });
-    assert_eq!(qwen36_without_shared.validate(), Err(Status::Unsupported));
 }
 
 #[test]

@@ -39,7 +39,7 @@ model-test repetitions="20" *args: build _generate-vectors
         shift
         for ((iteration=1; iteration<=repetitions; iteration++)); do
             echo "Model test repetition $iteration"
-            cargo test --test model -- "$@"
+            cargo test --lib model::lifecycle_tests -- "$@"
         done
 
 norm-validation: test (model-test "20") real-model-test
@@ -91,7 +91,6 @@ _benchmark context_tokens decode_samples:
         ln -s /lib/aarch64-linux-gnu/libcuda.so* /lib/aarch64-linux-gnu/libnvidia-*.so* "$driver_libs/"
         # Keep host CUDA and system libraries out of the Nix runtime's search path.
         QS3_BENCH_CONTEXT_TOKENS={{context_tokens}} QS3_BENCH_DECODE_SAMPLES={{decode_samples}} \
-        QS3_BENCH_MOE_KERNEL=decode_gemv64 QS3_BENCH_GDN_STATE=f32 \
         LD_LIBRARY_PATH="$driver_libs" nix run --impure .#benchmark
 
 weight-loader-bench: ninja

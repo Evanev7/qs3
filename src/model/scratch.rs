@@ -100,8 +100,8 @@ impl RunnerScratch {
     }
 
     pub(super) fn ensure(&mut self, config: &QwenConfig, rows: u32) -> Result<(), Status> {
-        let hidden = checked_usize_product(&[rows, config.hidden_size])?;
-        let logits = config.vocab_size as usize;
+        let hidden = checked_usize_product(&[rows, config.hidden_size()])?;
+        let logits = config.vocab_size() as usize;
         let row_count = rows as usize;
 
         self.token_ids.ensure(row_count)?;
@@ -134,7 +134,7 @@ impl RunnerScratch {
                 self.shared_gate_logits.ensure(row_count)?;
             }
         } else {
-            let intermediate = checked_usize_product(&[rows, config.intermediate_size])?;
+            let intermediate = checked_usize_product(&[rows, config.intermediate_size()])?;
             self.gate.ensure(intermediate)?;
             self.up.ensure(intermediate)?;
             self.mlp.ensure(intermediate)?;

@@ -23,6 +23,11 @@ precision, target, engine, and MTP modules. For example,
 `qs3::constants::model::HIDDEN_SIZE` and `qs3::constants::gdn::PACKED_QKV_CHANNELS`
 describe the selected build. Rust callers import generated model dimensions
 directly; this module does not itself enable another model or MTP.
+The generated source is self-contained: backend enum mappings stay with their
+Rust consumers and are evaluated at compile time.
+Both model selections emit the same MLP constants. Dense builds use zero expert
+counts and shared-expert width; `HAS_EXPERTS` selects execution, and the MoE
+kernel choice is unused for dense layers.
 The local Ninja build regenerates it when its inputs change, and Nix packages
 materialize the same generated source before compiling Rust. To inspect it:
 
@@ -32,6 +37,13 @@ nix eval --offline --raw --file build_tools/nixsrc/rust.nix
 
 Rust constants and the Triton manifest share the top-level `nix_eval` rule and
 the `config_inputs` phony dependency group in `build.ninja`.
+
+`QwenConfig` holds runtime resources: device/stream, request and KV capacity,
+and workspace sizes. Model geometry, math parameters, MoE kernel selection, and
+GDN recurrent storage type come from the generated build configuration. The loader
+rejects incompatible checkpoint configuration before reading the weight index or
+allocating CUDA memory. Small model fixtures and randomized weight constructors
+exist only in the crate's test build; `just model-test` runs their lifecycle tests.
 
 See [qstriton](pysrc/qstriton/README.md) for the compiler interface and
 [qwen36_vectors](pysrc/qwen36_vectors/README.md) for vector generation.
@@ -52,7 +64,11 @@ release/Nsight JSON. The remote benchmark action requires committed tracked chan
 transfers the exact commit, and saves that JSON under `benchmarks/`.
 The benchmark runs two workloads sequentially: 102 prompt tokens / 32 measured
 decode steps, then 1024 / 256. Each gets its own release/Nsight JSON, with the same
-schema as earlier results. Both use FP32 GDN state and `tile32_blocks96` MoE.
+schema as earlier results. Both use the choices compiled from `models/config.nix`
+and record them in the benchmark JSON. Change `kernels.mlp.bf16Kernel` or
+`precision.gdn.recurrentState` there and rebuild to compare implementations; the
+current build uses `decode_gemv64` MoE and FP32 GDN state. `just real-model-test`
+checks the selected build against the real-model reference.
 See `./remote.sh --help`.
 
 Every runnable prototype needs a named, no-argument recipe in

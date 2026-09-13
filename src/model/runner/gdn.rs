@@ -21,7 +21,7 @@ impl BatchExecution<'_> {
         if matches!(kind, ActiveRunKind::Decode) && rows != 1 {
             return Err(Status::InvalidArgument);
         }
-        let hidden = self.config.hidden_size;
+        let hidden = self.config.hidden_size();
         let state = self.gdn_state.ok_or(Status::InternalError)?;
         let slots = state.layer_slots(gdn_layer_idx)?;
         let conv_state = state.conv_view()?;
@@ -156,7 +156,7 @@ impl BatchExecution<'_> {
                 gate,
                 layer.rms_weight.vector(VALUE_HEAD_DIM)?,
                 norm_out,
-                self.config.rms_norm_eps,
+                self.config.rms_norm_eps(),
             )?;
             ops.qscb().linear(
                 self.scratch.gdn_norm_out.matrix(rows, OUTPUT_WIDTH)?,

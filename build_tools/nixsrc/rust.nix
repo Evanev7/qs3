@@ -4,6 +4,12 @@ let
   config = import ../../models/config.nix;
   text = config.model.config;
   dimensions = config.dimensions;
+  recurrentElement =
+    {
+      bf16 = "u16";
+      f32 = "f32";
+    }
+    .${config.precision.gdn.recurrentState};
   json = builtins.toJSON;
   u32 =
     value:
@@ -71,20 +77,14 @@ in
     PACKED_QKV_CHANNELS = u32 dimensions.gdn.packedQkvChannels;
     OUTPUT_WIDTH = u32 dimensions.gdn.outputWidth;
   };
-  mlp =
-    if text ? num_experts then
-      {
-        HAS_EXPERTS = boolean true;
-        NUM_EXPERTS = u32 text.num_experts;
-        NUM_EXPERTS_PER_TOKEN = u32 text.num_experts_per_tok;
-        INTERMEDIATE_SIZE = u32 text.moe_intermediate_size;
-        SHARED_EXPERT_INTERMEDIATE_SIZE = u32 text.shared_expert_intermediate_size;
-      }
-    else
-      {
-        HAS_EXPERTS = boolean false;
-        INTERMEDIATE_SIZE = u32 text.intermediate_size;
-      };
+  mlp = {
+    HAS_EXPERTS = boolean (text ? num_experts);
+    BF16_KERNEL = string config.kernels.mlp.bf16Kernel;
+    NUM_EXPERTS = u32 (text.num_experts or 0);
+    NUM_EXPERTS_PER_TOKEN = u32 (text.num_experts_per_tok or 0);
+    INTERMEDIATE_SIZE = u32 (text.moe_intermediate_size or text.intermediate_size);
+    SHARED_EXPERT_INTERMEDIATE_SIZE = u32 (text.shared_expert_intermediate_size or 0);
+  };
   mtp = {
     LAYERS = u32 config.mtp.layers;
     DEDICATED_EMBEDDINGS = boolean config.mtp.dedicatedEmbeddings;
@@ -111,3 +111,8 @@ in
   };
 }
 + "\n"
+
++ ''
+  // Primitive storage representation; consumers own backend dtype conversion.
+  pub type GdnRecurrentElement = ${recurrentElement};
+''

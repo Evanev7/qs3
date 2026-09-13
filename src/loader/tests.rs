@@ -240,6 +240,56 @@ fn qwen_text_config(layers: usize, vocab: u32) -> Qwen36TextConfig {
     Qwen36TextConfig::from_config_object(&root).unwrap()
 }
 
+#[test]
+fn compiled_model_rejects_checkpoint_geometry_and_math_mismatches() {
+    use crate::constants::{attention, model};
+    let valid = qwen_text_config(model::NUM_HIDDEN_LAYERS as usize, model::VOCAB_SIZE);
+    valid.validate_compiled_model().unwrap();
+    let mut wrong_layers = valid.clone();
+    wrong_layers.num_hidden_layers -= 4;
+    wrong_layers
+        .layer_types
+        .truncate(wrong_layers.num_hidden_layers as usize);
+    let mut wrong_vocab = valid.clone();
+    wrong_vocab.vocab_size -= 1;
+    let mut wrong_norm = valid.clone();
+    wrong_norm.rms_norm_eps *= 2.0;
+    let mut wrong_rope = valid.clone();
+    wrong_rope.rope_theta = attention::ROPE_THETA * 2.0;
+    let mut wrong_soft_cap = valid.clone();
+    wrong_soft_cap.logits_soft_cap = 2.0;
+    for wrong in [
+        wrong_layers,
+        wrong_vocab,
+        wrong_norm,
+        wrong_rope,
+        wrong_soft_cap,
+    ] {
+        assert!(matches!(
+            wrong.validate_compiled_model(),
+            Err(WeightLoadError::InvalidConfig(_))
+        ));
+    }
+}
+
+#[test]
+fn incompatible_checkpoint_is_rejected_before_reading_weight_index() {
+    let directory =
+        std::env::temp_dir().join(format!("qs3-compiled-model-reject-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::write(
+        directory.join("config.json"),
+        nested_text_config_json(4, 32),
+    )
+    .unwrap();
+    // No index or weights exist. Reject the config before attempting to open them.
+    assert!(matches!(
+        QwenBf16LoadPlan::read(&directory),
+        Err(WeightLoadError::InvalidConfig(_))
+    ));
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
 #[derive(Default)]
 struct TinyBackendState {
     take_calls: std::cell::Cell<usize>,
@@ -730,7 +780,7 @@ fn loaded_plan_transfers_allocations_into_qwen_weights_once() {
     let backend = TinyCudaBackend::new(0, state.clone());
 
     let loaded = execute_qwen36_bf16_load_plan(&plan, backend, ptr::null_mut()).unwrap();
-    let (config, weights) = loaded.into_qwen_model(ptr::null_mut(), 8).unwrap();
+    let (config, weights) = loaded.into_fixture_model(ptr::null_mut(), 8).unwrap();
 
     assert_eq!(count, 75);
     assert_eq!(state.take_calls.get(), 1);
@@ -764,7 +814,7 @@ fn materialization_rejects_duplicate_targets_before_transfer() {
     );
 
     let err = loaded
-        .into_qwen_model(ptr::null_mut(), 8)
+        .into_fixture_model(ptr::null_mut(), 8)
         .err()
         .expect("duplicate target must fail materialization");
 
@@ -796,7 +846,7 @@ fn materialization_rejects_duplicate_pointers_before_transfer() {
     );
 
     let err = loaded
-        .into_qwen_model(ptr::null_mut(), 8)
+        .into_fixture_model(ptr::null_mut(), 8)
         .err()
         .expect("duplicate pointer must fail materialization");
 
@@ -828,7 +878,7 @@ fn materialization_rejects_changed_taken_allocations_before_adoption() {
     );
 
     let err = loaded
-        .into_qwen_model(ptr::null_mut(), 8)
+        .into_fixture_model(ptr::null_mut(), 8)
         .err()
         .expect("changed allocation list must fail materialization");
 
@@ -854,7 +904,7 @@ fn materialization_rejects_backend_that_retains_allocations_after_take() {
     );
 
     let err = loaded
-        .into_qwen_model(ptr::null_mut(), 8)
+        .into_fixture_model(ptr::null_mut(), 8)
         .err()
         .expect("retained allocation list must fail materialization");
 
@@ -904,22 +954,16 @@ fn validates_real_qwen36_bf16_manifest_when_available() {
 #[test]
 #[ignore = "loads and executes the full real Qwen3.6 BF16 model"]
 fn real_qwen36_bf16_generates_reference_tokens() {
-    for precision in [
-        crate::model::GdnRecurrentPrecision::Bf16,
-        crate::model::GdnRecurrentPrecision::F32,
-    ] {
-        eprintln!("real BF16 model with {} GDN recurrence", precision.as_str());
-        check_real_bf16_reference(precision);
-    }
-}
-
-fn check_real_bf16_reference(precision: crate::model::GdnRecurrentPrecision) {
+    eprintln!(
+        "real BF16 model with {} GDN recurrence and {} MoE",
+        crate::constants::precision::GDN_RECURRENT_STATE,
+        crate::backend::qsfi::MoeBf16Kernel::COMPILED.as_str(),
+    );
     let model_dir = require_real_qwen36_model_dir();
     let plan = QwenBf16LoadPlan::read(model_dir).unwrap();
     let backend = ManagedUmaBackend::new(cuda_device_from_env()).unwrap();
     let loaded = execute_qwen36_bf16_load_plan(&plan, backend, ptr::null_mut()).unwrap();
-    let (mut config, weights) = loaded.into_qwen_model(ptr::null_mut(), 8).unwrap();
-    config.gdn_recurrent_precision = precision;
+    let (config, weights) = loaded.into_qwen_model(ptr::null_mut(), 8).unwrap();
     let mut runner = crate::model::ModelRunner::new(config, weights).unwrap();
     assert_eq!(runner.gdn_qkv_provider(), "triton");
     let request_id = 0xBF16_0001;

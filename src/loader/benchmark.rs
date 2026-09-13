@@ -1,3 +1,4 @@
+use crate::constants::precision::GDN_RECURRENT_STATE;
 use std::{collections::HashMap, time::Duration};
 
 use tinyjson::JsonValue;
@@ -8,8 +9,10 @@ use super::{
 };
 use crate::test_assets::require_real_qwen36_model_dir;
 use crate::{
-    QwenTokenizer, ffi,
-    model::{GdnRecurrentPrecision, ModelRunner, MoeBf16Kernel, QwenRequest},
+    QwenTokenizer,
+    backend::qsfi::MoeBf16Kernel,
+    ffi,
+    model::{ModelRunner, QwenRequest},
 };
 use std::{ptr, time::Instant};
 
@@ -238,26 +241,10 @@ pub fn run_core_benchmark() -> JsonValue {
     let weight_load = started.elapsed();
 
     let started = Instant::now();
-    let (mut config, weights) = loaded
+    let (config, weights) = loaded
         .into_qwen_model(ptr::null_mut(), max_seq_len)
         .expect("failed to materialize Qwen model weights");
     let weight_materialize = started.elapsed();
-    config.gdn_recurrent_precision = match std::env::var("QS3_BENCH_GDN_STATE") {
-        Err(std::env::VarError::NotPresent) => config.gdn_recurrent_precision,
-        Ok(value) if value == "bf16" => GdnRecurrentPrecision::Bf16,
-        Ok(value) if value == "f32" => GdnRecurrentPrecision::F32,
-        _ => panic!("QS3_BENCH_GDN_STATE must be unset, bf16 or f32"),
-    };
-    config.moe_bf16_kernel = match std::env::var("QS3_BENCH_MOE_KERNEL") {
-        Err(std::env::VarError::NotPresent) => config.moe_bf16_kernel,
-        Ok(value) if value == "tile128_blocks4" => MoeBf16Kernel::CutlassTile128Blocks4,
-        Ok(value) if value == "tile128_blocks96" => MoeBf16Kernel::CutlassTile128Blocks96,
-        Ok(value) if value == "tile32_blocks96" => MoeBf16Kernel::CutlassTile32Blocks96,
-        Ok(value) if value == "decode_gemv64" => MoeBf16Kernel::DecodeGemv64,
-        _ => panic!(
-            "QS3_BENCH_MOE_KERNEL must name tile128_blocks4, tile128_blocks96, tile32_blocks96 or decode_gemv64"
-        ),
-    };
     let started = Instant::now();
     let mut runner = ModelRunner::new(config, weights).expect("failed to construct ModelRunner");
     let runner_init = started.elapsed();
@@ -338,16 +325,15 @@ pub fn run_core_benchmark() -> JsonValue {
                 ("router_logits_dtype", "bf16".to_owned().into()),
                 (
                     "moe_threadblocks",
-                    f64::from(config.moe_bf16_kernel.threadblocks()).into(),
+                    f64::from(MoeBf16Kernel::COMPILED.threadblocks()).into(),
                 ),
                 (
                     "moe_kernel",
-                    config.moe_bf16_kernel.as_str().to_owned().into(),
+                    MoeBf16Kernel::COMPILED.as_str().to_owned().into(),
                 ),
                 (
                     "moe_cta_tile",
-                    config
-                        .moe_bf16_kernel
+                    MoeBf16Kernel::COMPILED
                         .cta_tile()
                         .into_iter()
                         .map(|dim| JsonValue::Number(f64::from(dim)))
@@ -357,11 +343,11 @@ pub fn run_core_benchmark() -> JsonValue {
                 ("gdn_conv_state_dtype", "bf16".to_owned().into()),
                 (
                     "gdn_recurrent_state_dtype",
-                    config.gdn_recurrent_precision.as_str().to_owned().into(),
+                    GDN_RECURRENT_STATE.to_owned().into(),
                 ),
                 (
                     "moe",
-                    if config.moe_bf16_kernel == MoeBf16Kernel::DecodeGemv64 {
+                    if MoeBf16Kernel::COMPILED == MoeBf16Kernel::DecodeGemv64 {
                         "qwen36_gemv64_decode_cutlass_sm80_prefill"
                     } else {
                         "cutlass_sm80_stages2_bf16"

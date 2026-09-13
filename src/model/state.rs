@@ -1,8 +1,11 @@
-use super::{GdnRecurrentPrecision, QwenConfig, checked_usize_product, scratch::DeviceBuffer};
+use super::{QwenConfig, checked_usize_product, scratch::DeviceBuffer};
 use crate::{
     QWEN36_GDN_STATE_SLOTS_PER_LAYER,
-    constants::gdn::{
-        CONV_HISTORY_LEN, KEY_HEAD_DIM, NUM_VALUE_HEADS, PACKED_QKV_CHANNELS, VALUE_HEAD_DIM,
+    constants::{
+        GdnRecurrentElement,
+        gdn::{
+            CONV_HISTORY_LEN, KEY_HEAD_DIM, NUM_VALUE_HEADS, PACKED_QKV_CHANNELS, VALUE_HEAD_DIM,
+        },
     },
     engine::Status,
     ext::SafeVec,
@@ -10,6 +13,13 @@ use crate::{
 
 use crate::backend::{FloatStorage, GdnRecurrentState};
 use std::mem;
+
+const GDN_RECURRENT_STORAGE: FloatStorage =
+    match crate::constants::precision::GDN_RECURRENT_STATE.as_bytes() {
+        b"bf16" => FloatStorage::Bf16,
+        b"f32" => FloatStorage::F32,
+        _ => panic!("unsupported compiled GDN recurrent storage"),
+    };
 
 pub(super) struct GdnLayerSlots {
     pub(super) live_slot: u32,
@@ -85,46 +95,9 @@ impl GdnSlotMap {
     }
 }
 
-enum RecurrentBuffer {
-    Bf16(DeviceBuffer<u16>),
-    F32(DeviceBuffer<f32>),
-}
-
-impl RecurrentBuffer {
-    fn new(config: &QwenConfig, elements: usize) -> Result<Self, Status> {
-        match config.gdn_recurrent_precision {
-            GdnRecurrentPrecision::Bf16 => {
-                let mut buffer = DeviceBuffer::empty(config.device_ordinal);
-                buffer.ensure(elements)?;
-                Ok(Self::Bf16(buffer))
-            }
-            GdnRecurrentPrecision::F32 => {
-                let mut buffer = DeviceBuffer::empty(config.device_ordinal);
-                buffer.ensure(elements)?;
-                Ok(Self::F32(buffer))
-            }
-        }
-    }
-
-    fn zero(&mut self, stream: crate::ffi::CudaStream) -> Result<(), Status> {
-        match self {
-            Self::Bf16(buffer) => buffer.zero(buffer.cap, stream),
-            Self::F32(buffer) => buffer.zero(buffer.cap, stream),
-        }
-    }
-
-    fn view(&self, state_pool: u32) -> Result<GdnRecurrentState, Status> {
-        let (data, dtype) = match self {
-            Self::Bf16(buffer) => (buffer.as_device_ptr(), FloatStorage::Bf16),
-            Self::F32(buffer) => (buffer.as_device_ptr(), FloatStorage::F32),
-        };
-        GdnRecurrentState::contiguous(data, dtype, state_pool)
-    }
-}
-
 pub(super) struct GdnState {
     pub(super) conv: DeviceBuffer<u16>,
-    recurrent: RecurrentBuffer,
+    recurrent: DeviceBuffer<GdnRecurrentElement>,
     pub(super) slots: GdnSlotMap,
 }
 
@@ -137,10 +110,11 @@ impl GdnState {
             checked_usize_product(&[state_pool, NUM_VALUE_HEADS, VALUE_HEAD_DIM, KEY_HEAD_DIM])?;
         let mut state = Self {
             conv: DeviceBuffer::empty(config.device_ordinal),
-            recurrent: RecurrentBuffer::new(config, recurrent_len)?,
+            recurrent: DeviceBuffer::empty(config.device_ordinal),
             slots,
         };
         state.conv.ensure(conv_len)?;
+        state.recurrent.ensure(recurrent_len)?;
         state.zero(config)?;
         Ok(state)
     }
@@ -152,7 +126,7 @@ impl GdnState {
 
     pub(super) fn zero(&mut self, config: &QwenConfig) -> Result<(), Status> {
         self.conv.zero(self.conv.cap, config.stream)?;
-        self.recurrent.zero(config.stream)
+        self.recurrent.zero(self.recurrent.cap, config.stream)
     }
 
     pub(super) fn conv_view(&self) -> Result<crate::backend::GdnConvState, Status> {
@@ -166,7 +140,11 @@ impl GdnState {
     }
 
     pub(super) fn recurrent_view(&self) -> Result<GdnRecurrentState, Status> {
-        self.recurrent.view(self.slots.state_pool)
+        GdnRecurrentState::contiguous(
+            self.recurrent.as_device_ptr(),
+            GDN_RECURRENT_STORAGE,
+            self.slots.state_pool,
+        )
     }
 
     pub(super) fn layer_slots(&self, gdn_layer_idx: u32) -> Result<GdnLayerSlots, Status> {

@@ -18,7 +18,7 @@ impl BatchExecution<'_> {
         layer: &QwenAttentionMlpWeights,
         kind: ActiveRunKind,
     ) -> Result<(), Status> {
-        let hidden = self.config.hidden_size;
+        let hidden = self.config.hidden_size();
         let q_hidden = self.config.q_hidden_size()?;
         let kv_hidden = self.config.kv_hidden_size()?;
         {
@@ -48,18 +48,18 @@ impl BatchExecution<'_> {
                     self.linear_workspace,
                 )?;
                 for (buffer, weight, heads) in [
-                    (&self.scratch.q, &layer.q_norm, self.config.num_q_heads),
-                    (&self.scratch.k, &layer.k_norm, self.config.num_kv_heads),
+                    (&self.scratch.q, &layer.q_norm, self.config.num_q_heads()),
+                    (&self.scratch.k, &layer.k_norm, self.config.num_kv_heads()),
                 ] {
                     let flattened = buffer.matrix(
                         rows.checked_mul(heads).ok_or(Status::InvalidArgument)?,
-                        self.config.head_dim,
+                        self.config.head_dim(),
                     )?;
                     let norm = RmsNormBf16::qwen_qk_norm(
                         flattened,
-                        weight.vector(self.config.head_dim)?,
+                        weight.vector(self.config.head_dim())?,
                         flattened,
-                        self.config.rms_norm_eps,
+                        self.config.rms_norm_eps(),
                     )?;
                     ops.qsfi().rmsnorm_bf16(&norm)?;
                 }
@@ -69,19 +69,19 @@ impl BatchExecution<'_> {
         let q = self
             .scratch
             .q
-            .heads(rows, self.config.num_q_heads, self.config.head_dim)?;
+            .heads(rows, self.config.num_q_heads(), self.config.head_dim())?;
         let k = self
             .scratch
             .k
-            .heads(rows, self.config.num_kv_heads, self.config.head_dim)?;
+            .heads(rows, self.config.num_kv_heads(), self.config.head_dim())?;
         let v = self
             .scratch
             .v
-            .heads(rows, self.config.num_kv_heads, self.config.head_dim)?;
+            .heads(rows, self.config.num_kv_heads(), self.config.head_dim())?;
         let output =
             self.scratch
                 .attn_out
-                .heads(rows, self.config.num_q_heads, self.config.head_dim)?;
+                .heads(rows, self.config.num_q_heads(), self.config.head_dim())?;
         let engine_layer = AttentionLayer::bf16_attention(
             attention_layer_idx,
             q,
@@ -116,11 +116,11 @@ impl BatchExecution<'_> {
         let q = self
             .scratch
             .q
-            .heads(rows, self.config.num_q_heads, self.config.head_dim)?;
+            .heads(rows, self.config.num_q_heads(), self.config.head_dim())?;
         let k = self
             .scratch
             .k
-            .heads(rows, self.config.num_kv_heads, self.config.head_dim)?;
+            .heads(rows, self.config.num_kv_heads(), self.config.head_dim())?;
         let desc = RopeApplyBf16::with_params(
             q,
             k,
@@ -128,8 +128,8 @@ impl BatchExecution<'_> {
             k,
             self.scratch.positions.vector(rows)?,
             ROTARY_DIM,
-            self.config.rope_scale,
-            self.config.rope_theta,
+            1.0,
+            self.config.rope_theta(),
         )?;
         unsafe { self.engine.operators().qsfi().rope_apply_bf16(&desc) }
     }
