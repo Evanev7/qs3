@@ -2,6 +2,7 @@
 #include "qscu.h"
 #include "qsfi.h"
 
+#include <cuda_bf16.h>
 #include <cuda_runtime.h>
 
 #include <algorithm>
@@ -1884,6 +1885,175 @@ void test_moe_bf16_top2_weighted_accumulation(qsfi_moe_bf16_kernel kernel)
     qsfi_context_destroy(ctx);
 }
 
+// A sparse analytic fixture exercises the real decode dimensions without a
+// second host copy of the 1.5 GiB expert tensors. Duplicate routes are intentional.
+__global__ void init_decode_moe_test_weights(__nv_bfloat16* gate_up, __nv_bfloat16* down)
+{
+    const int expert = blockIdx.y;
+    const int row = blockIdx.x * blockDim.x + threadIdx.x;
+    if (row < 512) {
+        gate_up[(size_t(expert) * 1024 + row) * 2048 + 7]
+            = __float2bfloat16(float((expert + row) % 7 + 1) * 0.125f);
+        gate_up[(size_t(expert) * 1024 + 512 + row) * 2048 + 7]
+            = __float2bfloat16(float(row % 5 + 1) * 0.25f);
+    }
+    down[(size_t(expert) * 2048 + row) * 512 + row % 512]
+        = __float2bfloat16(float(expert % 5 + 1) * 0.125f);
+}
+
+void test_moe_bf16_decode_real_shape()
+{
+    qsfi_context* ctx = nullptr;
+    if (!make_context(&ctx))
+        return;
+    constexpr size_t gate_elems = size_t(256) * 1024 * 2048;
+    constexpr size_t down_elems = size_t(256) * 2048 * 512;
+    std::vector<uint16_t> hidden(2048, 0), actual(2048), reference(2048);
+    hidden[7] = kBf16Two;
+    std::vector<int32_t> ids = { 0, 31, 63, 127, 191, 255, 31, 0 };
+    std::vector<float> scales = { 0.0625f, 0.125f, 0.25f, 0.0625f, 0.125f, 0.125f, 0.0f, 0.25f };
+    uint16_t *dx = nullptr, *gate = nullptr, *down = nullptr, *dy = nullptr;
+    int32_t* di = nullptr;
+    float* ds = nullptr;
+    uint8_t* workspace = nullptr;
+    qsfi_moe_plan *control = nullptr, *candidate = nullptr;
+    qsfi_moe_plan_desc p {};
+    p.backend = QSFI_MOE_BACKEND_FLASHINFER_STAGED_BF16;
+    p.bf16_kernel = QSFI_MOE_BF16_TILE32_BLOCKS96;
+    p.route_mode = QSFI_MOE_ROUTE_PRECOMPUTED_TOPK;
+    p.max_num_tokens = 1;
+    p.hidden_size = 2048;
+    p.intermediate_size = 512;
+    p.num_experts = p.local_num_experts = 256;
+    p.top_k = 8;
+    p.activation_dtype = p.weight_dtype = p.output_dtype = QSFI_DTYPE_BF16;
+    bool ok = check_status(
+        qsfi_moe_plan_create(ctx, &p, &control),
+        QSFI_STATUS_OK,
+        "decode control plan"
+    );
+    p.bf16_kernel = QSFI_MOE_BF16_DECODE_GEMV64;
+    ok = ok
+        && check_status(
+             qsfi_moe_plan_create(ctx, &p, &candidate),
+             QSFI_STATUS_OK,
+             "decode candidate plan"
+        );
+    size_t bytes = 0;
+    ok = ok
+        && check_status(
+             qsfi_moe_workspace_size(ctx, candidate, 1, &bytes),
+             QSFI_STATUS_OK,
+             "decode workspace"
+        );
+    ok = ok && copy_to_device(&dx, hidden.data(), hidden.size(), "decode hidden")
+        && copy_to_device(&di, ids.data(), ids.size(), "decode routes")
+        && copy_to_device(&ds, scales.data(), scales.size(), "decode scales")
+        && alloc_device(&gate, gate_elems, "decode gate weights")
+        && alloc_device(&down, down_elems, "decode down weights")
+        && alloc_device(&dy, size_t(2048), "decode output")
+        && alloc_device(&workspace, bytes, "decode workspace")
+        && check_cuda(cudaMemset(gate, 0, gate_elems * 2), "zero decode gate")
+        && check_cuda(cudaMemset(down, 0, down_elems * 2), "zero decode down");
+    if (ok) {
+        init_decode_moe_test_weights<<<dim3(8, 256), 256>>>(
+            reinterpret_cast<__nv_bfloat16*>(gate),
+            reinterpret_cast<__nv_bfloat16*>(down)
+        );
+        check_cuda(cudaGetLastError(), "initialize decode weights");
+        qsfi_moe_bf16_execute_desc d {};
+        d.num_tokens = 1;
+        d.hidden = tensor2_bf16(dx, 1, 2048);
+        d.topk_ids = tensor2_i32(di, 1, 8);
+        d.topk_weights = tensor2_f32(ds, 1, 8);
+        d.gate_up_weight = tensor3_bf16(gate, 256, 1024, 2048);
+        d.down_weight = tensor3_bf16(down, 256, 2048, 512);
+        d.out = tensor2_bf16(dy, 1, 2048);
+        d.workspace = tensor1_u8(workspace, bytes);
+        for (int pass = 0; pass < 3; ++pass) {
+            if (pass == 1)
+                std::fill(ids.begin(), ids.end(), 255);
+            if (pass == 2) {
+                ids[0] = -1;
+                ids[7] = 256;
+            }
+            check_cuda(
+                cudaMemcpy(di, ids.data(), 8 * sizeof(int32_t), cudaMemcpyHostToDevice),
+                "update decode routes"
+            );
+#if QSFI_ENABLE_CHECKED_VALIDATION
+            if (pass == 2) {
+                check_status(
+                    qsfi_moe_execute_bf16(ctx, candidate, &d),
+                    QSFI_STATUS_INVALID_ARGUMENT,
+                    "checked decode routes"
+                );
+                continue;
+            }
+#endif
+            check_status(
+                qsfi_moe_execute_bf16(ctx, control, &d),
+                QSFI_STATUS_OK,
+                "decode grouped control"
+            );
+            check_cuda(
+                cudaMemcpy(reference.data(), dy, 4096, cudaMemcpyDeviceToHost),
+                "decode control output"
+            );
+            check_cuda(cudaMemset(workspace, 0xa5, bytes), "poison reused decode workspace");
+            check_status(qsfi_moe_execute_bf16(ctx, candidate, &d), QSFI_STATUS_OK, "decode GEMV");
+            check_cuda(
+                cudaMemcpy(actual.data(), dy, 4096, cudaMemcpyDeviceToHost),
+                "decode candidate output"
+            );
+            if (actual != reference) {
+                std::fprintf(stderr, "FAIL: sparse decode differs from grouped pass=%d\n", pass);
+                ++failures;
+            }
+            const auto bf16 = [](float x) { return __bfloat162float(__float2bfloat16(x)); };
+            std::vector<float> expected(2048);
+            for (int h = 0; h < 2048; ++h) {
+                float sum = 0;
+                for (int r = 0; r < 8; ++r) {
+                    const int e = ids[r];
+                    if (e < 0 || e >= 256)
+                        continue;
+                    const float g = float((e + h % 512) % 7 + 1) * 0.25f;
+                    const float u = float((h % 512) % 5 + 1) * 0.5f;
+                    const float act = bf16(g / (1.0f + std::exp(-g)) * u);
+                    sum += scales[r] * bf16(act * float(e % 5 + 1) * 0.125f);
+                }
+                expected[h] = bf16(sum);
+            }
+            check_bf16_vector_close(actual, expected, 0.00390625f, "analytic decode MoE");
+        }
+#if QSFI_ENABLE_CHECKED_VALIDATION
+        std::fill(ids.begin(), ids.end(), 0);
+        scales[0] = std::numeric_limits<float>::quiet_NaN();
+        check_cuda(cudaMemcpy(di, ids.data(), 32, cudaMemcpyHostToDevice), "restore decode routes");
+        check_cuda(
+            cudaMemcpy(ds, scales.data(), 32, cudaMemcpyHostToDevice),
+            "nonfinite decode weight"
+        );
+        check_status(
+            qsfi_moe_execute_bf16(ctx, candidate, &d),
+            QSFI_STATUS_INVALID_ARGUMENT,
+            "checked decode scale"
+        );
+#endif
+    }
+    cudaFree(dx);
+    cudaFree(di);
+    cudaFree(ds);
+    cudaFree(gate);
+    cudaFree(down);
+    cudaFree(dy);
+    cudaFree(workspace);
+    qsfi_moe_plan_destroy(control);
+    qsfi_moe_plan_destroy(candidate);
+    qsfi_context_destroy(ctx);
+}
+
 void test_moe_router_logits_plan_is_unsupported()
 {
     qsfi_context* ctx = nullptr;
@@ -2524,6 +2694,9 @@ int main()
     test_moe_bf16_top2_weighted_accumulation(QSFI_MOE_BF16_TILE128_BLOCKS4);
     test_moe_bf16_top2_weighted_accumulation(QSFI_MOE_BF16_TILE128_BLOCKS96);
     test_moe_bf16_top2_weighted_accumulation(QSFI_MOE_BF16_TILE32_BLOCKS96);
+    test_moe_bf16_staged_grouped_gemm(QSFI_MOE_BF16_DECODE_GEMV64);
+    test_moe_bf16_top2_weighted_accumulation(QSFI_MOE_BF16_DECODE_GEMV64);
+    test_moe_bf16_decode_real_shape();
     test_moe_router_logits_plan_is_unsupported();
     test_moe_nvfp4_execute_is_declared_unsupported();
 #if QSFI_ENABLE_CHECKED_VALIDATION

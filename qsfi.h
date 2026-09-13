@@ -221,7 +221,9 @@ typedef enum {
 typedef enum {
     QSFI_MOE_BF16_TILE128_BLOCKS4 = 1,
     QSFI_MOE_BF16_TILE128_BLOCKS96 = 2,
-    QSFI_MOE_BF16_TILE32_BLOCKS96 = 3
+    QSFI_MOE_BF16_TILE32_BLOCKS96 = 3,
+    /* Qwen35B one-token GEMV; tile32/96 for prefill and narrow fixtures. */
+    QSFI_MOE_BF16_DECODE_GEMV64 = 4
 } qsfi_moe_bf16_kernel;
 
 typedef struct {

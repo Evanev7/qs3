@@ -253,8 +253,9 @@ pub fn run_core_benchmark() -> JsonValue {
         Ok(value) if value == "tile128_blocks4" => MoeBf16Kernel::CutlassTile128Blocks4,
         Ok(value) if value == "tile128_blocks96" => MoeBf16Kernel::CutlassTile128Blocks96,
         Ok(value) if value == "tile32_blocks96" => MoeBf16Kernel::CutlassTile32Blocks96,
+        Ok(value) if value == "decode_gemv64" => MoeBf16Kernel::DecodeGemv64,
         _ => panic!(
-            "QS3_BENCH_MOE_KERNEL must name tile128_blocks4, tile128_blocks96 or tile32_blocks96"
+            "QS3_BENCH_MOE_KERNEL must name tile128_blocks4, tile128_blocks96, tile32_blocks96 or decode_gemv64"
         ),
     };
     let started = Instant::now();
@@ -358,7 +359,16 @@ pub fn run_core_benchmark() -> JsonValue {
                     "gdn_recurrent_state_dtype",
                     config.gdn_recurrent_precision.as_str().to_owned().into(),
                 ),
-                ("moe", "cutlass_sm80_stages2_bf16".to_owned().into()),
+                (
+                    "moe",
+                    if config.moe_bf16_kernel == MoeBf16Kernel::DecodeGemv64 {
+                        "qwen36_gemv64_decode_cutlass_sm80_prefill"
+                    } else {
+                        "cutlass_sm80_stages2_bf16"
+                    }
+                    .to_owned()
+                    .into(),
+                ),
                 (
                     "linear_workspace_bytes",
                     (config.qscb_workspace_bytes as f64).into(),

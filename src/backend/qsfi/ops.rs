@@ -41,19 +41,22 @@ impl Qsfi {
     }
 }
 
-/// Explicit SM80 BF16 grouped-GEMM kernels compiled ahead of time.
+/// Explicit BF16 MoE kernels compiled ahead of time.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MoeBf16Kernel {
     CutlassTile128Blocks4,
     CutlassTile128Blocks96,
     CutlassTile32Blocks96,
+    /// Direct Qwen35B one-token GEMV; grouped tile32/96 otherwise.
+    DecodeGemv64,
 }
 
 impl MoeBf16Kernel {
+    /// Grouped path launch size (prefill and narrow fixtures).
     pub const fn threadblocks(self) -> u32 {
         match self {
             Self::CutlassTile128Blocks4 => 4,
-            Self::CutlassTile128Blocks96 | Self::CutlassTile32Blocks96 => 96,
+            Self::CutlassTile128Blocks96 | Self::CutlassTile32Blocks96 | Self::DecodeGemv64 => 96,
         }
     }
 
@@ -62,13 +65,15 @@ impl MoeBf16Kernel {
             Self::CutlassTile128Blocks4 => "tile128_blocks4",
             Self::CutlassTile128Blocks96 => "tile128_blocks96",
             Self::CutlassTile32Blocks96 => "tile32_blocks96",
+            Self::DecodeGemv64 => "decode_gemv64",
         }
     }
 
+    /// Grouped path tile (prefill and narrow fixtures).
     pub const fn cta_tile(self) -> [u32; 3] {
         match self {
             Self::CutlassTile128Blocks4 | Self::CutlassTile128Blocks96 => [128, 128, 32],
-            Self::CutlassTile32Blocks96 => [32, 128, 64],
+            Self::CutlassTile32Blocks96 | Self::DecodeGemv64 => [32, 128, 64],
         }
     }
 
@@ -77,6 +82,7 @@ impl MoeBf16Kernel {
             Self::CutlassTile128Blocks4 => ffi::sys::QSFI_MOE_BF16_TILE128_BLOCKS4,
             Self::CutlassTile128Blocks96 => ffi::sys::QSFI_MOE_BF16_TILE128_BLOCKS96,
             Self::CutlassTile32Blocks96 => ffi::sys::QSFI_MOE_BF16_TILE32_BLOCKS96,
+            Self::DecodeGemv64 => ffi::sys::QSFI_MOE_BF16_DECODE_GEMV64,
         }
     }
 }

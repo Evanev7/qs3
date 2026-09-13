@@ -382,6 +382,28 @@ local result collection after GPU measurement; its unintended local Nix build
 was stopped. This recovered record is deliberately outside the full core JSON
 history. The GPU raw artifacts and original Nsight report remain on sp10.
 
+The `decode_gemv64` MoE candidate is integrated behind the existing MoE API and
+named Rust/native kernel selection. Exact 35B one-token shapes use two direct
+BF16 GEMVs, the existing SiLU kernel, and weighted route reduction. Prefill and
+narrow fixtures use the existing tile32/96 grouped path. Loaded-model and routine
+benchmark defaults select the candidate; the three named CUTLASS controls remain
+forceable. Benchmark `moe` identifies the mixed decode/prefill implementation;
+`moe_cta_tile` and `moe_threadblocks` describe its grouped path. Existing Rust
+schedule, allocations, plans, workspace layout and tensor formats are unchanged.
+There is no graph capture, new synchronization or runtime compilation.
+
+The new exact-shape native fixture uses sparse analytic 256-expert weights,
+nonuniform route scales, duplicate IDs including expert 255, and poisoned
+workspace reuse. Candidate and grouped outputs agree bit-for-bit; the CPU
+calculation checks each BF16 rounding stage. Checked builds reject invalid IDs
+and NaN route scales before addressing weights; release builds safely skip
+out-of-range routes. All four native targets pass, as do the Python/Triton,
+127-library, five-benchmark, three-engine, sixteen-model and fourteen-vector
+checks through the prescribed script. The loaded 35B reference regression passes
+with both BF16 and FP32 recurrence, historical score tolerances, greedy IDs
+`[5, 6, 24218, 10]`, late-failure continuation and reset/replay. Real-model
+performance and sustained identical-prefix comparisons follow separately.
+
 ### First steady-decode GPU timeline
 
 The [Nsight capture and summaries](benchmarks/2026-09-09T015556Z-0a7eef9-decode/README.md)

@@ -356,7 +356,7 @@ impl QwenConfig {
             qsfi_int_workspace_bytes: 64 << 20,
             qsfi_host_int_workspace_bytes: 64 << 20,
             qscb_workspace_bytes: 64 << 20,
-            moe_bf16_kernel: MoeBf16Kernel::CutlassTile32Blocks96,
+            moe_bf16_kernel: MoeBf16Kernel::DecodeGemv64,
             gdn_recurrent_precision: GdnRecurrentPrecision::F32,
             model_shape: QwenModelShape::qwen36_moe_gdn(),
         };

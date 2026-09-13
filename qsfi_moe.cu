@@ -112,6 +112,7 @@ cudaError_t launch_grouped_bf16(
     case QSFI_MOE_BF16_TILE128_BLOCKS96:
         return launch_grouped_bf16_impl<128, 32>(ws, experts, 96, stream);
     case QSFI_MOE_BF16_TILE32_BLOCKS96:
+    case QSFI_MOE_BF16_DECODE_GEMV64:
         return launch_grouped_bf16_impl<32, 64>(ws, experts, 96, stream);
     default:
         return cudaErrorInvalidValue;
@@ -235,7 +236,8 @@ qsfi_status validate_plan_desc(qsfi_context* ctx, const qsfi_moe_plan_desc* desc
     if (desc->backend == QSFI_MOE_BACKEND_FLASHINFER_STAGED_BF16) {
         if (desc->bf16_kernel != QSFI_MOE_BF16_TILE128_BLOCKS4
             && desc->bf16_kernel != QSFI_MOE_BF16_TILE128_BLOCKS96
-            && desc->bf16_kernel != QSFI_MOE_BF16_TILE32_BLOCKS96)
+            && desc->bf16_kernel != QSFI_MOE_BF16_TILE32_BLOCKS96
+            && desc->bf16_kernel != QSFI_MOE_BF16_DECODE_GEMV64)
             return set_invalid_arg(
                 ctx,
                 "staged BF16 MoE bf16_kernel must name a compiled tile/grid"
@@ -618,6 +620,111 @@ qsfi_status validate_moe_routes(
 #endif
 }
 
+// Direct row reductions for the eight selected Qwen3.6-35B experts. Keep the
+// staged path's BF16 projection, SiLU and down-projection rounding boundaries.
+// The existing workspace owns all intermediates; Rust still owns the schedule.
+template <int Threads> __device__ float moe_sum(float x)
+{
+    for (int d = 16; d; d /= 2)
+        x += __shfl_down_sync(0xffffffff, x, d);
+    if constexpr (Threads > 32) {
+        __shared__ float partial[Threads / 32];
+        if (threadIdx.x % 32 == 0)
+            partial[threadIdx.x / 32] = x;
+        __syncthreads();
+        if (threadIdx.x < 32) {
+            x = threadIdx.x < Threads / 32 ? partial[threadIdx.x] : 0.f;
+            for (int d = 16; d; d /= 2)
+                x += __shfl_down_sync(0xffffffff, x, d);
+        }
+        __syncthreads();
+    }
+    return x;
+}
+
+template <int K, int N, int Threads, bool RoutedInput>
+__global__ void moe_decode_gemv(
+    const __nv_bfloat16* x, const __nv_bfloat16* w, const int32_t* ids, __nv_bfloat16* y
+)
+{
+    const int row = blockIdx.x;
+    const int route = blockIdx.y;
+    const int expert = ids[route];
+    if (expert < 0 || expert >= 256) {
+        if (threadIdx.x == 0)
+            y[route * N + row] = __float2bfloat16(0.f);
+        return;
+    }
+    x += RoutedInput ? route * K : 0;
+    w += (size_t(expert) * N + row) * K;
+    float sums[8] = {};
+    for (int k = threadIdx.x * 8; k < K; k += Threads * 8) {
+        uint4 xv = *reinterpret_cast<const uint4*>(x + k);
+        uint4 wv = *reinterpret_cast<const uint4*>(w + k);
+        const auto* xx = reinterpret_cast<const __nv_bfloat16*>(&xv);
+        const auto* ww = reinterpret_cast<const __nv_bfloat16*>(&wv);
+#pragma unroll
+        for (int j = 0; j < 8; ++j)
+            sums[j] += __bfloat162float(xx[j]) * __bfloat162float(ww[j]);
+    }
+    float acc = 0.f;
+#pragma unroll
+    for (int j = 0; j < 8; ++j)
+        acc += sums[j];
+    acc = moe_sum<Threads>(acc);
+    if (threadIdx.x == 0)
+        y[route * N + row] = __float2bfloat16(acc);
+}
+
+__global__ void moe_decode_finalize(
+    const int32_t* ids, const float* scales, const __nv_bfloat16* expert_out, __nv_bfloat16* out
+)
+{
+    int h = blockIdx.x * blockDim.x + threadIdx.x;
+    float acc = 0.f;
+#pragma unroll
+    for (int r = 0; r < 8; ++r)
+        if (ids[r] >= 0 && ids[r] < 256)
+            acc += scales[r] * __bfloat162float(expert_out[r * 2048 + h]);
+    out[h] = __float2bfloat16(acc);
+}
+
+template <int Threads>
+cudaError_t launch_decode_moe(
+    const qsfi_moe_bf16_execute_desc* desc, const moe_workspace& ws, cudaStream_t stream
+)
+{
+    moe_decode_gemv<2048, 1024, Threads, false><<<dim3(1024, 8), Threads, 0, stream>>>(
+        static_cast<const __nv_bfloat16*>(desc->hidden.data),
+        static_cast<const __nv_bfloat16*>(desc->gate_up_weight.data),
+        static_cast<const int32_t*>(desc->topk_ids.data),
+        ws.gemm1_out
+    );
+    auto err = cudaGetLastError();
+    if (err != cudaSuccess)
+        return err;
+    swiglu_kernel<<<16, 256, 0, stream>>>(ws.gemm1_out, 8, 512, ws.act);
+    err = cudaGetLastError();
+    if (err != cudaSuccess)
+        return err;
+    moe_decode_gemv<512, 2048, Threads, true><<<dim3(2048, 8), Threads, 0, stream>>>(
+        ws.act,
+        static_cast<const __nv_bfloat16*>(desc->down_weight.data),
+        static_cast<const int32_t*>(desc->topk_ids.data),
+        ws.gemm2_out
+    );
+    err = cudaGetLastError();
+    if (err != cudaSuccess)
+        return err;
+    moe_decode_finalize<<<8, 256, 0, stream>>>(
+        static_cast<const int32_t*>(desc->topk_ids.data),
+        static_cast<const float*>(desc->topk_weights.data),
+        ws.gemm2_out,
+        static_cast<__nv_bfloat16*>(desc->out.data)
+    );
+    return cudaGetLastError();
+}
+
 cudaError_t launch_bf16_moe(
     qsfi_context* ctx,
     const qsfi_moe_plan_desc& p,
@@ -625,6 +732,17 @@ cudaError_t launch_bf16_moe(
     const moe_workspace& ws
 )
 {
+    if (p.bf16_kernel == QSFI_MOE_BF16_DECODE_GEMV64 && desc->num_tokens == 1
+        && p.hidden_size == 2048 && p.intermediate_size == 512 && p.top_k == 8
+        && p.local_num_experts == 256
+        && ((reinterpret_cast<uintptr_t>(desc->hidden.data)
+             | reinterpret_cast<uintptr_t>(desc->gate_up_weight.data)
+             | reinterpret_cast<uintptr_t>(desc->down_weight.data)
+             | reinterpret_cast<uintptr_t>(desc->workspace.data))
+            & 15)
+            == 0) {
+        return launch_decode_moe<64>(desc, ws, ctx->stream);
+    }
     const uint32_t num_tokens = desc->num_tokens;
     const uint32_t max_routes = static_cast<uint32_t>(static_cast<uint64_t>(num_tokens) * p.top_k);
     const uint32_t local_experts = p.local_num_experts;

@@ -408,6 +408,7 @@ fn validate_moe_plan_desc(desc: &MoePlanDesc) -> Result<(), Status> {
             sys::QSFI_MOE_BF16_TILE128_BLOCKS4
                 | sys::QSFI_MOE_BF16_TILE128_BLOCKS96
                 | sys::QSFI_MOE_BF16_TILE32_BLOCKS96
+                | sys::QSFI_MOE_BF16_DECODE_GEMV64
         ) {
             return Err(Status::InvalidArgument);
         }
@@ -2197,7 +2198,7 @@ mod tests {
     #[test]
     fn moe_plan_validation_checks_supported_backend_and_shape() {
         let valid = moe_bf16_plan_desc();
-        for kernel in [0, 4, 96, u32::MAX] {
+        for kernel in [0, 5, 96, u32::MAX] {
             let mut invalid = valid;
             invalid.bf16_kernel = kernel;
             assert_eq!(
@@ -2205,9 +2206,16 @@ mod tests {
                 Err(Status::InvalidArgument)
             );
         }
-        let mut narrow = valid;
-        narrow.bf16_kernel = sys::QSFI_MOE_BF16_TILE128_BLOCKS4;
-        assert_eq!(validate_moe_plan_desc(&narrow), Ok(()));
+        for kernel in [
+            sys::QSFI_MOE_BF16_TILE128_BLOCKS4,
+            sys::QSFI_MOE_BF16_TILE128_BLOCKS96,
+            sys::QSFI_MOE_BF16_TILE32_BLOCKS96,
+            sys::QSFI_MOE_BF16_DECODE_GEMV64,
+        ] {
+            let mut supported = valid;
+            supported.bf16_kernel = kernel;
+            assert_eq!(validate_moe_plan_desc(&supported), Ok(()));
+        }
         assert_eq!(validate_moe_plan_desc(&valid), Ok(()));
         assert_eq!(validate_moe_plan_desc(&moe_nvfp4_plan_desc()), Ok(()));
 
