@@ -1,0 +1,436 @@
+{
+  "source_database": "/home/maia/projects/exo/qs3/.prototypes/trace-attribution/latest.sqlite",
+  "steps": 256,
+  "gpu_stream_ids": [
+    7
+  ],
+  "kernel_count": 251904,
+  "kernel_span_ms_per_token": 32.00002575,
+  "gpu_active_ms_per_token": 29.90155210546875,
+  "gpu_idle_ms_per_token": 2.09847364453125,
+  "idle_fraction_of_kernel_span": 0.06557724862240931,
+  "between_token_boundary_count": 255,
+  "between_token_span_ms_per_boundary": 0.07273198431372549,
+  "between_token_idle_ms_per_boundary": 0.06852530196078431,
+  "between_token_idle_ms_amortized_per_token": 0.068257625,
+  "within_token_idle_ms_amortized_per_token": 2.03021601953125,
+  "gap_count": 273143,
+  "gap_time_by_next_api_ms_per_token": {
+    "before_next_api_start": 0.0620149375,
+    "inside_next_api_call": 0.0090416875,
+    "after_next_api_return": 2.02741701953125
+  },
+  "gap_count_by_next_api": {
+    "next_api_overlaps_or_starts_in_gap": 974,
+    "next_api_returned_before_gap": 269899,
+    "next_api_started_after_gpu_start": 2270
+  },
+  "idle_next_api_returned_at_least_before_gap_ms_per_token": {
+    "10us": 2.02493776953125,
+    "100us": 2.02473151953125,
+    "1000us": 1.95592526171875
+  },
+  "gap_histogram": {
+    "<1us": {
+      "count": 26889,
+      "ms_per_token": 0.03970189453125
+    },
+    "1-5us": {
+      "count": 245285,
+      "ms_per_token": 2.001946125
+    },
+    "20-100us": {
+      "count": 32,
+      "ms_per_token": 0.00336125
+    },
+    "5-20us": {
+      "count": 927,
+      "ms_per_token": 0.03278725
+    },
+    ">=100us": {
+      "count": 10,
+      "ms_per_token": 0.020677125
+    }
+  },
+  "copy_api_by_kind": {
+    "1": {
+      "calls": 17408,
+      "api_sum_ms_per_token": 0.165582625,
+      "api_union_ms_per_token": 0.165582625,
+      "overlap_gpu_active_ms_per_token": 0.13553043359375,
+      "overlap_gpu_idle_ms_per_token": 0.02973431640625,
+      "gpu_copy_ms_per_token": 0.02016625,
+      "bytes_per_token": 1579.78125
+    },
+    "8": {
+      "calls": 5120,
+      "api_sum_ms_per_token": 0.063979,
+      "api_union_ms_per_token": 0.063979,
+      "overlap_gpu_active_ms_per_token": 0.058587375,
+      "overlap_gpu_idle_ms_per_token": 0.005391625,
+      "gpu_copy_ms_per_token": 0.018107375,
+      "bytes_per_token": 163840.0
+    },
+    "2": {
+      "calls": 256,
+      "api_sum_ms_per_token": 28.0053555,
+      "api_union_ms_per_token": 28.0053555,
+      "overlap_gpu_active_ms_per_token": 26.23148390625,
+      "overlap_gpu_idle_ms_per_token": 1.77383490625,
+      "gpu_copy_ms_per_token": 0.002345,
+      "bytes_per_token": 4.0
+    }
+  },
+  "top_api_overlap": {
+    "cudaMemcpyAsync_v3020": {
+      "calls": 17664,
+      "api_sum_ms_per_token": 28.170938125,
+      "api_union_ms_per_token": 28.170938125,
+      "overlap_gpu_active_ms_per_token": 26.36701433984375,
+      "overlap_gpu_idle_ms_per_token": 1.80356922265625
+    },
+    "cudaLaunchKernel_v7000": {
+      "calls": 202752,
+      "api_sum_ms_per_token": 2.2755355625,
+      "api_union_ms_per_token": 2.2755355625,
+      "overlap_gpu_active_ms_per_token": 2.125519671875,
+      "overlap_gpu_idle_ms_per_token": 0.149940890625
+    },
+    "cudaLaunchKernelExC_v11060": {
+      "calls": 41216,
+      "api_sum_ms_per_token": 0.452069375,
+      "api_union_ms_per_token": 0.452069375,
+      "overlap_gpu_active_ms_per_token": 0.4188307421875,
+      "overlap_gpu_idle_ms_per_token": 0.0332386328125
+    },
+    "cuLaunchKernel": {
+      "calls": 7936,
+      "api_sum_ms_per_token": 0.080411125,
+      "api_union_ms_per_token": 0.080411125,
+      "overlap_gpu_active_ms_per_token": 0.0744455625,
+      "overlap_gpu_idle_ms_per_token": 0.0059655625
+    },
+    "cudaMemcpy2DAsync_v3020": {
+      "calls": 5120,
+      "api_sum_ms_per_token": 0.063979,
+      "api_union_ms_per_token": 0.063979,
+      "overlap_gpu_active_ms_per_token": 0.058587375,
+      "overlap_gpu_idle_ms_per_token": 0.005391625
+    },
+    "cuKernelGetName": {
+      "calls": 197632,
+      "api_sum_ms_per_token": 0.02822125,
+      "api_union_ms_per_token": 0.02822125,
+      "overlap_gpu_active_ms_per_token": 0.0262463125,
+      "overlap_gpu_idle_ms_per_token": 0.0019736875
+    },
+    "cudaMalloc_v3020": {
+      "calls": 64,
+      "api_sum_ms_per_token": 0.003785875,
+      "api_union_ms_per_token": 0.003785875,
+      "overlap_gpu_active_ms_per_token": 0.0,
+      "overlap_gpu_idle_ms_per_token": 0.003639
+    },
+    "cudaFree_v3020": {
+      "calls": 64,
+      "api_sum_ms_per_token": 0.0009058125,
+      "api_union_ms_per_token": 0.0009058125,
+      "overlap_gpu_active_ms_per_token": 8.01875e-05,
+      "overlap_gpu_idle_ms_per_token": 0.0007638125
+    },
+    "cudaEventRecord_v3020": {
+      "calls": 256,
+      "api_sum_ms_per_token": 0.0007885625,
+      "api_union_ms_per_token": 0.0007885625,
+      "overlap_gpu_active_ms_per_token": 4.75e-06,
+      "overlap_gpu_idle_ms_per_token": 0.0007060625
+    },
+    "cudaStreamSynchronize_v3020": {
+      "calls": 256,
+      "api_sum_ms_per_token": 0.0006709375,
+      "api_union_ms_per_token": 0.0006709375,
+      "overlap_gpu_active_ms_per_token": 0.0,
+      "overlap_gpu_idle_ms_per_token": 0.000669125
+    },
+    "cudaEventQuery_v3020": {
+      "calls": 256,
+      "api_sum_ms_per_token": 0.000558875,
+      "api_union_ms_per_token": 0.000558875,
+      "overlap_gpu_active_ms_per_token": 2.5e-06,
+      "overlap_gpu_idle_ms_per_token": 0.000540875
+    },
+    "cuProfilerStart": {
+      "calls": 1,
+      "api_sum_ms_per_token": 3.08125e-05,
+      "api_union_ms_per_token": 3.08125e-05,
+      "overlap_gpu_active_ms_per_token": 0.0,
+      "overlap_gpu_idle_ms_per_token": 0.0
+    }
+  },
+  "largest_gap_pairs": [
+    {
+      "previous": "std::enable_if<!T7, void>::type internal::gemvx::kernel<int, int, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, float, (bool)0, (bool)1, (bool)1, (bool)0, (int)7, (bool)0, cublasGemvParamsEx<int, cublasGemvTensorStridedBatched<const __nv_bfloat16>, cublasGemvTensorStridedBatched<const __nv_bfloat16>, cublasGemvTensorStridedBatched<__nv_bfloat16>, float>>(T13)",
+      "next": "std::enable_if<!T7, void>::type internal::gemvx::kernel<int, int, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, float, (bool)0, (bool)1, (bool)1, (bool)0, (int)7, (bool)0, cublasGemvParamsEx<int, cublasGemvTensorStridedBatched<const __nv_bfloat16>, cublasGemvTensorStridedBatched<const __nv_bfloat16>, cublasGemvTensorStridedBatched<__nv_bfloat16>, float>>(T13)",
+      "count": 20480,
+      "ms_per_token": 0.151871625
+    },
+    {
+      "previous": "<unnamed>::qwen36_shared_expert_gate_add_bf16_kernel(<unnamed>::qwen36_shared_expert_gate_add_params)",
+      "next": "void flashinfer::norm::FusedAddRMSNormKernel<(unsigned int)8, __nv_bfloat16>(T2 *, T2 *, T2 *, unsigned int, unsigned int, unsigned int, float, float)",
+      "count": 10240,
+      "ms_per_token": 0.10816175
+    },
+    {
+      "previous": "<unnamed>::moe_decode_finalize(const int *, const float *, const __nv_bfloat16 *, __nv_bfloat16 *)",
+      "next": "std::enable_if<!T7, void>::type internal::gemvx::kernel<int, int, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, float, (bool)0, (bool)1, (bool)1, (bool)0, (int)7, (bool)0, cublasGemvParamsEx<int, cublasGemvTensorStridedBatched<const __nv_bfloat16>, cublasGemvTensorStridedBatched<const __nv_bfloat16>, cublasGemvTensorStridedBatched<__nv_bfloat16>, float>>(T13)",
+      "count": 10240,
+      "ms_per_token": 0.107736625
+    },
+    {
+      "previous": "<unnamed>::swiglu_kernel(const __nv_bfloat16 *, unsigned int, unsigned int, __nv_bfloat16 *)",
+      "next": "void <unnamed>::moe_decode_gemv<(int)512, (int)2048, (int)64, (bool)1>(const __nv_bfloat16 *, const __nv_bfloat16 *, const int *, __nv_bfloat16 *)",
+      "count": 10240,
+      "ms_per_token": 0.098052375
+    },
+    {
+      "previous": "std::enable_if<!T7, void>::type internal::gemvx::kernel<int, int, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, float, (bool)0, (bool)1, (bool)1, (bool)0, (int)7, (bool)0, cublasGemvParamsEx<int, cublasGemvTensorStridedBatched<const __nv_bfloat16>, cublasGemvTensorStridedBatched<const __nv_bfloat16>, cublasGemvTensorStridedBatched<__nv_bfloat16>, float>>(T13)",
+      "next": "std::enable_if<!T7, void>::type internal::gemvx::kernel<int, int, __nv_bfloat16, float, float, float, (bool)0, (bool)1, (bool)1, (bool)0, (int)6, (bool)0, cublasGemvParamsEx<int, cublasGemvTensorStridedBatched<const __nv_bfloat16>, cublasGemvTensorStridedBatched<const float>, cublasGemvTensorStridedBatched<float>, float>>(T13)",
+      "count": 10240,
+      "ms_per_token": 0.090663
+    },
+    {
+      "previous": "<unnamed>::silu_and_mul_bf16_kernel(<unnamed>::silu_and_mul_params)",
+      "next": "std::enable_if<!T7, void>::type internal::gemvx::kernel<int, int, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, float, (bool)0, (bool)1, (bool)1, (bool)0, (int)7, (bool)0, cublasGemvParamsEx<int, cublasGemvTensorStridedBatched<const __nv_bfloat16>, cublasGemvTensorStridedBatched<const __nv_bfloat16>, cublasGemvTensorStridedBatched<__nv_bfloat16>, float>>(T13)",
+      "count": 10240,
+      "ms_per_token": 0.089189625
+    },
+    {
+      "previous": "void cublasLt::splitKreduce_kernel<(int)32, (int)16, int, float, float, float, float, (bool)0, float, float, float, (bool)1, (bool)0, (bool)0, (bool)0>(cublasLt::cublasSplitKParams<T6>, const T4 *, const T10 *, T9 *, T5 *, const T6 *, const T6 *, const T11 *, const T4 *, T11 *, void *, long, T6 *, int *, T6 *, T6 *, const T6 *, const T6 *, const T6 *, const T6 *, const T6 *)",
+      "next": "<unnamed>::qwen36_shared_expert_gate_add_bf16_kernel(<unnamed>::qwen36_shared_expert_gate_add_params)",
+      "count": 10240,
+      "ms_per_token": 0.089116375
+    },
+    {
+      "previous": "std::enable_if<!T7, void>::type internal::gemvx::kernel<int, int, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, float, (bool)0, (bool)1, (bool)1, (bool)0, (int)7, (bool)0, cublasGemvParamsEx<int, cublasGemvTensorStridedBatched<const __nv_bfloat16>, cublasGemvTensorStridedBatched<const __nv_bfloat16>, cublasGemvTensorStridedBatched<__nv_bfloat16>, float>>(T13)",
+      "next": "<unnamed>::qwen36_router_topk_warp_kernel(<unnamed>::router_topk_params)",
+      "count": 10240,
+      "ms_per_token": 0.088477
+    },
+    {
+      "previous": "void flashinfer::norm::FusedAddRMSNormKernel<(unsigned int)8, __nv_bfloat16>(T2 *, T2 *, T2 *, unsigned int, unsigned int, unsigned int, float, float)",
+      "next": "std::enable_if<!T7, void>::type internal::gemvx::kernel<int, int, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, float, (bool)0, (bool)1, (bool)1, (bool)0, (int)7, (bool)0, cublasGemvParamsEx<int, cublasGemvTensorStridedBatched<const __nv_bfloat16>, cublasGemvTensorStridedBatched<const __nv_bfloat16>, cublasGemvTensorStridedBatched<__nv_bfloat16>, float>>(T13)",
+      "count": 10240,
+      "ms_per_token": 0.08473075
+    },
+    {
+      "previous": "void <unnamed>::moe_decode_gemv<(int)2048, (int)1024, (int)64, (bool)0>(const __nv_bfloat16 *, const __nv_bfloat16 *, const int *, __nv_bfloat16 *)",
+      "next": "<unnamed>::swiglu_kernel(const __nv_bfloat16 *, unsigned int, unsigned int, __nv_bfloat16 *)",
+      "count": 10240,
+      "ms_per_token": 0.084062875
+    },
+    {
+      "previous": "void <unnamed>::moe_decode_gemv<(int)512, (int)2048, (int)64, (bool)1>(const __nv_bfloat16 *, const __nv_bfloat16 *, const int *, __nv_bfloat16 *)",
+      "next": "<unnamed>::moe_decode_finalize(const int *, const float *, const __nv_bfloat16 *, __nv_bfloat16 *)",
+      "count": 10240,
+      "ms_per_token": 0.0833615
+    },
+    {
+      "previous": "std::enable_if<!T7, void>::type internal::gemvx::kernel<int, int, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, float, (bool)0, (bool)1, (bool)1, (bool)0, (int)6, (bool)0, cublasGemvParamsEx<int, cublasGemvTensorStridedBatched<const __nv_bfloat16>, cublasGemvTensorStridedBatched<const __nv_bfloat16>, cublasGemvTensorStridedBatched<__nv_bfloat16>, float>>(T13)",
+      "next": "void flashinfer::norm::FusedAddRMSNormKernel<(unsigned int)8, __nv_bfloat16>(T2 *, T2 *, T2 *, unsigned int, unsigned int, unsigned int, float, float)",
+      "count": 10240,
+      "ms_per_token": 0.08284925
+    },
+    {
+      "previous": "std::enable_if<!T7, void>::type internal::gemvx::kernel<int, int, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, float, (bool)0, (bool)1, (bool)1, (bool)0, (int)7, (bool)0, cublasGemvParamsEx<int, cublasGemvTensorStridedBatched<const __nv_bfloat16>, cublasGemvTensorStridedBatched<const __nv_bfloat16>, cublasGemvTensorStridedBatched<__nv_bfloat16>, float>>(T13)",
+      "next": "<unnamed>::silu_and_mul_bf16_kernel(<unnamed>::silu_and_mul_params)",
+      "count": 10240,
+      "ms_per_token": 0.081038375
+    },
+    {
+      "previous": "void <unnamed>::qwen36_gdn_rmsnorm_gated_kernel<(unsigned int)32>(<unnamed>::rmsnorm_gated_params)",
+      "next": "std::enable_if<!T7, void>::type internal::gemvx::kernel<int, int, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, float, (bool)0, (bool)1, (bool)1, (bool)0, (int)6, (bool)0, cublasGemvParamsEx<int, cublasGemvTensorStridedBatched<const __nv_bfloat16>, cublasGemvTensorStridedBatched<const __nv_bfloat16>, cublasGemvTensorStridedBatched<__nv_bfloat16>, float>>(T13)",
+      "count": 7680,
+      "ms_per_token": 0.078428
+    },
+    {
+      "previous": "std::enable_if<!T7, void>::type internal::gemvx::kernel<int, int, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, float, (bool)0, (bool)1, (bool)1, (bool)0, (int)6, (bool)0, cublasGemvParamsEx<int, cublasGemvTensorStridedBatched<const __nv_bfloat16>, cublasGemvTensorStridedBatched<const __nv_bfloat16>, cublasGemvTensorStridedBatched<__nv_bfloat16>, float>>(T13)",
+      "next": "void <unnamed>::qwen36_gdn_causal_conv1d_kernel<__nv_bfloat16>(<unnamed>::conv1d_params, T1 *)",
+      "count": 7680,
+      "ms_per_token": 0.062511625
+    },
+    {
+      "previous": "void <unnamed>::qwen36_gdn_warp_kernel<float, (bool)0>(<unnamed>::gdn_kernel_params, T1 *)",
+      "next": "void <unnamed>::qwen36_gdn_rmsnorm_gated_kernel<(unsigned int)32>(<unnamed>::rmsnorm_gated_params)",
+      "count": 7680,
+      "ms_per_token": 0.061469125
+    },
+    {
+      "previous": "kernel",
+      "next": "std::enable_if<!T7, void>::type internal::gemvx::kernel<int, int, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, float, (bool)0, (bool)1, (bool)1, (bool)0, (int)7, (bool)0, cublasGemvParamsEx<int, cublasGemvTensorStridedBatched<const __nv_bfloat16>, cublasGemvTensorStridedBatched<const __nv_bfloat16>, cublasGemvTensorStridedBatched<__nv_bfloat16>, float>>(T13)",
+      "count": 7680,
+      "ms_per_token": 0.061198375
+    },
+    {
+      "previous": "<unnamed>::qwen36_router_topk_warp_kernel(<unnamed>::router_topk_params)",
+      "next": "void <unnamed>::moe_decode_gemv<(int)2048, (int)1024, (int)64, (bool)0>(const __nv_bfloat16 *, const __nv_bfloat16 *, const int *, __nv_bfloat16 *)",
+      "count": 10240,
+      "ms_per_token": 0.058645125
+    },
+    {
+      "previous": "void <unnamed>::qwen36_gdn_post_conv_prepare_kernel<(unsigned int)32>(<unnamed>::post_conv_params)",
+      "next": "void <unnamed>::qwen36_gdn_warp_kernel<float, (bool)0>(<unnamed>::gdn_kernel_params, T1 *)",
+      "count": 7680,
+      "ms_per_token": 0.05798925
+    },
+    {
+      "previous": "CUPTI_ACTIVITY_KIND_MEMCPY:1",
+      "next": "CUPTI_ACTIVITY_KIND_MEMCPY:1",
+      "count": 9465,
+      "ms_per_token": 0.05086625
+    }
+  ],
+  "largest_gaps": [
+    {
+      "us": 791.456,
+      "previous": "CUPTI_ACTIVITY_KIND_MEMCPY:2",
+      "next": "CUPTI_ACTIVITY_KIND_MEMCPY:1",
+      "next_api": {
+        "start": 4432690176,
+        "end": 4432698448,
+        "correlationId": 547613,
+        "nameId": 47,
+        "globalTid": 288064329350708,
+        "name": "cudaMemcpyAsync_v3020",
+        "table": "CUPTI_ACTIVITY_KIND_RUNTIME"
+      }
+    },
+    {
+      "us": 691.456,
+      "previous": "CUPTI_ACTIVITY_KIND_MEMCPY:2",
+      "next": "CUPTI_ACTIVITY_KIND_MEMCPY:1",
+      "next_api": {
+        "start": 6610040000,
+        "end": 6610047632,
+        "correlationId": 808784,
+        "nameId": 47,
+        "globalTid": 288064329350708,
+        "name": "cudaMemcpyAsync_v3020",
+        "table": "CUPTI_ACTIVITY_KIND_RUNTIME"
+      }
+    },
+    {
+      "us": 622.72,
+      "previous": "CUPTI_ACTIVITY_KIND_MEMCPY:2",
+      "next": "CUPTI_ACTIVITY_KIND_MEMCPY:1",
+      "next_api": {
+        "start": 5520848896,
+        "end": 5520856224,
+        "correlationId": 678197,
+        "nameId": 47,
+        "globalTid": 288064329350708,
+        "name": "cudaMemcpyAsync_v3020",
+        "table": "CUPTI_ACTIVITY_KIND_RUNTIME"
+      }
+    },
+    {
+      "us": 607.552,
+      "previous": "CUPTI_ACTIVITY_KIND_MEMCPY:1",
+      "next": "CUPTI_ACTIVITY_KIND_MEMCPY:1",
+      "next_api": {
+        "start": 2183024800,
+        "end": 2183034528,
+        "correlationId": 278764,
+        "nameId": 47,
+        "globalTid": 288064329350708,
+        "name": "cudaMemcpyAsync_v3020",
+        "table": "CUPTI_ACTIVITY_KIND_RUNTIME"
+      }
+    },
+    {
+      "us": 551.328,
+      "previous": "CUPTI_ACTIVITY_KIND_MEMCPY:2",
+      "next": "CUPTI_ACTIVITY_KIND_MEMCPY:1",
+      "next_api": {
+        "start": 7699406416,
+        "end": 7699414624,
+        "correlationId": 939368,
+        "nameId": 47,
+        "globalTid": 288064329350708,
+        "name": "cudaMemcpyAsync_v3020",
+        "table": "CUPTI_ACTIVITY_KIND_RUNTIME"
+      }
+    },
+    {
+      "us": 511.584,
+      "previous": "CUPTI_ACTIVITY_KIND_MEMCPY:2",
+      "next": "CUPTI_ACTIVITY_KIND_MEMCPY:1",
+      "next_api": {
+        "start": 2252832576,
+        "end": 2252839936,
+        "correlationId": 286442,
+        "nameId": 47,
+        "globalTid": 288064329350708,
+        "name": "cudaMemcpyAsync_v3020",
+        "table": "CUPTI_ACTIVITY_KIND_RUNTIME"
+      }
+    },
+    {
+      "us": 475.456,
+      "previous": "CUPTI_ACTIVITY_KIND_MEMCPY:2",
+      "next": "CUPTI_ACTIVITY_KIND_MEMCPY:1",
+      "next_api": {
+        "start": 3312940832,
+        "end": 3312945376,
+        "correlationId": 413186,
+        "nameId": 47,
+        "globalTid": 288064329350708,
+        "name": "cudaMemcpyAsync_v3020",
+        "table": "CUPTI_ACTIVITY_KIND_RUNTIME"
+      }
+    },
+    {
+      "us": 474.496,
+      "previous": "CUPTI_ACTIVITY_KIND_MEMCPY:1",
+      "next": "CUPTI_ACTIVITY_KIND_MEMCPY:1",
+      "next_api": {
+        "start": 2181954080,
+        "end": 2182441648,
+        "correlationId": 278760,
+        "nameId": 47,
+        "globalTid": 288064329350708,
+        "name": "cudaMemcpyAsync_v3020",
+        "table": "CUPTI_ACTIVITY_KIND_RUNTIME"
+      }
+    },
+    {
+      "us": 372.448,
+      "previous": "CUPTI_ACTIVITY_KIND_MEMCPY:2",
+      "next": "CUPTI_ACTIVITY_KIND_MEMCPY:1",
+      "next_api": {
+        "start": 1101215488,
+        "end": 1101222192,
+        "correlationId": 148175,
+        "nameId": 47,
+        "globalTid": 288064329350708,
+        "name": "cudaMemcpyAsync_v3020",
+        "table": "CUPTI_ACTIVITY_KIND_RUNTIME"
+      }
+    },
+    {
+      "us": 194.848,
+      "previous": "CUPTI_ACTIVITY_KIND_MEMCPY:2",
+      "next": "CUPTI_ACTIVITY_KIND_MEMCPY:1",
+      "next_api": {
+        "start": 2181769360,
+        "end": 2181953984,
+        "correlationId": 278759,
+        "nameId": 47,
+        "globalTid": 288064329350708,
+        "name": "cudaMemcpyAsync_v3020",
+        "table": "CUPTI_ACTIVITY_KIND_RUNTIME"
+      }
+    }
+  ],
+  "source_benchmark": "benchmarks/2026-09-13T161024.273967469Z-efc9444.json",
+  "source_remote_database": "sp10@sp10:/home/sp10/qs3/.prototypes/profiles/2026-09-13T161024.203498622+0000/decode.sqlite"
+}

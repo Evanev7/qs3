@@ -120,6 +120,11 @@
   durations alone do not explain its cause. Use the CPU samples and stacks to
   investigate; the current Nsight capture diagnostics include a possible
   missing-event warning.
+  The latest saved 1024/256 trace now separates 2.030 ms/token of within-forward
+  gaps from 0.068 ms/token at token boundaries. Almost all gap time follows an
+  already-returned next-operation CUDA call; the ~28 ms sampled-ID host wait
+  mostly overlaps GPU work. See FINDINGS.md. Device dispatch versus profiling
+  effects and the benefit of graph replay remain unmeasured.
 
 ## 3. Add the exact 27B path
 

@@ -52,6 +52,59 @@ stacks and possibly missing CUDA events diagnostics. Full trace reductions,
 CPU summaries, kernel launch configurations and raw-artifact paths are in the
 linked JSON files.
 
+### Saved-trace attribution: CPU waiting versus GPU gaps
+
+A read-only analysis of the latest saved **1024/256** trace (`efc9444`) separates
+host completion waits from time without recorded GPU activity. No new inference
+run or CUDA graph implementation was needed. The source is
+`sp10@sp10:/home/sp10/qs3/.prototypes/profiles/2026-09-13T161024.203498622+0000/decode.sqlite`.
+[Analysis script](benchmarks/2026-09-13-decode-kernels/trace-gaps.py),
+[derived results](benchmarks/2026-09-13-decode-kernels/trace-gaps.json).
+Reproduce with `python3 benchmarks/2026-09-13-decode-kernels/trace-gaps.py /path/to/decode.sqlite`.
+
+| Recorded interval | Mean per token |
+| --- | ---: |
+| GPU kernel span, profiled | 32.0000 ms |
+| Union of GPU kernels and copies within that span | 29.9016 ms |
+| No recorded GPU activity within that span | 2.0985 ms |
+| Within-token gaps, embedding through argmax | 2.0302 ms |
+| Between-token gaps, amortized over all 256 tokens | 0.0683 ms |
+| CPU duration of the sampled-ID DtoH API call | 28.0054 ms |
+| Actual GPU DtoH copy, four bytes | 0.002345 ms |
+
+There are 255 complete boundaries from one argmax's end to the next embedding's
+start. Each averages **72.732 us**, including **68.525 us without recorded GPU
+activity** and the intervening copies. The amortized boundary row uses 256 as
+its denominator so that it adds to the within-token row. The first setup and
+last delivery outside the kernel span are excluded.
+
+Correlating each gap with the next GPU operation's CUDA API call attributes
+**2.0274 ms/token (96.6% of gap time)** to time after that call had already
+returned, **0.0620 ms** before its start, and **0.0090 ms** during the call.
+Every next operation has a matching correlation ID. The conclusion is robust
+to small timestamp errors: **2.0249 ms/token** is in gaps whose next API returned
+at least 10 us before the gap began, and 2.0247 ms retains a 100 us margin.
+Most gap time, **2.0019 ms/token**, consists of individual gaps of 1–5 us.
+
+The sampled-ID download calls overlap **26.2315 ms/token of active GPU work**
+and **1.7738 ms/token of GPU gaps**. Thus much of the GPU's gap time occurs
+while the host has submitted the forward and is waiting for its result. The
+subsequent explicit `cudaStreamSynchronize` averages only **0.671 us**: the wait
+has already occurred inside `cudaMemcpyAsync` to the host token buffer. CPU
+samples corroborate the `sample_logits` / `cuMemcpyDtoHAsync_v2` stack; sample
+counts themselves are not elapsed durations.
+
+This points to device execution/dispatch gaps as the larger remaining issue,
+with a much smaller between-token host turnaround. Returning from an API is
+not proof that its work is ready to execute, and this trace does not distinguish
+hardware dispatch costs, dependencies, driver behavior, and profiler effects.
+Some GPU starts precede their correlated API starts by up to 2.592 us, so the
+fine-grained API split is approximate. The existing missing-event warning also
+applies. A host scheduler can free the waiting CPU thread, but the 28 ms host
+wait is mostly overlapping GPU work and must not be counted as recoverable
+single-request latency. CUDA graph replay could change device dispatch costs;
+its gain remains an experiment, not something established by these gaps.
+
 The following historical context table predates device-backed weights and the
 Triton GDN QKV integration; it is retained for continuity.
 
