@@ -14,6 +14,7 @@ use crate::{
     ext::{SafeVec, try_clone_slice},
     model::{
         ActiveRunKind, BatchRun, QwenConfig, QwenWeights,
+        sampling::{Sampler, SamplingParams},
         scratch::{DeviceBuffer, RunnerScratch},
         state::GdnState,
         validate_token_ids,
@@ -51,6 +52,7 @@ pub struct ModelRunner {
     qscb_workspace: DeviceBuffer<u8>,
     lm_head: Option<LmHead>,
     gdn_qkv: Option<GdnQkv>,
+    sampler: Option<Sampler>,
     live_request_id: Option<RequestId>,
     live_tokens: Vec<i32>,
     last_next_tokens: Vec<i32>,
@@ -102,6 +104,7 @@ impl ModelRunner {
             .then(|| unsafe { LmHead::load() })
             .transpose()?;
         Ok(Self {
+            sampler: None,
             lm_head,
             gdn_qkv,
             scratch,
@@ -122,6 +125,28 @@ impl ModelRunner {
     pub fn random_bf16(config: QwenConfig, seed: u64) -> Result<Self, Status> {
         let weights = QwenWeights::random_bf16(&config, seed)?;
         Self::new(config, weights)
+    }
+
+    /// Configure before starting a request, or after reset/release. Reset keeps
+    /// this configuration and workspace; the same seed/position repeats draws.
+    /// The default is greedy and does not allocate/load stochastic kernels.
+    pub fn set_sampling(&mut self, params: SamplingParams) -> Result<(), Status> {
+        params.validate(self.config.vocab_size)?;
+        if self.live_request_id.is_some() {
+            return Err(Status::InvalidArgument);
+        }
+        let sampler = if params.temperature == 0.0 {
+            None
+        } else {
+            Some(Sampler::new(
+                self.config.device_ordinal,
+                self.config.stream,
+                self.config.vocab_size,
+                params,
+            )?)
+        };
+        self.sampler = sampler;
+        Ok(())
     }
 
     pub fn reset(&mut self) -> Result<(), Status> {
@@ -396,7 +421,7 @@ impl ModelRunner {
         // including on error. Inputs are uploaded on the engine stream; scratch
         // reuse is ordered on that stream and successful sampling waits for it.
         unsafe { execution.run(weights, rows, run.kind)? };
-        self.sample_logits(1)
+        self.sample_logits(rows - 1)
     }
 
     fn execution(&mut self) -> Result<(&QwenWeights, BatchExecution<'_>), Status> {
@@ -458,7 +483,8 @@ impl ModelRunner {
 
     // Safe within the runner: checked views address owned, separate buffers;
     // logits production, sampling and the synchronizing download share a stream.
-    fn sample_logits(&mut self, rows: u32) -> Result<Vec<i32>, Status> {
+    fn sample_logits(&mut self, position_index: u32) -> Result<Vec<i32>, Status> {
+        let rows = 1;
         let logits = self.scratch.logits.matrix(rows, self.config.vocab_size)?;
         if self.config.logits_soft_cap > 0.0 {
             let mut ops = self.engine.operators();
@@ -468,7 +494,15 @@ impl ModelRunner {
             };
         }
         let next_token_ids = self.scratch.next_token_ids.vector(rows)?;
-        {
+        if let Some(sampler) = self.sampler.as_mut() {
+            sampler.launch(
+                self.config.stream,
+                &self.scratch.logits,
+                &self.scratch.positions,
+                position_index,
+                &self.scratch.next_token_ids,
+            )?;
+        } else {
             let mut ops = self.engine.operators();
             unsafe { ops.qscu().greedy_argmax_f32(logits, next_token_ids)? };
         }
@@ -480,7 +514,7 @@ impl ModelRunner {
             .next_token_ids
             .download(self.config.stream, &mut sampled)?;
         for token in &sampled {
-            validate_token_ids(&[*token], self.config.vocab_size)
+            validate_token_ids(&[*token], self.config.vocab_size.min(248070))
                 .map_err(|_| Status::InternalError)?;
         }
         self.last_logits_rows = rows;

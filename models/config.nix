@@ -132,18 +132,30 @@ assert
   };
 
   kernels =
-      let
-        gemv = overrides: {
-          provider = "triton";
-          source = "triton_kernels/gemv.py";
-          spec = {
+    let
+      triton = name: blocks: spec: {
+        provider = "triton";
+        source = "triton_kernels/${name}.py";
+        spec = {
+          grid = [
+            blocks
+            1
+            1
+          ];
+          options.num_warps = 4;
+        }
+        // spec;
+      };
+      samplingBlocks = builtins.div (text.vocab_size + 1023) 1024;
+      gemv =
+        rows: overrides:
+        triton "gemv" rows (
+          {
             precision = precision.projections;
             constants = {
               K = text.hidden_size;
               BLOCK_K = nextPowerOfTwo text.hidden_size 1;
-              ACC = {
-                dtype = precision.projections.accumulation;
-              };
+              ACC.dtype = precision.projections.accumulation;
             };
             options = {
               num_warps = 8;
@@ -151,63 +163,95 @@ assert
               enable_fp_fusion = false;
             };
           }
-          // overrides;
-        };
-      in
-      {
-        # Sketch of existing provider choices, not a claim of completed 27B support.
-        projections = {
-          provider = "cublaslt";
-        };
-        lm_head = gemv {
-          precision = precision.lm_head;
-          grid = [
-            text.vocab_size
-            1
-            1
-          ];
-        };
-        gdn_qkv = gemv {
-          grid = [
-            dimensions.gdn.packedWidth
-            1
-            1
-          ];
-        };
-        attention = {
-          provider = "flashinfer";
-          pdl = true;
-          posEncoding = "none"; # Rust schedules explicit q/k norm + partial RoPE.
-          ctaTileQ = [
-            16
-            32
-            64
-            128
-          ];
-          groupSize = dimensions.attention.groupSize;
-          headDim = dimensions.attention.headDim;
-        };
-        gdn = {
-          provider = "qscu";
-          prepThreads = 128;
-          softplusBeta = 1.0;
-          softplusThreshold = 20.0;
-        };
-        mlp =
-          if hasExperts then
-            {
-              provider = "flashinfer-cutlass";
-              bf16Kernel = "tile32-blocks96";
-              router = {
-                score = "softmax";
-                renormalize = true;
-                scalingFactor = 1.0;
-              };
-            }
-          else
-            { provider = "cublaslt"; };
-
+          // overrides
+        );
+    in
+    {
+      # Sketch of existing provider choices, not a claim of completed 27B support.
+      projections = {
+        provider = "cublaslt";
       };
+      lm_head = gemv text.vocab_size { precision = precision.lm_head; };
+      gdn_qkv = gemv dimensions.gdn.packedWidth { };
+      sampling_prepare = triton "sampling_prepare" samplingBlocks {
+        precision = {
+          logits = "f32";
+          output = "f32";
+        };
+        constants = {
+          VOCAB = text.vocab_size;
+          BLOCK = 1024;
+        };
+      };
+      sampling_filter = triton "sampling_filter" 1 {
+        precision = {
+          LOGITS = "f32";
+          BUFFER = "f32";
+          PERCENTILE_TO_STD_TABLE = "f32";
+          NORMAL_CDF_TO_SIGMA_TABLE = "f32";
+        };
+        constants = {
+          BATCH_SIZE = 1;
+          VOCAB_SIZE = text.vocab_size;
+          BLOCK_SIZE = 8192;
+          BLOCK_SIZE_TRUNC = 4096;
+        };
+      };
+      sampling_gumbel = triton "sampling_gumbel" samplingBlocks {
+        precision = {
+          logits = "f32";
+          original = "f32";
+          local_max = "f32";
+          local_ids = "i32";
+          position = "i32";
+        };
+        constants.BLOCK = 1024;
+      };
+      sampling_reduce = triton "sampling_reduce" 1 {
+        precision = {
+          local_max = "f32";
+          local_ids = "i32";
+          output = "i32";
+        };
+        constants = {
+          BLOCKS = samplingBlocks;
+          BLOCK = nextPowerOfTwo samplingBlocks 1;
+        };
+      };
+      attention = {
+        provider = "flashinfer";
+        pdl = true;
+        posEncoding = "none"; # Rust schedules explicit q/k norm + partial RoPE.
+        ctaTileQ = [
+          16
+          32
+          64
+          128
+        ];
+        groupSize = dimensions.attention.groupSize;
+        headDim = dimensions.attention.headDim;
+      };
+      gdn = {
+        provider = "qscu";
+        prepThreads = 128;
+        softplusBeta = 1.0;
+        softplusThreshold = 20.0;
+      };
+      mlp =
+        if hasExperts then
+          {
+            provider = "flashinfer-cutlass";
+            bf16Kernel = "tile32-blocks96";
+            router = {
+              score = "softmax";
+              renormalize = true;
+              scalingFactor = 1.0;
+            };
+          }
+        else
+          { provider = "cublaslt"; };
+
+    };
 
   # Quantized recipes will also need concrete packing and scale layouts.
   # Compiler dependencies stay pinned in flake.lock and build_tools/uv.lock.

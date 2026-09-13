@@ -1,6 +1,33 @@
 use super::{BF16, DMat, F32};
 use crate::{Status, ffi};
 
+pub(crate) mod sampling {
+    pub(crate) mod prepare {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/build/triton/sampling_prepare.rs"
+        ));
+    }
+    pub(crate) mod filter {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/build/triton/sampling_filter.rs"
+        ));
+    }
+    pub(crate) mod gumbel {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/build/triton/sampling_gumbel.rs"
+        ));
+    }
+    pub(crate) mod reduce {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/build/triton/sampling_reduce.rs"
+        ));
+    }
+}
+
 mod lm_head {
     include!(concat!(
         env!("CARGO_MANIFEST_DIR"),

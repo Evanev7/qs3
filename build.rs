@@ -34,7 +34,14 @@ fn main() {
     println!("cargo:rerun-if-changed=build_tools/cuda.ninja");
     println!("cargo:rerun-if-changed=build_tools/generate_macros.c");
     println!("cargo:rerun-if-changed=build/libqs_native.a");
-    for kernel in ["lm_head", "gdn_qkv"] {
+    for kernel in [
+        "lm_head",
+        "gdn_qkv",
+        "sampling_prepare",
+        "sampling_filter",
+        "sampling_gumbel",
+        "sampling_reduce",
+    ] {
         for ext in ["rs", "cubin"] {
             println!("cargo:rerun-if-changed=build/triton/{kernel}.{ext}");
         }

@@ -6,6 +6,8 @@ use std::ffi::c_void;
 
 mod config;
 mod runner;
+mod sampling;
+pub use sampling::SamplingParams;
 
 pub use crate::backend::qsfi::MoeBf16Kernel;
 use config::QwenBlockKind;

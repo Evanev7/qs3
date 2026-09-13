@@ -4,7 +4,13 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from qstriton.builder import compile_source, load_kernel, signature, source_dependencies
+from qstriton.builder import (
+    compile_source,
+    load_kernel,
+    rust_type,
+    signature,
+    source_dependencies,
+)
 from qsutil.config import CudaTarget, TritonSpec, parse
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -45,16 +51,37 @@ def test_ninja_source_and_json_arguments(tmp_path: Path) -> None:
     commands = subprocess.check_output(
         ["ninja", "-f", str(graph), "-t", "commands", "triton/kernels"], text=True
     ).splitlines()
-    assert len(commands) == 2
+    config = json.loads(evaluate("models/config.nix", "--json"))
+    selected = {
+        name: entry
+        for name, entry in config["kernels"].items()
+        if entry["provider"] == "triton"
+    }
+    assert len(commands) == len(selected)
     outputs = set()
     for command in commands:
         args = shlex.split(command)
         assert "--kernel" not in args
-        assert args[args.index("--source") + 1] == "../triton_kernels/gemv.py"
+        name = Path(args[args.index("--prefix") + 1]).name
+        assert args[args.index("--source") + 1] == "../" + selected[name]["source"]
         parse(args[args.index("--spec") + 1], TritonSpec)
         parse(args[args.index("--target") + 1], CudaTarget)
         outputs.add(args[args.index("--prefix") + 1])
-    assert outputs == {"triton/lm_head", "triton/gdn_qkv"}
+    assert outputs == {"triton/" + name for name in selected}
+
+
+def test_sampler_integer_pointer_and_scalar_abi() -> None:
+    config = json.loads(evaluate("models/config.nix", "--json"))
+    entry = config["kernels"]["sampling_gumbel"]
+    types, _, args = signature(
+        load_kernel(ROOT / entry["source"]),
+        parse(json.dumps(entry["spec"]), TritonSpec),
+    )
+    assert types["position"] == "*i32"
+    assert types["seed"] == "u64"
+    assert {a.name: a.rust for a in args}["seed"] == "u64"
+    assert rust_type("*i32") == "*mut i32"
+    assert rust_type("*ku32") == "*const u32"
 
 
 @pytest.mark.parametrize("text", ["", "kernel = 1", "def kernel(): pass"])

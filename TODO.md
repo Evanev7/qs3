@@ -153,17 +153,23 @@
 
 ## 5. Add GPU non-greedy sampling
 
-- [ ] Add GPU temperature, top-k, and top-p sampling using an existing provider
-  where suitable, with Rust-owned configuration, RNG state, and workspace.
-  Keep sampled IDs on-device for subsequent decode and support graph replay.
-- [ ] Define and validate sampling semantics: parameter boundaries, filtering
+- [x] Add GPU temperature, top-k, and top-p sampling with Rust-owned configuration
+  and persistent workspace. AOT vLLM pivot filtering and Gumbel-Max are wired via
+  `ModelRunner::set_sampling`; the default/core benchmark remains greedy.
+- [x] Define and validate sampling semantics: parameter boundaries, filtering
   order, seed/reset behavior, and RNG advancement across repeated graph replays.
   Preserve greedy behavior and reject padded vocabulary IDs before embedding
   lookup or text decoding.
-- [ ] Validate sampling against a reference on controlled logits, including
+- [x] Validate sampling against a reference on controlled logits, including
   distribution checks and reproducibility under the supported seed/reset
-  contract. Exercise sustained decode and request reset/reuse; stochastic
+  contract, CUDA graph replay with updated device positions, and request
+  reset/reuse/failed rebuild. Stochastic
   token-for-token agreement with vLLM is not the correctness criterion.
+- [ ] Connect sampled device IDs directly to subsequent model decode during the
+  runner graph work. The sampler is capture-ready; the runner still downloads
+  IDs at its existing completion point. Exercise sustained real-model stochastic
+  decode when integrating this path. See `triton_kernels/README.md` for semantics
+  and upstream provenance.
 
 ## 6. Adopt and measure optimized providers
 

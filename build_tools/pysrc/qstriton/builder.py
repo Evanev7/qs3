@@ -43,7 +43,9 @@ class KernelMetadata(Protocol):
 
 def dtype(name: str) -> tl.dtype:
     """Translate scalar names into Triton dtypes."""
-    return tl.dtype({"f16": "fp16", "f32": "fp32", "f64": "fp64"}.get(name, name))
+    return tl.dtype(
+        {"i": "int", "u": "uint", "f": "fp"}[name[0]] + name[1:] if name[1:].isdigit() else name
+    )
 
 
 def scalar_rust_type(ty: tl.dtype) -> str:
@@ -61,7 +63,7 @@ def scalar_rust_type(ty: tl.dtype) -> str:
         "u16": "u16",
         "u32": "u32",
         "u64": "u64",
-    }[ty.name]
+    }[ty.mangle()]
 
 
 def rust_type(ty: str) -> str:
@@ -87,7 +89,10 @@ def signature[T](
                 dtype(value.dtype) if isinstance(value, DtypeConstant) else value
             )
         else:
-            ty = param.annotation_type or "*" + dtype(spec.precision[param.name]).name
+            ty = (
+                param.annotation_type
+                or "*" + dtype(spec.precision[param.name]).mangle()
+            )
             assert isinstance(ty, str)
             types[name] = ty
             arguments.append(Argument(param.name, triton=ty, rust=rust_type(ty)))
@@ -106,9 +111,10 @@ def rust_source(
         for name, value in constants.items()
         if isinstance(value, int) and not isinstance(value, bool)
     )
-    params = ", ".join(f"mut arg_{a.name}: {a.rust}" for a in arguments)
+    params = ", ".join(f"mut arg_{a.name.lower()}: {a.rust}" for a in arguments)
     pointers = ", ".join(
-        f"(&mut arg_{a.name} as *mut {a.rust}).cast::<c_void>()" for a in arguments
+        f"(&mut arg_{a.name.lower()} as *mut {a.rust}).cast::<c_void>()"
+        for a in arguments
     )
     if params:
         params = ", " + params

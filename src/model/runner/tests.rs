@@ -494,6 +494,7 @@ fn moe_vector_runner() -> ModelRunner {
     qscb_workspace.ensure(config.qscb_workspace_bytes).unwrap();
 
     ModelRunner {
+        sampler: None,
         lm_head: None,
         gdn_qkv: None,
         config,
@@ -797,6 +798,7 @@ fn full_attention_vector_runner() -> ModelRunner {
     config.qscb_workspace_bytes = 0; // This fixture runs only attention prep kernels.
     let engine = Engine::new(config.engine_config()).unwrap();
     ModelRunner {
+        sampler: None,
         gdn_qkv: None,
         lm_head: None,
         config,
@@ -821,6 +823,7 @@ fn full_attention_block_vector_runner() -> ModelRunner {
     let mut qscb_workspace = DeviceBuffer::empty(config.device_ordinal);
     qscb_workspace.ensure(config.qscb_workspace_bytes).unwrap();
     ModelRunner {
+        sampler: None,
         gdn_qkv: None,
         lm_head: None,
         config,
@@ -880,6 +883,7 @@ fn full_attention_block_moe_vector_runner() -> ModelRunner {
     let mut qscb_workspace = DeviceBuffer::empty(config.device_ordinal);
     qscb_workspace.ensure(config.qscb_workspace_bytes).unwrap();
     ModelRunner {
+        sampler: None,
         gdn_qkv: None,
         lm_head: None,
         config,
@@ -1106,6 +1110,7 @@ fn gdn_decoder_layer_vector_runner() -> ModelRunner {
     let gdn_state = Some(GdnState::new(&config).unwrap());
 
     ModelRunner {
+        sampler: None,
         gdn_qkv: None,
         lm_head: None,
         config,
@@ -3512,6 +3517,104 @@ fn gdn_slot_map_commit_is_explicit_and_uses_gdn_layer_count() {
     let reset = slots.layer_slots(1).unwrap();
     assert_eq!(reset.live_slot, before.live_slot);
     assert_eq!(reset.staged_slot, before.staged_slot);
+}
+
+#[test]
+fn sampling_rejects_padded_tokenizer_ids() {
+    if !cuda_device_available() {
+        return;
+    }
+    let config = QwenConfig::randomized_shared_moe_tiny_fixture(0);
+    let mut runner = ModelRunner::random_bf16(config, 78).unwrap();
+    // Exercise sampling directly with synthetic full-width logits; no model
+    // execution uses these tiny weights with the larger vocabulary.
+    runner.config.vocab_size = 248320;
+    runner.scratch.ensure(&runner.config, 1).unwrap();
+    runner
+        .scratch
+        .positions
+        .upload(runner.config.stream, &[0])
+        .unwrap();
+    let mut logits = vec![f32::NEG_INFINITY; 248320];
+    logits[248070] = 1.0;
+    for temperature in [0.0, 1.0] {
+        runner
+            .set_sampling(crate::model::SamplingParams {
+                temperature,
+                top_k: 1,
+                ..Default::default()
+            })
+            .unwrap();
+        runner
+            .scratch
+            .logits
+            .upload(runner.config.stream, &logits)
+            .unwrap();
+        assert_eq!(runner.sample_logits(0), Err(Status::InternalError));
+        assert!(runner.live_tokens.is_empty());
+    }
+}
+
+#[test]
+fn stochastic_sampling_survives_reset_release_and_failed_rebuild() {
+    if !cuda_device_available() {
+        return;
+    }
+    let config = QwenConfig::randomized_shared_moe_tiny_fixture(0);
+    let mut runner = ModelRunner::random_bf16(config, 78).unwrap();
+    let params = crate::model::SamplingParams {
+        temperature: 0.8,
+        top_k: 8,
+        top_p: 0.9,
+        seed: 0xabcdef0123456789,
+    };
+    runner.set_sampling(params).unwrap();
+    let prompt = [1, 2, 3];
+    let request = QwenRequest {
+        request_id: 41,
+        tokens: &prompt,
+        max_new_tokens: 3,
+    };
+    let expected = runner.run(request).unwrap();
+    assert_eq!(runner.set_sampling(params), Err(Status::InvalidArgument));
+    runner.reset().unwrap();
+    let initial = runner
+        .run(QwenRequest {
+            max_new_tokens: 1,
+            ..request
+        })
+        .unwrap();
+    assert_eq!(initial.generated_tokens, expected.generated_tokens[..1]);
+    runner.assert_late_rebuild_failure_preserves_prefix(41, &[7, 6, 5, 4, 3]);
+    let continued = runner
+        .run(QwenRequest {
+            tokens: &initial.live_tokens,
+            max_new_tokens: 2,
+            ..request
+        })
+        .unwrap();
+    assert_eq!(continued.generated_tokens, expected.generated_tokens[1..]);
+    runner.release_requests(&[41]).unwrap();
+    assert_eq!(
+        runner.run(request).unwrap().generated_tokens,
+        expected.generated_tokens
+    );
+    // Rebuild a different live prefix, then restore the original prompt.
+    runner
+        .run(QwenRequest {
+            tokens: &[4, 3, 2],
+            ..request
+        })
+        .unwrap();
+    assert_eq!(
+        runner.run(request).unwrap().generated_tokens,
+        expected.generated_tokens
+    );
+    runner.reset().unwrap();
+    runner
+        .set_sampling(crate::model::SamplingParams::default())
+        .unwrap();
+    assert!(runner.sampler.is_none());
 }
 
 #[test]
