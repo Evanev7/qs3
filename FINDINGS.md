@@ -342,6 +342,22 @@ tile. Final-row vocabulary projection saves memory without an established
 prefill speedup. The latest decode trace still contains host gaps and device
 allocations; prefill is dominated by GPU work.
 
+### September 13 kernel-only decode experiments
+
+The [initial sweeps](benchmarks/2026-09-13-decode-kernels/README.md) hold the
+existing runtime and weight formats fixed. Direct routed GEMV lowers the full
+one-token MoE microprobe from 276.674 to 221.519 us with 64 threads per row;
+128 threads reaches 218.837 us with more variation. All four GEMV configurations
+agree with one another; relative RMS error versus CUTLASS is 0.00155179 after
+preserving BF16 projection/activation/output rounding. This synthetic screen
+justifies a real-model trial, not a throughput or quality claim.
+
+Greedy argmax's shared-memory tree and 256-thread loop take 160.919 us on
+repeated warm 248320-element logits. Warp reductions take 34.811 us at the same
+block size and 16.384 us with 1024 threads. Processing four adjacent elements
+per thread regresses all three block sizes, so the candidate keeps scalar
+coalesced loads. The full raw sweeps and reproducer sources are linked above.
+
 ### First steady-decode GPU timeline
 
 The [Nsight capture and summaries](benchmarks/2026-09-09T015556Z-0a7eef9-decode/README.md)

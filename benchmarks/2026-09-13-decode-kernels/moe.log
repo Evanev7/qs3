@@ -1,0 +1,21 @@
+/home/sp10/qs3/.prototypes/moe_decode/candidate.cu(390): warning #177-D: function "<unnamed>::validate_routes_kernel" was declared but never referenced
+  __attribute__((global)) void validate_routes_kernel(
+                               ^
+
+Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+
+repeat=0 variant=0 diff=0 max_abs=0 relative_rms=0 moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	1	8	1024	2048	2048	0	512	256	8	5	100	276.674
+repeat=0 variant=32 diff=386 max_abs=0.000488281 relative_rms=0.00155179 moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	1	8	1024	2048	2048	0	512	256	8	5	100	223.854
+repeat=0 variant=64 diff=386 max_abs=0.000488281 relative_rms=0.00155179 moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	1	8	1024	2048	2048	0	512	256	8	5	100	221.519
+repeat=0 variant=128 diff=386 max_abs=0.000488281 relative_rms=0.00155179 moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	1	8	1024	2048	2048	0	512	256	8	5	100	225.687
+repeat=0 variant=256 diff=386 max_abs=0.000488281 relative_rms=0.00155179 moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	1	8	1024	2048	2048	0	512	256	8	5	100	225.013
+repeat=1 variant=0 diff=0 max_abs=0 relative_rms=0 moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	1	8	1024	2048	2048	0	512	256	8	5	100	280.564
+repeat=1 variant=32 diff=386 max_abs=0.000488281 relative_rms=0.00155179 moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	1	8	1024	2048	2048	0	512	256	8	5	100	228.155
+repeat=1 variant=64 diff=386 max_abs=0.000488281 relative_rms=0.00155179 moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	1	8	1024	2048	2048	0	512	256	8	5	100	221.520
+repeat=1 variant=128 diff=386 max_abs=0.000488281 relative_rms=0.00155179 moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	1	8	1024	2048	2048	0	512	256	8	5	100	218.837
+repeat=1 variant=256 diff=386 max_abs=0.000488281 relative_rms=0.00155179 moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	1	8	1024	2048	2048	0	512	256	8	5	100	222.002
+repeat=2 variant=0 diff=0 max_abs=0 relative_rms=0 moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	1	8	1024	2048	2048	0	512	256	8	5	100	275.977
+repeat=2 variant=32 diff=386 max_abs=0.000488281 relative_rms=0.00155179 moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	1	8	1024	2048	2048	0	512	256	8	5	100	227.889
+repeat=2 variant=64 diff=386 max_abs=0.000488281 relative_rms=0.00155179 moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	1	8	1024	2048	2048	0	512	256	8	5	100	221.130
+repeat=2 variant=128 diff=386 max_abs=0.000488281 relative_rms=0.00155179 moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	1	8	1024	2048	2048	0	512	256	8	5	100	218.560
+repeat=2 variant=256 diff=386 max_abs=0.000488281 relative_rms=0.00155179 moe_execute_bf16_h2048_e256_k8_i512_hot_plan	qsfi_moe_execute_bf16	1	8	1024	2048	2048	0	512	256	8	5	100	224.684
