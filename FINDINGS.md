@@ -371,6 +371,17 @@ tests, 127 library tests (four ignored), five benchmark, three engine, sixteen
 model and fourteen vector tests also pass. An existing Python formatting failure
 was fixed separately before those checks. Integrated timing follows separately.
 
+The integrated argmax run at `af5b043` measures **29.902 tok/s**, 33.427 ms
+p50 and 196.976 ms prefill p50, versus 29.665 tok/s in the fresh control. All
+36 output IDs match the control and profiling pass. The traced argmax cost falls
+from **0.418704 to 0.022606 ms/token**; unprofiled mean latency improves by
+0.267571 ms (0.80% throughput), so the full kernel saving is not a wall-time
+claim. [Raw pass logs and recovery metadata](benchmarks/2026-09-13-decode-kernels/argmax-core/recovery.json)
+preserve this result. An in-flight edit to the gitignored wrapper disrupted its
+local result collection after GPU measurement; its unintended local Nix build
+was stopped. This recovered record is deliberately outside the full core JSON
+history. The GPU raw artifacts and original Nsight report remain on sp10.
+
 ### First steady-decode GPU timeline
 
 The [Nsight capture and summaries](benchmarks/2026-09-09T015556Z-0a7eef9-decode/README.md)

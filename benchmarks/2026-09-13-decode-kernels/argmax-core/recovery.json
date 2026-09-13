@@ -1,0 +1,14 @@
+{
+  "source_commit": "af5b043",
+  "artifact_directory": "/home/sp10/qs3/.prototypes/profiles/2026-09-13T155330.959225593+0000",
+  "collection_note": "GPU passes and trace reduction completed; local wrapper collection failed after an in-flight edit. Recovered raw pass logs and selected kernel timing from saved artifacts, not a full core history JSON.",
+  "generated_ids_match": true,
+  "argmax": {
+    "name": "void <unnamed>::greedy_argmax_f32_kernel<(unsigned int)1024>(<unnamed>::greedy_argmax_params)",
+    "calls": 32,
+    "total_ms": 0.723392,
+    "ms_per_decode": 0.022606,
+    "block_x": 1024,
+    "grid_x": 1
+  }
+}
