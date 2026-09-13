@@ -5,8 +5,11 @@ mod mlp;
 mod tests;
 
 use crate::{
-    backend::qsfi::{MoeBf16PlanConfig, MoePlan, RmsNormBf16, Workspace},
-    backend::qstriton::LmHead,
+    QWEN36_GDN_PACKED_DIM,
+    backend::{
+        qsfi::{MoeBf16PlanConfig, MoePlan, RmsNormBf16, Workspace},
+        qstriton::{GdnQkv, LmHead},
+    },
     engine::{AppendBatch, Commit, DecodeBatch, Engine, RequestId, Status},
     ext::{SafeVec, try_clone_slice},
     model::{
@@ -47,6 +50,7 @@ pub struct ModelRunner {
     scratch: RunnerScratch,
     qscb_workspace: DeviceBuffer<u8>,
     lm_head: Option<LmHead>,
+    gdn_qkv: Option<GdnQkv>,
     live_request_id: Option<RequestId>,
     live_tokens: Vec<i32>,
     last_next_tokens: Vec<i32>,
@@ -85,19 +89,21 @@ impl ModelRunner {
         };
         let mut qscb_workspace = DeviceBuffer::empty(config.device_ordinal);
         qscb_workspace.ensure(config.qscb_workspace_bytes)?;
-        let gdn_state = if config.has_gdn_layers() {
-            Some(GdnState::new(&config)?)
-        } else {
-            None
-        };
-        let lm_head = if LmHead::supports(config.hidden_size, config.vocab_size) {
-            // Engine construction and allocations establish the primary context.
-            Some(unsafe { LmHead::load()? })
-        } else {
-            None
-        };
+        let gdn_state = config
+            .has_gdn_layers()
+            .then(|| GdnState::new(&config))
+            .transpose()?;
+        let gdn_qkv = (gdn_state.is_some()
+            && GdnQkv::supports(config.hidden_size, QWEN36_GDN_PACKED_DIM))
+        .then(|| unsafe { GdnQkv::load() })
+        .transpose()?;
+        // Engine construction and allocations establish the primary context.
+        let lm_head = LmHead::supports(config.hidden_size, config.vocab_size)
+            .then(|| unsafe { LmHead::load() })
+            .transpose()?;
         Ok(Self {
             lm_head,
+            gdn_qkv,
             scratch,
             qscb_workspace,
             config,
@@ -155,6 +161,14 @@ impl ModelRunner {
 
     pub(crate) fn lm_head_provider(&self) -> &'static str {
         if self.lm_head.is_some() {
+            "triton"
+        } else {
+            "cublaslt"
+        }
+    }
+
+    pub(crate) fn gdn_qkv_provider(&self) -> &'static str {
+        if self.gdn_qkv.is_some() {
             "triton"
         } else {
             "cublaslt"
@@ -402,6 +416,7 @@ impl ModelRunner {
                 gdn_state: self.gdn_state.as_ref(),
                 moe_plan: self.moe_plan.as_ref(),
                 lm_head: self.lm_head.as_ref(),
+                gdn_qkv: self.gdn_qkv.as_ref(),
                 linear_workspace,
                 moe_workspace,
             },
@@ -487,6 +502,7 @@ struct BatchExecution<'a> {
     gdn_state: Option<&'a GdnState>,
     moe_plan: Option<&'a MoePlan>,
     lm_head: Option<&'a LmHead>,
+    gdn_qkv: Option<&'a GdnQkv>,
     linear_workspace: Workspace,
     moe_workspace: Workspace,
 }

@@ -495,6 +495,7 @@ fn moe_vector_runner() -> ModelRunner {
 
     ModelRunner {
         lm_head: None,
+        gdn_qkv: None,
         config,
         weights: empty_weights_for_config(config),
         engine,
@@ -796,6 +797,7 @@ fn full_attention_vector_runner() -> ModelRunner {
     config.qscb_workspace_bytes = 0; // This fixture runs only attention prep kernels.
     let engine = Engine::new(config.engine_config()).unwrap();
     ModelRunner {
+        gdn_qkv: None,
         lm_head: None,
         config,
         weights: empty_weights_for_config(config),
@@ -819,6 +821,7 @@ fn full_attention_block_vector_runner() -> ModelRunner {
     let mut qscb_workspace = DeviceBuffer::empty(config.device_ordinal);
     qscb_workspace.ensure(config.qscb_workspace_bytes).unwrap();
     ModelRunner {
+        gdn_qkv: None,
         lm_head: None,
         config,
         weights: empty_weights_for_config(config),
@@ -877,6 +880,7 @@ fn full_attention_block_moe_vector_runner() -> ModelRunner {
     let mut qscb_workspace = DeviceBuffer::empty(config.device_ordinal);
     qscb_workspace.ensure(config.qscb_workspace_bytes).unwrap();
     ModelRunner {
+        gdn_qkv: None,
         lm_head: None,
         config,
         weights: empty_weights_for_config(config),
@@ -1102,6 +1106,7 @@ fn gdn_decoder_layer_vector_runner() -> ModelRunner {
     let gdn_state = Some(GdnState::new(&config).unwrap());
 
     ModelRunner {
+        gdn_qkv: None,
         lm_head: None,
         config,
         weights: empty_weights_for_config(config),
@@ -2458,6 +2463,78 @@ fn qwen36_full_attention_decoder_slice_chains_attention_into_moe_and_next_norm()
     );
 
     runner.engine.commit_batch(Commit::default()).unwrap();
+}
+
+#[test]
+fn qwen36_gdn_qkv_triton_decode_matches_cublaslt() {
+    if !cuda_device_available() {
+        return;
+    }
+
+    let mut runner = gdn_decoder_layer_vector_runner();
+    let stream = runner.config.stream;
+    let device = runner.config.device_ordinal;
+    let hidden = runner.config.hidden_size;
+    let packed = QWEN36_GDN_PACKED_DIM;
+    runner.scratch.ensure(&runner.config, 1).unwrap();
+    runner.gdn_qkv = Some(unsafe { crate::backend::qstriton::GdnQkv::load().unwrap() });
+    assert_eq!(runner.gdn_qkv_provider(), "triton");
+
+    // Exactly representable BF16 values with varying signs and magnitudes.
+    let values: Vec<u16> = (0..hidden)
+        .map(|col| {
+            let value = ((col % 31) as i32 - 15) as f32 / 32.0;
+            (value.to_bits() >> 16) as u16
+        })
+        .collect();
+    let input = DeviceBuffer::from_slice(device, stream, &values).unwrap();
+    let layer = gdn_decoder_layer_fixture(device, stream);
+    let mut reference = DeviceBuffer::<u16>::empty(device);
+    reference.ensure(packed as usize).unwrap();
+    unsafe {
+        runner
+            .engine
+            .operators()
+            .qscb()
+            .linear(
+                input.matrix(1, hidden).unwrap(),
+                layer.weights().in_proj.matrix(packed, hidden).unwrap(),
+                reference.matrix(1, packed).unwrap(),
+                runner
+                    .qscb_workspace
+                    .workspace(runner.config.qscb_workspace_bytes)
+                    .unwrap(),
+            )
+            .unwrap();
+        runner
+            .execution()
+            .unwrap()
+            .1
+            .execute_gdn_layer(
+                0,
+                1,
+                input.matrix(1, hidden).unwrap(),
+                layer.weights(),
+                ActiveRunKind::Decode,
+            )
+            .unwrap();
+    }
+
+    let actual = download_bf16(&runner.scratch.gdn_packed, stream, packed as usize);
+    let expected = download_bf16(&reference, stream, packed as usize);
+    let mut max_error = 0.0_f32;
+    for (index, (&actual, &expected)) in actual.iter().zip(&expected).enumerate() {
+        let actual = bf16_bits_to_f32(actual);
+        let expected = bf16_bits_to_f32(expected);
+        let error = (actual - expected).abs();
+        // Same tolerance as the real-weight QKV prototype comparison.
+        assert!(
+            actual.is_finite() && expected.is_finite() && error <= 2e-5 + 0.008 * expected.abs(),
+            "GDN QKV output {index}: Triton {actual}, cuBLASLt {expected}"
+        );
+        max_error = max_error.max(error);
+    }
+    eprintln!("Triton GDN QKV vs cuBLASLt: {packed} outputs, max abs error {max_error}");
 }
 
 #[test]

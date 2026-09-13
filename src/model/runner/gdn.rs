@@ -82,12 +82,16 @@ impl BatchExecution<'_> {
                 .heads(rows, QWEN36_GDN_NUM_V_HEADS, QWEN36_GDN_VALUE_DIM)?;
         let mut ops = self.engine.operators();
         unsafe {
-            ops.qscb().linear(
-                input,
-                layer.in_proj.matrix(QWEN36_GDN_PACKED_DIM, hidden)?,
-                packed,
-                self.linear_workspace,
-            )?;
+            let weight = layer.in_proj.matrix(QWEN36_GDN_PACKED_DIM, hidden)?;
+            match (kind, self.gdn_qkv) {
+                (ActiveRunKind::Decode, Some(kernel)) => {
+                    kernel.launch(self.config.stream, input, weight, packed)?;
+                }
+                _ => {
+                    ops.qscb()
+                        .linear(input, weight, packed, self.linear_workspace)?;
+                }
+            }
             ops.qscb().linear(
                 input,
                 layer.a_proj.matrix(QWEN36_GDN_NUM_V_HEADS, hidden)?,

@@ -921,6 +921,7 @@ fn check_real_bf16_reference(precision: crate::model::GdnRecurrentPrecision) {
     let (mut config, weights) = loaded.into_qwen_model(ptr::null_mut(), 8).unwrap();
     config.gdn_recurrent_precision = precision;
     let mut runner = crate::model::ModelRunner::new(config, weights).unwrap();
+    assert_eq!(runner.gdn_qkv_provider(), "triton");
     let request_id = 0xBF16_0001;
 
     let prefill = runner

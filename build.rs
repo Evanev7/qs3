@@ -34,8 +34,11 @@ fn main() {
     println!("cargo:rerun-if-changed=build_tools/cuda.ninja");
     println!("cargo:rerun-if-changed=build_tools/generate_macros.c");
     println!("cargo:rerun-if-changed=build/libqs_native.a");
-    println!("cargo:rerun-if-changed=build/triton/lm_head.rs");
-    println!("cargo:rerun-if-changed=build/triton/lm_head.cubin");
+    for kernel in ["lm_head", "gdn_qkv"] {
+        for ext in ["rs", "cubin"] {
+            println!("cargo:rerun-if-changed=build/triton/{kernel}.{ext}");
+        }
+    }
 
     println!("cargo:rustc-link-search=build");
     println!("cargo:rustc-link-lib=static=qs_native");
