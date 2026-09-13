@@ -44,7 +44,9 @@ class KernelMetadata(Protocol):
 def dtype(name: str) -> tl.dtype:
     """Translate scalar names into Triton dtypes."""
     return tl.dtype(
-        {"i": "int", "u": "uint", "f": "fp"}[name[0]] + name[1:] if name[1:].isdigit() else name
+        {"i": "int", "u": "uint", "f": "fp"}[name[0]] + name[1:]
+        if name[1:].isdigit()
+        else name
     )
 
 
