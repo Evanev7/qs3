@@ -43,7 +43,7 @@ fn real_qwen36_same_prefix_scores() {
         spec["model_revision"].get::<String>().unwrap()
     );
     let plan = QwenBf16LoadPlan::read(&model_dir).unwrap();
-    let backend = ManagedUmaBackend::new(cuda_device_from_env()).unwrap();
+    let backend = PinnedUploadBackend::new(cuda_device_from_env()).unwrap();
     let loaded = execute_qwen36_bf16_load_plan(&plan, backend, ptr::null_mut()).unwrap();
     let (config, weights) = loaded
         .into_qwen_model(
@@ -56,6 +56,7 @@ fn real_qwen36_same_prefix_scores() {
         crate::model::GdnRecurrentPrecision::F32
     );
     let mut runner = crate::model::ModelRunner::new(config, weights).unwrap();
+    assert_eq!(runner.gdn_qkv_provider(), "triton");
     const REQUEST: u64 = 0x53434f5245;
     runner
         .run(crate::model::QwenRequest {
@@ -76,6 +77,7 @@ fn real_qwen36_same_prefix_scores() {
         order.select_nth_unstable_by(20, compare);
         order.truncate(20);
         order.sort_unstable_by(compare);
+        assert!(order[0] < 248070, "padded token won at step {step}");
         let max = f64::from(raw[order[0]]);
         let lse = max
             + raw
@@ -121,6 +123,9 @@ fn real_qwen36_same_prefix_scores() {
             fields.insert("file".into(), filename.into());
         }
         records.push(row);
+        if step % 100 == 0 {
+            eprintln!("captured step {step}/{}", forced.len());
+        }
         if step < forced.len() {
             runner.decode_forced_token_for_test(forced[step]).unwrap();
             expected_live.push(forced[step]);
@@ -128,6 +133,11 @@ fn real_qwen36_same_prefix_scores() {
     }
     let result = object([
         ("input", spec),
+        ("weight_backend", "pinned_upload".to_owned().into()),
+        (
+            "gdn_qkv_provider",
+            runner.gdn_qkv_provider().to_owned().into(),
+        ),
         ("router_logits_dtype", "bf16".to_owned().into()),
         ("records", records.into()),
         (

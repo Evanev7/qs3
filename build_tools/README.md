@@ -35,7 +35,7 @@ current working tree. The root `benchmark` recipe builds through Nix and emits
 release/Nsight JSON. The remote benchmark action requires committed tracked changes,
 transfers the exact commit, and saves that JSON under `benchmarks/`.
 The benchmark runs two workloads sequentially: 102 prompt tokens / 32 measured
-decode steps, then 500 / 200. Each gets its own release/Nsight JSON, with the same
+decode steps, then 1024 / 256. Each gets its own release/Nsight JSON, with the same
 schema as earlier results. Both use FP32 GDN state and `tile32_blocks96` MoE.
 See `./remote.sh --help`.
 
@@ -61,8 +61,8 @@ container/GPU metadata are retrieved under `.prototypes/out/vllm-*/`. vLLM stays
 outside the build-tools venv. The harness uses greedy sampling, decode graphs,
 four decode warmups and records the resolved GDN state precision. Compare prompt
 fingerprints before comparing token sequences. vLLM records one extra output token
-because it emits a token at prefill; compare qs3's 36/204 IDs against vLLM's first
-36/204 IDs. Prefill timing includes first-token delivery in vLLM.
+because it emits a token at prefill; compare qs3's 36/260 IDs against vLLM's first
+36/260 IDs. Prefill timing includes first-token delivery in vLLM.
 
 The original `run_cuda_test.sh` and `run_core_benchmark.sh` remain for comparison.
 All runners share the disposable checkout; run them sequentially.

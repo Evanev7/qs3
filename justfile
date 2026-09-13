@@ -81,7 +81,7 @@ model-tps: ninja
         ninja -C build
         LIBRARY_PATH="{{cuda_lib_path}}:${LIBRARY_PATH:-}" cargo run --release --bin qs3-bench
 
-benchmark: (_benchmark "102" "32") (_benchmark "500" "200")
+benchmark: (_benchmark "102" "32") (_benchmark "1024" "256")
 
 _benchmark context_tokens decode_samples:
         #!/usr/bin/env bash

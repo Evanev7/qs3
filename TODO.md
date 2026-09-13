@@ -15,8 +15,33 @@
   catalogues, graph solvers, and e-graphs.
 - Keep kernel choices visible and benchmarkable. Add fused paths where measured
   launch or memory traffic costs justify them.
+- Keep local `qscu` kernels focused on correctness; prefer adopting optimized
+  upstream kernels over spending time microoptimizing local implementations.
+  Rust owns efficient preparation, scheduling, and provider orchestration.
 - Keep the existing no-CMake build direction. Static linking is secondary to
   execution performance and a clear Rust implementation.
+
+## Current BF16 priorities
+
+- Prioritize prepared CUDA graph replay, GPU non-greedy sampling, sustained
+  correctness comparisons, and repeatable provider experiments. These complete
+  useful BF16 functionality and carry into NVFP4 without requiring a generic DAG
+  runner or an exhaustive BF16 kernel-tuning campaign.
+- [ ] Beat the recorded vLLM 35B BF16 **102/32** result: **30.573 tok/s**,
+  **32.640 ms/token p50**. The separate **500/200** baseline is **30.396 tok/s**,
+  **32.892 ms/token p50**. Throughput uses mean latency, not p50. Reference
+  artifacts: `.prototypes/out/vllm-2026-09-13T103506Z-AIU8cb/`.
+  Attribute current decode gaps before assuming graph replay can recover them;
+  record execution mode.
+- Keep the routine core benchmark independently runnable through
+  `./remote.sh benchmark`: **102/32**, then **1024/256**, with separate results.
+  Restore the sustained workload for continuity with the September 9 results;
+  use the completed 500/200 reference for correctness checks.
+  Keep greedy generation fixed for performance history when adding sampling.
+- Run vLLM comparisons explicitly through `.prototypes`, outside the routine
+  core benchmark. Reuse recorded baselines with matching settings and revisions;
+  the reported 12m30s comparison cost should not become the normal edit/measure
+  cycle. Refresh references when relevant settings or implementations change.
 
 ## 1. Set up the new Spark and establish a baseline
 
@@ -52,6 +77,12 @@
   independent quality evaluation. Precision controls and sustained quality remain
   open. Aligned qs3/vLLM 32-forward GPU timelines are now
   recorded, including graph gaps, kernel choices and LM-head precision differences.
+- [ ] Establish sustained BF16 correctness, focusing on the saved 500/200
+  workload and retaining the 102/32 and 4000/800 checks:
+  compare logits and token rankings against vLLM on identical token prefixes at
+  selected positions. Record free-generation divergence separately; matching
+  tokens between the core benchmark's measurement/profile passes is not an
+  external correctness check. Reuse this comparison workflow for NVFP4.
 
 ## 2. Remove repeated preparation from decode
 
@@ -110,14 +141,31 @@
 ## 4. Capture steady decode
 
 - [ ] Make decode buffers, workspaces, and device metadata addresses persistent.
-  Complete provider initialization and preparation before capture.
+  Complete provider initialization and preparation before capture; replay must
+  not allocate, compile kernels, or select algorithms.
 - [ ] Handle changing sequence/page metadata and GDN slot alternation explicitly
   across graph replays; test page boundaries and prefix resets/rebuilds.
 - [ ] Separate enqueueing from output delivery. Keep the sampled token available
   on-device for the next step and make host completion points explicit.
-- [ ] Compare prepared eager execution with graph replay for both models.
+- [ ] Compare prepared eager execution with graph replay for both models,
+  including output correctness across page boundaries and prefix reset/reuse.
+  Measure the core workloads and record the selected execution mode.
 
-## 5. Tune the measured GPU work
+## 5. Add GPU non-greedy sampling
+
+- [ ] Add GPU temperature, top-k, and top-p sampling using an existing provider
+  where suitable, with Rust-owned configuration, RNG state, and workspace.
+  Keep sampled IDs on-device for subsequent decode and support graph replay.
+- [ ] Define and validate sampling semantics: parameter boundaries, filtering
+  order, seed/reset behavior, and RNG advancement across repeated graph replays.
+  Preserve greedy behavior and reject padded vocabulary IDs before embedding
+  lookup or text decoding.
+- [ ] Validate sampling against a reference on controlled logits, including
+  distribution checks and reproducibility under the supported seed/reset
+  contract. Exercise sustained decode and request reset/reuse; stochastic
+  token-for-token agreement with vLLM is not the correctness criterion.
+
+## 6. Adopt and measure optimized providers
 
 - [ ] Report selected kernel implementations, precision, graph mode, and workspace
   sizes in benchmarks. Keep alternatives named and forceable in Rust. Current
@@ -131,7 +179,13 @@
   convolution and recurrence prefill improvements pass bitwise probes and core runs.
 - [ ] Implement optimized quantized paths, beginning with NVFP4 after BF16
   correctness. Validate packing/scales and actual SM121 kernel support; compare
-  matched quantization with vLLM.
+  against vLLM using the same pinned NVFP4 checkpoint and generation settings.
+  Separate quantization differences from implementation errors using identical
+  prefixes; retain BF16 as a correctness baseline.
+- [ ] Make a forced provider selection easy to compare through the same
+  correctness checks and both core workloads. Prefer bounded upstream-kernel
+  adoption experiments; extend build/launch support only as an actual provider
+  needs it.
 - [x] Revisit managed versus pinned weight-load performance on the new host,
   including the previously interrupted four-buffer, 1 GiB-per-buffer run.
   Five full-snapshot tests pass. With zero resident shard pages verified before
@@ -150,12 +204,16 @@
   The prototype shows a 3.94% decode gain for the LM head alone. The existing
   all-device backend captures a larger gain; the core benchmark confirms 14.97%
   higher throughput while retaining the same generated IDs. No mixed policy added.
-- [ ] Test further Triton GEMVs with real allocation behavior, starting with
-  GDN QKV; prototype routed-expert GEMV separately against the tested MoE path.
+- [x] Integrate and measure the Triton GDN QKV decode projection.
   The real-weight QKV probe passes 54 cases across three layers and allocation
   modes. With shared device allocations, row/eight-warps saves 13.312 µs (6.7%)
-  after eviction; managed gains are small. Full-model integration/timing and the
-  routed-expert probe remain open; see FINDINGS.md.
+  after eviction; managed gains are small. Production integration passes tests
+  and the short core benchmark improves from about 28.4 to 29.7 tok/s with the
+  same generated IDs.
+- [ ] Evaluate an upstream routed-expert provider against the existing MoE path
+  if current profiling justifies it. Use the experiment to validate weight
+  preparation, dispatch, and complete MoE correctness; avoid an open-ended local
+  BF16 GEMV tuning project.
 - [ ] Generate provider build availability from Nix without removing handwritten
   Rust APIs. Artifact generation now follows named Nix specializations; the
   handwritten Rust LM-head adapter still includes its module unconditionally.
