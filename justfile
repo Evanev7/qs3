@@ -81,14 +81,16 @@ model-tps: ninja
         ninja -C build
         LIBRARY_PATH="{{cuda_lib_path}}:${LIBRARY_PATH:-}" cargo run --release --bin qs3-bench
 
-benchmark:
+benchmark: (_benchmark "102" "32") (_benchmark "500" "200")
+
+_benchmark context_tokens decode_samples:
         #!/usr/bin/env bash
         set -euo pipefail
         driver_libs=$(mktemp -d)
         trap 'rm -rf "$driver_libs"' EXIT
         ln -s /lib/aarch64-linux-gnu/libcuda.so* /lib/aarch64-linux-gnu/libnvidia-*.so* "$driver_libs/"
         # Keep host CUDA and system libraries out of the Nix runtime's search path.
-        QS3_BENCH_CONTEXT_TOKENS=102 QS3_BENCH_DECODE_SAMPLES=32 \
+        QS3_BENCH_CONTEXT_TOKENS={{context_tokens}} QS3_BENCH_DECODE_SAMPLES={{decode_samples}} \
         QS3_BENCH_MOE_KERNEL=tile32_blocks96 QS3_BENCH_GDN_STATE=f32 \
         LD_LIBRARY_PATH="$driver_libs" nix run --impure .#benchmark
 
