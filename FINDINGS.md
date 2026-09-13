@@ -10,27 +10,46 @@ counts and pass claims describe the cited change, not every subsequent revision.
 
 ## Latest validated measurements
 
-Fresh kernel-experiment controls at `8451569` (2026-09-13) measure
-**29.665 tok/s** at 102/32 and **29.528 tok/s** at 1024/256. Both use the pinned
-35B BF16 snapshot, device weights through pinned staging, FP32 GDN recurrence,
-BF16 router output, Triton LM head and GDN QKV, and eager execution. The 31 tok/s
-target requires mean decode latency below 32.258 ms; these controls average
-33.710 and 33.867 ms. No CUDA graphs or architecture changes are part of this
-experiment session.
+The kernel-only changes at `efc9444` (2026-09-13) reach **31.735 tok/s** at
+102/32 and **31.642 tok/s** at 1024/256, exceeding the **31 tok/s** target in
+both workloads. Fresh controls at `8451569` measure 29.665 and 29.528 tok/s;
+throughput improves by **6.98% and 7.16%**. All use the pinned 35B BF16 snapshot,
+device weights through pinned staging, FP32 GDN recurrence, BF16 router output,
+Triton LM head and GDN QKV, and eager execution. There are no CUDA graphs or
+architecture changes in this experiment session.
 
-| Workload | Prefill p50 ms | Decode p50 ms | Decode tok/s | Evidence |
+| Workload / kernel | Prefill p50 ms | Decode p50 ms | Decode tok/s | Evidence |
 | --- | ---: | ---: | ---: | --- |
 | 102/32 control | 196.758 | 33.677 | 29.665 | [JSON](benchmarks/2026-09-13T153611.267771164Z-8451569.json) |
+| 102/32 warp argmax + direct MoE | 196.441 | 31.479 | **31.735** | [JSON](benchmarks/2026-09-13T160759.262053707Z-efc9444.json) |
 | 1024/256 control | 498.157 | 33.841 | 29.528 | [JSON](benchmarks/2026-09-13T153824.583020108Z-8451569.json) |
+| 1024/256 warp argmax + direct MoE | 497.725 | 31.575 | **31.642** | [JSON](benchmarks/2026-09-13T161024.273967469Z-efc9444.json) |
 
-The short trace attributes 9.778 ms/token to grouped MoE GEMMs, 4.135 to the
-LM head, 3.929 to GDN QKV and 2.906 to time without recorded GPU work. The
-sustained values are 9.829, 4.159, 3.983 and 2.968 ms/token. Kernel experiments
-start with routed single-token MoE and greedy argmax (about 0.42 ms/token).
-Unprofiled and profiled generated IDs match within each workload. Nsight retains
-the previously documented unsupported-UM, unavailable kernel-space CPU stacks
-and possibly missing CUDA events diagnostics. Throughput is from unprofiled
-wall time, including sampled-token delivery.
+All 36 short-run IDs match the control. Sustained generation first differs at
+output index 163; both runs include four warmups. Restricting that comparison
+to the first **159 measured forwards with matching input tokens** gives
+**29.541 versus 31.638 tok/s**, or 33.851 versus 31.608 ms mean latency. This is
+a derived common-prefix subset of the saved samples, not a separate timing run.
+The complete sustained results follow different prefixes after that point.
+Unprofiled and profiled IDs match within each candidate workload. The existing
+loaded 35B reference regression passes with both recurrent precisions; sustained
+identical-prefix score comparisons are recorded separately below.
+
+The short trace attributes **10.506 → 9.387 ms/token** to the complete MoE
+kernel sequence. Its matrix kernels alone change 9.778 → 9.289 ms; removing
+routing preparation is part of the measured gain. Argmax changes
+**0.419 → 0.0217 ms/token**. There are **240 fewer kernel launches and 200 fewer
+memsets per token**, while time without recorded GPU work changes
+**2.906 → 2.167 ms/token**. The existing native MoE operation now launches its
+direct row kernels into the same stream/workspace. Rust scheduling, allocation,
+transaction handling and output delivery are unchanged. Prefill timing is
+essentially unchanged. Unprofiled wall time determines throughput; trace totals
+and gaps must not be added to it or interpreted as isolated CPU costs.
+
+Nsight retains the documented unsupported-UM, unavailable kernel-space CPU
+stacks and possibly missing CUDA events diagnostics. Full trace reductions,
+CPU summaries, kernel launch configurations and raw-artifact paths are in the
+linked JSON files.
 
 The following historical context table predates device-backed weights and the
 Triton GDN QKV integration; it is retained for continuity.
