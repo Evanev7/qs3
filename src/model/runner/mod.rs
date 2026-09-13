@@ -5,11 +5,11 @@ mod mlp;
 mod tests;
 
 use crate::{
-    QWEN36_GDN_PACKED_DIM,
     backend::{
         qsfi::{MoeBf16PlanConfig, MoePlan, RmsNormBf16, Workspace},
         qstriton::{GdnQkv, LmHead},
     },
+    constants::gdn::PACKED_QKV_CHANNELS,
     engine::{AppendBatch, Commit, DecodeBatch, Engine, RequestId, Status},
     ext::{SafeVec, try_clone_slice},
     model::{
@@ -96,7 +96,7 @@ impl ModelRunner {
             .then(|| GdnState::new(&config))
             .transpose()?;
         let gdn_qkv = (gdn_state.is_some()
-            && GdnQkv::supports(config.hidden_size, QWEN36_GDN_PACKED_DIM))
+            && GdnQkv::supports(config.hidden_size, PACKED_QKV_CHANNELS))
         .then(|| unsafe { GdnQkv::load() })
         .transpose()?;
         // Engine construction and allocations establish the primary context.

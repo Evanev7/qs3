@@ -3,8 +3,11 @@ use super::{
     constant_bf16_values, random_bf16_values, scratch::DeviceBuffer,
 };
 use crate::{
-    QWEN36_FULL_ATTN_Q_PROJ_OUT, QWEN36_GDN_CONV_WIDTH, QWEN36_GDN_NUM_V_HEADS,
-    QWEN36_GDN_OUTPUT_DIM, QWEN36_GDN_PACKED_DIM, QWEN36_GDN_VALUE_DIM, engine::Status,
+    constants::{
+        attention::PACKED_Q_GATE_WIDTH,
+        gdn::{CONV_WIDTH, NUM_VALUE_HEADS, OUTPUT_WIDTH, PACKED_QKV_CHANNELS, VALUE_HEAD_DIM},
+    },
+    engine::Status,
     ext::SafeVec,
 };
 
@@ -134,7 +137,7 @@ impl QwenWeights {
                         stream,
                         &random_bf16_values(
                             &mut rng,
-                            checked_usize_product(&[QWEN36_GDN_PACKED_DIM, hidden])?,
+                            checked_usize_product(&[PACKED_QKV_CHANNELS, hidden])?,
                             0.01,
                         )?,
                     )?,
@@ -143,7 +146,7 @@ impl QwenWeights {
                         stream,
                         &random_bf16_values(
                             &mut rng,
-                            checked_usize_product(&[QWEN36_GDN_OUTPUT_DIM, hidden])?,
+                            checked_usize_product(&[OUTPUT_WIDTH, hidden])?,
                             0.01,
                         )?,
                     )?,
@@ -152,7 +155,7 @@ impl QwenWeights {
                         stream,
                         &random_bf16_values(
                             &mut rng,
-                            checked_usize_product(&[QWEN36_GDN_NUM_V_HEADS, hidden])?,
+                            checked_usize_product(&[NUM_VALUE_HEADS, hidden])?,
                             0.005,
                         )?,
                     )?,
@@ -161,7 +164,7 @@ impl QwenWeights {
                         stream,
                         &random_bf16_values(
                             &mut rng,
-                            checked_usize_product(&[QWEN36_GDN_NUM_V_HEADS, hidden])?,
+                            checked_usize_product(&[NUM_VALUE_HEADS, hidden])?,
                             0.005,
                         )?,
                     )?,
@@ -170,36 +173,36 @@ impl QwenWeights {
                         stream,
                         &random_bf16_values(
                             &mut rng,
-                            checked_usize_product(&[QWEN36_GDN_PACKED_DIM, QWEN36_GDN_CONV_WIDTH])?,
+                            checked_usize_product(&[PACKED_QKV_CHANNELS, CONV_WIDTH])?,
                             0.25,
                         )?,
                     )?,
                     conv_bias: DeviceBuffer::from_slice(
                         device,
                         stream,
-                        &constant_bf16_values(QWEN36_GDN_PACKED_DIM as usize, 0.0)?,
+                        &constant_bf16_values(PACKED_QKV_CHANNELS as usize, 0.0)?,
                     )?,
                     a_log: DeviceBuffer::from_slice(
                         device,
                         stream,
-                        &constant_bf16_values(QWEN36_GDN_NUM_V_HEADS as usize, -2.0)?,
+                        &constant_bf16_values(NUM_VALUE_HEADS as usize, -2.0)?,
                     )?,
                     dt_bias: DeviceBuffer::from_slice(
                         device,
                         stream,
-                        &constant_bf16_values(QWEN36_GDN_NUM_V_HEADS as usize, -1.0)?,
+                        &constant_bf16_values(NUM_VALUE_HEADS as usize, -1.0)?,
                     )?,
                     rms_weight: DeviceBuffer::from_slice(
                         device,
                         stream,
-                        &constant_bf16_values(QWEN36_GDN_VALUE_DIM as usize, 1.0)?,
+                        &constant_bf16_values(VALUE_HEAD_DIM as usize, 1.0)?,
                     )?,
                     out_proj: DeviceBuffer::from_slice(
                         device,
                         stream,
                         &random_bf16_values(
                             &mut rng,
-                            checked_usize_product(&[hidden, QWEN36_GDN_OUTPUT_DIM])?,
+                            checked_usize_product(&[hidden, OUTPUT_WIDTH])?,
                             0.01,
                         )?,
                     )?,
@@ -233,7 +236,7 @@ impl QwenWeights {
                     stream,
                     &random_bf16_values(
                         &mut rng,
-                        checked_usize_product(&[QWEN36_FULL_ATTN_Q_PROJ_OUT, hidden])?,
+                        checked_usize_product(&[PACKED_Q_GATE_WIDTH, hidden])?,
                         0.04,
                     )?,
                 )?,

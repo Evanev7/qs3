@@ -3,12 +3,19 @@ use super::{
     TEXT_PREFIX,
 };
 use crate::{
-    QWEN36_FULL_ATTN_HEAD_DIM, QWEN36_FULL_ATTN_KV_HEADS, QWEN36_FULL_ATTN_KV_HIDDEN,
-    QWEN36_FULL_ATTN_Q_HEADS, QWEN36_FULL_ATTN_Q_HIDDEN, QWEN36_FULL_ATTN_Q_PROJ_OUT,
-    QWEN36_FULL_ATTN_ROTARY_DIM, QWEN36_GDN_CONV_WIDTH, QWEN36_GDN_KEY_DIM, QWEN36_GDN_NUM_K_HEADS,
-    QWEN36_GDN_NUM_V_HEADS, QWEN36_GDN_OUTPUT_DIM, QWEN36_GDN_PACKED_DIM, QWEN36_GDN_VALUE_DIM,
-    QWEN36_HIDDEN_SIZE, QWEN36_MOE_INTERMEDIATE_SIZE, QWEN36_MOE_NUM_EXPERTS,
-    QWEN36_MOE_SHARED_EXPERT_INTERMEDIATE_SIZE, QWEN36_MOE_TOP_K,
+    constants::{
+        attention::{
+            HEAD_DIM, KV_WIDTH, NUM_KV_HEADS, NUM_Q_HEADS, PACKED_Q_GATE_WIDTH, Q_WIDTH, ROTARY_DIM,
+        },
+        gdn::{
+            CONV_WIDTH, KEY_HEAD_DIM, NUM_KEY_HEADS, NUM_VALUE_HEADS, OUTPUT_WIDTH,
+            PACKED_QKV_CHANNELS, VALUE_HEAD_DIM,
+        },
+        mlp::{
+            INTERMEDIATE_SIZE, NUM_EXPERTS, NUM_EXPERTS_PER_TOKEN, SHARED_EXPERT_INTERMEDIATE_SIZE,
+        },
+        model::HIDDEN_SIZE,
+    },
     engine::{DynDType, Status},
 };
 
@@ -455,9 +462,9 @@ impl Qwen36TextConfig {
                 self.dtype
             )));
         }
-        if self.hidden_size != QWEN36_HIDDEN_SIZE {
+        if self.hidden_size != HIDDEN_SIZE {
             return Err(WeightLoadError::invalid_config(format!(
-                "hidden_size must be {QWEN36_HIDDEN_SIZE}, got {}",
+                "hidden_size must be {HIDDEN_SIZE}, got {}",
                 self.hidden_size
             )));
         }
@@ -494,32 +501,32 @@ impl Qwen36TextConfig {
                 self.full_attention_interval
             )));
         }
-        if self.num_attention_heads != QWEN36_FULL_ATTN_Q_HEADS
-            || self.num_key_value_heads != QWEN36_FULL_ATTN_KV_HEADS
-            || self.head_dim != QWEN36_FULL_ATTN_HEAD_DIM
+        if self.num_attention_heads != NUM_Q_HEADS
+            || self.num_key_value_heads != NUM_KV_HEADS
+            || self.head_dim != HEAD_DIM
         {
             return Err(WeightLoadError::invalid_config(format!(
-                "full attention shape must be q_heads={QWEN36_FULL_ATTN_Q_HEADS} \
-                 kv_heads={QWEN36_FULL_ATTN_KV_HEADS} head_dim={QWEN36_FULL_ATTN_HEAD_DIM}, \
+                "full attention shape must be q_heads={NUM_Q_HEADS} \
+                 kv_heads={NUM_KV_HEADS} head_dim={HEAD_DIM}, \
                  got q_heads={} kv_heads={} head_dim={}",
                 self.num_attention_heads, self.num_key_value_heads, self.head_dim
             )));
         }
-        if self.num_experts != QWEN36_MOE_NUM_EXPERTS
-            || self.num_experts_per_tok != QWEN36_MOE_TOP_K
-            || self.moe_intermediate_size != QWEN36_MOE_INTERMEDIATE_SIZE
-            || self.intermediate_size != QWEN36_MOE_INTERMEDIATE_SIZE
-            || self.shared_expert_intermediate_size != QWEN36_MOE_SHARED_EXPERT_INTERMEDIATE_SIZE
+        if self.num_experts != NUM_EXPERTS
+            || self.num_experts_per_tok != NUM_EXPERTS_PER_TOKEN
+            || self.moe_intermediate_size != INTERMEDIATE_SIZE
+            || self.intermediate_size != INTERMEDIATE_SIZE
+            || self.shared_expert_intermediate_size != SHARED_EXPERT_INTERMEDIATE_SIZE
         {
             return Err(WeightLoadError::invalid_config(
                 "MoE fields do not match qs3 Qwen3.6-35B-A3B constants",
             ));
         }
-        if self.linear_num_key_heads != QWEN36_GDN_NUM_K_HEADS
-            || self.linear_num_value_heads != QWEN36_GDN_NUM_V_HEADS
-            || self.linear_key_head_dim != QWEN36_GDN_KEY_DIM
-            || self.linear_value_head_dim != QWEN36_GDN_VALUE_DIM
-            || self.linear_conv_kernel_dim != QWEN36_GDN_CONV_WIDTH
+        if self.linear_num_key_heads != NUM_KEY_HEADS
+            || self.linear_num_value_heads != NUM_VALUE_HEADS
+            || self.linear_key_head_dim != KEY_HEAD_DIM
+            || self.linear_value_head_dim != VALUE_HEAD_DIM
+            || self.linear_conv_kernel_dim != CONV_WIDTH
         {
             return Err(WeightLoadError::invalid_config(
                 "GDN fields do not match qs3 Qwen3.6 constants",
@@ -542,9 +549,9 @@ impl Qwen36TextConfig {
                 ));
             }
             let rotary_dim = self.head_dim as f32 * partial_rotary_factor;
-            if (rotary_dim - QWEN36_FULL_ATTN_ROTARY_DIM as f32).abs() > f32::EPSILON {
+            if (rotary_dim - ROTARY_DIM as f32).abs() > f32::EPSILON {
                 return Err(WeightLoadError::invalid_config(format!(
-                    "partial rotary dim must be {QWEN36_FULL_ATTN_ROTARY_DIM}, got {rotary_dim}"
+                    "partial rotary dim must be {ROTARY_DIM}, got {rotary_dim}"
                 )));
             }
         }
@@ -1002,7 +1009,7 @@ pub(crate) fn expected_qwen36_bf16_specs(
                     &mut specs,
                     format!("{attn}.q_norm.weight"),
                     WeightTensorDType::Bf16,
-                    &[QWEN36_FULL_ATTN_HEAD_DIM],
+                    &[HEAD_DIM],
                     WeightTensorSource::Safetensors,
                     Some(layer),
                     "attn.q_norm",
@@ -1011,7 +1018,7 @@ pub(crate) fn expected_qwen36_bf16_specs(
                     &mut specs,
                     format!("{attn}.k_norm.weight"),
                     WeightTensorDType::Bf16,
-                    &[QWEN36_FULL_ATTN_HEAD_DIM],
+                    &[HEAD_DIM],
                     WeightTensorSource::Safetensors,
                     Some(layer),
                     "attn.k_norm",
@@ -1020,7 +1027,7 @@ pub(crate) fn expected_qwen36_bf16_specs(
                     &mut specs,
                     format!("{attn}.q_proj.weight"),
                     WeightTensorDType::Bf16,
-                    &[QWEN36_FULL_ATTN_Q_PROJ_OUT, hidden],
+                    &[PACKED_Q_GATE_WIDTH, hidden],
                     WeightTensorSource::Safetensors,
                     Some(layer),
                     "attn.q_proj",
@@ -1029,7 +1036,7 @@ pub(crate) fn expected_qwen36_bf16_specs(
                     &mut specs,
                     format!("{attn}.k_proj.weight"),
                     WeightTensorDType::Bf16,
-                    &[QWEN36_FULL_ATTN_KV_HIDDEN, hidden],
+                    &[KV_WIDTH, hidden],
                     WeightTensorSource::Safetensors,
                     Some(layer),
                     "attn.k_proj",
@@ -1038,7 +1045,7 @@ pub(crate) fn expected_qwen36_bf16_specs(
                     &mut specs,
                     format!("{attn}.v_proj.weight"),
                     WeightTensorDType::Bf16,
-                    &[QWEN36_FULL_ATTN_KV_HIDDEN, hidden],
+                    &[KV_WIDTH, hidden],
                     WeightTensorSource::Safetensors,
                     Some(layer),
                     "attn.v_proj",
@@ -1047,7 +1054,7 @@ pub(crate) fn expected_qwen36_bf16_specs(
                     &mut specs,
                     format!("{attn}.o_proj.weight"),
                     WeightTensorDType::Bf16,
-                    &[hidden, QWEN36_FULL_ATTN_Q_HIDDEN],
+                    &[hidden, Q_WIDTH],
                     WeightTensorSource::Safetensors,
                     Some(layer),
                     "attn.o_proj",
@@ -1059,7 +1066,7 @@ pub(crate) fn expected_qwen36_bf16_specs(
                     &mut specs,
                     format!("{gdn}.in_proj_qkv.weight"),
                     WeightTensorDType::Bf16,
-                    &[QWEN36_GDN_PACKED_DIM, hidden],
+                    &[PACKED_QKV_CHANNELS, hidden],
                     WeightTensorSource::Safetensors,
                     Some(layer),
                     "gdn.in_proj_qkv",
@@ -1068,7 +1075,7 @@ pub(crate) fn expected_qwen36_bf16_specs(
                     &mut specs,
                     format!("{gdn}.in_proj_z.weight"),
                     WeightTensorDType::Bf16,
-                    &[QWEN36_GDN_OUTPUT_DIM, hidden],
+                    &[OUTPUT_WIDTH, hidden],
                     WeightTensorSource::Safetensors,
                     Some(layer),
                     "gdn.gate_proj_z",
@@ -1095,7 +1102,7 @@ pub(crate) fn expected_qwen36_bf16_specs(
                     &mut specs,
                     format!("{gdn}.conv1d.weight"),
                     WeightTensorDType::Bf16,
-                    &[QWEN36_GDN_PACKED_DIM, 1, QWEN36_GDN_CONV_WIDTH],
+                    &[PACKED_QKV_CHANNELS, 1, CONV_WIDTH],
                     WeightTensorSource::Safetensors,
                     Some(layer),
                     "gdn.conv_weight",
@@ -1104,7 +1111,7 @@ pub(crate) fn expected_qwen36_bf16_specs(
                     &mut specs,
                     format!("{gdn}.conv1d.bias"),
                     WeightTensorDType::Bf16,
-                    &[QWEN36_GDN_PACKED_DIM],
+                    &[PACKED_QKV_CHANNELS],
                     WeightTensorSource::ZeroFill,
                     Some(layer),
                     "gdn.conv_bias.zero",
@@ -1140,7 +1147,7 @@ pub(crate) fn expected_qwen36_bf16_specs(
                     &mut specs,
                     format!("{gdn}.out_proj.weight"),
                     WeightTensorDType::Bf16,
-                    &[hidden, QWEN36_GDN_OUTPUT_DIM],
+                    &[hidden, OUTPUT_WIDTH],
                     WeightTensorSource::Safetensors,
                     Some(layer),
                     "gdn.out_proj",

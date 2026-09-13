@@ -1,14 +1,17 @@
 use super::{ModelRunner, QwenRequest};
 use crate::{
-    QWEN36_FULL_ATTN_HEAD_DIM, QWEN36_FULL_ATTN_KV_HEADS, QWEN36_FULL_ATTN_KV_HIDDEN,
-    QWEN36_FULL_ATTN_Q_HEADS, QWEN36_FULL_ATTN_Q_HIDDEN, QWEN36_FULL_ATTN_Q_PROJ_OUT,
-    QWEN36_GDN_CONV_WIDTH, QWEN36_GDN_NUM_V_HEADS, QWEN36_GDN_OUTPUT_DIM, QWEN36_GDN_PACKED_DIM,
-    QWEN36_GDN_VALUE_DIM, QWEN36_HIDDEN_SIZE, QWEN36_MOE_INTERMEDIATE_SIZE, QWEN36_MOE_NUM_EXPERTS,
     QWEN36_MOE_ROUTER_SCALING_FACTOR, QWEN36_MOE_ROUTER_SCORE,
-    QWEN36_MOE_SHARED_EXPERT_INTERMEDIATE_SIZE, QWEN36_MOE_TOP_K,
     backend::{
         DMat, DTensor3,
         qsfi::{MoeBf16Execute, MoeBf16ExecuteArgs, MoeBf16PlanConfig, Workspace},
+    },
+    constants::{
+        attention::{HEAD_DIM, KV_WIDTH, NUM_KV_HEADS, NUM_Q_HEADS, PACKED_Q_GATE_WIDTH, Q_WIDTH},
+        gdn::{CONV_WIDTH, NUM_VALUE_HEADS, OUTPUT_WIDTH, PACKED_QKV_CHANNELS, VALUE_HEAD_DIM},
+        mlp::{
+            INTERMEDIATE_SIZE, NUM_EXPERTS, NUM_EXPERTS_PER_TOKEN, SHARED_EXPERT_INTERMEDIATE_SIZE,
+        },
+        model::HIDDEN_SIZE,
     },
     engine::{AppendBatch, AttentionLayer, Commit, Engine, Status},
     ffi::cuda,
@@ -457,8 +460,8 @@ fn moe_vector_config() -> QwenConfig {
     config.hidden_size = MOE_VECTOR_HIDDEN;
     config.intermediate_size = MOE_VECTOR_INTERMEDIATE;
     config.moe = Some(QwenMoeConfig {
-        num_experts: QWEN36_MOE_NUM_EXPERTS,
-        num_experts_per_tok: QWEN36_MOE_TOP_K,
+        num_experts: NUM_EXPERTS,
+        num_experts_per_tok: NUM_EXPERTS_PER_TOKEN,
         moe_intermediate_size: MOE_VECTOR_INTERMEDIATE,
         shared_expert_intermediate_size: MOE_VECTOR_INTERMEDIATE,
     });
@@ -532,7 +535,7 @@ fn upload_moe_vector_inputs(runner: &mut ModelRunner) {
             runner.config.stream,
             &read_moe_bf16_vector(
                 "router_logits.bf16",
-                (MOE_VECTOR_ROWS * QWEN36_MOE_NUM_EXPERTS) as usize,
+                (MOE_VECTOR_ROWS * NUM_EXPERTS) as usize,
             ),
         )
         .unwrap();
@@ -579,7 +582,7 @@ fn execute_moe_vector_routed_output(runner: &mut ModelRunner) {
         runner.config.stream,
         &read_moe_bf16_vector(
             "gate_up_weight.bf16",
-            (QWEN36_MOE_NUM_EXPERTS * 2 * MOE_VECTOR_INTERMEDIATE * MOE_VECTOR_HIDDEN) as usize,
+            (NUM_EXPERTS * 2 * MOE_VECTOR_INTERMEDIATE * MOE_VECTOR_HIDDEN) as usize,
         ),
     )
     .unwrap();
@@ -588,7 +591,7 @@ fn execute_moe_vector_routed_output(runner: &mut ModelRunner) {
         runner.config.stream,
         &read_moe_bf16_vector(
             "down_weight.bf16",
-            (QWEN36_MOE_NUM_EXPERTS * MOE_VECTOR_HIDDEN * MOE_VECTOR_INTERMEDIATE) as usize,
+            (NUM_EXPERTS * MOE_VECTOR_HIDDEN * MOE_VECTOR_INTERMEDIATE) as usize,
         ),
     )
     .unwrap();
@@ -848,8 +851,8 @@ fn full_attention_block_moe_vector_config() -> QwenConfig {
     config.page_size = 4;
     config.intermediate_size = FULL_ATTN_BLOCK_MOE_INTERMEDIATE;
     config.moe = Some(QwenMoeConfig {
-        num_experts: QWEN36_MOE_NUM_EXPERTS,
-        num_experts_per_tok: QWEN36_MOE_TOP_K,
+        num_experts: NUM_EXPERTS,
+        num_experts_per_tok: NUM_EXPERTS_PER_TOKEN,
         moe_intermediate_size: FULL_ATTN_BLOCK_MOE_INTERMEDIATE,
         shared_expert_intermediate_size: FULL_ATTN_BLOCK_MOE_INTERMEDIATE,
     });
@@ -916,9 +919,9 @@ impl FullAttentionBlockMoeLayer {
 }
 
 fn full_attention_block_moe_layer(device: i32, stream: *mut c_void) -> FullAttentionBlockMoeLayer {
-    let hidden = QWEN36_HIDDEN_SIZE;
-    let q_hidden = QWEN36_FULL_ATTN_Q_HIDDEN;
-    let kv_hidden = QWEN36_FULL_ATTN_KV_HIDDEN;
+    let hidden = HIDDEN_SIZE;
+    let q_hidden = Q_WIDTH;
+    let kv_hidden = KV_WIDTH;
     let intermediate = FULL_ATTN_BLOCK_MOE_INTERMEDIATE;
     let layer = QwenLayerWeights::AttentionMlp(QwenAttentionMlpWeights {
         attn_norm: DeviceBuffer::from_slice(
@@ -930,19 +933,13 @@ fn full_attention_block_moe_layer(device: i32, stream: *mut c_void) -> FullAtten
         q_norm: DeviceBuffer::from_slice(
             device,
             stream,
-            &read_block_bf16_vector(
-                "block_q_norm_raw_weight.bf16",
-                QWEN36_FULL_ATTN_HEAD_DIM as usize,
-            ),
+            &read_block_bf16_vector("block_q_norm_raw_weight.bf16", HEAD_DIM as usize),
         )
         .unwrap(),
         k_norm: DeviceBuffer::from_slice(
             device,
             stream,
-            &read_block_bf16_vector(
-                "block_k_norm_raw_weight.bf16",
-                QWEN36_FULL_ATTN_HEAD_DIM as usize,
-            ),
+            &read_block_bf16_vector("block_k_norm_raw_weight.bf16", HEAD_DIM as usize),
         )
         .unwrap(),
         q_proj: DeviceBuffer::from_slice(
@@ -950,7 +947,7 @@ fn full_attention_block_moe_layer(device: i32, stream: *mut c_void) -> FullAtten
             stream,
             &read_block_bf16_vector(
                 "block_q_proj_weight.bf16",
-                checked_usize_product(&[QWEN36_FULL_ATTN_Q_PROJ_OUT, hidden]).unwrap(),
+                checked_usize_product(&[PACKED_Q_GATE_WIDTH, hidden]).unwrap(),
             ),
         )
         .unwrap(),
@@ -993,7 +990,7 @@ fn full_attention_block_moe_layer(device: i32, stream: *mut c_void) -> FullAtten
                 stream,
                 &read_block_bf16_vector(
                     "block_moe_router_proj_weight.bf16",
-                    checked_usize_product(&[QWEN36_MOE_NUM_EXPERTS, hidden]).unwrap(),
+                    checked_usize_product(&[NUM_EXPERTS, hidden]).unwrap(),
                 ),
             )
             .unwrap(),
@@ -1002,8 +999,7 @@ fn full_attention_block_moe_layer(device: i32, stream: *mut c_void) -> FullAtten
                 stream,
                 &read_block_bf16_vector(
                     "block_moe_gate_up_proj_weight.bf16",
-                    checked_usize_product(&[QWEN36_MOE_NUM_EXPERTS, 2, intermediate, hidden])
-                        .unwrap(),
+                    checked_usize_product(&[NUM_EXPERTS, 2, intermediate, hidden]).unwrap(),
                 ),
             )
             .unwrap(),
@@ -1012,7 +1008,7 @@ fn full_attention_block_moe_layer(device: i32, stream: *mut c_void) -> FullAtten
                 stream,
                 &read_block_bf16_vector(
                     "block_moe_down_proj_weight.bf16",
-                    checked_usize_product(&[QWEN36_MOE_NUM_EXPERTS, hidden, intermediate]).unwrap(),
+                    checked_usize_product(&[NUM_EXPERTS, hidden, intermediate]).unwrap(),
                 ),
             )
             .unwrap(),
@@ -1072,8 +1068,8 @@ fn gdn_decoder_layer_vector_config() -> QwenConfig {
     config.page_size = 4;
     config.intermediate_size = GDN_DECODER_LAYER_MOE_INTERMEDIATE;
     config.moe = Some(QwenMoeConfig {
-        num_experts: QWEN36_MOE_NUM_EXPERTS,
-        num_experts_per_tok: QWEN36_MOE_TOP_K,
+        num_experts: NUM_EXPERTS,
+        num_experts_per_tok: NUM_EXPERTS_PER_TOKEN,
         moe_intermediate_size: GDN_DECODER_LAYER_MOE_INTERMEDIATE,
         shared_expert_intermediate_size: GDN_DECODER_LAYER_MOE_INTERMEDIATE,
     });
@@ -1145,7 +1141,7 @@ impl GdnDecoderLayerFixture {
 }
 
 fn gdn_decoder_layer_fixture(device: i32, stream: *mut c_void) -> GdnDecoderLayerFixture {
-    let hidden = QWEN36_HIDDEN_SIZE;
+    let hidden = HIDDEN_SIZE;
     let intermediate = GDN_DECODER_LAYER_MOE_INTERMEDIATE;
     let layer = QwenLayerWeights::Gdn(QwenGdnWeights {
         norm: filled_bf16_buffer(device, stream, hidden as usize, 0.0),
@@ -1154,7 +1150,7 @@ fn gdn_decoder_layer_fixture(device: i32, stream: *mut c_void) -> GdnDecoderLaye
             stream,
             &read_gdn_decoder_bf16_vector(
                 "gdn_decoder_in_proj_weight.bf16",
-                checked_usize_product(&[QWEN36_GDN_PACKED_DIM, hidden]).unwrap(),
+                checked_usize_product(&[PACKED_QKV_CHANNELS, hidden]).unwrap(),
             ),
         )
         .unwrap(),
@@ -1163,7 +1159,7 @@ fn gdn_decoder_layer_fixture(device: i32, stream: *mut c_void) -> GdnDecoderLaye
             stream,
             &read_gdn_decoder_bf16_vector(
                 "gdn_decoder_gate_proj_weight.bf16",
-                checked_usize_product(&[QWEN36_GDN_OUTPUT_DIM, hidden]).unwrap(),
+                checked_usize_product(&[OUTPUT_WIDTH, hidden]).unwrap(),
             ),
         )
         .unwrap(),
@@ -1172,7 +1168,7 @@ fn gdn_decoder_layer_fixture(device: i32, stream: *mut c_void) -> GdnDecoderLaye
             stream,
             &read_gdn_decoder_bf16_vector(
                 "gdn_decoder_a_proj_weight.bf16",
-                checked_usize_product(&[QWEN36_GDN_NUM_V_HEADS, hidden]).unwrap(),
+                checked_usize_product(&[NUM_VALUE_HEADS, hidden]).unwrap(),
             ),
         )
         .unwrap(),
@@ -1181,7 +1177,7 @@ fn gdn_decoder_layer_fixture(device: i32, stream: *mut c_void) -> GdnDecoderLaye
             stream,
             &read_gdn_decoder_bf16_vector(
                 "gdn_decoder_b_proj_weight.bf16",
-                checked_usize_product(&[QWEN36_GDN_NUM_V_HEADS, hidden]).unwrap(),
+                checked_usize_product(&[NUM_VALUE_HEADS, hidden]).unwrap(),
             ),
         )
         .unwrap(),
@@ -1190,7 +1186,7 @@ fn gdn_decoder_layer_fixture(device: i32, stream: *mut c_void) -> GdnDecoderLaye
             stream,
             &read_gdn_decoder_bf16_vector(
                 "gdn_decoder_conv_weight.bf16",
-                checked_usize_product(&[QWEN36_GDN_PACKED_DIM, QWEN36_GDN_CONV_WIDTH]).unwrap(),
+                checked_usize_product(&[PACKED_QKV_CHANNELS, CONV_WIDTH]).unwrap(),
             ),
         )
         .unwrap(),
@@ -1199,35 +1195,26 @@ fn gdn_decoder_layer_fixture(device: i32, stream: *mut c_void) -> GdnDecoderLaye
             stream,
             &read_gdn_decoder_bf16_vector(
                 "gdn_decoder_conv_bias.bf16",
-                QWEN36_GDN_PACKED_DIM as usize,
+                PACKED_QKV_CHANNELS as usize,
             ),
         )
         .unwrap(),
         a_log: DeviceBuffer::from_slice(
             device,
             stream,
-            &read_gdn_decoder_bf16_vector(
-                "gdn_decoder_A_log.bf16",
-                QWEN36_GDN_NUM_V_HEADS as usize,
-            ),
+            &read_gdn_decoder_bf16_vector("gdn_decoder_A_log.bf16", NUM_VALUE_HEADS as usize),
         )
         .unwrap(),
         dt_bias: DeviceBuffer::from_slice(
             device,
             stream,
-            &read_gdn_decoder_bf16_vector(
-                "gdn_decoder_dt_bias.bf16",
-                QWEN36_GDN_NUM_V_HEADS as usize,
-            ),
+            &read_gdn_decoder_bf16_vector("gdn_decoder_dt_bias.bf16", NUM_VALUE_HEADS as usize),
         )
         .unwrap(),
         rms_weight: DeviceBuffer::from_slice(
             device,
             stream,
-            &read_gdn_decoder_bf16_vector(
-                "gdn_decoder_rms_weight.bf16",
-                QWEN36_GDN_VALUE_DIM as usize,
-            ),
+            &read_gdn_decoder_bf16_vector("gdn_decoder_rms_weight.bf16", VALUE_HEAD_DIM as usize),
         )
         .unwrap(),
         out_proj: DeviceBuffer::from_slice(
@@ -1235,7 +1222,7 @@ fn gdn_decoder_layer_fixture(device: i32, stream: *mut c_void) -> GdnDecoderLaye
             stream,
             &read_gdn_decoder_bf16_vector(
                 "gdn_decoder_out_proj_weight.bf16",
-                checked_usize_product(&[hidden, QWEN36_GDN_OUTPUT_DIM]).unwrap(),
+                checked_usize_product(&[hidden, OUTPUT_WIDTH]).unwrap(),
             ),
         )
         .unwrap(),
@@ -1251,7 +1238,7 @@ fn gdn_decoder_layer_fixture(device: i32, stream: *mut c_void) -> GdnDecoderLaye
                 stream,
                 &read_gdn_decoder_bf16_vector(
                     "gdn_decoder_moe_router_proj_weight.bf16",
-                    checked_usize_product(&[QWEN36_MOE_NUM_EXPERTS, hidden]).unwrap(),
+                    checked_usize_product(&[NUM_EXPERTS, hidden]).unwrap(),
                 ),
             )
             .unwrap(),
@@ -1260,8 +1247,7 @@ fn gdn_decoder_layer_fixture(device: i32, stream: *mut c_void) -> GdnDecoderLaye
                 stream,
                 &read_gdn_decoder_bf16_vector(
                     "gdn_decoder_moe_gate_up_proj_weight.bf16",
-                    checked_usize_product(&[QWEN36_MOE_NUM_EXPERTS, 2, intermediate, hidden])
-                        .unwrap(),
+                    checked_usize_product(&[NUM_EXPERTS, 2, intermediate, hidden]).unwrap(),
                 ),
             )
             .unwrap(),
@@ -1270,7 +1256,7 @@ fn gdn_decoder_layer_fixture(device: i32, stream: *mut c_void) -> GdnDecoderLaye
                 stream,
                 &read_gdn_decoder_bf16_vector(
                     "gdn_decoder_moe_down_proj_weight.bf16",
-                    checked_usize_product(&[QWEN36_MOE_NUM_EXPERTS, hidden, intermediate]).unwrap(),
+                    checked_usize_product(&[NUM_EXPERTS, hidden, intermediate]).unwrap(),
                 ),
             )
             .unwrap(),
@@ -1334,8 +1320,8 @@ fn model_logits_vector_config() -> QwenConfig {
     config.page_size = MODEL_LOGITS_PROMPT_LEN as u32;
     config.intermediate_size = MODEL_LOGITS_INTERMEDIATE;
     config.moe = Some(QwenMoeConfig {
-        num_experts: QWEN36_MOE_NUM_EXPERTS,
-        num_experts_per_tok: QWEN36_MOE_TOP_K,
+        num_experts: NUM_EXPERTS,
+        num_experts_per_tok: NUM_EXPERTS_PER_TOKEN,
         moe_intermediate_size: MODEL_LOGITS_INTERMEDIATE,
         shared_expert_intermediate_size: MODEL_LOGITS_INTERMEDIATE,
     });
@@ -1406,7 +1392,7 @@ fn model_logits_vector_weights(config: QwenConfig) -> QwenWeights {
             stream,
             &read_model_logits_bf16_vector(
                 "model_q_proj_weight.bf16",
-                checked_usize_product(&[QWEN36_FULL_ATTN_Q_PROJ_OUT, hidden]).unwrap(),
+                checked_usize_product(&[PACKED_Q_GATE_WIDTH, hidden]).unwrap(),
             ),
         )
         .unwrap(),
@@ -1527,63 +1513,43 @@ fn model_logits_vector_weights(config: QwenConfig) -> QwenWeights {
 }
 
 fn full_attention_block_hidden_len() -> usize {
-    checked_usize_product(&[FULL_ATTN_BLOCK_VECTOR_ROWS, QWEN36_HIDDEN_SIZE]).unwrap()
+    checked_usize_product(&[FULL_ATTN_BLOCK_VECTOR_ROWS, HIDDEN_SIZE]).unwrap()
 }
 
 fn full_attention_block_q_len() -> usize {
-    checked_usize_product(&[
-        FULL_ATTN_BLOCK_VECTOR_ROWS,
-        QWEN36_FULL_ATTN_Q_HEADS,
-        QWEN36_FULL_ATTN_HEAD_DIM,
-    ])
-    .unwrap()
+    checked_usize_product(&[FULL_ATTN_BLOCK_VECTOR_ROWS, NUM_Q_HEADS, HEAD_DIM]).unwrap()
 }
 
 fn full_attention_block_kv_len() -> usize {
-    checked_usize_product(&[
-        FULL_ATTN_BLOCK_VECTOR_ROWS,
-        QWEN36_FULL_ATTN_KV_HEADS,
-        QWEN36_FULL_ATTN_HEAD_DIM,
-    ])
-    .unwrap()
+    checked_usize_product(&[FULL_ATTN_BLOCK_VECTOR_ROWS, NUM_KV_HEADS, HEAD_DIM]).unwrap()
 }
 
 fn full_attention_block_q_proj_len() -> usize {
-    checked_usize_product(&[FULL_ATTN_BLOCK_VECTOR_ROWS, QWEN36_FULL_ATTN_Q_PROJ_OUT]).unwrap()
+    checked_usize_product(&[FULL_ATTN_BLOCK_VECTOR_ROWS, PACKED_Q_GATE_WIDTH]).unwrap()
 }
 
 fn full_attention_block_moe_topk_len() -> usize {
-    checked_usize_product(&[FULL_ATTN_BLOCK_VECTOR_ROWS, QWEN36_MOE_TOP_K]).unwrap()
+    checked_usize_product(&[FULL_ATTN_BLOCK_VECTOR_ROWS, NUM_EXPERTS_PER_TOKEN]).unwrap()
 }
 
 fn gdn_decoder_layer_hidden_len() -> usize {
-    checked_usize_product(&[GDN_DECODER_LAYER_VECTOR_ROWS, QWEN36_HIDDEN_SIZE]).unwrap()
+    checked_usize_product(&[GDN_DECODER_LAYER_VECTOR_ROWS, HIDDEN_SIZE]).unwrap()
 }
 
 fn gdn_decoder_layer_topk_len() -> usize {
-    checked_usize_product(&[GDN_DECODER_LAYER_VECTOR_ROWS, QWEN36_MOE_TOP_K]).unwrap()
+    checked_usize_product(&[GDN_DECODER_LAYER_VECTOR_ROWS, NUM_EXPERTS_PER_TOKEN]).unwrap()
 }
 
 fn full_attention_q_len() -> usize {
-    checked_usize_product(&[
-        FULL_ATTN_VECTOR_ROWS,
-        QWEN36_FULL_ATTN_Q_HEADS,
-        QWEN36_FULL_ATTN_HEAD_DIM,
-    ])
-    .unwrap()
+    checked_usize_product(&[FULL_ATTN_VECTOR_ROWS, NUM_Q_HEADS, HEAD_DIM]).unwrap()
 }
 
 fn full_attention_kv_len() -> usize {
-    checked_usize_product(&[
-        FULL_ATTN_VECTOR_ROWS,
-        QWEN36_FULL_ATTN_KV_HEADS,
-        QWEN36_FULL_ATTN_HEAD_DIM,
-    ])
-    .unwrap()
+    checked_usize_product(&[FULL_ATTN_VECTOR_ROWS, NUM_KV_HEADS, HEAD_DIM]).unwrap()
 }
 
 fn full_attention_packed_q_gate_len() -> usize {
-    checked_usize_product(&[FULL_ATTN_VECTOR_ROWS, QWEN36_FULL_ATTN_Q_PROJ_OUT]).unwrap()
+    checked_usize_product(&[FULL_ATTN_VECTOR_ROWS, PACKED_Q_GATE_WIDTH]).unwrap()
 }
 
 fn has_nonzero_bf16(values: &[u16]) -> bool {
@@ -1602,22 +1568,22 @@ fn qwen36_packed_attention_q_gate_extraction_preserves_rows_heads_and_lanes() {
     }
 
     const ROWS: usize = 3;
-    const HEADS: usize = QWEN36_FULL_ATTN_Q_HEADS as usize;
-    const HEAD_DIM: usize = QWEN36_FULL_ATTN_HEAD_DIM as usize;
-    const PACKED_HEAD_DIM: usize = 2 * HEAD_DIM;
+    const HEADS: usize = NUM_Q_HEADS as usize;
+    const HEAD_LANES: usize = HEAD_DIM as usize;
+    const PACKED_HEAD_DIM: usize = 2 * HEAD_LANES;
 
     let mut packed = vec![0_u16; ROWS * HEADS * PACKED_HEAD_DIM];
-    let mut expected_q = vec![0_u16; ROWS * HEADS * HEAD_DIM];
-    let mut expected_gate = vec![0_u16; ROWS * HEADS * HEAD_DIM];
+    let mut expected_q = vec![0_u16; ROWS * HEADS * HEAD_LANES];
+    let mut expected_gate = vec![0_u16; ROWS * HEADS * HEAD_LANES];
     for row in 0..ROWS {
         for head in 0..HEADS {
-            for lane in 0..HEAD_DIM {
+            for lane in 0..HEAD_LANES {
                 let packed_base = (row * HEADS + head) * PACKED_HEAD_DIM;
-                let out_idx = (row * HEADS + head) * HEAD_DIM + lane;
+                let out_idx = (row * HEADS + head) * HEAD_LANES + lane;
                 let q = qwen36_packed_q_gate_pattern(row, head, lane, false);
                 let gate = qwen36_packed_q_gate_pattern(row, head, lane, true);
                 packed[packed_base + lane] = q;
-                packed[packed_base + HEAD_DIM + lane] = gate;
+                packed[packed_base + HEAD_LANES + lane] = gate;
                 expected_q[out_idx] = q;
                 expected_gate[out_idx] = gate;
             }
@@ -1638,14 +1604,10 @@ fn qwen36_packed_attention_q_gate_extraction_preserves_rows_heads_and_lanes() {
             .qscu()
             .qwen36_extract_q_and_gate_bf16(
                 packed_device
-                    .matrix(ROWS as u32, QWEN36_FULL_ATTN_Q_PROJ_OUT)
+                    .matrix(ROWS as u32, PACKED_Q_GATE_WIDTH)
                     .unwrap(),
-                q_device
-                    .matrix(ROWS as u32, QWEN36_FULL_ATTN_Q_HIDDEN)
-                    .unwrap(),
-                gate_device
-                    .matrix(ROWS as u32, QWEN36_FULL_ATTN_Q_HIDDEN)
-                    .unwrap(),
+                q_device.matrix(ROWS as u32, Q_WIDTH).unwrap(),
+                gate_device.matrix(ROWS as u32, Q_WIDTH).unwrap(),
             )
             .unwrap();
     }
@@ -1688,18 +1650,10 @@ fn qwen36_full_attention_vectors_validate_packed_q_gate_extraction() {
                 runner
                     .scratch
                     .q_proj_out
-                    .matrix(rows, QWEN36_FULL_ATTN_Q_PROJ_OUT)
+                    .matrix(rows, PACKED_Q_GATE_WIDTH)
                     .unwrap(),
-                runner
-                    .scratch
-                    .q
-                    .matrix(rows, QWEN36_FULL_ATTN_Q_HIDDEN)
-                    .unwrap(),
-                runner
-                    .scratch
-                    .attn_gate
-                    .matrix(rows, QWEN36_FULL_ATTN_Q_HIDDEN)
-                    .unwrap(),
+                runner.scratch.q.matrix(rows, Q_WIDTH).unwrap(),
+                runner.scratch.attn_gate.matrix(rows, Q_WIDTH).unwrap(),
             )
     }
     .unwrap();
@@ -1729,7 +1683,7 @@ fn qwen36_full_attention_vectors_validate_qk_norm_and_rope_pipeline() {
     let rows = FULL_ATTN_VECTOR_ROWS;
     let q_len = full_attention_q_len();
     let kv_len = full_attention_kv_len();
-    let head_dim = QWEN36_FULL_ATTN_HEAD_DIM as usize;
+    let head_dim = HEAD_DIM as usize;
     runner.scratch.ensure(&runner.config, rows).unwrap();
 
     let packed = read_bf16_vector(
@@ -1751,18 +1705,10 @@ fn qwen36_full_attention_vectors_validate_qk_norm_and_rope_pipeline() {
                 runner
                     .scratch
                     .q_proj_out
-                    .matrix(rows, QWEN36_FULL_ATTN_Q_PROJ_OUT)
+                    .matrix(rows, PACKED_Q_GATE_WIDTH)
                     .unwrap(),
-                runner
-                    .scratch
-                    .q
-                    .matrix(rows, QWEN36_FULL_ATTN_Q_HIDDEN)
-                    .unwrap(),
-                runner
-                    .scratch
-                    .attn_gate
-                    .matrix(rows, QWEN36_FULL_ATTN_Q_HIDDEN)
-                    .unwrap(),
+                runner.scratch.q.matrix(rows, Q_WIDTH).unwrap(),
+                runner.scratch.attn_gate.matrix(rows, Q_WIDTH).unwrap(),
             )
     }
     .unwrap();
@@ -1890,16 +1836,8 @@ fn qwen36_full_attention_vectors_validate_output_gate() {
             .operators()
             .qscu()
             .qwen36_full_attention_output_gate_bf16(
-                runner
-                    .scratch
-                    .attn_gate
-                    .matrix(rows, QWEN36_FULL_ATTN_Q_HIDDEN)
-                    .unwrap(),
-                runner
-                    .scratch
-                    .attn_out
-                    .matrix(rows, QWEN36_FULL_ATTN_Q_HIDDEN)
-                    .unwrap(),
+                runner.scratch.attn_gate.matrix(rows, Q_WIDTH).unwrap(),
+                runner.scratch.attn_out.matrix(rows, Q_WIDTH).unwrap(),
             )
     }
     .unwrap();
@@ -1920,9 +1858,9 @@ fn qwen36_full_attention_block_vector_validates_attention_residual_norm_composit
     let stream = runner.config.stream;
     let device = runner.config.device_ordinal;
     let rows = FULL_ATTN_BLOCK_VECTOR_ROWS;
-    let hidden = QWEN36_HIDDEN_SIZE;
-    let q_hidden = QWEN36_FULL_ATTN_Q_HIDDEN;
-    let kv_hidden = QWEN36_FULL_ATTN_KV_HIDDEN;
+    let hidden = HIDDEN_SIZE;
+    let q_hidden = Q_WIDTH;
+    let kv_hidden = KV_WIDTH;
     let hidden_len = full_attention_block_hidden_len();
     let q_len = full_attention_block_q_len();
     let kv_len = full_attention_block_kv_len();
@@ -1947,19 +1885,13 @@ fn qwen36_full_attention_block_vector_validates_attention_residual_norm_composit
     let q_norm_weight = DeviceBuffer::from_slice(
         device,
         stream,
-        &read_block_bf16_vector(
-            "block_q_norm_raw_weight.bf16",
-            QWEN36_FULL_ATTN_HEAD_DIM as usize,
-        ),
+        &read_block_bf16_vector("block_q_norm_raw_weight.bf16", HEAD_DIM as usize),
     )
     .unwrap();
     let k_norm_weight = DeviceBuffer::from_slice(
         device,
         stream,
-        &read_block_bf16_vector(
-            "block_k_norm_raw_weight.bf16",
-            QWEN36_FULL_ATTN_HEAD_DIM as usize,
-        ),
+        &read_block_bf16_vector("block_k_norm_raw_weight.bf16", HEAD_DIM as usize),
     )
     .unwrap();
     let post_norm_weight = DeviceBuffer::from_slice(
@@ -1973,7 +1905,7 @@ fn qwen36_full_attention_block_vector_validates_attention_residual_norm_composit
         stream,
         &read_block_bf16_vector(
             "block_q_proj_weight.bf16",
-            checked_usize_product(&[QWEN36_FULL_ATTN_Q_PROJ_OUT, hidden]).unwrap(),
+            checked_usize_product(&[PACKED_Q_GATE_WIDTH, hidden]).unwrap(),
         ),
     )
     .unwrap();
@@ -2032,13 +1964,11 @@ fn qwen36_full_attention_block_vector_validates_attention_residual_norm_composit
     unsafe {
         runner.engine.operators().qscb().linear(
             norm_ptr,
-            q_proj_weight
-                .matrix(QWEN36_FULL_ATTN_Q_PROJ_OUT, hidden)
-                .unwrap(),
+            q_proj_weight.matrix(PACKED_Q_GATE_WIDTH, hidden).unwrap(),
             runner
                 .scratch
                 .q_proj_out
-                .matrix(rows, QWEN36_FULL_ATTN_Q_PROJ_OUT)
+                .matrix(rows, PACKED_Q_GATE_WIDTH)
                 .unwrap(),
             runner
                 .qscb_workspace
@@ -2056,18 +1986,10 @@ fn qwen36_full_attention_block_vector_validates_attention_residual_norm_composit
                 runner
                     .scratch
                     .q_proj_out
-                    .matrix(rows, QWEN36_FULL_ATTN_Q_PROJ_OUT)
+                    .matrix(rows, PACKED_Q_GATE_WIDTH)
                     .unwrap(),
-                runner
-                    .scratch
-                    .q
-                    .matrix(rows, QWEN36_FULL_ATTN_Q_HIDDEN)
-                    .unwrap(),
-                runner
-                    .scratch
-                    .attn_gate
-                    .matrix(rows, QWEN36_FULL_ATTN_Q_HIDDEN)
-                    .unwrap(),
+                runner.scratch.q.matrix(rows, Q_WIDTH).unwrap(),
+                runner.scratch.attn_gate.matrix(rows, Q_WIDTH).unwrap(),
             )
     }
     .unwrap();
@@ -2254,16 +2176,8 @@ fn qwen36_full_attention_block_vector_validates_attention_residual_norm_composit
             .operators()
             .qscu()
             .qwen36_full_attention_output_gate_bf16(
-                runner
-                    .scratch
-                    .attn_gate
-                    .matrix(rows, QWEN36_FULL_ATTN_Q_HIDDEN)
-                    .unwrap(),
-                runner
-                    .scratch
-                    .attn_out
-                    .matrix(rows, QWEN36_FULL_ATTN_Q_HIDDEN)
-                    .unwrap(),
+                runner.scratch.attn_gate.matrix(rows, Q_WIDTH).unwrap(),
+                runner.scratch.attn_out.matrix(rows, Q_WIDTH).unwrap(),
             )
     }
     .unwrap();
@@ -2352,7 +2266,7 @@ fn qwen36_full_attention_decoder_slice_chains_attention_into_moe_and_next_norm()
     let stream = runner.config.stream;
     let device = runner.config.device_ordinal;
     let rows = FULL_ATTN_BLOCK_VECTOR_ROWS;
-    let hidden = QWEN36_HIDDEN_SIZE;
+    let hidden = HIDDEN_SIZE;
     let hidden_len = full_attention_block_hidden_len();
     runner.scratch.ensure(&runner.config, rows).unwrap();
 
@@ -2480,7 +2394,7 @@ fn qwen36_gdn_qkv_triton_decode_matches_cublaslt() {
     let stream = runner.config.stream;
     let device = runner.config.device_ordinal;
     let hidden = runner.config.hidden_size;
-    let packed = QWEN36_GDN_PACKED_DIM;
+    let packed = PACKED_QKV_CHANNELS;
     runner.scratch.ensure(&runner.config, 1).unwrap();
     runner.gdn_qkv = Some(unsafe { crate::backend::qstriton::GdnQkv::load().unwrap() });
     assert_eq!(runner.gdn_qkv_provider(), "triton");
@@ -2552,9 +2466,9 @@ fn qwen36_gdn_decoder_layer_vector_chains_gdn_into_moe_and_next_norm() {
     let stream = runner.config.stream;
     let device = runner.config.device_ordinal;
     let rows = GDN_DECODER_LAYER_VECTOR_ROWS;
-    let hidden = QWEN36_HIDDEN_SIZE;
+    let hidden = HIDDEN_SIZE;
     let hidden_len = gdn_decoder_layer_hidden_len();
-    let gdn_out_len = checked_usize_product(&[rows, QWEN36_GDN_OUTPUT_DIM]).unwrap();
+    let gdn_out_len = checked_usize_product(&[rows, OUTPUT_WIDTH]).unwrap();
     let topk_len = gdn_decoder_layer_topk_len();
     runner.scratch.ensure(&runner.config, rows).unwrap();
 
@@ -2642,15 +2556,15 @@ fn qwen36_gdn_decoder_layer_vector_chains_gdn_into_moe_and_next_norm() {
         &download_bf16(
             &runner.scratch.router_logits,
             stream,
-            (rows * QWEN36_MOE_NUM_EXPERTS) as usize,
+            (rows * NUM_EXPERTS) as usize,
         ),
         &read_gdn_decoder_bf16_vector(
             "gdn_decoder_expected_moe_router_logits_bf16.bf16",
-            (rows * QWEN36_MOE_NUM_EXPERTS) as usize,
+            (rows * NUM_EXPERTS) as usize,
         ),
         &read_gdn_decoder_f32_vector(
             "gdn_decoder_expected_moe_router_logits_f32.f32",
-            (rows * QWEN36_MOE_NUM_EXPERTS) as usize,
+            (rows * NUM_EXPERTS) as usize,
         ),
         BF16_GDN_DECODER_PROJ_ABS_TOL,
     );
@@ -2774,15 +2688,15 @@ fn qwen36_full_attention_block_vector_validates_oracle_seeded_moe_shared_and_nex
         &download_bf16(
             &runner.scratch.router_logits,
             stream,
-            (rows * QWEN36_MOE_NUM_EXPERTS) as usize,
+            (rows * NUM_EXPERTS) as usize,
         ),
         &read_block_bf16_vector(
             "block_expected_moe_router_logits_bf16.bf16",
-            (rows * QWEN36_MOE_NUM_EXPERTS) as usize,
+            (rows * NUM_EXPERTS) as usize,
         ),
         &read_block_f32_vector(
             "block_expected_moe_router_logits_f32.f32",
-            (rows * QWEN36_MOE_NUM_EXPERTS) as usize,
+            (rows * NUM_EXPERTS) as usize,
         ),
         BF16_BLOCK_PROJ_ABS_TOL,
     );
@@ -2989,7 +2903,7 @@ fn qwen36_moe_vectors_validate_router_topk_and_renormalized_weights() {
     upload_moe_vector_inputs(&mut runner);
     run_moe_vector_router(&mut runner, true);
 
-    let topk_len = (MOE_VECTOR_ROWS * QWEN36_MOE_TOP_K) as usize;
+    let topk_len = (MOE_VECTOR_ROWS * NUM_EXPERTS_PER_TOKEN) as usize;
     let got_ids = download_i32(&runner.scratch.topk_ids, runner.config.stream, topk_len);
     let got_weights = download_f32(&runner.scratch.topk_weights, runner.config.stream, topk_len);
     assert_eq!(
@@ -3016,7 +2930,7 @@ fn qwen36_moe_vectors_validate_router_unrenormalized_weights() {
     upload_moe_vector_inputs(&mut runner);
     run_moe_vector_router(&mut runner, false);
 
-    let topk_len = (MOE_VECTOR_ROWS * QWEN36_MOE_TOP_K) as usize;
+    let topk_len = (MOE_VECTOR_ROWS * NUM_EXPERTS_PER_TOKEN) as usize;
     let got_ids = download_i32(&runner.scratch.topk_ids, runner.config.stream, topk_len);
     let got_weights = download_f32(&runner.scratch.topk_weights, runner.config.stream, topk_len);
     assert_eq!(
@@ -3089,10 +3003,10 @@ fn public_moe_config_validation_rejects_invalid_config_json_shapes() {
     assert_eq!(
         QwenMoeConfig::qwen36_35b_a3b(),
         QwenMoeConfig {
-            num_experts: QWEN36_MOE_NUM_EXPERTS,
-            num_experts_per_tok: QWEN36_MOE_TOP_K,
-            moe_intermediate_size: QWEN36_MOE_INTERMEDIATE_SIZE,
-            shared_expert_intermediate_size: QWEN36_MOE_SHARED_EXPERT_INTERMEDIATE_SIZE,
+            num_experts: NUM_EXPERTS,
+            num_experts_per_tok: NUM_EXPERTS_PER_TOKEN,
+            moe_intermediate_size: INTERMEDIATE_SIZE,
+            shared_expert_intermediate_size: SHARED_EXPERT_INTERMEDIATE_SIZE,
         }
     );
     assert_eq!(
@@ -3216,12 +3130,12 @@ fn qwen36_one_schedule_block_engine_config_uses_real_attention_dimensions() {
     assert_eq!(config.validate(), Ok(()));
     assert_eq!(config.attention_layer_count(), 1);
     assert_eq!(config.gdn_layer_count(), 3);
-    assert_eq!(config.hidden_size, QWEN36_HIDDEN_SIZE);
-    assert_eq!(config.num_q_heads, QWEN36_FULL_ATTN_Q_HEADS);
-    assert_eq!(config.num_kv_heads, QWEN36_FULL_ATTN_KV_HEADS);
-    assert_eq!(config.head_dim, QWEN36_FULL_ATTN_HEAD_DIM);
-    assert_eq!(config.q_hidden_size(), Ok(QWEN36_FULL_ATTN_Q_HIDDEN));
-    assert_eq!(config.kv_hidden_size(), Ok(QWEN36_FULL_ATTN_KV_HIDDEN));
+    assert_eq!(config.hidden_size, HIDDEN_SIZE);
+    assert_eq!(config.num_q_heads, NUM_Q_HEADS);
+    assert_eq!(config.num_kv_heads, NUM_KV_HEADS);
+    assert_eq!(config.head_dim, HEAD_DIM);
+    assert_eq!(config.q_hidden_size(), Ok(Q_WIDTH));
+    assert_eq!(config.kv_hidden_size(), Ok(KV_WIDTH));
 
     let engine = config.engine_config();
     assert_eq!(engine.num_layers, 1);
@@ -3290,7 +3204,7 @@ fn randomized_full_attention_weights_seed_qwen_norm_raw_weights_as_zero() {
             assert_eq!(layer.k_norm.cap, head_dim);
             assert_eq!(
                 layer.q_proj.cap,
-                checked_usize_product(&[QWEN36_FULL_ATTN_Q_PROJ_OUT, config.hidden_size]).unwrap()
+                checked_usize_product(&[PACKED_Q_GATE_WIDTH, config.hidden_size]).unwrap()
             );
             assert_eq!(
                 download_bf16(&layer.attn_norm, config.stream, hidden),
@@ -3485,8 +3399,8 @@ fn qwen36_hybrid_schedule_maps_model_layers_to_attention_and_gdn_indices() {
     assert_eq!(engine.num_q_heads, config.num_q_heads);
     assert_eq!(engine.num_kv_heads, config.num_kv_heads);
     assert_eq!(engine.head_dim, config.head_dim);
-    assert_eq!(config.num_q_heads, QWEN36_FULL_ATTN_Q_HEADS);
-    assert_eq!(config.num_kv_heads, QWEN36_FULL_ATTN_KV_HEADS);
+    assert_eq!(config.num_q_heads, NUM_Q_HEADS);
+    assert_eq!(config.num_kv_heads, NUM_KV_HEADS);
 }
 
 #[test]

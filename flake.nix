@@ -146,6 +146,7 @@
         kernelNinja = pkgs.writeText "qs3-kernels.ninja" (
           "qstriton = ${buildTools}/bin/qstriton\n" + import ./build_tools/nixsrc/ninja.nix
         );
+        rustConstants = pkgs.writeText "qs3-constants.rs" (import ./build_tools/nixsrc/rust.nix);
         commonArgs = {
           inherit src;
           inherit (craneLib.crateNameFromCargoToml { inherit src; }) version;
@@ -169,6 +170,7 @@
           doCheck = false;
           preBuild = ''
             mkdir -p build
+            cp ${rustConstants} build/constants.rs
             ln -s ${qsNative}/lib/libqs_native.a build/libqs_native.a
             export TRITON_CACHE_DIR="$TMPDIR/triton-cache"
             ninja -C build -f ${kernelNinja} triton/kernels

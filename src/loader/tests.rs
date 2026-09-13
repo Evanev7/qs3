@@ -18,7 +18,7 @@ use super::{
 };
 use crate::test_assets::{real_qwen36_model_dir, require_real_qwen36_model_dir};
 use crate::{
-    QWEN36_FULL_ATTN_HEAD_DIM, QWEN36_GDN_PACKED_DIM, QWEN36_HIDDEN_SIZE,
+    constants::{attention::HEAD_DIM, gdn::PACKED_QKV_CHANNELS, model::HIDDEN_SIZE},
     engine::{DynDType, Status},
     ffi,
 };
@@ -470,14 +470,14 @@ fn tensor_table_from_specs(specs: &[WeightTensorSpec]) -> BTreeMap<String, Tenso
 #[test]
 fn parses_nested_qwen36_text_config_and_manifest() {
     let config = qwen_text_config(40, 248_320);
-    assert_eq!(config.hidden_size, QWEN36_HIDDEN_SIZE);
+    assert_eq!(config.hidden_size, HIDDEN_SIZE);
     assert_eq!(config.rope_theta, 10_000_000.0);
 
     let specs = expected_qwen36_bf16_specs(&config).unwrap();
     assert_eq!(specs.len(), 723);
     assert!(specs.iter().any(|spec| {
         spec.name == "model.language_model.layers.3.self_attn.q_norm.weight"
-            && spec.shape == vec![QWEN36_FULL_ATTN_HEAD_DIM]
+            && spec.shape == vec![HEAD_DIM]
     }));
     assert!(specs.iter().any(|spec| {
         spec.name == "model.language_model.layers.0.mlp.experts.gate_up_proj"
@@ -897,7 +897,7 @@ fn validates_real_qwen36_bf16_manifest_when_available() {
 
     assert_eq!(plan.config.num_hidden_layers, 40);
     assert_eq!(plan.tensor_count(), 723);
-    assert_eq!(zero_fill_bytes, 30 * QWEN36_GDN_PACKED_DIM as usize * 2);
+    assert_eq!(zero_fill_bytes, 30 * PACKED_QKV_CHANNELS as usize * 2);
     assert!(file_bytes > 60usize << 30);
 }
 

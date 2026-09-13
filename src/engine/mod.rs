@@ -1,4 +1,7 @@
-use crate::{QWEN36_FULL_ATTN_HEAD_DIM, QWEN36_FULL_ATTN_KV_HEADS, QWEN36_FULL_ATTN_Q_HEADS, ffi};
+use crate::{
+    constants::attention::{HEAD_DIM, NUM_KV_HEADS, NUM_Q_HEADS},
+    ffi,
+};
 
 mod attention;
 mod core;
@@ -169,7 +172,7 @@ pub(crate) fn validate_supported_attention_grouping(
     if num_q_heads == 0 || num_kv_heads == 0 || !num_q_heads.is_multiple_of(num_kv_heads) {
         return Err(Status::InvalidArgument);
     }
-    if num_q_heads != QWEN36_FULL_ATTN_Q_HEADS || num_kv_heads != QWEN36_FULL_ATTN_KV_HEADS {
+    if num_q_heads != NUM_Q_HEADS || num_kv_heads != NUM_KV_HEADS {
         return Err(Status::Unsupported);
     }
     Ok(())
@@ -179,7 +182,7 @@ pub(crate) fn validate_supported_attention_head_dim(head_dim: u32) -> Result<(),
     if head_dim == 0 {
         return Err(Status::InvalidArgument);
     }
-    if head_dim != QWEN36_FULL_ATTN_HEAD_DIM {
+    if head_dim != HEAD_DIM {
         return Err(Status::Unsupported);
     }
     Ok(())

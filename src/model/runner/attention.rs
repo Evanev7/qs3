@@ -1,10 +1,10 @@
 use super::BatchExecution;
 use crate::{
-    QWEN36_FULL_ATTN_Q_PROJ_OUT, QWEN36_FULL_ATTN_ROTARY_DIM,
     backend::{
         BF16, DMat,
         qsfi::{RmsNormBf16, RopeApplyBf16},
     },
+    constants::attention::{PACKED_Q_GATE_WIDTH, ROTARY_DIM},
     engine::{AttentionLayer, Status},
     model::{ActiveRunKind, weights::QwenAttentionMlpWeights},
 };
@@ -26,16 +26,12 @@ impl BatchExecution<'_> {
             unsafe {
                 ops.qscb().linear(
                     input,
-                    layer.q_proj.matrix(QWEN36_FULL_ATTN_Q_PROJ_OUT, hidden)?,
-                    self.scratch
-                        .q_proj_out
-                        .matrix(rows, QWEN36_FULL_ATTN_Q_PROJ_OUT)?,
+                    layer.q_proj.matrix(PACKED_Q_GATE_WIDTH, hidden)?,
+                    self.scratch.q_proj_out.matrix(rows, PACKED_Q_GATE_WIDTH)?,
                     self.linear_workspace,
                 )?;
                 ops.qscu().qwen36_extract_q_and_gate_bf16(
-                    self.scratch
-                        .q_proj_out
-                        .matrix(rows, QWEN36_FULL_ATTN_Q_PROJ_OUT)?,
+                    self.scratch.q_proj_out.matrix(rows, PACKED_Q_GATE_WIDTH)?,
                     self.scratch.q.matrix(rows, q_hidden)?,
                     self.scratch.attn_gate.matrix(rows, q_hidden)?,
                 )?;
@@ -131,7 +127,7 @@ impl BatchExecution<'_> {
             q,
             k,
             self.scratch.positions.vector(rows)?,
-            QWEN36_FULL_ATTN_ROTARY_DIM,
+            ROTARY_DIM,
             self.config.rope_scale,
             self.config.rope_theta,
         )?;

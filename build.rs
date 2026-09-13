@@ -34,6 +34,7 @@ fn main() {
     println!("cargo:rerun-if-changed=build_tools/cuda.ninja");
     println!("cargo:rerun-if-changed=build_tools/generate_macros.c");
     println!("cargo:rerun-if-changed=build/libqs_native.a");
+    println!("cargo:rerun-if-changed=build/constants.rs");
     for kernel in [
         "lm_head",
         "gdn_qkv",

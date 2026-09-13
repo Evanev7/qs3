@@ -96,12 +96,13 @@ let
       packedQGateWidth = qWidth * (if text.attn_output_gate then 2 else 1);
       rotaryDim = builtins.floor (headDim * text.rope_parameters.partial_rotary_factor);
     };
-    gdn = {
-      packedWidth =
+    gdn = rec {
+      packedQkvChannels =
         2 * text.linear_num_key_heads * text.linear_key_head_dim
         + text.linear_num_value_heads * text.linear_value_head_dim;
       outputWidth = text.linear_num_value_heads * text.linear_value_head_dim;
-      convHistory = text.linear_conv_kernel_dim - 1;
+      convWidth = text.linear_conv_kernel_dim;
+      convHistoryLen = convWidth - 1;
     };
   };
 in
@@ -172,7 +173,7 @@ assert
         provider = "cublaslt";
       };
       lm_head = gemv text.vocab_size { precision = precision.lm_head; };
-      gdn_qkv = gemv dimensions.gdn.packedWidth { };
+      gdn_qkv = gemv dimensions.gdn.packedQkvChannels { };
       sampling_prepare = triton "sampling_prepare" samplingBlocks {
         precision = {
           logits = "f32";

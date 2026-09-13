@@ -848,8 +848,10 @@ mod tests {
         PlanCache, PlanKey, make_attention, validate_runtime_config, validate_tensor3_shape,
     };
     use crate::{
-        QWEN36_FULL_ATTN_HEAD_DIM, QWEN36_FULL_ATTN_KV_HEADS, QWEN36_FULL_ATTN_Q_HEADS,
-        QWEN36_HIDDEN_SIZE,
+        constants::{
+            attention::{HEAD_DIM, NUM_KV_HEADS, NUM_Q_HEADS},
+            model::HIDDEN_SIZE,
+        },
         engine::{DynDType, EngineConfig, KvLayout, Status},
         ffi::{DTYPE_F16, MASK_MODE_CAUSAL, MASK_MODE_NONE, Tensor3},
     };
@@ -867,12 +869,12 @@ mod tests {
             max_seq_len: 8,
             max_pages: 8,
             page_size: 4,
-            hidden_size: QWEN36_HIDDEN_SIZE,
+            hidden_size: HIDDEN_SIZE,
             intermediate_size: 0,
             vocab_size: 0,
-            num_q_heads: QWEN36_FULL_ATTN_Q_HEADS,
-            num_kv_heads: QWEN36_FULL_ATTN_KV_HEADS,
-            head_dim: QWEN36_FULL_ATTN_HEAD_DIM,
+            num_q_heads: NUM_Q_HEADS,
+            num_kv_heads: NUM_KV_HEADS,
+            head_dim: HEAD_DIM,
             activation_dtype: DynDType::F16,
             kv_dtype: DynDType::F16,
             kv_layout: KvLayout::NHD,

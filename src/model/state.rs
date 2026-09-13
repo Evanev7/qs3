@@ -1,7 +1,11 @@
 use super::{GdnRecurrentPrecision, QwenConfig, checked_usize_product, scratch::DeviceBuffer};
 use crate::{
-    QWEN36_GDN_CONV_STATE, QWEN36_GDN_KEY_DIM, QWEN36_GDN_NUM_V_HEADS, QWEN36_GDN_PACKED_DIM,
-    QWEN36_GDN_STATE_SLOTS_PER_LAYER, QWEN36_GDN_VALUE_DIM, engine::Status, ext::SafeVec,
+    QWEN36_GDN_STATE_SLOTS_PER_LAYER,
+    constants::gdn::{
+        CONV_HISTORY_LEN, KEY_HEAD_DIM, NUM_VALUE_HEADS, PACKED_QKV_CHANNELS, VALUE_HEAD_DIM,
+    },
+    engine::Status,
+    ext::SafeVec,
 };
 
 use crate::backend::{FloatStorage, GdnRecurrentState};
@@ -128,14 +132,9 @@ impl GdnState {
     pub(super) fn new(config: &QwenConfig) -> Result<Self, Status> {
         let slots = GdnSlotMap::new(config.gdn_layer_count())?;
         let state_pool = slots.state_pool;
-        let conv_len =
-            checked_usize_product(&[state_pool, QWEN36_GDN_PACKED_DIM, QWEN36_GDN_CONV_STATE])?;
-        let recurrent_len = checked_usize_product(&[
-            state_pool,
-            QWEN36_GDN_NUM_V_HEADS,
-            QWEN36_GDN_VALUE_DIM,
-            QWEN36_GDN_KEY_DIM,
-        ])?;
+        let conv_len = checked_usize_product(&[state_pool, PACKED_QKV_CHANNELS, CONV_HISTORY_LEN])?;
+        let recurrent_len =
+            checked_usize_product(&[state_pool, NUM_VALUE_HEADS, VALUE_HEAD_DIM, KEY_HEAD_DIM])?;
         let mut state = Self {
             conv: DeviceBuffer::empty(config.device_ordinal),
             recurrent: RecurrentBuffer::new(config, recurrent_len)?,
@@ -157,11 +156,8 @@ impl GdnState {
     }
 
     pub(super) fn conv_view(&self) -> Result<crate::backend::GdnConvState, Status> {
-        self.conv.tensor3(
-            self.slots.state_pool,
-            QWEN36_GDN_PACKED_DIM,
-            QWEN36_GDN_CONV_STATE,
-        )?;
+        self.conv
+            .tensor3(self.slots.state_pool, PACKED_QKV_CHANNELS, CONV_HISTORY_LEN)?;
         crate::backend::GdnConvState::contiguous(
             self.conv.as_device_ptr(),
             FloatStorage::Bf16,

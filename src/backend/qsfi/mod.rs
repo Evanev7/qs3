@@ -1,8 +1,9 @@
 #![allow(dead_code)]
 
 use crate::{
-    QWEN36_FULL_ATTN_HEAD_DIM, QWEN36_FULL_ATTN_KV_HEADS, QWEN36_FULL_ATTN_Q_HEADS,
-    QWEN36_FULL_ATTN_ROTARY_DIM, engine::Status, ffi,
+    constants::attention::{HEAD_DIM, NUM_KV_HEADS, NUM_Q_HEADS, ROTARY_DIM},
+    engine::Status,
+    ffi,
 };
 
 use crate::backend::result_from_raw;
@@ -125,9 +126,9 @@ fn validate_attention_desc(attention: &AttentionDesc) -> Result<(), Status> {
     if attention.head_dim_qk != attention.head_dim_vo {
         return Err(Status::Unsupported);
     }
-    if attention.head_dim_qk != QWEN36_FULL_ATTN_HEAD_DIM
-        || attention.num_qo_heads != QWEN36_FULL_ATTN_Q_HEADS
-        || attention.num_kv_heads != QWEN36_FULL_ATTN_KV_HEADS
+    if attention.head_dim_qk != HEAD_DIM
+        || attention.num_qo_heads != NUM_Q_HEADS
+        || attention.num_kv_heads != NUM_KV_HEADS
     {
         return Err(Status::Unsupported);
     }
@@ -312,8 +313,7 @@ fn validate_rope_apply_desc(desc: &RopeApplyDesc) -> Result<(), Status> {
         return Err(Status::InvalidArgument);
     }
     if !supported_rope_head_dim(desc.head_dim)
-        || (desc.head_dim == QWEN36_FULL_ATTN_HEAD_DIM
-            && desc.rotary_dim != QWEN36_FULL_ATTN_ROTARY_DIM)
+        || (desc.head_dim == HEAD_DIM && desc.rotary_dim != ROTARY_DIM)
         || desc.interleave != 0
     {
         return Err(Status::Unsupported);
@@ -1367,8 +1367,10 @@ mod tests {
     use crate::ffi::sys;
     use crate::ffi::{KvLayoutRaw, MOE_ROUTE_ROUTER_LOGITS, StatusRaw};
     use crate::{
-        QWEN36_FULL_ATTN_HEAD_DIM, QWEN36_FULL_ATTN_KV_HEADS, QWEN36_FULL_ATTN_KV_HIDDEN,
-        QWEN36_FULL_ATTN_Q_HEADS, QWEN36_FULL_ATTN_Q_HIDDEN, QWEN36_FULL_ATTN_ROTARY_DIM, Status,
+        Status,
+        constants::attention::{
+            HEAD_DIM, KV_WIDTH, NUM_KV_HEADS, NUM_Q_HEADS, Q_WIDTH, ROTARY_DIM,
+        },
     };
     use std::ffi::c_void;
     use std::ptr;
@@ -1424,10 +1426,10 @@ mod tests {
 
     fn attention(layout: KvLayoutRaw) -> AttentionDesc {
         AttentionDesc {
-            num_qo_heads: QWEN36_FULL_ATTN_Q_HEADS,
-            num_kv_heads: QWEN36_FULL_ATTN_KV_HEADS,
-            head_dim_qk: QWEN36_FULL_ATTN_HEAD_DIM,
-            head_dim_vo: QWEN36_FULL_ATTN_HEAD_DIM,
+            num_qo_heads: NUM_Q_HEADS,
+            num_kv_heads: NUM_KV_HEADS,
+            head_dim_qk: HEAD_DIM,
+            head_dim_vo: HEAD_DIM,
             page_size: 4,
             q_dtype: DTYPE_F16,
             kv_dtype: DTYPE_F16,
@@ -1448,9 +1450,9 @@ mod tests {
     fn kv_cache(layout: KvLayoutRaw) -> PagedKvCache {
         let page_size = 4_i64;
         let max_pages = 8_i64;
-        let kv_heads = i64::from(QWEN36_FULL_ATTN_KV_HEADS);
-        let head_dim = i64::from(QWEN36_FULL_ATTN_HEAD_DIM);
-        let kv_hidden = i64::from(QWEN36_FULL_ATTN_KV_HIDDEN);
+        let kv_heads = i64::from(NUM_KV_HEADS);
+        let head_dim = i64::from(HEAD_DIM);
+        let kv_hidden = i64::from(KV_WIDTH);
         let page_hidden = page_size * kv_hidden;
         let shape = if layout == KV_LAYOUT_NHD {
             [max_pages, page_size, kv_heads, head_dim]
@@ -1808,9 +1810,9 @@ mod tests {
             num_indices: 3,
             total_tokens: 5,
         };
-        let q_heads = i64::from(QWEN36_FULL_ATTN_Q_HEADS);
-        let head_dim = i64::from(QWEN36_FULL_ATTN_HEAD_DIM);
-        let q_hidden = i64::from(QWEN36_FULL_ATTN_Q_HIDDEN);
+        let q_heads = i64::from(NUM_Q_HEADS);
+        let head_dim = i64::from(HEAD_DIM);
+        let q_hidden = i64::from(Q_WIDTH);
         let decode_q = tensor3(
             device_ptr(10),
             DTYPE_F16,
@@ -1907,9 +1909,9 @@ mod tests {
             num_indices: 3,
             total_tokens: 5,
         };
-        let kv_heads = i64::from(QWEN36_FULL_ATTN_KV_HEADS);
-        let head_dim = i64::from(QWEN36_FULL_ATTN_HEAD_DIM);
-        let kv_hidden = i64::from(QWEN36_FULL_ATTN_KV_HIDDEN);
+        let kv_heads = i64::from(NUM_KV_HEADS);
+        let head_dim = i64::from(HEAD_DIM);
+        let kv_hidden = i64::from(KV_WIDTH);
         let decode_kv = tensor3(
             device_ptr(70),
             DTYPE_F16,
@@ -2129,9 +2131,9 @@ mod tests {
         );
 
         let mut qwen36_rotary = rope_desc(DTYPE_BF16);
-        let head_dim = i64::from(QWEN36_FULL_ATTN_HEAD_DIM);
-        let q_stride = i64::from(4 * QWEN36_FULL_ATTN_HEAD_DIM);
-        let kv_stride = i64::from(QWEN36_FULL_ATTN_KV_HIDDEN);
+        let head_dim = i64::from(HEAD_DIM);
+        let q_stride = i64::from(4 * HEAD_DIM);
+        let kv_stride = i64::from(KV_WIDTH);
         qwen36_rotary.q.shape[2] = head_dim;
         qwen36_rotary.q.stride = [q_stride, head_dim, 1];
         qwen36_rotary.k.shape[2] = head_dim;
@@ -2140,8 +2142,8 @@ mod tests {
         qwen36_rotary.q_out.stride = [q_stride, head_dim, 1];
         qwen36_rotary.k_out.shape[2] = head_dim;
         qwen36_rotary.k_out.stride = [kv_stride, head_dim, 1];
-        qwen36_rotary.head_dim = QWEN36_FULL_ATTN_HEAD_DIM;
-        qwen36_rotary.rotary_dim = QWEN36_FULL_ATTN_ROTARY_DIM;
+        qwen36_rotary.head_dim = HEAD_DIM;
+        qwen36_rotary.rotary_dim = ROTARY_DIM;
         assert_eq!(validate_rope_apply_desc(&qwen36_rotary), Ok(()));
 
         qwen36_rotary.rotary_dim = 128;

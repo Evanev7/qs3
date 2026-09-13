@@ -17,6 +17,22 @@ ninja -C build triton/kernels
 each Triton recipe's attribute name determines output filenames; `source` is
 repository-relative and `spec` supplies compiler inputs.
 
+`nixsrc/rust.nix` generates `build/constants.rs` from the same configuration.
+The crate exposes it as `qs3::constants`, with model, attention, GDN, MLP,
+precision, target, engine, and MTP modules. For example,
+`qs3::constants::model::HIDDEN_SIZE` and `qs3::constants::gdn::PACKED_QKV_CHANNELS`
+describe the selected build. Rust callers import generated model dimensions
+directly; this module does not itself enable another model or MTP.
+The local Ninja build regenerates it when its inputs change, and Nix packages
+materialize the same generated source before compiling Rust. To inspect it:
+
+```sh
+nix eval --offline --raw --file build_tools/nixsrc/rust.nix
+```
+
+Rust constants and the Triton manifest share the top-level `nix_eval` rule and
+the `config_inputs` phony dependency group in `build.ninja`.
+
 See [qstriton](pysrc/qstriton/README.md) for the compiler interface and
 [qwen36_vectors](pysrc/qwen36_vectors/README.md) for vector generation.
 

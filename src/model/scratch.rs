@@ -2,8 +2,10 @@ use super::{
     QwenConfig, activate_device, checked_usize_product, result_from_cuda, synchronize_stream,
 };
 use crate::{
-    QWEN36_FULL_ATTN_Q_PROJ_OUT, QWEN36_GDN_KEY_DIM, QWEN36_GDN_NUM_K_HEADS,
-    QWEN36_GDN_NUM_Q_HEADS, QWEN36_GDN_NUM_V_HEADS, QWEN36_GDN_OUTPUT_DIM, QWEN36_GDN_PACKED_DIM,
+    constants::{
+        attention::PACKED_Q_GATE_WIDTH,
+        gdn::{KEY_HEAD_DIM, NUM_KEY_HEADS, NUM_VALUE_HEADS, OUTPUT_WIDTH, PACKED_QKV_CHANNELS},
+    },
     engine::Status,
     ffi::{self, cuda},
 };
@@ -107,7 +109,7 @@ impl RunnerScratch {
         self.residual.ensure(hidden)?;
         self.norm.ensure(hidden)?;
         let q_hidden = checked_usize_product(&[rows, config.q_hidden_size()?])?;
-        let q_proj_out = checked_usize_product(&[rows, QWEN36_FULL_ATTN_Q_PROJ_OUT])?;
+        let q_proj_out = checked_usize_product(&[rows, PACKED_Q_GATE_WIDTH])?;
         let kv_hidden = checked_usize_product(&[rows, config.kv_hidden_size()?])?;
         self.q_proj_out.ensure(q_proj_out)?;
         self.q.ensure(q_hidden)?;
@@ -140,24 +142,18 @@ impl RunnerScratch {
         self.mlp_out.ensure(hidden)?;
         if config.has_gdn_layers() {
             self.gdn_packed
-                .ensure(checked_usize_product(&[rows, QWEN36_GDN_PACKED_DIM])?)?;
+                .ensure(checked_usize_product(&[rows, PACKED_QKV_CHANNELS])?)?;
             self.gdn_conv_out
-                .ensure(checked_usize_product(&[rows, QWEN36_GDN_PACKED_DIM])?)?;
+                .ensure(checked_usize_product(&[rows, PACKED_QKV_CHANNELS])?)?;
             self.gdn_a
-                .ensure(checked_usize_product(&[rows, QWEN36_GDN_NUM_V_HEADS])?)?;
+                .ensure(checked_usize_product(&[rows, NUM_VALUE_HEADS])?)?;
             self.gdn_b
-                .ensure(checked_usize_product(&[rows, QWEN36_GDN_NUM_V_HEADS])?)?;
-            self.gdn_q.ensure(checked_usize_product(&[
-                rows,
-                QWEN36_GDN_NUM_Q_HEADS,
-                QWEN36_GDN_KEY_DIM,
-            ])?)?;
-            self.gdn_k.ensure(checked_usize_product(&[
-                rows,
-                QWEN36_GDN_NUM_K_HEADS,
-                QWEN36_GDN_KEY_DIM,
-            ])?)?;
-            let gdn_out = checked_usize_product(&[rows, QWEN36_GDN_OUTPUT_DIM])?;
+                .ensure(checked_usize_product(&[rows, NUM_VALUE_HEADS])?)?;
+            self.gdn_q
+                .ensure(checked_usize_product(&[rows, NUM_KEY_HEADS, KEY_HEAD_DIM])?)?;
+            self.gdn_k
+                .ensure(checked_usize_product(&[rows, NUM_KEY_HEADS, KEY_HEAD_DIM])?)?;
+            let gdn_out = checked_usize_product(&[rows, OUTPUT_WIDTH])?;
             self.gdn_v.ensure(gdn_out)?;
             self.gdn_recurrent_out.ensure(gdn_out)?;
             self.gdn_gate.ensure(gdn_out)?;

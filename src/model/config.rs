@@ -1,11 +1,17 @@
 use crate::{
-    QWEN36_FULL_ATTN_GROUP_SIZE, QWEN36_FULL_ATTN_HEAD_DIM, QWEN36_FULL_ATTN_KV_HEADS,
-    QWEN36_FULL_ATTN_KV_HIDDEN, QWEN36_FULL_ATTN_Q_HEADS, QWEN36_FULL_ATTN_Q_HIDDEN,
-    QWEN36_GDN_CONV_WIDTH, QWEN36_GDN_KEY_DIM, QWEN36_GDN_NUM_K_HEADS, QWEN36_GDN_NUM_V_HEADS,
-    QWEN36_GDN_OUTPUT_DIM, QWEN36_GDN_PACKED_DIM, QWEN36_GDN_VALUE_DIM, QWEN36_HIDDEN_SIZE,
-    QWEN36_MOE_INTERMEDIATE_SIZE, QWEN36_MOE_MAX_EXPERTS, QWEN36_MOE_MAX_TOP_K,
-    QWEN36_MOE_NUM_EXPERTS, QWEN36_MOE_SHARED_EXPERT_INTERMEDIATE_SIZE, QWEN36_MOE_TOP_K,
+    QWEN36_MOE_MAX_EXPERTS, QWEN36_MOE_MAX_TOP_K,
     backend::qsfi::MoeBf16Kernel,
+    constants::{
+        attention::{GROUP_SIZE, HEAD_DIM, KV_WIDTH, NUM_KV_HEADS, NUM_Q_HEADS, Q_WIDTH},
+        gdn::{
+            CONV_WIDTH, KEY_HEAD_DIM, NUM_KEY_HEADS, NUM_VALUE_HEADS, OUTPUT_WIDTH,
+            PACKED_QKV_CHANNELS, VALUE_HEAD_DIM,
+        },
+        mlp::{
+            INTERMEDIATE_SIZE, NUM_EXPERTS, NUM_EXPERTS_PER_TOKEN, SHARED_EXPERT_INTERMEDIATE_SIZE,
+        },
+        model::HIDDEN_SIZE,
+    },
     engine::{
         DynDType, EngineConfig, KvLayout, Status, validate_supported_attention_grouping,
         validate_supported_attention_head_dim,
@@ -38,10 +44,10 @@ impl QwenMoeConfig {
 
     pub const fn qwen36_35b_a3b() -> Self {
         Self {
-            num_experts: QWEN36_MOE_NUM_EXPERTS,
-            num_experts_per_tok: QWEN36_MOE_TOP_K,
-            moe_intermediate_size: QWEN36_MOE_INTERMEDIATE_SIZE,
-            shared_expert_intermediate_size: QWEN36_MOE_SHARED_EXPERT_INTERMEDIATE_SIZE,
+            num_experts: NUM_EXPERTS,
+            num_experts_per_tok: NUM_EXPERTS_PER_TOKEN,
+            moe_intermediate_size: INTERMEDIATE_SIZE,
+            shared_expert_intermediate_size: SHARED_EXPERT_INTERMEDIATE_SIZE,
         }
     }
 
@@ -80,22 +86,22 @@ pub(super) struct QwenGdnShape {
 impl QwenGdnShape {
     const fn qwen36_moe() -> Self {
         Self {
-            num_key_heads: QWEN36_GDN_NUM_K_HEADS,
-            num_value_heads: QWEN36_GDN_NUM_V_HEADS,
-            key_head_dim: QWEN36_GDN_KEY_DIM,
-            value_head_dim: QWEN36_GDN_VALUE_DIM,
-            conv_kernel_dim: QWEN36_GDN_CONV_WIDTH,
+            num_key_heads: NUM_KEY_HEADS,
+            num_value_heads: NUM_VALUE_HEADS,
+            key_head_dim: KEY_HEAD_DIM,
+            value_head_dim: VALUE_HEAD_DIM,
+            conv_kernel_dim: CONV_WIDTH,
         }
     }
 
     #[cfg(test)]
     pub(super) const fn qwen36_dense_27b() -> Self {
         Self {
-            num_key_heads: QWEN36_GDN_NUM_K_HEADS,
+            num_key_heads: NUM_KEY_HEADS,
             num_value_heads: 48,
-            key_head_dim: QWEN36_GDN_KEY_DIM,
-            value_head_dim: QWEN36_GDN_VALUE_DIM,
-            conv_kernel_dim: QWEN36_GDN_CONV_WIDTH,
+            key_head_dim: KEY_HEAD_DIM,
+            value_head_dim: VALUE_HEAD_DIM,
+            conv_kernel_dim: CONV_WIDTH,
         }
     }
 
@@ -124,13 +130,13 @@ impl QwenGdnShape {
 
     pub(super) fn validate_config(self, config: &QwenConfig) -> Result<(), Status> {
         self.validate_supported_runner_shape()?;
-        if self.packed_dim()? != QWEN36_GDN_PACKED_DIM
-            || self.output_dim()? != QWEN36_GDN_OUTPUT_DIM
-            || self.conv_kernel_dim != QWEN36_GDN_CONV_WIDTH
+        if self.packed_dim()? != PACKED_QKV_CHANNELS
+            || self.output_dim()? != OUTPUT_WIDTH
+            || self.conv_kernel_dim != CONV_WIDTH
         {
             return Err(Status::InternalError);
         }
-        if config.hidden_size != QWEN36_HIDDEN_SIZE {
+        if config.hidden_size != HIDDEN_SIZE {
             return Err(Status::InvalidArgument);
         }
         Ok(())
@@ -341,13 +347,13 @@ impl QwenConfig {
             max_seq_len,
             max_pages: max_seq_len.div_ceil(page_size),
             page_size,
-            hidden_size: QWEN36_HIDDEN_SIZE,
-            intermediate_size: QWEN36_MOE_INTERMEDIATE_SIZE,
+            hidden_size: HIDDEN_SIZE,
+            intermediate_size: INTERMEDIATE_SIZE,
             moe: Some(QwenMoeConfig::qwen36_35b_a3b()),
             vocab_size,
-            num_q_heads: QWEN36_FULL_ATTN_Q_HEADS,
-            num_kv_heads: QWEN36_FULL_ATTN_KV_HEADS,
-            head_dim: QWEN36_FULL_ATTN_HEAD_DIM,
+            num_q_heads: NUM_Q_HEADS,
+            num_kv_heads: NUM_KV_HEADS,
+            head_dim: HEAD_DIM,
             rms_norm_eps,
             rope_theta,
             rope_scale: 1.0,
@@ -375,13 +381,13 @@ impl QwenConfig {
             max_seq_len: 16,
             max_pages: 8,
             page_size: 4,
-            hidden_size: QWEN36_HIDDEN_SIZE,
+            hidden_size: HIDDEN_SIZE,
             intermediate_size: 256,
             moe: None,
             vocab_size: 64,
-            num_q_heads: QWEN36_FULL_ATTN_Q_HEADS,
-            num_kv_heads: QWEN36_FULL_ATTN_KV_HEADS,
-            head_dim: QWEN36_FULL_ATTN_HEAD_DIM,
+            num_q_heads: NUM_Q_HEADS,
+            num_kv_heads: NUM_KV_HEADS,
+            head_dim: HEAD_DIM,
             rms_norm_eps: 1.0e-6,
             rope_theta: 10000.0,
             rope_scale: 1.0,
@@ -425,13 +431,13 @@ impl QwenConfig {
             max_seq_len: 8,
             max_pages: 2,
             page_size: 4,
-            hidden_size: QWEN36_HIDDEN_SIZE,
+            hidden_size: HIDDEN_SIZE,
             intermediate_size: moe.moe_intermediate_size,
             moe: Some(moe),
             vocab_size: 32,
-            num_q_heads: QWEN36_FULL_ATTN_Q_HEADS,
-            num_kv_heads: QWEN36_FULL_ATTN_KV_HEADS,
-            head_dim: QWEN36_FULL_ATTN_HEAD_DIM,
+            num_q_heads: NUM_Q_HEADS,
+            num_kv_heads: NUM_KV_HEADS,
+            head_dim: HEAD_DIM,
             rms_norm_eps: 1.0e-6,
             rope_theta: 10000.0,
             rope_scale: 1.0,
@@ -524,20 +530,20 @@ impl QwenConfig {
     }
 
     pub(super) fn validate_full_attention_shape(&self) -> Result<(), Status> {
-        if self.hidden_size != QWEN36_HIDDEN_SIZE {
+        if self.hidden_size != HIDDEN_SIZE {
             return Err(Status::InvalidArgument);
         }
         validate_supported_attention_grouping(self.num_q_heads, self.num_kv_heads)?;
-        if self.num_q_heads / self.num_kv_heads != QWEN36_FULL_ATTN_GROUP_SIZE {
+        if self.num_q_heads / self.num_kv_heads != GROUP_SIZE {
             return Err(Status::Unsupported);
         }
         validate_supported_attention_head_dim(self.head_dim)?;
-        if self.head_dim != QWEN36_FULL_ATTN_HEAD_DIM {
+        if self.head_dim != HEAD_DIM {
             return Err(Status::Unsupported);
         }
         let q_hidden = self.q_hidden_size()?;
         let kv_hidden = self.kv_hidden_size()?;
-        if q_hidden != QWEN36_FULL_ATTN_Q_HIDDEN || kv_hidden != QWEN36_FULL_ATTN_KV_HIDDEN {
+        if q_hidden != Q_WIDTH || kv_hidden != KV_WIDTH {
             return Err(Status::InvalidArgument);
         }
         Ok(())

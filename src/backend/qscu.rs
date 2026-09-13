@@ -5,9 +5,14 @@ use super::{
     zero_tensor2,
 };
 use crate::{
-    QWEN36_FULL_ATTN_Q_HIDDEN, QWEN36_GDN_CONV_WIDTH, QWEN36_GDN_KEY_DIM, QWEN36_GDN_NUM_K_HEADS,
-    QWEN36_GDN_NUM_Q_HEADS, QWEN36_GDN_NUM_V_HEADS, QWEN36_GDN_PACKED_DIM, QWEN36_GDN_VALUE_DIM,
     QWEN36_MOE_MAX_EXPERTS, QWEN36_MOE_MAX_TOP_K, Status,
+    constants::{
+        attention::{HEAD_DIM, NUM_Q_HEADS, PACKED_Q_GATE_WIDTH, Q_WIDTH},
+        gdn::{
+            CONV_WIDTH, KEY_HEAD_DIM, NUM_KEY_HEADS, NUM_VALUE_HEADS, PACKED_QKV_CHANNELS,
+            VALUE_HEAD_DIM,
+        },
+    },
     ffi::{self, sys},
 };
 
@@ -32,11 +37,11 @@ impl<'a> Qscu<'a> {
         q: DMat<BF16>,
         gate: DMat<BF16>,
     ) -> Result<(), Status> {
-        let width = crate::QWEN36_FULL_ATTN_HEAD_DIM as usize * 2;
+        let width = HEAD_DIM as usize * 2;
         if packed.rows != q.rows
             || !q.same_shape(gate)
-            || packed.cols != crate::QWEN36_FULL_ATTN_Q_PROJ_OUT
-            || q.cols != crate::QWEN36_FULL_ATTN_Q_HIDDEN
+            || packed.cols != PACKED_Q_GATE_WIDTH
+            || q.cols != Q_WIDTH
         {
             return Err(Status::InvalidArgument);
         }
@@ -44,7 +49,7 @@ impl<'a> Qscu<'a> {
         q.require_contiguous()?;
         gate.require_contiguous()?;
         let height = (packed.rows as usize)
-            .checked_mul(crate::QWEN36_FULL_ATTN_Q_HEADS as usize)
+            .checked_mul(NUM_Q_HEADS as usize)
             .ok_or(Status::InvalidArgument)?;
         let source = packed.tensor().data.cast::<u8>();
         for (target, offset) in [(q.tensor().data, 0), (gate.tensor().data, width)] {
@@ -298,13 +303,13 @@ pub(super) fn qwen36_gdn_gated_rmsnorm_desc(
     gate.require_contiguous()?;
     weight.require_contiguous()?;
     out.require_contiguous()?;
-    if weight.len != QWEN36_GDN_VALUE_DIM {
+    if weight.len != VALUE_HEAD_DIM {
         return Err(Status::InvalidArgument);
     }
     let tokens = x.tokens;
-    require_qwen36_gdn_heads(x, QWEN36_GDN_NUM_V_HEADS, tokens)?;
-    require_qwen36_gdn_heads(gate, QWEN36_GDN_NUM_V_HEADS, tokens)?;
-    require_qwen36_gdn_heads(out, QWEN36_GDN_NUM_V_HEADS, tokens)?;
+    require_qwen36_gdn_heads(x, NUM_VALUE_HEADS, tokens)?;
+    require_qwen36_gdn_heads(gate, NUM_VALUE_HEADS, tokens)?;
+    require_qwen36_gdn_heads(out, NUM_VALUE_HEADS, tokens)?;
     Ok(sys::qscu_qwen36_gdn_rmsnorm_gated_desc {
         x: x.tensor(),
         gate: gate.tensor(),
@@ -384,7 +389,7 @@ pub(super) fn qwen36_full_attention_output_gate_desc(
 ) -> Result<sys::qscu_qwen36_full_attention_output_gate_desc, Status> {
     gate.require_contiguous()?;
     out.require_contiguous()?;
-    if !gate.same_shape(out) || gate.cols != QWEN36_FULL_ATTN_Q_HIDDEN {
+    if !gate.same_shape(out) || gate.cols != Q_WIDTH {
         return Err(Status::InvalidArgument);
     }
     Ok(sys::qscu_qwen36_full_attention_output_gate_desc {
@@ -485,16 +490,16 @@ pub(super) fn qwen36_gdn_causal_conv1d_desc(
     weight.require_contiguous()?;
     out.require_contiguous()?;
     if x.rows == 0
-        || x.cols != QWEN36_GDN_PACKED_DIM
-        || weight.rows != QWEN36_GDN_PACKED_DIM
-        || weight.cols != QWEN36_GDN_CONV_WIDTH
+        || x.cols != PACKED_QKV_CHANNELS
+        || weight.rows != PACKED_QKV_CHANNELS
+        || weight.cols != CONV_WIDTH
         || out.rows != x.rows
-        || out.cols != QWEN36_GDN_PACKED_DIM
+        || out.cols != PACKED_QKV_CHANNELS
     {
         return Err(Status::InvalidArgument);
     }
     bias.require_contiguous()?;
-    if bias.len != QWEN36_GDN_PACKED_DIM {
+    if bias.len != PACKED_QKV_CHANNELS {
         return Err(Status::InvalidArgument);
     }
     if let Some(indices) = state_read_indices {
@@ -553,19 +558,19 @@ pub(super) fn qwen36_gdn_post_conv_prepare_desc(
     k.require_contiguous()?;
     v.require_contiguous()?;
     let tokens = conv_out.rows;
-    if conv_out.cols != QWEN36_GDN_PACKED_DIM
+    if conv_out.cols != PACKED_QKV_CHANNELS
         || a.rows != tokens
-        || a.cols != QWEN36_GDN_NUM_V_HEADS
+        || a.cols != NUM_VALUE_HEADS
         || b.rows != tokens
-        || b.cols != QWEN36_GDN_NUM_V_HEADS
-        || a_log.len != QWEN36_GDN_NUM_V_HEADS
-        || dt_bias.len != QWEN36_GDN_NUM_V_HEADS
+        || b.cols != NUM_VALUE_HEADS
+        || a_log.len != NUM_VALUE_HEADS
+        || dt_bias.len != NUM_VALUE_HEADS
     {
         return Err(Status::InvalidArgument);
     }
-    require_qwen36_gdn_heads(q, QWEN36_GDN_NUM_Q_HEADS, tokens)?;
-    require_qwen36_gdn_heads(k, QWEN36_GDN_NUM_K_HEADS, tokens)?;
-    require_qwen36_gdn_heads(v, QWEN36_GDN_NUM_V_HEADS, tokens)?;
+    require_qwen36_gdn_heads(q, NUM_KEY_HEADS, tokens)?;
+    require_qwen36_gdn_heads(k, NUM_KEY_HEADS, tokens)?;
+    require_qwen36_gdn_heads(v, NUM_VALUE_HEADS, tokens)?;
     Ok(sys::qscu_qwen36_gdn_post_conv_prepare_desc {
         conv_out: conv_out.tensor(),
         a: a.tensor(),
@@ -616,11 +621,11 @@ pub(super) fn qwen36_gdn_decode_desc(
         state_out_indices: state_out_indices.map_or(zero_tensor1(ffi::DTYPE_I32), DVec::tensor),
         out: out.tensor(),
         num_tokens: tokens,
-        num_q_heads: QWEN36_GDN_NUM_Q_HEADS,
-        num_k_heads: QWEN36_GDN_NUM_K_HEADS,
-        num_v_heads: QWEN36_GDN_NUM_V_HEADS,
-        key_dim: QWEN36_GDN_KEY_DIM,
-        value_dim: QWEN36_GDN_VALUE_DIM,
+        num_q_heads: NUM_KEY_HEADS,
+        num_k_heads: NUM_KEY_HEADS,
+        num_v_heads: NUM_VALUE_HEADS,
+        key_dim: KEY_HEAD_DIM,
+        value_dim: VALUE_HEAD_DIM,
         state_layout: sys::QSCU_GDN_STATE_LAYOUT_VK,
         scale: qwen36_gdn_scale(),
         use_qk_l2norm: 1,
@@ -673,11 +678,11 @@ pub(super) fn qwen36_gdn_prefill_desc(
         out: out.tensor(),
         batch_size,
         total_tokens,
-        num_q_heads: QWEN36_GDN_NUM_Q_HEADS,
-        num_k_heads: QWEN36_GDN_NUM_K_HEADS,
-        num_v_heads: QWEN36_GDN_NUM_V_HEADS,
-        key_dim: QWEN36_GDN_KEY_DIM,
-        value_dim: QWEN36_GDN_VALUE_DIM,
+        num_q_heads: NUM_KEY_HEADS,
+        num_k_heads: NUM_KEY_HEADS,
+        num_v_heads: NUM_VALUE_HEADS,
+        key_dim: KEY_HEAD_DIM,
+        value_dim: VALUE_HEAD_DIM,
         state_layout: sys::QSCU_GDN_STATE_LAYOUT_VK,
         scale: qwen36_gdn_scale(),
         use_qk_l2norm: 1,
@@ -686,5 +691,5 @@ pub(super) fn qwen36_gdn_prefill_desc(
 }
 
 fn qwen36_gdn_scale() -> f32 {
-    1.0 / (QWEN36_GDN_KEY_DIM as f32).sqrt()
+    1.0 / (KEY_HEAD_DIM as f32).sqrt()
 }

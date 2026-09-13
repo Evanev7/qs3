@@ -1,9 +1,14 @@
 #![allow(dead_code)]
 
 use crate::{
-    QWEN36_FULL_ATTN_HEAD_DIM, QWEN36_FULL_ATTN_ROTARY_DIM, QWEN36_GDN_CONV_STATE,
-    QWEN36_GDN_KEY_DIM, QWEN36_GDN_NUM_K_HEADS, QWEN36_GDN_NUM_Q_HEADS, QWEN36_GDN_NUM_V_HEADS,
-    QWEN36_GDN_PACKED_DIM, QWEN36_GDN_VALUE_DIM, Status,
+    Status,
+    constants::{
+        attention::{HEAD_DIM, ROTARY_DIM},
+        gdn::{
+            CONV_HISTORY_LEN, KEY_HEAD_DIM, NUM_KEY_HEADS, NUM_VALUE_HEADS, PACKED_QKV_CHANNELS,
+            VALUE_HEAD_DIM,
+        },
+    },
     ffi::{self, sys},
 };
 
@@ -200,12 +205,12 @@ impl GdnConvState {
             dtype: self.dtype.dtype(),
             shape: [
                 self.state_pool.into(),
-                QWEN36_GDN_PACKED_DIM.into(),
-                QWEN36_GDN_CONV_STATE.into(),
+                PACKED_QKV_CHANNELS.into(),
+                CONV_HISTORY_LEN.into(),
             ],
             stride: [
-                (QWEN36_GDN_PACKED_DIM * QWEN36_GDN_CONV_STATE).into(),
-                QWEN36_GDN_CONV_STATE.into(),
+                (PACKED_QKV_CHANNELS * CONV_HISTORY_LEN).into(),
+                CONV_HISTORY_LEN.into(),
                 1,
             ],
         }
@@ -235,20 +240,20 @@ impl GdnRecurrentState {
     }
 
     fn tensor(self) -> ffi::Tensor4 {
-        let value_key = QWEN36_GDN_VALUE_DIM * QWEN36_GDN_KEY_DIM;
+        let value_key = VALUE_HEAD_DIM * KEY_HEAD_DIM;
         ffi::Tensor4 {
             data: self.data,
             dtype: self.dtype.dtype(),
             shape: [
                 self.state_pool.into(),
-                QWEN36_GDN_NUM_V_HEADS.into(),
-                QWEN36_GDN_VALUE_DIM.into(),
-                QWEN36_GDN_KEY_DIM.into(),
+                NUM_VALUE_HEADS.into(),
+                VALUE_HEAD_DIM.into(),
+                KEY_HEAD_DIM.into(),
             ],
             stride: [
-                (QWEN36_GDN_NUM_V_HEADS * value_key).into(),
+                (NUM_VALUE_HEADS * value_key).into(),
                 value_key.into(),
-                QWEN36_GDN_KEY_DIM.into(),
+                KEY_HEAD_DIM.into(),
                 1.into(),
             ],
         }
@@ -358,7 +363,7 @@ fn require_supported_rope_dims(head_dim: u32, rotary_dim: u32) -> Result<(), Sta
     if !matches!(head_dim, 64 | 128 | 256 | 512) {
         return Err(Status::Unsupported);
     }
-    if head_dim == QWEN36_FULL_ATTN_HEAD_DIM && rotary_dim != QWEN36_FULL_ATTN_ROTARY_DIM {
+    if head_dim == HEAD_DIM && rotary_dim != ROTARY_DIM {
         return Err(Status::Unsupported);
     }
     Ok(())
@@ -386,7 +391,7 @@ fn require_qwen36_gdn_heads(
 ) -> Result<(), Status> {
     if heads.tokens != expected_tokens
         || heads.heads != expected_heads
-        || heads.head_dim != QWEN36_GDN_KEY_DIM
+        || heads.head_dim != KEY_HEAD_DIM
     {
         return Err(Status::InvalidArgument);
     }
@@ -404,16 +409,16 @@ fn validate_gdn_recurrent_tensors(
     out: Bf16Heads,
     total_tokens: u32,
 ) -> Result<(), Status> {
-    require_qwen36_gdn_heads(q, QWEN36_GDN_NUM_Q_HEADS, total_tokens)?;
-    require_qwen36_gdn_heads(k, QWEN36_GDN_NUM_K_HEADS, total_tokens)?;
-    require_qwen36_gdn_heads(v, QWEN36_GDN_NUM_V_HEADS, total_tokens)?;
-    require_qwen36_gdn_heads(out, QWEN36_GDN_NUM_V_HEADS, total_tokens)?;
+    require_qwen36_gdn_heads(q, NUM_KEY_HEADS, total_tokens)?;
+    require_qwen36_gdn_heads(k, NUM_KEY_HEADS, total_tokens)?;
+    require_qwen36_gdn_heads(v, NUM_VALUE_HEADS, total_tokens)?;
+    require_qwen36_gdn_heads(out, NUM_VALUE_HEADS, total_tokens)?;
     if a.rows != total_tokens
-        || a.cols != QWEN36_GDN_NUM_V_HEADS
+        || a.cols != NUM_VALUE_HEADS
         || b.rows != total_tokens
-        || b.cols != QWEN36_GDN_NUM_V_HEADS
-        || a_log.len != QWEN36_GDN_NUM_V_HEADS
-        || dt_bias.len != QWEN36_GDN_NUM_V_HEADS
+        || b.cols != NUM_VALUE_HEADS
+        || a_log.len != NUM_VALUE_HEADS
+        || dt_bias.len != NUM_VALUE_HEADS
     {
         return Err(Status::InvalidArgument);
     }

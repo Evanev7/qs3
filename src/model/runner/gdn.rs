@@ -1,8 +1,10 @@
 use super::BatchExecution;
 use crate::{
-    QWEN36_GDN_CONV_WIDTH, QWEN36_GDN_KEY_DIM, QWEN36_GDN_NUM_K_HEADS, QWEN36_GDN_NUM_Q_HEADS,
-    QWEN36_GDN_NUM_V_HEADS, QWEN36_GDN_OUTPUT_DIM, QWEN36_GDN_PACKED_DIM, QWEN36_GDN_VALUE_DIM,
     backend::{BF16, DMat},
+    constants::gdn::{
+        CONV_WIDTH, KEY_HEAD_DIM, NUM_KEY_HEADS, NUM_VALUE_HEADS, OUTPUT_WIDTH,
+        PACKED_QKV_CHANNELS, VALUE_HEAD_DIM,
+    },
     engine::Status,
     model::{ActiveRunKind, weights::QwenGdnWeights},
 };
@@ -43,46 +45,42 @@ impl BatchExecution<'_> {
         };
         let read_indices = self.scratch.gdn_state_indices.vector(1)?;
         let write_indices = Some(self.scratch.gdn_state_out_indices.vector(1)?);
-        let packed = self
-            .scratch
-            .gdn_packed
-            .matrix(rows, QWEN36_GDN_PACKED_DIM)?;
+        let packed = self.scratch.gdn_packed.matrix(rows, PACKED_QKV_CHANNELS)?;
         let conv_out = self
             .scratch
             .gdn_conv_out
-            .matrix(rows, QWEN36_GDN_PACKED_DIM)?;
-        let a = self.scratch.gdn_a.matrix(rows, QWEN36_GDN_NUM_V_HEADS)?;
-        let b = self.scratch.gdn_b.matrix(rows, QWEN36_GDN_NUM_V_HEADS)?;
-        let a_log = layer.a_log.vector(QWEN36_GDN_NUM_V_HEADS)?;
-        let dt_bias = layer.dt_bias.vector(QWEN36_GDN_NUM_V_HEADS)?;
+            .matrix(rows, PACKED_QKV_CHANNELS)?;
+        let a = self.scratch.gdn_a.matrix(rows, NUM_VALUE_HEADS)?;
+        let b = self.scratch.gdn_b.matrix(rows, NUM_VALUE_HEADS)?;
+        let a_log = layer.a_log.vector(NUM_VALUE_HEADS)?;
+        let dt_bias = layer.dt_bias.vector(NUM_VALUE_HEADS)?;
         let q = self
             .scratch
             .gdn_q
-            .heads(rows, QWEN36_GDN_NUM_Q_HEADS, QWEN36_GDN_KEY_DIM)?;
+            .heads(rows, NUM_KEY_HEADS, KEY_HEAD_DIM)?;
         let k = self
             .scratch
             .gdn_k
-            .heads(rows, QWEN36_GDN_NUM_K_HEADS, QWEN36_GDN_KEY_DIM)?;
+            .heads(rows, NUM_KEY_HEADS, KEY_HEAD_DIM)?;
         let v = self
             .scratch
             .gdn_v
-            .heads(rows, QWEN36_GDN_NUM_V_HEADS, QWEN36_GDN_VALUE_DIM)?;
-        let out = self.scratch.gdn_recurrent_out.heads(
-            rows,
-            QWEN36_GDN_NUM_V_HEADS,
-            QWEN36_GDN_VALUE_DIM,
-        )?;
-        let gate =
-            self.scratch
-                .gdn_gate
-                .heads(rows, QWEN36_GDN_NUM_V_HEADS, QWEN36_GDN_VALUE_DIM)?;
-        let norm_out =
-            self.scratch
-                .gdn_norm_out
-                .heads(rows, QWEN36_GDN_NUM_V_HEADS, QWEN36_GDN_VALUE_DIM)?;
+            .heads(rows, NUM_VALUE_HEADS, VALUE_HEAD_DIM)?;
+        let out = self
+            .scratch
+            .gdn_recurrent_out
+            .heads(rows, NUM_VALUE_HEADS, VALUE_HEAD_DIM)?;
+        let gate = self
+            .scratch
+            .gdn_gate
+            .heads(rows, NUM_VALUE_HEADS, VALUE_HEAD_DIM)?;
+        let norm_out = self
+            .scratch
+            .gdn_norm_out
+            .heads(rows, NUM_VALUE_HEADS, VALUE_HEAD_DIM)?;
         let mut ops = self.engine.operators();
         unsafe {
-            let weight = layer.in_proj.matrix(QWEN36_GDN_PACKED_DIM, hidden)?;
+            let weight = layer.in_proj.matrix(PACKED_QKV_CHANNELS, hidden)?;
             match (kind, self.gdn_qkv) {
                 (ActiveRunKind::Decode, Some(kernel)) => {
                     kernel.launch(self.config.stream, input, weight, packed)?;
@@ -94,28 +92,26 @@ impl BatchExecution<'_> {
             }
             ops.qscb().linear(
                 input,
-                layer.a_proj.matrix(QWEN36_GDN_NUM_V_HEADS, hidden)?,
+                layer.a_proj.matrix(NUM_VALUE_HEADS, hidden)?,
                 a,
                 self.linear_workspace,
             )?;
             ops.qscb().linear(
                 input,
-                layer.b_proj.matrix(QWEN36_GDN_NUM_V_HEADS, hidden)?,
+                layer.b_proj.matrix(NUM_VALUE_HEADS, hidden)?,
                 b,
                 self.linear_workspace,
             )?;
             ops.qscb().linear(
                 input,
-                layer.gate_proj.matrix(QWEN36_GDN_OUTPUT_DIM, hidden)?,
-                self.scratch.gdn_gate.matrix(rows, QWEN36_GDN_OUTPUT_DIM)?,
+                layer.gate_proj.matrix(OUTPUT_WIDTH, hidden)?,
+                self.scratch.gdn_gate.matrix(rows, OUTPUT_WIDTH)?,
                 self.linear_workspace,
             )?;
             ops.qscu().qwen36_gdn_causal_conv1d_bf16(
                 packed,
-                layer
-                    .conv_weight
-                    .matrix(QWEN36_GDN_PACKED_DIM, QWEN36_GDN_CONV_WIDTH)?,
-                layer.conv_bias.vector(QWEN36_GDN_PACKED_DIM)?,
+                layer.conv_weight.matrix(PACKED_QKV_CHANNELS, CONV_WIDTH)?,
+                layer.conv_bias.vector(PACKED_QKV_CHANNELS)?,
                 conv_state,
                 Some(read_indices),
                 write_indices,
@@ -158,15 +154,13 @@ impl BatchExecution<'_> {
             ops.qscu().qwen36_gdn_gated_rmsnorm_bf16(
                 out,
                 gate,
-                layer.rms_weight.vector(QWEN36_GDN_VALUE_DIM)?,
+                layer.rms_weight.vector(VALUE_HEAD_DIM)?,
                 norm_out,
                 self.config.rms_norm_eps,
             )?;
             ops.qscb().linear(
-                self.scratch
-                    .gdn_norm_out
-                    .matrix(rows, QWEN36_GDN_OUTPUT_DIM)?,
-                layer.out_proj.matrix(hidden, QWEN36_GDN_OUTPUT_DIM)?,
+                self.scratch.gdn_norm_out.matrix(rows, OUTPUT_WIDTH)?,
+                layer.out_proj.matrix(hidden, OUTPUT_WIDTH)?,
                 self.scratch.attn_proj.matrix(rows, hidden)?,
                 self.linear_workspace,
             )

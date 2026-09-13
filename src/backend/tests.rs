@@ -4,11 +4,14 @@ use super::{
     qsfi::{FusedAddRmsNormBf16, RmsNormBf16, RopeApplyBf16},
 };
 use crate::{
-    QWEN36_FULL_ATTN_HEAD_DIM, QWEN36_FULL_ATTN_KV_HEADS, QWEN36_FULL_ATTN_KV_HIDDEN,
-    QWEN36_FULL_ATTN_Q_HEADS, QWEN36_FULL_ATTN_Q_HIDDEN, QWEN36_FULL_ATTN_ROTARY_DIM,
-    QWEN36_GDN_CONV_WIDTH, QWEN36_GDN_KEY_DIM, QWEN36_GDN_NUM_K_HEADS, QWEN36_GDN_NUM_Q_HEADS,
-    QWEN36_GDN_NUM_V_HEADS, QWEN36_GDN_PACKED_DIM, QWEN36_GDN_VALUE_DIM, QWEN36_MOE_MAX_TOP_K,
-    Status,
+    QWEN36_MOE_MAX_TOP_K, Status,
+    constants::{
+        attention::{HEAD_DIM, KV_WIDTH, NUM_KV_HEADS, NUM_Q_HEADS, Q_WIDTH, ROTARY_DIM},
+        gdn::{
+            CONV_WIDTH, KEY_HEAD_DIM, NUM_KEY_HEADS, NUM_VALUE_HEADS, PACKED_QKV_CHANNELS,
+            VALUE_HEAD_DIM,
+        },
+    },
     ffi::{self, sys},
 };
 
@@ -44,15 +47,15 @@ fn heads(offset: usize, tokens: u32, heads: u32, head_dim: u32) -> Bf16Heads {
 }
 
 fn q_heads(offset: usize, tokens: u32) -> Bf16Heads {
-    heads(offset, tokens, QWEN36_GDN_NUM_Q_HEADS, QWEN36_GDN_KEY_DIM)
+    heads(offset, tokens, NUM_KEY_HEADS, KEY_HEAD_DIM)
 }
 
 fn k_heads(offset: usize, tokens: u32) -> Bf16Heads {
-    heads(offset, tokens, QWEN36_GDN_NUM_K_HEADS, QWEN36_GDN_KEY_DIM)
+    heads(offset, tokens, NUM_KEY_HEADS, KEY_HEAD_DIM)
 }
 
 fn v_heads(offset: usize, tokens: u32) -> Bf16Heads {
-    heads(offset, tokens, QWEN36_GDN_NUM_V_HEADS, QWEN36_GDN_VALUE_DIM)
+    heads(offset, tokens, NUM_VALUE_HEADS, VALUE_HEAD_DIM)
 }
 
 fn recurrent_state(offset: usize) -> GdnRecurrentState {
@@ -142,35 +145,29 @@ fn qscu_descriptor_builders_validate_shapes_and_modes() {
 
     assert!(
         qscu::qwen36_full_attention_output_gate_desc(
-            bf16_mat(119, 2, QWEN36_FULL_ATTN_Q_HIDDEN),
-            bf16_mat(120, 2, QWEN36_FULL_ATTN_Q_HIDDEN),
+            bf16_mat(119, 2, Q_WIDTH),
+            bf16_mat(120, 2, Q_WIDTH),
         )
         .is_ok()
     );
     assert!(matches!(
         qscu::qwen36_full_attention_output_gate_desc(
-            bf16_mat(121, 2, QWEN36_FULL_ATTN_Q_HIDDEN - 1),
-            bf16_mat(122, 2, QWEN36_FULL_ATTN_Q_HIDDEN - 1),
+            bf16_mat(121, 2, Q_WIDTH - 1),
+            bf16_mat(122, 2, Q_WIDTH - 1),
         ),
         Err(Status::InvalidArgument)
     ));
     assert!(matches!(
         qscu::qwen36_full_attention_output_gate_desc(
-            DMat::<BF16>::new(
-                device_ptr(123),
-                2,
-                QWEN36_FULL_ATTN_Q_HIDDEN,
-                QWEN36_FULL_ATTN_Q_HIDDEN + 8,
-            )
-            .unwrap(),
-            bf16_mat(124, 2, QWEN36_FULL_ATTN_Q_HIDDEN),
+            DMat::<BF16>::new(device_ptr(123), 2, Q_WIDTH, Q_WIDTH + 8,).unwrap(),
+            bf16_mat(124, 2, Q_WIDTH),
         ),
         Err(Status::InvalidArgument)
     ));
     assert!(matches!(
         qscu::qwen36_full_attention_output_gate_desc(
-            bf16_mat(125, 2, QWEN36_FULL_ATTN_Q_HIDDEN),
-            bf16_mat(126, 1, QWEN36_FULL_ATTN_Q_HIDDEN),
+            bf16_mat(125, 2, Q_WIDTH),
+            bf16_mat(126, 1, Q_WIDTH),
         ),
         Err(Status::InvalidArgument)
     ));
@@ -322,40 +319,26 @@ fn qsfi_descriptor_builders_accept_padded_rows() {
         RopeApplyBf16::new(q, k, q_out, k_out, i32_vec(52, 2), 256),
         Err(Status::InvalidArgument)
     ));
-    let qwen36_q = Bf16Heads::new(
-        device_ptr(53),
-        2,
-        QWEN36_FULL_ATTN_Q_HEADS,
-        QWEN36_FULL_ATTN_HEAD_DIM,
-        QWEN36_FULL_ATTN_Q_HIDDEN,
-        QWEN36_FULL_ATTN_HEAD_DIM,
-    )
-    .unwrap();
+    let qwen36_q =
+        Bf16Heads::new(device_ptr(53), 2, NUM_Q_HEADS, HEAD_DIM, Q_WIDTH, HEAD_DIM).unwrap();
     let qwen36_k = Bf16Heads::new(
         device_ptr(54),
         2,
-        QWEN36_FULL_ATTN_KV_HEADS,
-        QWEN36_FULL_ATTN_HEAD_DIM,
-        QWEN36_FULL_ATTN_KV_HIDDEN,
-        QWEN36_FULL_ATTN_HEAD_DIM,
+        NUM_KV_HEADS,
+        HEAD_DIM,
+        KV_WIDTH,
+        HEAD_DIM,
     )
     .unwrap();
-    let qwen36_q_out = Bf16Heads::new(
-        device_ptr(55),
-        2,
-        QWEN36_FULL_ATTN_Q_HEADS,
-        QWEN36_FULL_ATTN_HEAD_DIM,
-        QWEN36_FULL_ATTN_Q_HIDDEN,
-        QWEN36_FULL_ATTN_HEAD_DIM,
-    )
-    .unwrap();
+    let qwen36_q_out =
+        Bf16Heads::new(device_ptr(55), 2, NUM_Q_HEADS, HEAD_DIM, Q_WIDTH, HEAD_DIM).unwrap();
     let qwen36_k_out = Bf16Heads::new(
         device_ptr(56),
         2,
-        QWEN36_FULL_ATTN_KV_HEADS,
-        QWEN36_FULL_ATTN_HEAD_DIM,
-        QWEN36_FULL_ATTN_KV_HIDDEN,
-        QWEN36_FULL_ATTN_HEAD_DIM,
+        NUM_KV_HEADS,
+        HEAD_DIM,
+        KV_WIDTH,
+        HEAD_DIM,
     )
     .unwrap();
     assert!(
@@ -365,7 +348,7 @@ fn qsfi_descriptor_builders_accept_padded_rows() {
             qwen36_q_out,
             qwen36_k_out,
             i32_vec(57, 2),
-            QWEN36_FULL_ATTN_ROTARY_DIM,
+            ROTARY_DIM,
         )
         .is_ok()
     );
@@ -391,11 +374,11 @@ fn qsfi_descriptor_builders_accept_padded_rows() {
 fn gdn_prep_descriptors_enforce_qwen36_shapes() {
     let tokens = 2;
     let post = qscu::qwen36_gdn_post_conv_prepare_desc(
-        bf16_mat(60, tokens, QWEN36_GDN_PACKED_DIM),
-        bf16_mat(61, tokens, QWEN36_GDN_NUM_V_HEADS),
-        bf16_mat(62, tokens, QWEN36_GDN_NUM_V_HEADS),
-        bf16_vec(63, QWEN36_GDN_NUM_V_HEADS),
-        bf16_vec(64, QWEN36_GDN_NUM_V_HEADS),
+        bf16_mat(60, tokens, PACKED_QKV_CHANNELS),
+        bf16_mat(61, tokens, NUM_VALUE_HEADS),
+        bf16_mat(62, tokens, NUM_VALUE_HEADS),
+        bf16_vec(63, NUM_VALUE_HEADS),
+        bf16_vec(64, NUM_VALUE_HEADS),
         q_heads(65, tokens),
         k_heads(66, tokens),
         v_heads(67, tokens),
@@ -405,12 +388,12 @@ fn gdn_prep_descriptors_enforce_qwen36_shapes() {
     assert_eq!(post.forget_gate_output, sys::QSCU_GDN_FORGET_LOG_DECAY);
     assert!(matches!(
         qscu::qwen36_gdn_post_conv_prepare_desc(
-            bf16_mat(60, tokens, QWEN36_GDN_PACKED_DIM),
-            bf16_mat(61, tokens, QWEN36_GDN_NUM_V_HEADS),
-            bf16_mat(62, tokens, QWEN36_GDN_NUM_V_HEADS),
-            bf16_vec(63, QWEN36_GDN_NUM_V_HEADS),
-            bf16_vec(64, QWEN36_GDN_NUM_V_HEADS),
-            heads(69, tokens, 8, QWEN36_GDN_KEY_DIM),
+            bf16_mat(60, tokens, PACKED_QKV_CHANNELS),
+            bf16_mat(61, tokens, NUM_VALUE_HEADS),
+            bf16_mat(62, tokens, NUM_VALUE_HEADS),
+            bf16_vec(63, NUM_VALUE_HEADS),
+            bf16_vec(64, NUM_VALUE_HEADS),
+            heads(69, tokens, 8, KEY_HEAD_DIM),
             k_heads(66, tokens),
             v_heads(67, tokens),
         ),
@@ -420,7 +403,7 @@ fn gdn_prep_descriptors_enforce_qwen36_shapes() {
     let gated = qscu::qwen36_gdn_gated_rmsnorm_desc(
         v_heads(70, tokens),
         v_heads(71, tokens),
-        bf16_vec(72, QWEN36_GDN_VALUE_DIM),
+        bf16_vec(72, VALUE_HEAD_DIM),
         v_heads(73, tokens),
         1.0e-6,
     )
@@ -429,8 +412,8 @@ fn gdn_prep_descriptors_enforce_qwen36_shapes() {
     assert!(matches!(
         qscu::qwen36_gdn_gated_rmsnorm_desc(
             v_heads(70, tokens),
-            heads(71, tokens, QWEN36_GDN_NUM_V_HEADS - 1, QWEN36_GDN_VALUE_DIM),
-            bf16_vec(72, QWEN36_GDN_VALUE_DIM),
+            heads(71, tokens, NUM_VALUE_HEADS - 1, VALUE_HEAD_DIM),
+            bf16_vec(72, VALUE_HEAD_DIM),
             v_heads(73, tokens),
             1.0e-6,
         ),
@@ -438,14 +421,14 @@ fn gdn_prep_descriptors_enforce_qwen36_shapes() {
     ));
 
     let conv = qscu::qwen36_gdn_causal_conv1d_desc(
-        bf16_mat(74, tokens, QWEN36_GDN_PACKED_DIM),
-        bf16_mat(75, QWEN36_GDN_PACKED_DIM, QWEN36_GDN_CONV_WIDTH),
-        bf16_vec(76, QWEN36_GDN_PACKED_DIM),
+        bf16_mat(74, tokens, PACKED_QKV_CHANNELS),
+        bf16_mat(75, PACKED_QKV_CHANNELS, CONV_WIDTH),
+        bf16_vec(76, PACKED_QKV_CHANNELS),
         GdnConvState::contiguous(device_ptr(77), FloatStorage::F32, 3).unwrap(),
         Some(i32_vec(78, tokens)),
         None,
         None,
-        bf16_mat(79, tokens, QWEN36_GDN_PACKED_DIM),
+        bf16_mat(79, tokens, PACKED_QKV_CHANNELS),
         tokens,
     )
     .unwrap();
@@ -459,10 +442,10 @@ fn gdn_recurrent_descriptors_validate_decode_and_prefill_shapes() {
     let q = q_heads(90, tokens);
     let k = k_heads(91, tokens);
     let v = v_heads(92, tokens);
-    let a = bf16_mat(93, tokens, QWEN36_GDN_NUM_V_HEADS);
-    let b = bf16_mat(94, tokens, QWEN36_GDN_NUM_V_HEADS);
-    let a_log = bf16_vec(95, QWEN36_GDN_NUM_V_HEADS);
-    let dt_bias = bf16_vec(96, QWEN36_GDN_NUM_V_HEADS);
+    let a = bf16_mat(93, tokens, NUM_VALUE_HEADS);
+    let b = bf16_mat(94, tokens, NUM_VALUE_HEADS);
+    let a_log = bf16_vec(95, NUM_VALUE_HEADS);
+    let dt_bias = bf16_vec(96, NUM_VALUE_HEADS);
     let state = recurrent_state(97);
     let out = v_heads(99, tokens);
     let decode = qscu::qwen36_gdn_decode_desc(
@@ -481,7 +464,7 @@ fn gdn_recurrent_descriptors_validate_decode_and_prefill_shapes() {
     .unwrap();
     assert_eq!(decode.use_qk_l2norm, 1);
     assert_eq!(decode.disable_state_update, 0);
-    assert_eq!(decode.scale, 1.0 / (QWEN36_GDN_KEY_DIM as f32).sqrt());
+    assert_eq!(decode.scale, 1.0 / (KEY_HEAD_DIM as f32).sqrt());
 
     assert!(matches!(
         qscu::qwen36_gdn_decode_desc(
