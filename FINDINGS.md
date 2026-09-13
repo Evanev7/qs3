@@ -358,6 +358,19 @@ block size and 16.384 us with 1024 threads. Processing four adjacent elements
 per thread regresses all three block sizes, so the candidate keeps scalar
 coalesced loads. The full raw sweeps and reproducer sources are linked above.
 
+The argmax candidate is now integrated: 1024 threads for vocabulary width at
+least 65536, 256 for small fixtures, with warp winner reduction and one shared
+exchange. The API, validation, finite-value policy and lowest-ID tie break are
+unchanged; no workspace, extra launch or synchronization is added. New native
+coverage tests widths 65535/65536/248320/248321, final-element winners, cross-warp
+ties, all-equal rows, I32/U32 results and output sentinels. The first fixture
+incorrectly requested strided tensors; the existing API correctly rejected it.
+The corrected contiguous fixture passes all four checked/release native targets.
+Through the prescribed test script, Python's seven tests, three Triton launcher
+tests, 127 library tests (four ignored), five benchmark, three engine, sixteen
+model and fourteen vector tests also pass. An existing Python formatting failure
+was fixed separately before those checks. Integrated timing follows separately.
+
 ### First steady-decode GPU timeline
 
 The [Nsight capture and summaries](benchmarks/2026-09-09T015556Z-0a7eef9-decode/README.md)

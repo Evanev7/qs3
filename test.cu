@@ -2548,6 +2548,7 @@ int main()
     test_qscu_utils_embedding_gather_bf16();
     test_qscu_utils_logits_soft_cap_f32();
     test_qscu_utils_greedy_argmax_f32();
+    test_qscu_utils_greedy_argmax_large();
     test_qscu_utils_negative_validation();
     test_qscu_gdn_router_helpers();
 #endif

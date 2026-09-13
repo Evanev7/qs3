@@ -32,7 +32,6 @@ constexpr uint32_t qwen36_gdn_packed_dim(uint32_t value_heads)
 constexpr uint32_t kQwen36FullAttentionQHidden = 4096;
 constexpr uint32_t kQwen36GdnThreads = QSFI_QWEN36_GDN_THREADS;
 constexpr uint32_t kElementwiseThreads = 256;
-constexpr uint32_t kArgmaxThreads = 256;
 constexpr uint32_t kRouterMaxTopK = 8;
 constexpr uint32_t kRouterMaxExperts = 256;
 constexpr float kRouterNegInf = -3.4028234663852886e38f;
@@ -485,47 +484,55 @@ better_argmax_candidate(float score, uint32_t token, float best, uint32_t best_t
     return score > best || (score == best && token < best_token);
 }
 
-__global__ void greedy_argmax_f32_kernel(greedy_argmax_params p)
+// One block per row; warp reductions avoid a shared-memory round trip at every
+// reduction level. The real vocabulary uses 1024 threads to expose more loads.
+template <uint32_t Threads> __global__ void greedy_argmax_f32_kernel(greedy_argmax_params p)
 {
     const uint32_t row = blockIdx.x;
     float best_score = kRouterNegInf;
     uint32_t best_token = UINT_MAX;
-
-    for (uint32_t token = threadIdx.x; token < p.vocab_size; token += blockDim.x) {
-        float score = p.logits
-                          [static_cast<int64_t>(row) * p.logits_stride0
-                           + static_cast<int64_t>(token) * p.logits_stride1];
+    for (uint32_t token = threadIdx.x; token < p.vocab_size; token += Threads) {
+        const float score = p.logits
+                                [static_cast<int64_t>(row) * p.logits_stride0
+                                 + static_cast<int64_t>(token) * p.logits_stride1];
         if (better_argmax_candidate(score, token, best_score, best_token)) {
             best_score = score;
             best_token = token;
         }
     }
-
-    __shared__ float scores[kArgmaxThreads];
-    __shared__ uint32_t tokens[kArgmaxThreads];
-    scores[threadIdx.x] = best_score;
-    tokens[threadIdx.x] = best_token;
-    __syncthreads();
-
-    for (uint32_t stride = blockDim.x / 2; stride > 0; stride >>= 1) {
-        if (threadIdx.x < stride
-            && better_argmax_candidate(
-                scores[threadIdx.x + stride],
-                tokens[threadIdx.x + stride],
-                scores[threadIdx.x],
-                tokens[threadIdx.x]
-            )) {
-            scores[threadIdx.x] = scores[threadIdx.x + stride];
-            tokens[threadIdx.x] = tokens[threadIdx.x + stride];
+    for (uint32_t offset = 16; offset > 0; offset >>= 1) {
+        const float score = __shfl_down_sync(0xffffffff, best_score, offset);
+        const uint32_t token = __shfl_down_sync(0xffffffff, best_token, offset);
+        if (better_argmax_candidate(score, token, best_score, best_token)) {
+            best_score = score;
+            best_token = token;
         }
-        __syncthreads();
     }
-
-    if (threadIdx.x == 0) {
-        if (p.out_i32 != nullptr)
-            p.out_i32[static_cast<int64_t>(row) * p.out_stride0] = static_cast<int32_t>(tokens[0]);
-        else
-            p.out_u32[static_cast<int64_t>(row) * p.out_stride0] = tokens[0];
+    __shared__ float scores[Threads / 32];
+    __shared__ uint32_t tokens[Threads / 32];
+    if (threadIdx.x % 32 == 0) {
+        scores[threadIdx.x / 32] = best_score;
+        tokens[threadIdx.x / 32] = best_token;
+    }
+    __syncthreads();
+    if (threadIdx.x < 32) {
+        best_score = threadIdx.x < Threads / 32 ? scores[threadIdx.x] : kRouterNegInf;
+        best_token = threadIdx.x < Threads / 32 ? tokens[threadIdx.x] : UINT_MAX;
+        for (uint32_t offset = 16; offset > 0; offset >>= 1) {
+            const float score = __shfl_down_sync(0xffffffff, best_score, offset);
+            const uint32_t token = __shfl_down_sync(0xffffffff, best_token, offset);
+            if (better_argmax_candidate(score, token, best_score, best_token)) {
+                best_score = score;
+                best_token = token;
+            }
+        }
+        if (threadIdx.x == 0) {
+            if (p.out_i32 != nullptr)
+                p.out_i32[static_cast<int64_t>(row) * p.out_stride0]
+                    = static_cast<int32_t>(best_token);
+            else
+                p.out_u32[static_cast<int64_t>(row) * p.out_stride0] = best_token;
+        }
     }
 }
 
@@ -1790,7 +1797,10 @@ qsfi_status qscu_greedy_argmax_f32(const qscu_sampling_desc* desc, qsfi_cuda_str
     params.out_stride0 = desc->next_token_ids.stride[0];
     params.vocab_size = desc->vocab_size;
 
-    greedy_argmax_f32_kernel<<<desc->batch_size, kArgmaxThreads, 0, cuda_stream>>>(params);
+    if (desc->vocab_size >= 65536)
+        greedy_argmax_f32_kernel<1024><<<desc->batch_size, 1024, 0, cuda_stream>>>(params);
+    else
+        greedy_argmax_f32_kernel<256><<<desc->batch_size, 256, 0, cuda_stream>>>(params);
     return validate_cuda(cudaGetLastError());
 }
 

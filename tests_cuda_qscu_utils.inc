@@ -565,6 +565,64 @@ static void test_qscu_utils_greedy_argmax_f32()
     cudaFree(d_next);
 }
 
+// Exercise both launch sizes, partial iterations, ties across warps,
+// signed and unsigned IDs, and the padded vocabulary tail.
+static void test_qscu_utils_greedy_argmax_large()
+{
+    for (const int vocab : { 65535, 65536, 248320, 248321 }) {
+        constexpr int batch = 3;
+        const int row_stride = vocab;
+        std::vector<float> logits(batch * row_stride, 1e10f);
+        for (int row = 0; row < batch; ++row)
+            for (int token = 0; token < vocab; ++token)
+                logits[row * row_stride + token] = -1.0f;
+        logits[31] = 3.0f;
+        logits[1024] = 3.0f;
+        logits[(vocab - 1)] = 3.0f;
+        logits[row_stride + (vocab - 1)] = 4.0f;
+        const uint32_t expected[] = { 31, static_cast<uint32_t>(vocab - 1), 0 };
+        std::vector<uint32_t> result(batch + 1, 0x12345678);
+        float* d_logits = nullptr;
+        uint32_t* d_next = nullptr;
+        if (!copy_to_device(&d_logits, logits.data(), logits.size(), "large argmax logits")
+            || !copy_to_device(&d_next, result.data(), result.size(), "large argmax IDs"))
+            return;
+        qscu_sampling_desc desc {};
+        desc.logits = tensor2_f32(d_logits, batch, vocab);
+        desc.next_token_ids = qscu_utils_tensor1_u32(d_next, batch);
+        desc.batch_size = batch;
+        desc.vocab_size = vocab;
+        for (auto dtype : { QSFI_DTYPE_I32, QSFI_DTYPE_U32 }) {
+            desc.next_token_ids.dtype = dtype;
+            check_status(qscu_greedy_argmax_f32(&desc, nullptr), QSFI_STATUS_OK, "large argmax");
+            check_cuda(
+                cudaMemcpy(
+                    result.data(),
+                    d_next,
+                    result.size() * sizeof(uint32_t),
+                    cudaMemcpyDeviceToHost
+                ),
+                "large argmax result"
+            );
+            for (int row = 0; row < batch; ++row) {
+                if (result[row] != expected[row] || result[batch] != 0x12345678) {
+                    std::fprintf(
+                        stderr,
+                        "FAIL: large argmax vocab=%d row=%d got=%u expected=%u\n",
+                        vocab,
+                        row,
+                        result[row],
+                        expected[row]
+                    );
+                    ++failures;
+                }
+            }
+        }
+        cudaFree(d_logits);
+        cudaFree(d_next);
+    }
+}
+
 static void test_qscu_utils_greedy_argmax_nonfinite()
 {
     constexpr int batch = 1;
