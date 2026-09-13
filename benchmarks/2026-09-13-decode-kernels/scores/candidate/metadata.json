@@ -1,0 +1,7 @@
+{
+  "commit": "efc944447ed60a6586e44504d4ee59dcbaf66247",
+  "reference": "../vllm-correctness-2026-09-13T121347Z-8y4EGb/data",
+  "profile": "release",
+  "weight_backend": "pinned_upload",
+  "timing": "instrumented correctness replay; not a performance benchmark"
+}

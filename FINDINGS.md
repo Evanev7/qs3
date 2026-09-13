@@ -436,6 +436,29 @@ match, and the candidate repeat is within 0.07% of the full core measurement.
 commit and an empty source diff. These additional unprofiled passes complement
 the complete two-workload Nsight records; they are not separate trace captures.
 
+The [sustained identical-prefix check](benchmarks/2026-09-13-decode-kernels/scores/README.md)
+reuses the saved vLLM BF16 reference and captures every full-vocabulary frame.
+All three prefill arrays are bitwise identical to the earlier qs3 control;
+decode arrays change with the GEMV summation order. No short argmax changes,
+one intermediate change (193), and three long changes (26, 148, 539) occur
+relative to that control. Existing real-model score/token/reset/rollback checks
+pass with both recurrent precisions.
+
+| Prompt / measured decode | Earlier qs3 agreement with vLLM | Candidate agreement | Earlier forced mean NLL | Candidate NLL |
+| --- | ---: | ---: | ---: | ---: |
+| 102/32 | 37/37 | 37/37 | 0.000395 | 0.000446 |
+| 500/200 | 204/205 | 205/205 | 0.095672 | 0.093924 |
+| 4000/800 | 798/805 | 799/805 | 0.087547 | 0.088508 |
+
+Counts include prefill and warmups. Candidate-versus-earlier-qs3 mean centered
+logit RMSE is 0.124974/0.112670/0.148895; maximum absolute changes anywhere in the
+full vocabulary are 3.576336/3.905744/4.893288. Relative-to-vLLM score distances
+and likelihood move in both directions. This supports retaining the measured
+kernel improvement under the existing correctness gates, but is not bitwise
+output equivalence or independent quality evidence. The linked report preserves
+all input IDs, per-frame hashes, rankings, margins, likelihoods, source provenance
+and reproduction scripts; raw logits remain in the recorded sp10 directories.
+
 ### First steady-decode GPU timeline
 
 The [Nsight capture and summaries](benchmarks/2026-09-09T015556Z-0a7eef9-decode/README.md)

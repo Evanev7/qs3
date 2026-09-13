@@ -1,0 +1,211 @@
+diff --git a/TODO.md b/TODO.md
+index bbb374a..fb85842 100644
+--- a/TODO.md
++++ b/TODO.md
+@@ -15,9 +15,34 @@
+   catalogues, graph solvers, and e-graphs.
+ - Keep kernel choices visible and benchmarkable. Add fused paths where measured
+   launch or memory traffic costs justify them.
++- Keep local `qscu` kernels focused on correctness; prefer adopting optimized
++  upstream kernels over spending time microoptimizing local implementations.
++  Rust owns efficient preparation, scheduling, and provider orchestration.
+ - Keep the existing no-CMake build direction. Static linking is secondary to
+   execution performance and a clear Rust implementation.
+ 
++## Current BF16 priorities
++
++- Prioritize prepared CUDA graph replay, GPU non-greedy sampling, sustained
++  correctness comparisons, and repeatable provider experiments. These complete
++  useful BF16 functionality and carry into NVFP4 without requiring a generic DAG
++  runner or an exhaustive BF16 kernel-tuning campaign.
++- [ ] Beat the recorded vLLM 35B BF16 **102/32** result: **30.573 tok/s**,
++  **32.640 ms/token p50**. The separate **500/200** baseline is **30.396 tok/s**,
++  **32.892 ms/token p50**. Throughput uses mean latency, not p50. Reference
++  artifacts: `.prototypes/out/vllm-2026-09-13T103506Z-AIU8cb/`.
++  Attribute current decode gaps before assuming graph replay can recover them;
++  record execution mode.
++- Keep the routine core benchmark independently runnable through
++  `./remote.sh benchmark`: **102/32**, then **1024/256**, with separate results.
++  Restore the sustained workload for continuity with the September 9 results;
++  retain the completed 500/200 captures for the current numerical diagnostic.
++  Keep greedy generation fixed for performance history when adding sampling.
++- Run vLLM comparisons explicitly through `.prototypes`, outside the routine
++  core benchmark. Reuse recorded baselines with matching settings and revisions;
++  the reported 12m30s comparison cost should not become the normal edit/measure
++  cycle. Refresh references when relevant settings or implementations change.
++
+ ## 1. Set up the new Spark and establish a baseline
+ 
+ - [x] Set up a checkout on `sp10@sp10`; it does not currently have the repo.
+@@ -52,6 +77,11 @@
+   independent quality evaluation. Precision controls and sustained quality remain
+   open. Aligned qs3/vLLM 32-forward GPU timelines are now
+   recorded, including graph gaps, kernel choices and LM-head precision differences.
++- [ ] Establish sustained BF16 correctness on the 102/32 and 1024/256 workloads:
++  compare logits and token rankings against vLLM on identical token prefixes at
++  selected positions. Record free-generation divergence separately; matching
++  tokens between the core benchmark's measurement/profile passes is not an
++  external correctness check. Reuse this comparison workflow for NVFP4.
+ 
+ ## 2. Remove repeated preparation from decode
+ 
+@@ -110,14 +140,31 @@
+ ## 4. Capture steady decode
+ 
+ - [ ] Make decode buffers, workspaces, and device metadata addresses persistent.
+-  Complete provider initialization and preparation before capture.
++  Complete provider initialization and preparation before capture; replay must
++  not allocate, compile kernels, or select algorithms.
+ - [ ] Handle changing sequence/page metadata and GDN slot alternation explicitly
+   across graph replays; test page boundaries and prefix resets/rebuilds.
+ - [ ] Separate enqueueing from output delivery. Keep the sampled token available
+   on-device for the next step and make host completion points explicit.
+-- [ ] Compare prepared eager execution with graph replay for both models.
+-
+-## 5. Tune the measured GPU work
++- [ ] Compare prepared eager execution with graph replay for both models,
++  including output correctness across page boundaries and prefix reset/reuse.
++  Measure the two core workloads and record the selected execution mode.
++
++## 5. Add GPU non-greedy sampling
++
++- [ ] Add GPU temperature, top-k, and top-p sampling using an existing provider
++  where suitable, with Rust-owned configuration, RNG state, and workspace.
++  Keep sampled IDs on-device for subsequent decode and support graph replay.
++- [ ] Define and validate sampling semantics: parameter boundaries, filtering
++  order, seed/reset behavior, and RNG advancement across repeated graph replays.
++  Preserve greedy behavior and reject padded vocabulary IDs before embedding
++  lookup or text decoding.
++- [ ] Validate sampling against a reference on controlled logits, including
++  distribution checks and reproducibility under the supported seed/reset
++  contract. Exercise sustained decode and request reset/reuse; stochastic
++  token-for-token agreement with vLLM is not the correctness criterion.
++
++## 6. Adopt and measure optimized providers
+ 
+ - [ ] Report selected kernel implementations, precision, graph mode, and workspace
+   sizes in benchmarks. Keep alternatives named and forceable in Rust. Current
+@@ -131,7 +178,13 @@
+   convolution and recurrence prefill improvements pass bitwise probes and core runs.
+ - [ ] Implement optimized quantized paths, beginning with NVFP4 after BF16
+   correctness. Validate packing/scales and actual SM121 kernel support; compare
+-  matched quantization with vLLM.
++  against vLLM using the same pinned NVFP4 checkpoint and generation settings.
++  Separate quantization differences from implementation errors using identical
++  prefixes; retain BF16 as a correctness baseline.
++- [ ] Make a forced provider selection easy to compare through the same
++  correctness checks and both core workloads. Prefer bounded upstream-kernel
++  adoption experiments; extend build/launch support only as an actual provider
++  needs it.
+ - [x] Revisit managed versus pinned weight-load performance on the new host,
+   including the previously interrupted four-buffer, 1 GiB-per-buffer run.
+   Five full-snapshot tests pass. With zero resident shard pages verified before
+@@ -150,12 +203,16 @@
+   The prototype shows a 3.94% decode gain for the LM head alone. The existing
+   all-device backend captures a larger gain; the core benchmark confirms 14.97%
+   higher throughput while retaining the same generated IDs. No mixed policy added.
+-- [ ] Test further Triton GEMVs with real allocation behavior, starting with
+-  GDN QKV; prototype routed-expert GEMV separately against the tested MoE path.
++- [x] Integrate and measure the Triton GDN QKV decode projection.
+   The real-weight QKV probe passes 54 cases across three layers and allocation
+   modes. With shared device allocations, row/eight-warps saves 13.312 µs (6.7%)
+-  after eviction; managed gains are small. Full-model integration/timing and the
+-  routed-expert probe remain open; see FINDINGS.md.
++  after eviction; managed gains are small. Production integration passes tests
++  and the short core benchmark improves from about 28.4 to 29.7 tok/s with the
++  same generated IDs.
++- [ ] Evaluate an upstream routed-expert provider against the existing MoE path
++  if current profiling justifies it. Use the experiment to validate weight
++  preparation, dispatch, and complete MoE correctness; avoid an open-ended local
++  BF16 GEMV tuning project.
+ - [ ] Generate provider build availability from Nix without removing handwritten
+   Rust APIs. Artifact generation now follows named Nix specializations; the
+   handwritten Rust LM-head adapter still includes its module unconditionally.
+diff --git a/build_tools/README.md b/build_tools/README.md
+index 017d72d..c9ac2b8 100644
+--- a/build_tools/README.md
++++ b/build_tools/README.md
+@@ -35,7 +35,7 @@ current working tree. The root `benchmark` recipe builds through Nix and emits
+ release/Nsight JSON. The remote benchmark action requires committed tracked changes,
+ transfers the exact commit, and saves that JSON under `benchmarks/`.
+ The benchmark runs two workloads sequentially: 102 prompt tokens / 32 measured
+-decode steps, then 500 / 200. Each gets its own release/Nsight JSON, with the same
++decode steps, then 1024 / 256. Each gets its own release/Nsight JSON, with the same
+ schema as earlier results. Both use FP32 GDN state and `tile32_blocks96` MoE.
+ See `./remote.sh --help`.
+ 
+@@ -61,8 +61,8 @@ container/GPU metadata are retrieved under `.prototypes/out/vllm-*/`. vLLM stays
+ outside the build-tools venv. The harness uses greedy sampling, decode graphs,
+ four decode warmups and records the resolved GDN state precision. Compare prompt
+ fingerprints before comparing token sequences. vLLM records one extra output token
+-because it emits a token at prefill; compare qs3's 36/204 IDs against vLLM's first
+-36/204 IDs. Prefill timing includes first-token delivery in vLLM.
++because it emits a token at prefill; compare qs3's 36/260 IDs against vLLM's first
++36/260 IDs. Prefill timing includes first-token delivery in vLLM.
+ 
+ The original `run_cuda_test.sh` and `run_core_benchmark.sh` remain for comparison.
+ All runners share the disposable checkout; run them sequentially.
+diff --git a/justfile b/justfile
+index 69a475f..e45c08b 100644
+--- a/justfile
++++ b/justfile
+@@ -81,7 +81,7 @@ model-tps: ninja
+         ninja -C build
+         LIBRARY_PATH="{{cuda_lib_path}}:${LIBRARY_PATH:-}" cargo run --release --bin qs3-bench
+ 
+-benchmark: (_benchmark "102" "32") (_benchmark "500" "200")
++benchmark: (_benchmark "102" "32") (_benchmark "1024" "256")
+ 
+ _benchmark context_tokens decode_samples:
+         #!/usr/bin/env bash
+diff --git a/src/loader/tests/scores.rs b/src/loader/tests/scores.rs
+index af847f0..cf66304 100644
+--- a/src/loader/tests/scores.rs
++++ b/src/loader/tests/scores.rs
+@@ -43,7 +43,7 @@ fn real_qwen36_same_prefix_scores() {
+         spec["model_revision"].get::<String>().unwrap()
+     );
+     let plan = QwenBf16LoadPlan::read(&model_dir).unwrap();
+-    let backend = ManagedUmaBackend::new(cuda_device_from_env()).unwrap();
++    let backend = PinnedUploadBackend::new(cuda_device_from_env()).unwrap();
+     let loaded = execute_qwen36_bf16_load_plan(&plan, backend, ptr::null_mut()).unwrap();
+     let (config, weights) = loaded
+         .into_qwen_model(
+@@ -56,6 +56,7 @@ fn real_qwen36_same_prefix_scores() {
+         crate::model::GdnRecurrentPrecision::F32
+     );
+     let mut runner = crate::model::ModelRunner::new(config, weights).unwrap();
++    assert_eq!(runner.gdn_qkv_provider(), "triton");
+     const REQUEST: u64 = 0x53434f5245;
+     runner
+         .run(crate::model::QwenRequest {
+@@ -76,6 +77,7 @@ fn real_qwen36_same_prefix_scores() {
+         order.select_nth_unstable_by(20, compare);
+         order.truncate(20);
+         order.sort_unstable_by(compare);
++        assert!(order[0] < 248070, "padded token won at step {step}");
+         let max = f64::from(raw[order[0]]);
+         let lse = max
+             + raw
+@@ -121,6 +123,9 @@ fn real_qwen36_same_prefix_scores() {
+             fields.insert("file".into(), filename.into());
+         }
+         records.push(row);
++        if step % 100 == 0 {
++            eprintln!("captured step {step}/{}", forced.len());
++        }
+         if step < forced.len() {
+             runner.decode_forced_token_for_test(forced[step]).unwrap();
+             expected_live.push(forced[step]);
+@@ -128,6 +133,11 @@ fn real_qwen36_same_prefix_scores() {
+     }
+     let result = object([
+         ("input", spec),
++        ("weight_backend", "pinned_upload".to_owned().into()),
++        (
++            "gdn_qkv_provider",
++            runner.gdn_qkv_provider().to_owned().into(),
++        ),
+         ("router_logits_dtype", "bf16".to_owned().into()),
+         ("records", records.into()),
+         (

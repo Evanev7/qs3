@@ -1,0 +1,58 @@
+{
+  "artifact_directory": "/home/sp10/qs3/.prototypes/out/qs3-correctness-2026-09-13T130939Z-jyc_aku1",
+  "metadata": {
+    "commit": "4cdc27088a76a0b03418ef06e6d2813d592f397c",
+    "reference": "../vllm-correctness-2026-09-13T121347Z-8y4EGb/data",
+    "profile": "release",
+    "weight_backend": "pinned_upload",
+    "timing": "instrumented correctness replay; not a performance benchmark"
+  },
+  "workloads": {
+    "102-32": {
+      "protocol": "one prefill then forced token-by-token decode; raw logits before sampling",
+      "steps": 37,
+      "argmax_agreement_count": 37,
+      "first_argmax_difference": null,
+      "argmax_difference_steps": [],
+      "qs3_forced_mean_nll": 0.0003949652681605187,
+      "vllm_forced_mean_nll": 0.0005161293479628447,
+      "vllm_matches_original_greedy_count": 36,
+      "mean_centered_rmse": 0.11899590812631813,
+      "max_kl_vllm_to_qs3": 0.0008443671481738976
+    },
+    "500-200": {
+      "protocol": "one prefill then forced token-by-token decode; raw logits before sampling",
+      "steps": 205,
+      "argmax_agreement_count": 204,
+      "first_argmax_difference": 193,
+      "argmax_difference_steps": [
+        193
+      ],
+      "qs3_forced_mean_nll": 0.09567213653539308,
+      "vllm_forced_mean_nll": 0.09890958090558115,
+      "vllm_matches_original_greedy_count": 204,
+      "mean_centered_rmse": 0.1421588264291559,
+      "max_kl_vllm_to_qs3": 0.33805697778597493
+    },
+    "4000-800": {
+      "protocol": "one prefill then forced token-by-token decode; raw logits before sampling",
+      "steps": 805,
+      "argmax_agreement_count": 798,
+      "first_argmax_difference": 26,
+      "argmax_difference_steps": [
+        26,
+        47,
+        49,
+        148,
+        210,
+        271,
+        278
+      ],
+      "qs3_forced_mean_nll": 0.08754663800228055,
+      "vllm_forced_mean_nll": 0.08392226642912473,
+      "vllm_matches_original_greedy_count": 804,
+      "mean_centered_rmse": 0.1794752124681642,
+      "max_kl_vllm_to_qs3": 0.6617883033484624
+    }
+  }
+}
