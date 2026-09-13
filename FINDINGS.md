@@ -10,12 +10,30 @@ counts and pass claims describe the cited change, not every subsequent revision.
 
 ## Latest validated measurements
 
-The latest short core benchmark uses device-backed weights loaded through the
-existing pinned ring: **28.504 tok/s**, 35.052 ms decode p50 and 196.498 ms prefill
-p50 at `8849854`, versus 24.791 tok/s with managed weights. All 36 generated IDs
-match. See [the JSON](benchmarks/2026-09-10T094105.966130733Z-8849854.json) and the
-all-device section below. The following table retains the earlier comparison
-across contexts; it predates this allocation change.
+Fresh kernel-experiment controls at `8451569` (2026-09-13) measure
+**29.665 tok/s** at 102/32 and **29.528 tok/s** at 1024/256. Both use the pinned
+35B BF16 snapshot, device weights through pinned staging, FP32 GDN recurrence,
+BF16 router output, Triton LM head and GDN QKV, and eager execution. The 31 tok/s
+target requires mean decode latency below 32.258 ms; these controls average
+33.710 and 33.867 ms. No CUDA graphs or architecture changes are part of this
+experiment session.
+
+| Workload | Prefill p50 ms | Decode p50 ms | Decode tok/s | Evidence |
+| --- | ---: | ---: | ---: | --- |
+| 102/32 control | 196.758 | 33.677 | 29.665 | [JSON](benchmarks/2026-09-13T153611.267771164Z-8451569.json) |
+| 1024/256 control | 498.157 | 33.841 | 29.528 | [JSON](benchmarks/2026-09-13T153824.583020108Z-8451569.json) |
+
+The short trace attributes 9.778 ms/token to grouped MoE GEMMs, 4.135 to the
+LM head, 3.929 to GDN QKV and 2.906 to time without recorded GPU work. The
+sustained values are 9.829, 4.159, 3.983 and 2.968 ms/token. Kernel experiments
+start with routed single-token MoE and greedy argmax (about 0.42 ms/token).
+Unprofiled and profiled generated IDs match within each workload. Nsight retains
+the previously documented unsupported-UM, unavailable kernel-space CPU stacks
+and possibly missing CUDA events diagnostics. Throughput is from unprofiled
+wall time, including sampled-token delivery.
+
+The following historical context table predates device-backed weights and the
+Triton GDN QKV integration; it is retained for continuity.
 
 Pinned 35B BF16 weights, BF16 caches/convolution history and FP32 GDN recurrence,
 measured on sp10. These measurements precede the uniform BF16 router-logit switch
