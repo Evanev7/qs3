@@ -9,12 +9,6 @@ pub(super) struct BpeDefinition {
     merges: Vec<(String, String)>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) struct BpeFingerprint {
-    pub(super) vocab: u64,
-    pub(super) merges: u64,
-}
-
 impl BpeDefinition {
     pub(super) fn new(vocab: HashMap<String, u32>, merges: Vec<(String, String)>) -> Self {
         Self { vocab, merges }
@@ -23,32 +17,7 @@ impl BpeDefinition {
     pub(super) fn vocab(&self) -> &HashMap<String, u32> {
         &self.vocab
     }
-
-    pub(super) fn token_count(&self) -> usize {
-        self.vocab.len()
-    }
-
-    pub(super) fn merge_count(&self) -> usize {
-        self.merges.len()
-    }
-
-    pub(super) fn fingerprint(&self) -> Result<BpeFingerprint, TokenizerError> {
-        let mut vocab = FNV_OFFSET;
-        for token in ordered_vocab(&self.vocab)? {
-            hash_token(&mut vocab, token);
-        }
-
-        let mut merges = FNV_OFFSET;
-        for (left, right) in &self.merges {
-            hash_token(&mut merges, left);
-            hash_token(&mut merges, right);
-        }
-        Ok(BpeFingerprint { vocab, merges })
-    }
 }
-
-const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
-const FNV_PRIME: u64 = 0x100_0000_01b3;
 
 #[derive(Clone, Copy, Debug)]
 struct MergeRule {
@@ -263,17 +232,6 @@ fn ordered_vocab(vocab: &HashMap<String, u32>) -> Result<Vec<&str>, TokenizerErr
         .map(|token| token.expect("missing IDs checked"))
         .map(String::as_str)
         .collect())
-}
-
-fn hash_token(hash: &mut u64, token: &str) {
-    for byte in (token.len() as u64).to_le_bytes() {
-        *hash ^= u64::from(byte);
-        *hash = hash.wrapping_mul(FNV_PRIME);
-    }
-    for &byte in token.as_bytes() {
-        *hash ^= u64::from(byte);
-        *hash = hash.wrapping_mul(FNV_PRIME);
-    }
 }
 
 fn build_decode_table(

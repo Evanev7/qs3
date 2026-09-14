@@ -348,15 +348,41 @@ fn small_tokenizer_json() -> JsonValue {
 }
 
 #[test]
-fn format_parses_the_supported_pipeline_before_artifact_identity_validation() {
-    let definition =
-        TokenizerDefinition::parse_json(&small_tokenizer_json().stringify().unwrap()).unwrap();
-    assert_eq!(definition.base_token_count(), 256);
-    assert_eq!(definition.added_token_count(), 1);
-    assert!(matches!(
-        definition.validate_qwen36_identity(),
-        Err(TokenizerError::InvalidVocabulary(_))
-    ));
+fn tokenizer_loads_asset_defined_ids_merges_and_added_tokens() {
+    let mut definition = small_tokenizer_json();
+    // Valid non-pinned IDs and ranked merges must be honored, not fingerprinted.
+    definition["model"]["vocab"]["a"] = (b'b' as f64).into();
+    definition["model"]["vocab"]["b"] = (b'a' as f64).into();
+    let vocab = definition["model"]["vocab"]
+        .get_mut::<HashMap<String, JsonValue>>()
+        .unwrap();
+    vocab.insert("ab".into(), 256.0.into());
+    vocab.insert("bc".into(), 257.0.into());
+    definition["model"]["merges"] = vec![string("b c"), string("a b")].into();
+    definition["added_tokens"] = vec![
+        added_token(259, "<|audio_pad|>"),
+        added_token(258, "<arbitrary-token>"),
+    ]
+    .into();
+    // Use the public file-loading path: tests must not bypass its validation.
+    let path = std::env::temp_dir().join(format!("qs3-tokenizer-{}.json", std::process::id()));
+    std::fs::write(&path, definition.stringify().unwrap()).unwrap();
+    let result = QwenTokenizer::from_file(&path);
+    std::fs::remove_file(path).unwrap();
+    let tokenizer = result.unwrap();
+    assert_eq!(tokenizer.token_count(), 260);
+    assert_eq!(
+        tokenizer.encode("abc<arbitrary-token><|audio_pad|>"),
+        [98, 257, 258, 259]
+    );
+    assert_eq!(
+        tokenizer.decode(&[98, 257, 258, 259]).unwrap(),
+        "abc<arbitrary-token><|audio_pad|>"
+    );
+    assert_eq!(
+        tokenizer.decode(&[260]),
+        Err(TokenizerError::UnknownTokenId(260))
+    );
 }
 
 #[test]
@@ -404,24 +430,51 @@ fn format_rejects_unsupported_or_ambiguous_added_tokens() {
 }
 
 #[test]
-fn format_rejects_unknown_fields_instead_of_silently_ignoring_them() {
+fn format_rejects_gaps_overlaps_and_duplicate_added_token_contents() {
+    for id in [255, 257] {
+        let mut definition = small_tokenizer_json();
+        definition["added_tokens"][0]["id"] = (id as f64).into();
+        assert!(matches!(
+            TokenizerDefinition::parse_json(&definition.stringify().unwrap()),
+            Err(TokenizerError::InvalidVocabulary(_))
+        ));
+    }
     let mut definition = small_tokenizer_json();
-    definition
-        .get_mut::<HashMap<String, JsonValue>>()
+    definition["added_tokens"]
+        .get_mut::<Vec<JsonValue>>()
         .unwrap()
-        .insert("new_behavior".into(), true.into());
+        .push(added_token(257, "<test-token>"));
     assert!(matches!(
         TokenizerDefinition::parse_json(&definition.stringify().unwrap()),
-        Err(TokenizerError::UnsupportedDefinition(_))
+        Err(TokenizerError::InvalidVocabulary(_))
     ));
 }
 
 #[test]
-fn format_rejects_numeric_literals_that_f64_would_round_into_valid_ids() {
+fn format_ignores_unknown_fields() {
+    let mut definition = small_tokenizer_json();
+    definition
+        .get_mut::<HashMap<String, JsonValue>>()
+        .unwrap()
+        .insert("metadata".into(), string("ignored"));
+    definition["model"]
+        .get_mut::<HashMap<String, JsonValue>>()
+        .unwrap()
+        .insert("metadata".into(), string("also ignored"));
+    let tokenizer = tokenizer_from_json(definition);
+    assert_eq!(tokenizer.encode("abc<test-token>"), [97, 98, 99, 256]);
+}
+
+#[test]
+fn format_validates_numeric_id_values() {
     let source = small_tokenizer_json().stringify().unwrap();
     assert!(source.contains("\"id\":256"));
-    for malformed in ["255.99999999999999", "-1e-400", "4294967295.0000001"] {
-        let source = source.replacen("\"id\":256", &format!("\"id\":{malformed}"), 1);
+    for spelling in ["256", "256.0", "2.56e2"] {
+        let source = source.replacen("\"id\":256", &format!("\"id\":{spelling}"), 1);
+        TokenizerDefinition::parse_json(&source).unwrap();
+    }
+    for invalid in ["255.5", "-1", "4294967296"] {
+        let source = source.replacen("\"id\":256", &format!("\"id\":{invalid}"), 1);
         assert!(matches!(
             TokenizerDefinition::parse_json(&source),
             Err(TokenizerError::Json(_))
@@ -492,65 +545,47 @@ fn tokenizer_decode_accumulates_bytes_and_rejects_unknown_ids() {
 }
 
 #[test]
-fn real_qwen36_identity_rejects_same_count_bpe_mutations_when_available() {
-    let tokenizer_path = real_qwen36_model_dir().join("tokenizer.json");
-    if !tokenizer_path.is_file() {
-        eprintln!(
-            "skipping real Qwen3.6 tokenizer identity mutations; {} is unavailable",
-            tokenizer_path.display()
-        );
-        return;
+fn real_qwen_tokenizers_match_hugging_face_oracle_when_available() {
+    let hub =
+        std::path::PathBuf::from(std::env::var_os("HOME").unwrap()).join(".cache/huggingface/hub");
+    // Pin identity belongs in reference tests, not the runtime tokenizer loader.
+    for (model_dir, token_count) in [
+        (real_qwen36_model_dir(), 248_070),
+        (
+            hub.join(
+                "models--Qwen--Qwen3.6-27B/snapshots/6a9e13bd6fc8f0983b9b99948120bc37f49c13e9",
+            ),
+            248_070,
+        ),
+        (
+            hub.join(
+                "models--Qwen--Qwen3.8-27B/snapshots/1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0",
+            ),
+            248_077,
+        ),
+    ] {
+        check_real_tokenizer(&model_dir, token_count);
     }
-    let source = std::fs::read_to_string(tokenizer_path).unwrap();
-    let original: JsonValue = source.parse().unwrap();
-
-    let mut swapped_ids = original.clone();
-    let vocab = swapped_ids["model"]["vocab"]
-        .get_mut::<HashMap<String, JsonValue>>()
-        .unwrap();
-    let bang = vocab.get("!").unwrap().clone();
-    let quote = vocab.get("\"").unwrap().clone();
-    vocab.insert("!".into(), quote);
-    vocab.insert("\"".into(), bang);
-    let swapped_ids = TokenizerDefinition::parse_json(&swapped_ids.stringify().unwrap()).unwrap();
-    assert!(matches!(
-        swapped_ids.validate_qwen36_identity(),
-        Err(TokenizerError::InvalidVocabulary(_))
-    ));
-
-    let mut reordered_merges = original;
-    reordered_merges["model"]["merges"]
-        .get_mut::<Vec<JsonValue>>()
-        .unwrap()
-        .swap(0, 1);
-    let reordered_merges =
-        TokenizerDefinition::parse_json(&reordered_merges.stringify().unwrap()).unwrap();
-    assert!(matches!(
-        reordered_merges.validate_qwen36_identity(),
-        Err(TokenizerError::InvalidVocabulary(_))
-    ));
 }
 
-#[test]
-fn real_qwen36_tokenizer_matches_hugging_face_oracle_when_available() {
-    let model_dir = real_qwen36_model_dir();
+fn check_real_tokenizer(model_dir: &std::path::Path, token_count: usize) {
     if !model_dir.join("tokenizer.json").is_file() {
         eprintln!(
-            "skipping real Qwen3.6 tokenizer oracle; {} is unavailable",
+            "skipping real Qwen tokenizer oracle; {} is unavailable",
             model_dir.display()
         );
         return;
     }
 
     let started = Instant::now();
-    let tokenizer = QwenTokenizer::from_model_dir(&model_dir).unwrap();
+    let tokenizer = QwenTokenizer::from_model_dir(model_dir).unwrap();
     println!(
         "loaded {} tokenizer IDs from {} in {:.3}s",
         tokenizer.token_count(),
         model_dir.display(),
         started.elapsed().as_secs_f64()
     );
-    assert_eq!(tokenizer.token_count(), 248_070);
+    assert_eq!(tokenizer.token_count(), token_count);
     assert_eq!(tokenizer.token_id("<|endoftext|>"), Some(248_044));
     assert_eq!(tokenizer.token_id("<|im_start|>"), Some(248_045));
     assert_eq!(tokenizer.token_id("<|im_end|>"), Some(248_046));
@@ -633,8 +668,31 @@ fn real_qwen36_tokenizer_matches_hugging_face_oracle_when_available() {
             "decode differs for {text:?}"
         );
     }
-    assert_eq!(
-        tokenizer.decode(&[248_070]),
-        Err(TokenizerError::UnknownTokenId(248_070))
-    );
+    if token_count == 248_077 {
+        for (offset, token) in [
+            "<|audio_start|>",
+            "<|audio_end|>",
+            "<tts_pad>",
+            "<tts_text_bos>",
+            "<tts_text_eod>",
+            "<tts_text_bos_single>",
+            "<|audio_pad|>",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let id = 248_070 + offset as i32;
+            assert_eq!(tokenizer.token_id(token), Some(id));
+            assert_eq!(tokenizer.encode(token), [id]);
+            assert_eq!(tokenizer.decode(&[id]).unwrap(), token);
+        }
+    }
+    let last = token_count as i32 - 1;
+    assert!(tokenizer.decode(&[last]).is_ok());
+    for id in [token_count as i32, 248_319, 248_320] {
+        assert_eq!(
+            tokenizer.decode(&[id]),
+            Err(TokenizerError::UnknownTokenId(id))
+        );
+    }
 }

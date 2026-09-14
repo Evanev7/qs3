@@ -128,10 +128,16 @@
 
 ## 3. Add the exact 27B path
 
-- [ ] Account for the pinned 3.8 tokenizer's 248077 addressable IDs, including
-  seven audio special tokens beyond the 3.6 count of 248070. Audit tokenizer
-  asset validation, ModelRunner's sampled-ID bound and score diagnostics before
-  claiming complete 3.8 support. The reference collector checks both exact sets.
+- [ ] Normalize sampling over valid tokenizer IDs: exclude padded logit slots
+  before greedy selection or stochastic probability normalization, instead of
+  returning `InternalError` when padding wins. Use the loaded tokenizer's count
+  and cover both sampling paths.
+
+- [x] Load tokenizer vocabulary, merges and added tokens from the asset, keeping
+  structural and supported-pipeline checks instead of exact identity checks.
+  ModelRunner and score diagnostics use the loaded tokenizer's ID count.
+  Pinned 35B, 3.6-27B and 3.8-27B tokenizer oracles pass, including all seven
+  3.8 audio tokens and greedy/stochastic sampling boundary regressions.
 
 - [x] Probe native full attention with 24 Q heads, 4 KV heads, head dimension
   256, and GQA ratio 6. The isolated AOT probe passes CPU-reference prefill/decode

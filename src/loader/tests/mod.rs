@@ -1002,6 +1002,7 @@ fn real_qwen36_bf16_generates_reference_tokens() {
         crate::backend::qsfi::MoeBf16Kernel::COMPILED.as_str(),
     );
     let model_dir = require_real_qwen36_model_dir();
+    let tokenizer = crate::tokenizer::QwenTokenizer::from_model_dir(&model_dir).unwrap();
     let plan = QwenBf16LoadPlan::read(model_dir).unwrap();
     let backend = ManagedUmaBackend::new(cuda_device_from_env()).unwrap();
     let loaded = execute_qwen36_bf16_load_plan(&plan, backend, ptr::null_mut()).unwrap();
@@ -1010,6 +1011,7 @@ fn real_qwen36_bf16_generates_reference_tokens() {
         std::rc::Rc::new(crate::memory::CudaCtx::default().unwrap()),
         config,
         weights,
+        tokenizer.token_count(),
     )
     .unwrap();
     assert_eq!(runner.gdn_qkv_provider(), "triton");

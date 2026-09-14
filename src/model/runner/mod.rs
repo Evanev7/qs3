@@ -46,6 +46,7 @@ pub struct QwenResult {
 pub struct ModelRunner {
     ctx: Rc<CudaCtx>,
     config: QwenConfig,
+    tokenizer_token_count: u32,
     weights: QwenWeights,
     engine: Engine,
     moe_plan: Option<MoePlan>,
@@ -63,8 +64,20 @@ pub struct ModelRunner {
 }
 
 impl ModelRunner {
-    pub fn new(ctx: Rc<CudaCtx>, config: QwenConfig, weights: QwenWeights) -> Result<Self, Status> {
+    /// `tokenizer_token_count` comes from the loaded tokenizer, excluding padded
+    /// logit slots. Tokenizer ownership and text formatting remain with the caller.
+    pub fn new(
+        ctx: Rc<CudaCtx>,
+        config: QwenConfig,
+        weights: QwenWeights,
+        tokenizer_token_count: usize,
+    ) -> Result<Self, Status> {
         config.validate()?;
+        let tokenizer_token_count =
+            u32::try_from(tokenizer_token_count).map_err(|_| Status::InvalidArgument)?;
+        if tokenizer_token_count == 0 || tokenizer_token_count > config.vocab_size() {
+            return Err(Status::InvalidArgument);
+        }
         let mut engine = Engine::new(ctx.clone(), config.engine_config())?;
         let (moe_plan, moe_workspace_bytes) = if let Some(moe) = config.moe_config() {
             let (plan, workspace_bytes) = {
@@ -109,6 +122,7 @@ impl ModelRunner {
             scratch,
             qscb_workspace,
             config,
+            tokenizer_token_count,
             weights,
             engine,
             moe_plan,
@@ -128,7 +142,7 @@ impl ModelRunner {
         seed: u64,
     ) -> Result<Self, Status> {
         let weights = QwenWeights::random_bf16(ctx.clone(), &config, seed)?;
-        Self::new(ctx, config, weights)
+        Self::new(ctx, config, weights, config.vocab_size() as usize)
     }
 
     /// Configure before starting a request, or after reset/release. Reset keeps
@@ -516,7 +530,7 @@ impl ModelRunner {
         // NOTE: THE SYNCHRONIZE CALL
         self.ctx.synchronize()?;
         for token in &sampled {
-            validate_token_ids(&[*token], self.config.vocab_size().min(248070))
+            validate_token_ids(&[*token], self.tokenizer_token_count)
                 .map_err(|_| Status::InternalError)?;
         }
         self.last_logits_rows = rows;

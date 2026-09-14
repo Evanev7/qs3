@@ -15,7 +15,7 @@ use bpe::BpeModel;
 use format::TokenizerDefinition;
 use pretokenize::{byte_pieces, char_byte};
 
-/// The exact host-side tokenizer used by the supported Qwen3.6 artifact.
+/// Host-side tokenizer for Qwen assets using the supported NFC + ByteLevel BPE pipeline.
 ///
 /// Construction validates the complete tokenizer pipeline and vocabulary.
 /// Encoding therefore has no unknown-token path and never inserts BOS or EOS.
@@ -36,7 +36,7 @@ impl QwenTokenizer {
         Self::from_file(path.as_ref().join("tokenizer.json"))
     }
 
-    /// Load and validate a Qwen3.6 `tokenizer.json` artifact.
+    /// Load `tokenizer.json`, validating supported semantics and vocabulary structure.
     pub fn from_file(path: impl AsRef<Path>) -> Result<Self, TokenizerError> {
         Self::from_definition(TokenizerDefinition::read(path)?)
     }

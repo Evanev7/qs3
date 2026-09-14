@@ -10,45 +10,11 @@ use super::bpe::BpeDefinition;
 use super::pretokenize::QWEN_SPLIT_PATTERN;
 
 const MAX_TOKENIZER_JSON_BYTES: usize = 64 << 20;
-const QWEN36_BASE_TOKEN_COUNT: usize = 248_044;
-const QWEN36_MERGE_COUNT: usize = 247_587;
-const QWEN36_VOCAB_FINGERPRINT: u64 = 0x3816_dfff_87e4_58d6;
-const QWEN36_MERGES_FINGERPRINT: u64 = 0x5744_a130_3ff2_f51d;
-
-const QWEN36_ADDED_TOKENS: &[(u32, &str, bool)] = &[
-    (248_044, "<|endoftext|>", true),
-    (248_045, "<|im_start|>", true),
-    (248_046, "<|im_end|>", true),
-    (248_047, "<|object_ref_start|>", true),
-    (248_048, "<|object_ref_end|>", true),
-    (248_049, "<|box_start|>", true),
-    (248_050, "<|box_end|>", true),
-    (248_051, "<|quad_start|>", true),
-    (248_052, "<|quad_end|>", true),
-    (248_053, "<|vision_start|>", true),
-    (248_054, "<|vision_end|>", true),
-    (248_055, "<|vision_pad|>", true),
-    (248_056, "<|image_pad|>", true),
-    (248_057, "<|video_pad|>", true),
-    (248_058, "<tool_call>", false),
-    (248_059, "</tool_call>", false),
-    (248_060, "<|fim_prefix|>", false),
-    (248_061, "<|fim_middle|>", false),
-    (248_062, "<|fim_suffix|>", false),
-    (248_063, "<|fim_pad|>", false),
-    (248_064, "<|repo_name|>", false),
-    (248_065, "<|file_sep|>", false),
-    (248_066, "<tool_response>", false),
-    (248_067, "</tool_response>", false),
-    (248_068, "<think>", false),
-    (248_069, "</think>", false),
-];
 
 #[derive(Debug)]
 pub(super) struct AddedTokenDefinition {
     pub(super) id: u32,
     pub(super) content: String,
-    pub(super) special: bool,
 }
 
 pub(super) struct TokenizerDefinition {
@@ -78,13 +44,10 @@ impl TokenizerDefinition {
         file.read_to_string(&mut source).map_err(|error| {
             TokenizerError::Io(format!("failed to read {}: {error}", path.display()))
         })?;
-        let definition = Self::parse_json(&source)?;
-        definition.validate_qwen36_identity()?;
-        Ok(definition)
+        Self::parse_json(&source)
     }
 
     pub(super) fn parse_json(source: &str) -> Result<Self, TokenizerError> {
-        validate_u32_number_literals(source)?;
         let value = source
             .parse::<JsonValue>()
             .map_err(|error| TokenizerError::json(error.to_string()))?;
@@ -98,117 +61,14 @@ impl TokenizerDefinition {
         validate_byte_level("post_processor", root.take("post_processor")?)?;
         validate_byte_level("decoder", root.take("decoder")?)?;
         let bpe = parse_bpe(root.take("model")?)?;
-        root.finish()?;
 
         let added_tokens = parse_added_tokens(added_tokens, bpe.vocab())?;
         Ok(Self { bpe, added_tokens })
     }
 
-    pub(super) fn validate_qwen36_identity(&self) -> Result<(), TokenizerError> {
-        if self.bpe.token_count() != QWEN36_BASE_TOKEN_COUNT {
-            return Err(TokenizerError::invalid_vocabulary(format!(
-                "expected {QWEN36_BASE_TOKEN_COUNT} base tokens, found {}",
-                self.bpe.token_count()
-            )));
-        }
-        if self.bpe.merge_count() != QWEN36_MERGE_COUNT {
-            return Err(TokenizerError::invalid_vocabulary(format!(
-                "expected {QWEN36_MERGE_COUNT} BPE merges, found {}",
-                self.bpe.merge_count()
-            )));
-        }
-        let fingerprint = self.bpe.fingerprint()?;
-        if fingerprint.vocab != QWEN36_VOCAB_FINGERPRINT {
-            return Err(TokenizerError::invalid_vocabulary(format!(
-                "base vocabulary fingerprint is {:016x}, expected {QWEN36_VOCAB_FINGERPRINT:016x}",
-                fingerprint.vocab
-            )));
-        }
-        if fingerprint.merges != QWEN36_MERGES_FINGERPRINT {
-            return Err(TokenizerError::invalid_vocabulary(format!(
-                "BPE merge fingerprint is {:016x}, expected {QWEN36_MERGES_FINGERPRINT:016x}",
-                fingerprint.merges
-            )));
-        }
-        if self.added_tokens.len() != QWEN36_ADDED_TOKENS.len() {
-            return Err(TokenizerError::invalid_vocabulary(format!(
-                "expected {} Qwen added tokens, found {}",
-                QWEN36_ADDED_TOKENS.len(),
-                self.added_tokens.len()
-            )));
-        }
-        for (actual, &(id, content, special)) in self.added_tokens.iter().zip(QWEN36_ADDED_TOKENS) {
-            if actual.id != id || actual.content != content || actual.special != special {
-                return Err(TokenizerError::invalid_vocabulary(format!(
-                    "added token ID {id} must be {content:?} with special={special}"
-                )));
-            }
-        }
-        Ok(())
-    }
-
-    #[cfg(test)]
-    pub(super) fn base_token_count(&self) -> usize {
-        self.bpe.token_count()
-    }
-
-    #[cfg(test)]
-    pub(super) fn added_token_count(&self) -> usize {
-        self.added_tokens.len()
-    }
-
     pub(super) fn into_runtime_parts(self) -> (BpeDefinition, Vec<AddedTokenDefinition>) {
         (self.bpe, self.added_tokens)
     }
-}
-
-fn validate_u32_number_literals(source: &str) -> Result<(), TokenizerError> {
-    // tinyjson intentionally represents every JSON number as f64. This exact
-    // artifact has only u32 token IDs, so reject non-canonical spellings before
-    // f64 rounding can turn a fraction, exponent, or negative value into one.
-    let bytes = source.as_bytes();
-    let mut cursor = 0;
-    while cursor < bytes.len() {
-        if bytes[cursor] == b'"' {
-            cursor = string_end(bytes, cursor);
-            continue;
-        }
-        if bytes[cursor] == b'-' || bytes[cursor].is_ascii_digit() {
-            let start = cursor;
-            cursor += 1;
-            while cursor < bytes.len()
-                && matches!(
-                    bytes[cursor],
-                    b'0'..=b'9' | b'.' | b'e' | b'E' | b'+' | b'-'
-                )
-            {
-                cursor += 1;
-            }
-            let literal = &source[start..cursor];
-            let canonical = literal.bytes().all(|byte| byte.is_ascii_digit())
-                && (literal.len() == 1 || !literal.starts_with('0'));
-            if !canonical || literal.parse::<u32>().is_err() {
-                return Err(TokenizerError::json(format!(
-                    "numeric literal {literal:?} must be a canonical unsigned u32 token ID"
-                )));
-            }
-            continue;
-        }
-        cursor += 1;
-    }
-    Ok(())
-}
-
-fn string_end(bytes: &[u8], start: usize) -> usize {
-    let mut cursor = start + 1;
-    while cursor < bytes.len() {
-        match bytes[cursor] {
-            b'\\' => cursor = (cursor + 2).min(bytes.len()),
-            b'"' => return cursor + 1,
-            _ => cursor += 1,
-        }
-    }
-    cursor
 }
 
 struct JsonObject {
@@ -230,25 +90,12 @@ impl JsonObject {
             .remove(name)
             .ok_or_else(|| TokenizerError::json(format!("{}.{} is required", self.context, name)))
     }
-
-    fn finish(self) -> Result<(), TokenizerError> {
-        if self.fields.is_empty() {
-            return Ok(());
-        }
-        let mut names: Vec<_> = self.fields.into_keys().collect();
-        names.sort();
-        Err(TokenizerError::unsupported(format!(
-            "{} has unsupported fields: {}",
-            self.context,
-            names.join(", ")
-        )))
-    }
 }
 
 fn validate_normalizer(value: JsonValue) -> Result<(), TokenizerError> {
     let mut normalizer = JsonObject::new("tokenizer.normalizer", value)?;
     require_string(&mut normalizer, "type", "NFC")?;
-    normalizer.finish()
+    Ok(())
 }
 
 fn validate_pre_tokenizer(value: JsonValue) -> Result<(), TokenizerError> {
@@ -258,7 +105,7 @@ fn validate_pre_tokenizer(value: JsonValue) -> Result<(), TokenizerError> {
         sequence.take("pretokenizers")?,
         "tokenizer.pre_tokenizer.pretokenizers",
     )?;
-    sequence.finish()?;
+
     if components.len() != 2 {
         return Err(TokenizerError::unsupported(format!(
             "tokenizer.pre_tokenizer must contain exactly two components, found {}",
@@ -281,10 +128,10 @@ fn validate_split(value: JsonValue) -> Result<(), TokenizerError> {
         split.take("pattern")?,
     )?;
     require_string(&mut pattern, "Regex", QWEN_SPLIT_PATTERN)?;
-    pattern.finish()?;
+
     require_string(&mut split, "behavior", "Isolated")?;
     require_bool(&mut split, "invert", false)?;
-    split.finish()
+    Ok(())
 }
 
 fn validate_byte_level(context: &str, value: JsonValue) -> Result<(), TokenizerError> {
@@ -293,7 +140,7 @@ fn validate_byte_level(context: &str, value: JsonValue) -> Result<(), TokenizerE
     require_bool(&mut byte_level, "add_prefix_space", false)?;
     require_bool(&mut byte_level, "trim_offsets", false)?;
     require_bool(&mut byte_level, "use_regex", false)?;
-    byte_level.finish()
+    Ok(())
 }
 
 fn parse_bpe(value: JsonValue) -> Result<BpeDefinition, TokenizerError> {
@@ -308,7 +155,6 @@ fn parse_bpe(value: JsonValue) -> Result<BpeDefinition, TokenizerError> {
     require_bool(&mut model, "ignore_merges", false)?;
     let vocab = object_map(model.take("vocab")?, "tokenizer.model.vocab")?;
     let merges = array(model.take("merges")?, "tokenizer.model.merges")?;
-    model.finish()?;
 
     let mut parsed_vocab = HashMap::with_capacity(vocab.len());
     for (token, value) in vocab {
@@ -339,19 +185,18 @@ fn parse_added_tokens(
 ) -> Result<Vec<AddedTokenDefinition>, TokenizerError> {
     let values = array(value, "tokenizer.added_tokens")?;
     let mut tokens = Vec::with_capacity(values.len());
-    let mut ids = HashSet::with_capacity(values.len());
     let mut contents = HashSet::with_capacity(values.len());
     for (index, value) in values.into_iter().enumerate() {
         let context = format!("tokenizer.added_tokens[{index}]");
         let mut token = JsonObject::new(&context, value)?;
         let id = take_u32(&mut token, "id")?;
         let content = take_string(&mut token, "content")?;
-        let special = take_bool(&mut token, "special")?;
+        // Decode preserves every added token, including special tokens.
+        take_bool(&mut token, "special")?;
         require_bool(&mut token, "single_word", false)?;
         require_bool(&mut token, "lstrip", false)?;
         require_bool(&mut token, "rstrip", false)?;
         require_bool(&mut token, "normalized", false)?;
-        token.finish()?;
 
         if content.is_empty() {
             return Err(TokenizerError::invalid_vocabulary(format!(
@@ -363,21 +208,12 @@ fn parse_added_tokens(
                 "added token {content:?} duplicates a base-vocabulary token"
             )));
         }
-        if !ids.insert(id) {
-            return Err(TokenizerError::invalid_vocabulary(format!(
-                "added token ID {id} is duplicated"
-            )));
-        }
         if !contents.insert(content.clone()) {
             return Err(TokenizerError::invalid_vocabulary(format!(
                 "added token content {content:?} is duplicated"
             )));
         }
-        tokens.push(AddedTokenDefinition {
-            id,
-            content,
-            special,
-        });
+        tokens.push(AddedTokenDefinition { id, content });
     }
 
     tokens.sort_unstable_by_key(|token| token.id);

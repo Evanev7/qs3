@@ -11,14 +11,14 @@ fn object(fields: impl IntoIterator<Item = (&'static str, JsonValue)>) -> JsonVa
         .into()
 }
 
-fn ids(spec: &JsonValue, key: &str) -> Vec<i32> {
+fn ids(spec: &JsonValue, key: &str, limit: usize) -> Vec<i32> {
     spec[key]
         .get::<Vec<JsonValue>>()
         .unwrap()
         .iter()
         .map(|v| {
             let x = *v.get::<f64>().unwrap();
-            assert!(x.is_finite() && x.fract() == 0.0 && (0.0..248070.0).contains(&x));
+            assert!(x.is_finite() && x.fract() == 0.0 && (0.0..limit as f64).contains(&x));
             x as i32
         })
         .collect()
@@ -32,13 +32,15 @@ fn real_qwen36_same_prefix_scores() {
         std::env::var("QS3_SCORE_OUTPUT").expect("QS3_SCORE_OUTPUT directory"),
     );
     let spec: JsonValue = std::fs::read_to_string(input).unwrap().parse().unwrap();
-    let prompt = ids(&spec, "prompt_ids");
-    let forced = ids(&spec, "forced_ids");
-    let captures = ids(&spec, "capture_steps");
+    let model_dir = require_real_qwen36_model_dir();
+    let tokenizer = crate::tokenizer::QwenTokenizer::from_model_dir(&model_dir).unwrap();
+    let token_count = tokenizer.token_count();
+    let prompt = ids(&spec, "prompt_ids", token_count);
+    let forced = ids(&spec, "forced_ids", token_count);
+    let captures = ids(&spec, "capture_steps", forced.len() + 1);
     assert!(!prompt.is_empty() && !forced.is_empty());
     assert!(captures.iter().all(|&x| x as usize <= forced.len()));
     std::fs::create_dir_all(&output).unwrap();
-    let model_dir = require_real_qwen36_model_dir();
     assert_eq!(
         model_dir.file_name().unwrap().to_str().unwrap(),
         spec["model_revision"].get::<String>().unwrap()
@@ -54,6 +56,7 @@ fn real_qwen36_same_prefix_scores() {
         std::rc::Rc::new(crate::memory::CudaCtx::default().unwrap()),
         config,
         weights,
+        token_count,
     )
     .unwrap();
     assert_eq!(runner.gdn_qkv_provider(), "triton");
@@ -77,7 +80,7 @@ fn real_qwen36_same_prefix_scores() {
         order.select_nth_unstable_by(20, compare);
         order.truncate(20);
         order.sort_unstable_by(compare);
-        assert!(order[0] < 248070, "padded token won at step {step}");
+        assert!(order[0] < token_count, "padded token won at step {step}");
         let max = f64::from(raw[order[0]]);
         let lse = max
             + raw

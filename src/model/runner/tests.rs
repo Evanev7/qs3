@@ -535,6 +535,7 @@ fn moe_vector_runner() -> ModelRunner {
         lm_head: None,
         gdn_qkv: None,
         config,
+        tokenizer_token_count: config.vocab_size(),
         weights: placeholder_weights(),
         engine,
         moe_plan: Some(moe_plan),
@@ -826,6 +827,7 @@ fn full_attention_vector_runner() -> ModelRunner {
         gdn_qkv: None,
         lm_head: None,
         config,
+        tokenizer_token_count: config.vocab_size(),
         weights: placeholder_weights(),
         engine,
         moe_plan: None,
@@ -853,6 +855,7 @@ fn full_attention_block_vector_runner() -> ModelRunner {
         gdn_qkv: None,
         lm_head: None,
         config,
+        tokenizer_token_count: config.vocab_size(),
         weights: placeholder_weights(),
         engine,
         moe_plan: None,
@@ -914,6 +917,7 @@ fn full_attention_block_moe_vector_runner() -> ModelRunner {
         gdn_qkv: None,
         lm_head: None,
         config,
+        tokenizer_token_count: config.vocab_size(),
         weights: placeholder_weights(),
         engine,
         moe_plan: Some(moe_plan),
@@ -1149,6 +1153,7 @@ fn gdn_decoder_layer_vector_runner() -> ModelRunner {
         gdn_qkv: None,
         lm_head: None,
         config,
+        tokenizer_token_count: config.vocab_size(),
         weights: placeholder_weights(),
         engine,
         moe_plan: Some(moe_plan),
@@ -2851,7 +2856,8 @@ fn qwen36_model_logits_vector_validates_public_run_moe_logits_handoff() {
     let config = model_logits_vector_config();
     let request_id = 0x4D4C_0001;
     let weights = model_logits_vector_weights(&ctx, config);
-    let mut runner = ModelRunner::new(ctx.clone(), config, weights).unwrap();
+    let mut runner =
+        ModelRunner::new(ctx.clone(), config, weights, config.vocab_size() as usize).unwrap();
     let prompt = read_model_logits_i32_vector("model_prompt_tokens.i32", MODEL_LOGITS_PROMPT_LEN);
     assert_eq!(prompt.len() as u32, runner.config.page_size);
 
@@ -3356,7 +3362,7 @@ fn gdn_slot_map_commit_is_explicit_and_uses_gdn_layer_count() {
 }
 
 #[test]
-fn sampling_rejects_padded_tokenizer_ids() {
+fn sampling_respects_the_loaded_tokenizer_boundary() {
     if !cuda_device_available() {
         return;
     }
@@ -3369,18 +3375,46 @@ fn sampling_rejects_padded_tokenizer_ids() {
     runner.scratch.reserve(1).unwrap();
     upload(&runner.ctx, &mut runner.scratch.positions, &[0]).unwrap();
     let mut logits = vec![f32::NEG_INFINITY; 248320];
-    logits[248070] = 1.0;
-    for temperature in [0.0, 1.0] {
-        runner
-            .set_sampling(crate::model::SamplingParams {
-                temperature,
-                top_k: 1,
-                ..Default::default()
-            })
-            .unwrap();
-        upload(&runner.ctx, &mut runner.scratch.logits, &logits).unwrap();
-        assert_eq!(runner.sample_logits(0), Err(Status::InternalError));
-        assert!(runner.live_tokens.is_empty());
+    // Include a non-pinned boundary so this tests the supplied count itself.
+    for token_count in [257, 248070, 248077] {
+        runner.tokenizer_token_count = token_count;
+        for temperature in [0.0, 1.0] {
+            runner
+                .set_sampling(crate::model::SamplingParams {
+                    temperature,
+                    top_k: 1,
+                    ..Default::default()
+                })
+                .unwrap();
+            for token in [token_count - 1, token_count] {
+                logits.fill(f32::NEG_INFINITY);
+                logits[token as usize] = 1.0;
+                upload(&runner.ctx, &mut runner.scratch.logits, &logits).unwrap();
+                let expected = if token < token_count {
+                    Ok(vec![token as i32])
+                } else {
+                    Err(Status::InternalError)
+                };
+                assert_eq!(runner.sample_logits(0), expected);
+                assert!(runner.live_tokens.is_empty());
+            }
+        }
+    }
+}
+
+#[test]
+fn runner_rejects_invalid_tokenizer_counts() {
+    if !cuda_device_available() {
+        return;
+    }
+    let ctx = Rc::new(CudaCtx::default().unwrap());
+    let config = QwenConfig::randomized_shared_moe_tiny_fixture();
+    for token_count in [0, config.vocab_size() as usize + 1, usize::MAX] {
+        let weights = QwenWeights::random_bf16(ctx.clone(), &config, 78).unwrap();
+        assert_eq!(
+            ModelRunner::new(ctx.clone(), config, weights, token_count).err(),
+            Some(Status::InvalidArgument)
+        );
     }
 }
 

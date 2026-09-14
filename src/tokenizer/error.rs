@@ -29,10 +29,10 @@ impl fmt::Display for TokenizerError {
             Self::Io(message) => write!(f, "tokenizer I/O error: {message}"),
             Self::Json(message) => write!(f, "invalid tokenizer JSON: {message}"),
             Self::UnsupportedDefinition(message) => {
-                write!(f, "unsupported Qwen3.6 tokenizer definition: {message}")
+                write!(f, "unsupported Qwen tokenizer definition: {message}")
             }
             Self::InvalidVocabulary(message) => {
-                write!(f, "invalid Qwen3.6 tokenizer vocabulary: {message}")
+                write!(f, "invalid Qwen tokenizer vocabulary: {message}")
             }
             Self::UnknownTokenId(id) => write!(f, "unknown tokenizer token ID {id}"),
         }

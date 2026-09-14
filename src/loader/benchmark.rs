@@ -247,8 +247,8 @@ pub fn run_core_benchmark() -> JsonValue {
     let weight_materialize = started.elapsed();
     let started = Instant::now();
     let ctx = std::rc::Rc::new(crate::memory::CudaCtx::default().unwrap());
-    let mut runner =
-        ModelRunner::new(ctx.clone(), config, weights).expect("failed to construct ModelRunner");
+    let mut runner = ModelRunner::new(ctx.clone(), config, weights, tokenizer.token_count())
+        .expect("failed to construct ModelRunner");
     let runner_init = started.elapsed();
 
     let mut prefill_warmup_times = Vec::with_capacity(PREFILL_WARMUPS);

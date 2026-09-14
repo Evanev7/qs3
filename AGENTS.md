@@ -38,10 +38,11 @@ current architecture:
 - `ModelRunner` is the boundary above `Engine`: it computes activations, supplies
   Q/K/V to attention, stores logits, samples, and owns exact-prefix sync/rebuild
 - `QwenTokenizer` is a separate host-side asset boundary: it strictly loads the
-  pinned NFC + ByteLevel BPE `tokenizer.json` and hands `i32` IDs to callers;
-  `ModelRunner` does not own text formatting or tokenization. the tokenizer has
-  248070 addressable IDs while the model vocabulary is padded to 248320, so
-  padded logit slots must fail decode rather than be treated as tokenizer IDs
+  NFC + ByteLevel BPE `tokenizer.json`, validating supported semantics and
+  vocabulary structure, and hands `i32` IDs to callers. `ModelRunner` receives
+  the loaded tokenizer's addressable token count; it does not own text formatting
+  or tokenization. Pinned 3.6 tokenizers have 248070 IDs and 3.8 has 248077,
+  while model logits have 248320 slots. Padded IDs must fail sampling and decode
 - validation before device addressing is contract: Rust descriptors validate
   shapes/strides/modes; checked native paths cover attention page ids and append
   positions, GDN metadata, embedding ids, and MoE routes/weights
