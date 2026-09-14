@@ -1,0 +1,12 @@
+{
+  "models": [
+    "qwen3.6-35b-a3b",
+    "qwen3.6-27b",
+    "qwen3.8-27b"
+  ],
+  "image": "sha256:c2914767605584b6d8f45686b82de173ecc99e781897aa3d0a66dacd72c51ae1",
+  "completed_before": [
+    "qwen3.6-35b-a3b"
+  ],
+  "run_dir": "/home/sp10/qs3/.prototypes/out/vllm-correctness-2026-09-14T194223Z-jn1cisug"
+}

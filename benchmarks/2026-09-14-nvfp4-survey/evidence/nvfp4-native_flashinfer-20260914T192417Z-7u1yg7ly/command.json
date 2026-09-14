@@ -1,0 +1,7 @@
+[
+  "python3",
+  "/home/sp10/qs3/.prototypes/nvfp4_survey/native_flashinfer.py",
+  "--output",
+  "/home/sp10/qs3/.prototypes/out/nvfp4-native_flashinfer-20260914T192417Z-7u1yg7ly",
+  "--prefill"
+]

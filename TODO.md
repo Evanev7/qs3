@@ -128,6 +128,11 @@
 
 ## 3. Add the exact 27B path
 
+- [ ] Account for the pinned 3.8 tokenizer's 248077 addressable IDs, including
+  seven audio special tokens beyond the 3.6 count of 248070. Audit tokenizer
+  asset validation, ModelRunner's sampled-ID bound and score diagnostics before
+  claiming complete 3.8 support. The reference collector checks both exact sets.
+
 - [x] Probe native full attention with 24 Q heads, 4 KV heads, head dimension
   256, and GQA ratio 6. The isolated AOT probe passes CPU-reference prefill/decode
   and append cases on sp10; see FINDINGS.md. Production native dispatch now
@@ -241,15 +246,6 @@
   types as those cases are introduced.
 - [ ] Revalidate source/helper edits, missing cubins, unchanged rebuilds,
   Nix package builds, and GPU launchers after the explicit-source refactor.
-- [ ] Exercise graph capture/module lifetimes when integrating generated wrappers.
-
-## Model configuration references
-
-- [Qwen3.6-35B-A3B config](https://huggingface.co/Qwen/Qwen3.6-35B-A3B/blob/main/config.json)
-- [Qwen3.6-27B config](https://huggingface.co/Qwen/Qwen3.6-27B/blob/main/config.json)
-
-These links describe the model shapes; validation runs must use pinned snapshots.
-
 - [ ] Resolve `TODO(async-upload-lifetimes)` in `src/model/runner/gdn.rs`: retain
   GDN host metadata until batch completion, then remove the temporary per-layer
   stream wait. The explicit wait currently keeps stack upload sources alive,

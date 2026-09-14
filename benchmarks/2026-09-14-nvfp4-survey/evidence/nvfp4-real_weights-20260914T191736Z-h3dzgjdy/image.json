@@ -1,0 +1,109 @@
+[
+    {
+        "Id": "sha256:d966c1831d5da55c0cc52c6bd40f7d02cfc3d83404c3bd599139b055232d3970",
+        "RepoTags": [
+            "vllm-node:latest"
+        ],
+        "RepoDigests": [
+            "vllm-node@sha256:d966c1831d5da55c0cc52c6bd40f7d02cfc3d83404c3bd599139b055232d3970"
+        ],
+        "Comment": "buildkit.dockerfile.v0",
+        "Created": "2026-05-25T17:55:45.595000894-07:00",
+        "Config": {
+            "Env": [
+                "PATH=/usr/local/nvidia/bin:/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                "NVARCH=sbsa",
+                "NVIDIA_REQUIRE_CUDA=cuda>=13.0 brand=unknown,driver>=535,driver<536 brand=grid,driver>=535,driver<536 brand=tesla,driver>=535,driver<536 brand=nvidia,driver>=535,driver<536 brand=quadro,driver>=535,driver<536 brand=quadrortx,driver>=535,driver<536 brand=nvidiartx,driver>=535,driver<536 brand=vapps,driver>=535,driver<536 brand=vpc,driver>=535,driver<536 brand=vcs,driver>=535,driver<536 brand=vws,driver>=535,driver<536 brand=cloudgaming,driver>=535,driver<536 brand=unknown,driver>=550,driver<551 brand=grid,driver>=550,driver<551 brand=tesla,driver>=550,driver<551 brand=nvidia,driver>=550,driver<551 brand=quadro,driver>=550,driver<551 brand=quadrortx,driver>=550,driver<551 brand=nvidiartx,driver>=550,driver<551 brand=vapps,driver>=550,driver<551 brand=vpc,driver>=550,driver<551 brand=vcs,driver>=550,driver<551 brand=vws,driver>=550,driver<551 brand=cloudgaming,driver>=550,driver<551 brand=unknown,driver>=565,driver<566 brand=grid,driver>=565,driver<566 brand=tesla,driver>=565,driver<566 brand=nvidia,driver>=565,driver<566 brand=quadro,driver>=565,driver<566 brand=quadrortx,driver>=565,driver<566 brand=nvidiartx,driver>=565,driver<566 brand=vapps,driver>=565,driver<566 brand=vpc,driver>=565,driver<566 brand=vcs,driver>=565,driver<566 brand=vws,driver>=565,driver<566 brand=cloudgaming,driver>=565,driver<566 brand=unknown,driver>=570,driver<571 brand=grid,driver>=570,driver<571 brand=tesla,driver>=570,driver<571 brand=nvidia,driver>=570,driver<571 brand=quadro,driver>=570,driver<571 brand=quadrortx,driver>=570,driver<571 brand=nvidiartx,driver>=570,driver<571 brand=vapps,driver>=570,driver<571 brand=vpc,driver>=570,driver<571 brand=vcs,driver>=570,driver<571 brand=vws,driver>=570,driver<571 brand=cloudgaming,driver>=570,driver<571 brand=unknown,driver>=575,driver<576 brand=grid,driver>=575,driver<576 brand=tesla,driver>=575,driver<576 brand=nvidia,driver>=575,driver<576 brand=quadro,driver>=575,driver<576 brand=quadrortx,driver>=575,driver<576 brand=nvidiartx,driver>=575,driver<576 brand=vapps,driver>=575,driver<576 brand=vpc,driver>=575,driver<576 brand=vcs,driver>=575,driver<576 brand=vws,driver>=575,driver<576 brand=cloudgaming,driver>=575,driver<576",
+                "NV_CUDA_CUDART_VERSION=13.0.96-1",
+                "CUDA_VERSION=13.0.2",
+                "LD_LIBRARY_PATH=/usr/local/nvidia/lib64:/usr/local/cuda/lib64:/usr/local/nvidia/lib:/usr/local/nvidia/lib64:/usr/local/cuda/lib64",
+                "NVIDIA_VISIBLE_DEVICES=all",
+                "NVIDIA_DRIVER_CAPABILITIES=compute,utility",
+                "DEBIAN_FRONTEND=noninteractive",
+                "UV_HTTP_TIMEOUT=500",
+                "UV_INDEX_STRATEGY=unsafe-best-match",
+                "UV_LINK_MODE=copy",
+                "VLLM_ENABLE_CUDA_COMPATIBILITY=0",
+                "TORCH_CUDA_ARCH_LIST=8.0 8.7 8.9 9.0 10.0 11.0 12.0+PTX",
+                "VLLM_USAGE_SOURCE=production-docker-image",
+                "VLLM_BUILD_COMMIT=ad7125a431e176d4161099480a66f0169609a690",
+                "VLLM_BUILD_PIPELINE=019d130e-464e-4ff7-b84b-492992c0c06b",
+                "VLLM_BUILD_URL=https://buildkite.com/vllm/release-v2/builds/1649",
+                "VLLM_IMAGE_TAG=vllm/vllm-openai:v0.21.0"
+            ],
+            "Entrypoint": [
+                "vllm",
+                "serve"
+            ],
+            "WorkingDir": "/vllm-workspace",
+            "Labels": {
+                "ai.vllm.build.commit": "ad7125a431e176d4161099480a66f0169609a690",
+                "ai.vllm.build.pipeline": "019d130e-464e-4ff7-b84b-492992c0c06b",
+                "ai.vllm.build.url": "https://buildkite.com/vllm/release-v2/builds/1649",
+                "ai.vllm.image.tag": "vllm/vllm-openai:v0.21.0",
+                "maintainer": "NVIDIA CORPORATION <cudatools@nvidia.com>",
+                "org.opencontainers.image.ref.name": "ubuntu",
+                "org.opencontainers.image.revision": "ad7125a431e176d4161099480a66f0169609a690",
+                "org.opencontainers.image.source": "https://github.com/vllm-project/vllm",
+                "org.opencontainers.image.url": "https://buildkite.com/vllm/release-v2/builds/1649",
+                "org.opencontainers.image.version": "vllm/vllm-openai:v0.21.0"
+            }
+        },
+        "Architecture": "arm64",
+        "Os": "linux",
+        "Size": 9967993237,
+        "RootFS": {
+            "Type": "layers",
+            "Layers": [
+                "sha256:0d1a800648d7469f0278fe8acc8f0affd3e7199368ec9d0e4bfee32f62775852",
+                "sha256:544242a509ad1e870fbf30caadd264c7b3612a1facd587d0b3e353ac6cc269d4",
+                "sha256:e4e9bbb9e44e974e738e4deb5f25ffd582afca0b0e2c3102b25b2b1d7a8b5a5d",
+                "sha256:baa1952ab39e611f83823cf10e34036d742a6c214c536c50eb65d1cc5e2ebb52",
+                "sha256:b7ec8fd7c485bbedbe64cbc5a7a810ceabb9156e95c83ba60596ddb9b4955d48",
+                "sha256:b77b88194edce9b7a3729a5976990b348e363d0d34ad204ac80a084795cdb386",
+                "sha256:377ef6b62ef89b126d332e25fc27ddb7f44e4f968c90e7b51229341dbcfedd86",
+                "sha256:0ab0312a6be474dcdb588c707e1ca151e3311d05efd6bf6fa8e8b55217db6c8e",
+                "sha256:f57445eadfc94600fecb9b59d503e6c323d0a77b41af45d2373dd496a7c9e2c7",
+                "sha256:5c3d4e9bcb2bfddf3520c87b99b3041d44df2f68770b4f6dc2c23341b9c6812e",
+                "sha256:26571204d8c9edbb410d4880186b147519cc2c92371a51bd0d84f020f33c5c67",
+                "sha256:784e1de663e54afdc554b662af012e0deaf8ea8ea4e03954a316cb5a3dbb48bb",
+                "sha256:8be0da1323eafdc997337fc053ac82f7bb64e6c250b1a873d409e41a9c0c05d5",
+                "sha256:92b9549681c6d76f61614be4e3eb42e67063cb37201de9b977047fdbd52b05a2",
+                "sha256:d282a8191679a40ea98c38f17f59073f3bc3a2d2086f7fcacb62907a7f78a2b8",
+                "sha256:cedf2fad217a9a7ccaced2291b8afcd502984112e2e4e1134867768adf28b82d",
+                "sha256:26b57e4aa1764839c9f4bf0938536fdf0532b70351a2b1c12583483ca4f917fe",
+                "sha256:c93fb0368c5adbd2ea895f41f9c06462a8998f4feb5a8c04d2c07bdc446b6b51",
+                "sha256:efbce76fffa4d73028cc33a7880aec5f557fd07f3013901c2638a8777d65ab83",
+                "sha256:7ea7357fc65ee96f9a93caf8b012d4c0be78e51488409d20c00a15faee2eb6f5",
+                "sha256:429534b472a61851eb8087a94a1121d5c4602d43679116e037df94dc539ba389",
+                "sha256:2d9316624fdef74885987e1c8fcf5538ffb57752e5eb57e0db5f0723c1f417f8",
+                "sha256:7ae6854e35218072a65969db83e3ff17b1114dc355c6e397fc0914af332accd3",
+                "sha256:5745949e418eedf9a5ff1c2e62e1a061bd6e04dc93f9af2688f3eabb14578e63",
+                "sha256:0798d82944b37a1f320ca36ebecd4365c7acee9c85d0fd6d06fa968dff1effa1",
+                "sha256:aaaa9e817240d86e936e0b2e19f81e6eb33ee3382ac08679f81bd18408875b8e",
+                "sha256:4c80212758e37ed39d600a5ff32304837e6b9c87dd4f69f69d2010f713521e67"
+            ]
+        },
+        "Metadata": {
+            "LastTagTime": "2026-05-26T00:55:51.96203509Z"
+        },
+        "Descriptor": {
+            "mediaType": "application/vnd.oci.image.index.v1+json",
+            "digest": "sha256:d966c1831d5da55c0cc52c6bd40f7d02cfc3d83404c3bd599139b055232d3970",
+            "size": 856
+        },
+        "Identity": {
+            "Pull": [
+                {
+                    "Repository": "docker.io/library/vllm-node"
+                }
+            ],
+            "Build": [
+                {
+                    "Ref": "0x1a2k2r5r2uhbw0gu0k50br0",
+                    "CreatedAt": "2026-05-25T17:55:53.45656385-07:00"
+                }
+            ]
+        }
+    }
+]

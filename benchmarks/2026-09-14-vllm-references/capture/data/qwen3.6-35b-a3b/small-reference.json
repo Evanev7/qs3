@@ -1,0 +1,148 @@
+{
+  "model_name": "qwen3.6-35b-a3b",
+  "model_repo": "Qwen/Qwen3.6-35B-A3B",
+  "model_revision": "995ad96eacd98c81ed38be0c5b274b04031597b0",
+  "container_image": "sha256:c2914767605584b6d8f45686b82de173ecc99e781897aa3d0a66dacd72c51ae1",
+  "versions": {
+    "vllm": "0.29.0",
+    "torch": "2.13.0+cu130",
+    "transformers": "5.16.1",
+    "flashinfer-python": "0.6.18"
+  },
+  "metadata": "metadata.json",
+  "prompt_ids": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "generated_ids": [
+    5,
+    6,
+    24218,
+    10
+  ],
+  "forced_ids": [
+    5,
+    6,
+    24218
+  ],
+  "rows": [
+    {
+      "step": 0,
+      "phase": "prefill",
+      "argmax": 5,
+      "top_ids": [
+        5,
+        3,
+        2,
+        220,
+        61,
+        198,
+        271,
+        26972
+      ],
+      "top_values": [
+        13.6875,
+        12.0,
+        10.75,
+        10.5625,
+        10.3125,
+        10.1875,
+        9.875,
+        9.6875
+      ],
+      "top2_margin": 1.6875,
+      "logits_dtype": "torch.bfloat16",
+      "file": "4-4/vllm/logits-0000.f32",
+      "sha256": "46f21b01578304e14deedbfd444a7370d1637d3a2a54a743015386521ade75f5"
+    },
+    {
+      "step": 1,
+      "phase": "decode",
+      "argmax": 6,
+      "top_ids": [
+        6,
+        9,
+        9867,
+        61,
+        41813,
+        24218,
+        1,
+        4
+      ],
+      "top_values": [
+        14.875,
+        11.3125,
+        11.0625,
+        11.0625,
+        10.875,
+        10.5625,
+        10.5,
+        10.5
+      ],
+      "top2_margin": 3.5625,
+      "logits_dtype": "torch.bfloat16",
+      "file": "4-4/vllm/logits-0001.f32",
+      "sha256": "d19e92d1e566e26ceedf90ac4280f738d6a81e7e171fd2f444cbf7cfce4cf5c6"
+    },
+    {
+      "step": 2,
+      "phase": "decode",
+      "argmax": 24218,
+      "top_ids": [
+        24218,
+        363,
+        3935,
+        1659,
+        33905,
+        2031,
+        318,
+        5
+      ],
+      "top_values": [
+        16.625,
+        13.8125,
+        12.5625,
+        12.1875,
+        12.1875,
+        12.0625,
+        11.6875,
+        11.6875
+      ],
+      "top2_margin": 2.8125,
+      "logits_dtype": "torch.bfloat16",
+      "file": "4-4/vllm/logits-0002.f32",
+      "sha256": "b66f5e645f30a2f958874f1a7023935ed3a57af6b979d28d500e3709b386de5f"
+    },
+    {
+      "step": 3,
+      "phase": "decode",
+      "argmax": 10,
+      "top_ids": [
+        10,
+        20815,
+        5007,
+        43181,
+        1,
+        40337,
+        16390,
+        2
+      ],
+      "top_values": [
+        17.75,
+        14.0625,
+        13.6875,
+        13.6875,
+        13.375,
+        12.75,
+        12.5,
+        11.8125
+      ],
+      "top2_margin": 3.6875,
+      "logits_dtype": "torch.bfloat16",
+      "file": "4-4/vllm/logits-0003.f32",
+      "sha256": "f5366513bf4a1c5ecb5ec5d541d11e9ba1ede91949700b961e485a0a63f3b809"
+    }
+  ]
+}

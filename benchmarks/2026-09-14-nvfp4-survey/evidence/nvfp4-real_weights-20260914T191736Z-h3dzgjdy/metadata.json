@@ -1,0 +1,10 @@
+{
+  "snapshot": "/hf/models--nvidia--Qwen3.6-35B-A3B-NVFP4/snapshots/6c7f09d4036e97393f82e9f9ecd1a5c35ca5ee92",
+  "config_sha256": "58aefa1c9eff7989f431d748f2ddec39446cb1fd2a69acc46e285c6a37b0cecc",
+  "backend": "b12x",
+  "paired_experts_checked": 10240,
+  "unequal_gate_up_count": 0,
+  "unequal_gate_up_examples": [],
+  "inputs": "synthetic BF16, real packed checkpoint weights",
+  "checkpoint_mlp_precision": "W4A16_NVFP4; W4A4 is an alternative, not its requested activation precision"
+}

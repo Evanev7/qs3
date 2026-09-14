@@ -1,0 +1,179 @@
+{
+  "verified": true,
+  "run_dir": "/home/sp10/qs3/.prototypes/out/vllm-correctness-2026-09-14T194223Z-jn1cisug",
+  "image": "sha256:c2914767605584b6d8f45686b82de173ecc99e781897aa3d0a66dacd72c51ae1",
+  "verified_utc": "2026-09-14T20:28:14.233946+00:00",
+  "rows": 3153,
+  "logits_bytes": 3131811840,
+  "manifest_sha256": "dae278dbeb39f91f799d13da9170e18731b2e43aa66de47d93ad5c618112065b",
+  "manifest_files": 3264,
+  "manifest_definition": "SHA256 of sorted-key compact JSON mapping verified run-relative filenames to bytes and SHA256",
+  "plan_sha256": "1b61aeaefe00b873b9ff10486a8275a0d950ef79d2046f4c8e5a8f273234e9b1",
+  "models": {
+    "qwen3.6-35b-a3b": {
+      "repo": "Qwen/Qwen3.6-35B-A3B",
+      "revision": "995ad96eacd98c81ed38be0c5b274b04031597b0",
+      "image": "sha256:c2914767605584b6d8f45686b82de173ecc99e781897aa3d0a66dacd72c51ae1",
+      "versions": {
+        "vllm": "0.29.0",
+        "torch": "2.13.0+cu130",
+        "transformers": "5.16.1",
+        "flashinfer-python": "0.6.18"
+      },
+      "small_generated_ids": [
+        5,
+        6,
+        24218,
+        10
+      ],
+      "small_reference": "data/qwen3.6-35b-a3b/small-reference.json",
+      "metadata": "data/qwen3.6-35b-a3b/metadata.json",
+      "metadata_sha256": "9e3f3e41e7f90a34850e21943ede4f03b3aeb8a8231272a2842644abc35ea180",
+      "pin_sha256": "bbe23f08ca2189ff9e9d38f8298760579bc5249159986c92366cc1ac937d8931",
+      "workloads": {
+        "4-4": {
+          "rows": 4,
+          "bytes": 3973120,
+          "rows_manifest_sha256": "c9fb57f642584fb8d2e5e41a7bc6cce8833094f726569271819715efece62ff8",
+          "scores": "data/qwen3.6-35b-a3b/4-4/vllm/scores.json",
+          "scores_sha256": "cd6cfab1adeb8cc6d3a89b837209bfa2dc33a636c448dd44896a03bca0da2c75",
+          "input": "data/qwen3.6-35b-a3b/4-4/input.json"
+        },
+        "102-32": {
+          "rows": 37,
+          "bytes": 36751360,
+          "rows_manifest_sha256": "5ba1b4f6508926c343479f797e29183a9d62e36a011895189d7ba42f38b15b10",
+          "scores": "data/qwen3.6-35b-a3b/102-32/vllm/scores.json",
+          "scores_sha256": "46e28a5e2f328ed9a9a0c431ba8637e435d47067b3ef5bc115d55a0b170efe9e",
+          "input": "data/qwen3.6-35b-a3b/102-32/input.json"
+        },
+        "500-200": {
+          "rows": 205,
+          "bytes": 203622400,
+          "rows_manifest_sha256": "6a46c5c2714dab808fd13dfccd924a60454b5f22ac450a6d087a5e6552c93627",
+          "scores": "data/qwen3.6-35b-a3b/500-200/vllm/scores.json",
+          "scores_sha256": "9ca8b8b3f6ce10067b1b8e878fff3f0521c620efd1a1129b4e4b1aaff98846bc",
+          "input": "data/qwen3.6-35b-a3b/500-200/input.json"
+        },
+        "4000-800": {
+          "rows": 805,
+          "bytes": 799590400,
+          "rows_manifest_sha256": "1aea75c1ab2ac3b83f98edcdbe1e5a4dd82b437bfcc0ba6df48ec41828ccee5f",
+          "scores": "data/qwen3.6-35b-a3b/4000-800/vllm/scores.json",
+          "scores_sha256": "c68f4d570420988a489d9805ce43929456eca73b308daebdee1062579181f691",
+          "input": "data/qwen3.6-35b-a3b/4000-800/input.json"
+        }
+      }
+    },
+    "qwen3.6-27b": {
+      "repo": "Qwen/Qwen3.6-27B",
+      "revision": "6a9e13bd6fc8f0983b9b99948120bc37f49c13e9",
+      "image": "sha256:c2914767605584b6d8f45686b82de173ecc99e781897aa3d0a66dacd72c51ae1",
+      "versions": {
+        "vllm": "0.29.0",
+        "torch": "2.13.0+cu130",
+        "transformers": "5.16.1",
+        "flashinfer-python": "0.6.18"
+      },
+      "small_generated_ids": [
+        5,
+        9,
+        0,
+        31
+      ],
+      "small_reference": "data/qwen3.6-27b/small-reference.json",
+      "metadata": "data/qwen3.6-27b/metadata.json",
+      "metadata_sha256": "a512b272e1417a8b958a7ed6521a4ffdb99fa25a21fb3e494e57ce2feb9bee46",
+      "pin_sha256": "12549061bf39145f600cad3ce5eb8c0edba50af7acf517f2f5c0510985ee24c5",
+      "workloads": {
+        "4-4": {
+          "rows": 4,
+          "bytes": 3973120,
+          "rows_manifest_sha256": "743e2c1285edf58c6f6e9b99dcc383e97aea17ed34d5ee6aa9fb6f50f351bcd5",
+          "scores": "data/qwen3.6-27b/4-4/vllm/scores.json",
+          "scores_sha256": "52ad1f7b21d997da9cc6fcf2b67fb24cfd6b5ebee3624b5882ab346893ad5682",
+          "input": "data/qwen3.6-27b/4-4/input.json"
+        },
+        "102-32": {
+          "rows": 37,
+          "bytes": 36751360,
+          "rows_manifest_sha256": "190f8849072b5a61a8f4f5e6ec9dfe982433a78d4e04955f7de2bdf2a76bcfad",
+          "scores": "data/qwen3.6-27b/102-32/vllm/scores.json",
+          "scores_sha256": "c6e6d229920cfbd35b1885af96c2fcad6c97b5079cb3bf7056a569243506ede8",
+          "input": "data/qwen3.6-27b/102-32/input.json"
+        },
+        "500-200": {
+          "rows": 205,
+          "bytes": 203622400,
+          "rows_manifest_sha256": "ef6285f84627cdaea41f878bf85d25249ff76cbb85c449e2918d848055f43cfb",
+          "scores": "data/qwen3.6-27b/500-200/vllm/scores.json",
+          "scores_sha256": "c101313a5d9d8bea95eb1c5333bcb28b45ef7383654125b0579f8616f53985ad",
+          "input": "data/qwen3.6-27b/500-200/input.json"
+        },
+        "4000-800": {
+          "rows": 805,
+          "bytes": 799590400,
+          "rows_manifest_sha256": "548981cb5f27e21b9a757380541556d58b331ba84b3c91eb932cc3884f7a13f8",
+          "scores": "data/qwen3.6-27b/4000-800/vllm/scores.json",
+          "scores_sha256": "57f3554a8cabd18c66dbc03cb97ea7f8fc856d8db4239360c27d2407a003ed78",
+          "input": "data/qwen3.6-27b/4000-800/input.json"
+        }
+      }
+    },
+    "qwen3.8-27b": {
+      "repo": "Qwen/Qwen3.8-27B",
+      "revision": "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0",
+      "image": "sha256:c2914767605584b6d8f45686b82de173ecc99e781897aa3d0a66dacd72c51ae1",
+      "versions": {
+        "vllm": "0.29.0",
+        "torch": "2.13.0+cu130",
+        "transformers": "5.16.1",
+        "flashinfer-python": "0.6.18"
+      },
+      "small_generated_ids": [
+        5,
+        0,
+        31,
+        46474
+      ],
+      "small_reference": "data/qwen3.8-27b/small-reference.json",
+      "metadata": "data/qwen3.8-27b/metadata.json",
+      "metadata_sha256": "c58d5a94940e36004c870f05e0769bf7f4b8e775c63896c65fbd2dd67d8fe495",
+      "pin_sha256": "c3cd067c3ca17b179b7bef687855719b957f9e03060e20189bdb4e82fbfcd2ea",
+      "workloads": {
+        "4-4": {
+          "rows": 4,
+          "bytes": 3973120,
+          "rows_manifest_sha256": "2297082f863a9f5218a370b9034f4753f1afd6ae7419cf20760736d1e9a0075b",
+          "scores": "data/qwen3.8-27b/4-4/vllm/scores.json",
+          "scores_sha256": "442a7800bb7ac44121f992e59c86c2bafc5721ffcddaf1cb9e9594a06c54e934",
+          "input": "data/qwen3.8-27b/4-4/input.json"
+        },
+        "102-32": {
+          "rows": 37,
+          "bytes": 36751360,
+          "rows_manifest_sha256": "63e511c58be83bfc8019238a3780134251bb09a78393ad7e4ab3bf4309bffa34",
+          "scores": "data/qwen3.8-27b/102-32/vllm/scores.json",
+          "scores_sha256": "5483e5f5a6a1f93648d7dd82bb27c43a39ebe9c971db572836f7b818dcb57e34",
+          "input": "data/qwen3.8-27b/102-32/input.json"
+        },
+        "500-200": {
+          "rows": 205,
+          "bytes": 203622400,
+          "rows_manifest_sha256": "00690e963561df590d062b250140d39280f48a4184e0f6dcaa4c42f9ccdd1ba9",
+          "scores": "data/qwen3.8-27b/500-200/vllm/scores.json",
+          "scores_sha256": "0c4cf6d8d3b120c5640b17892a339323080825defab4167441e0ce7e99e3b133",
+          "input": "data/qwen3.8-27b/500-200/input.json"
+        },
+        "4000-800": {
+          "rows": 805,
+          "bytes": 799590400,
+          "rows_manifest_sha256": "faad10822bfafec1af5b2df3ba14e1e190ce474bd54353f44950c56650dcef17",
+          "scores": "data/qwen3.8-27b/4000-800/vllm/scores.json",
+          "scores_sha256": "5527ed26100df707c9e5b319a47f62ad6c6784cd599072f05e9b501ae538a451",
+          "input": "data/qwen3.8-27b/4000-800/input.json"
+        }
+      }
+    }
+  }
+}

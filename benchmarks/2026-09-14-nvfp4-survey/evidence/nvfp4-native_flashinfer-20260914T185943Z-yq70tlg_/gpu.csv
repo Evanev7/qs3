@@ -1,0 +1,2 @@
+name, driver_version, memory.total [MiB], memory.used [MiB], utilization.gpu [%], temperature.gpu
+NVIDIA GB10, 580.142, [N/A], [N/A], 0 %, 58

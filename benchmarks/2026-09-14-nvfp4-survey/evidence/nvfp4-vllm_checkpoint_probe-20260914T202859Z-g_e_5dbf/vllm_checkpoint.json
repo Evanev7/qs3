@@ -1,0 +1,374 @@
+{
+  "status": "ok",
+  "model_name": "qwen3.6-35b-a3b-nvfp4",
+  "model_repo": "nvidia/Qwen3.6-35B-A3B-NVFP4",
+  "snapshot": "/hf/models--nvidia--Qwen3.6-35B-A3B-NVFP4/snapshots/6c7f09d4036e97393f82e9f9ecd1a5c35ca5ee92",
+  "revision": "6c7f09d4036e97393f82e9f9ecd1a5c35ca5ee92",
+  "prompt_ids": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "max_new_tokens": 4,
+  "graphs": false,
+  "precision": "checkpoint-declared linear precision; explicit BF16 KV cache",
+  "model_runner": "v1",
+  "versions": {
+    "vllm": "0.29.0",
+    "torch": "2.13.0+cu130",
+    "transformers": "5.16.1",
+    "flashinfer-python": "0.6.18",
+    "nvidia-cutlass-dsl": "4.6.2"
+  },
+  "config_sha256": "58aefa1c9eff7989f431d748f2ddec39446cb1fd2a69acc46e285c6a37b0cecc",
+  "required_layer_algorithms": {
+    "FP8": 130,
+    "W4A16_NVFP4": 161
+  },
+  "stage": "generation-complete",
+  "elapsed_seconds": 229.35114148585126,
+  "installed_vllm": {
+    "path": "/usr/local/lib/python3.12/dist-packages/vllm/__init__.py",
+    "modelopt_path": "/usr/local/lib/python3.12/dist-packages/vllm/model_executor/layers/quantization/modelopt.py",
+    "quant_algorithms": [
+      "FP8",
+      "FP8_PER_CHANNEL_PER_TOKEN",
+      "FP8_PB_WO",
+      "NVFP4",
+      "W4A16_NVFP4",
+      "MXFP8",
+      "MIXED_PRECISION"
+    ],
+    "mixed_class_sha256": "3472cd7cec50da72a763896ae9b4eb66b0db745ad27ea5ffee8f117c5300b632"
+  },
+  "parsed_quant_config": {
+    "type": "ModelOptMixedPrecisionConfig",
+    "name": "modelopt_mixed"
+  },
+  "options": {
+    "model": "/hf/models--nvidia--Qwen3.6-35B-A3B-NVFP4/snapshots/6c7f09d4036e97393f82e9f9ecd1a5c35ca5ee92",
+    "dtype": "bfloat16",
+    "quantization": null,
+    "skip_tokenizer_init": true,
+    "tensor_parallel_size": 1,
+    "max_num_seqs": 1,
+    "max_model_len": 256,
+    "max_num_batched_tokens": 256,
+    "enable_prefix_caching": false,
+    "enable_chunked_prefill": false,
+    "enforce_eager": true,
+    "gpu_memory_utilization": 0.5,
+    "kv_cache_memory_bytes": 268435456,
+    "kv_cache_dtype": "bfloat16",
+    "mamba_cache_dtype": "auto",
+    "mamba_ssm_cache_dtype": "float32",
+    "limit_mm_per_prompt": {
+      "image": 0,
+      "video": 0
+    },
+    "moe_backend": "marlin",
+    "seed": 0
+  },
+  "engine_arguments_accepted": "marlin",
+  "preflight_kv_cache_dtype": "bfloat16",
+  "preflight_dispatch": [
+    {
+      "prefix": "model.language_model.layers.0.linear_attn.out_proj",
+      "algorithm": "FP8",
+      "method": "ModelOptFp8LinearMethod",
+      "kernel": "NoneType"
+    },
+    {
+      "prefix": "model.language_model.layers.0.mlp.shared_expert.gate_proj",
+      "algorithm": "W4A16_NVFP4",
+      "method": "ModelOptNvFp4W4A16LinearMethod",
+      "kernel": "MarlinNvFp4LinearKernel"
+    }
+  ],
+  "gpu": {
+    "name": "NVIDIA GB10",
+    "capability": [
+      12,
+      1
+    ]
+  },
+  "load_seconds": 166.7887494652532,
+  "resolved_config": "model='/hf/models--nvidia--Qwen3.6-35B-A3B-NVFP4/snapshots/6c7f09d4036e97393f82e9f9ecd1a5c35ca5ee92', speculative_config=None, tokenizer='/hf/models--nvidia--Qwen3.6-35B-A3B-NVFP4/snapshots/6c7f09d4036e97393f82e9f9ecd1a5c35ca5ee92', skip_tokenizer_init=True, tokenizer_mode=auto, revision=None, tokenizer_revision=None, trust_remote_code=False, dtype=torch.bfloat16, max_seq_len=256, download_dir=None, load_format=auto, tensor_parallel_size=1, pipeline_parallel_size=1, data_parallel_size=1, decode_context_parallel_size=1, dcp_comm_backend=ag_rs, disable_custom_all_reduce=False, quantization=modelopt_mixed, quantization_config=None, enforce_eager=True, enable_return_routed_experts=False, kv_cache_dtype=bfloat16, device_config=cuda, structured_outputs_config=StructuredOutputsConfig(backend='auto', disable_any_whitespace=False, disable_additional_properties=False, reasoning_parser='', reasoning_parser_plugin='', enable_in_reasoning=False), observability_config=ObservabilityConfig(show_hidden_metrics_for_version=None, otlp_traces_endpoint=None, collect_detailed_traces=None, per_request_spec_decode_metrics='none', kv_cache_metrics=False, kv_cache_metrics_sample=0.01, cudagraph_metrics=False, enable_layerwise_nvtx_tracing=False, enable_mfu_metrics=False, enable_mm_processor_stats=False, enable_logging_iteration_details=False, jit_monitor_mode='warn', jit_monitor_verbose=False), seed=0, served_model_name=/hf/models--nvidia--Qwen3.6-35B-A3B-NVFP4/snapshots/6c7f09d4036e97393f82e9f9ecd1a5c35ca5ee92, enable_prefix_caching=False, enable_chunked_prefill=False, pooler_config=None, compilation_config={'mode': <CompilationMode.NONE: 0>, 'debug_dump_path': None, 'cache_dir': '', 'compile_cache_save_format': 'binary', 'backend': 'inductor', 'custom_ops': ['all'], 'ir_enable_torch_wrap': False, 'splitting_ops': [], 'compile_mm_encoder': False, 'cudagraph_mm_encoder': False, 'encoder_cudagraph_token_budgets': [], 'encoder_cudagraph_max_vision_items_per_batch': 0, 'encoder_cudagraph_max_frames_per_batch': None, 'compile_sizes': [], 'compile_ranges_endpoints': [256], 'inductor_compile_config': {'enable_auto_functionalized_v2': False, 'combo_kernels': True, 'benchmark_combo_kernel': True}, 'inductor_passes': {}, 'cudagraph_mode': <CUDAGraphMode.NONE: 0>, 'cudagraph_num_of_warmups': 0, 'cudagraph_capture_sizes': [], 'cudagraph_copy_inputs': False, 'cudagraph_specialize_lora': True, 'use_inductor_graph_partition': False, 'pass_config': {'fuse_norm_quant': True, 'fuse_act_quant': True, 'fuse_attn_quant': False, 'enable_sp': False, 'fuse_gemm_comms': False, 'fuse_allreduce_rms': False, 'enable_qk_norm_rope_fusion': False, 'fuse_rope_kvcache_cat_mla': False, 'fuse_act_padding': False, 'fuse_qk_norm_rope_kvcache': False}, 'max_cudagraph_capture_size': 0, 'dynamic_shapes_config': {'type': <DynamicShapesType.BACKED: 'backed'>, 'evaluate_guards': False, 'assume_32_bit_indexing': False}, 'local_cache_dir': None, 'fast_moe_cold_start': False, 'static_all_moe_layers': ['language_model.model.layers.0.mlp.experts', 'language_model.model.layers.1.mlp.experts', 'language_model.model.layers.2.mlp.experts', 'language_model.model.layers.3.mlp.experts', 'language_model.model.layers.4.mlp.experts', 'language_model.model.layers.5.mlp.experts', 'language_model.model.layers.6.mlp.experts', 'language_model.model.layers.7.mlp.experts', 'language_model.model.layers.8.mlp.experts', 'language_model.model.layers.9.mlp.experts', 'language_model.model.layers.10.mlp.experts', 'language_model.model.layers.11.mlp.experts', 'language_model.model.layers.12.mlp.experts', 'language_model.model.layers.13.mlp.experts', 'language_model.model.layers.14.mlp.experts', 'language_model.model.layers.15.mlp.experts', 'language_model.model.layers.16.mlp.experts', 'language_model.model.layers.17.mlp.experts', 'language_model.model.layers.18.mlp.experts', 'language_model.model.layers.19.mlp.experts', 'language_model.model.layers.20.mlp.experts', 'language_model.model.layers.21.mlp.experts', 'language_model.model.layers.22.mlp.experts', 'language_model.model.layers.23.mlp.experts', 'language_model.model.layers.24.mlp.experts', 'language_model.model.layers.25.mlp.experts', 'language_model.model.layers.26.mlp.experts', 'language_model.model.layers.27.mlp.experts', 'language_model.model.layers.28.mlp.experts', 'language_model.model.layers.29.mlp.experts', 'language_model.model.layers.30.mlp.experts', 'language_model.model.layers.31.mlp.experts', 'language_model.model.layers.32.mlp.experts', 'language_model.model.layers.33.mlp.experts', 'language_model.model.layers.34.mlp.experts', 'language_model.model.layers.35.mlp.experts', 'language_model.model.layers.36.mlp.experts', 'language_model.model.layers.37.mlp.experts', 'language_model.model.layers.38.mlp.experts', 'language_model.model.layers.39.mlp.experts']}, kernel_config=KernelConfig(ir_op_priority=IrOpPriorityConfig(rms_norm=['vllm_c', 'native'], fused_add_rms_norm=['vllm_c', 'native']), enable_flashinfer_autotune=True, enable_cutedsl_warmup=True, enable_jit_warmup=True, enable_bf16x3_router_gemm=False, moe_backend='marlin', linear_backend='auto')",
+  "resolved_quantization": "modelopt_mixed",
+  "resolved_kernel_config": "KernelConfig(ir_op_priority=IrOpPriorityConfig(rms_norm=['vllm_c', 'native'], fused_add_rms_norm=['vllm_c', 'native']), enable_flashinfer_autotune=True, enable_cutedsl_warmup=True, enable_jit_warmup=True, enable_bf16x3_router_gemm=False, moe_backend='marlin', linear_backend='auto')",
+  "resolved_compilation_config": "{'mode': <CompilationMode.NONE: 0>, 'debug_dump_path': None, 'cache_dir': '', 'compile_cache_save_format': 'binary', 'backend': 'inductor', 'custom_ops': ['all'], 'ir_enable_torch_wrap': False, 'splitting_ops': [], 'compile_mm_encoder': False, 'cudagraph_mm_encoder': False, 'encoder_cudagraph_token_budgets': [], 'encoder_cudagraph_max_vision_items_per_batch': 0, 'encoder_cudagraph_max_frames_per_batch': None, 'compile_sizes': [], 'compile_ranges_endpoints': [256], 'inductor_compile_config': {'enable_auto_functionalized_v2': False, 'combo_kernels': True, 'benchmark_combo_kernel': True}, 'inductor_passes': {}, 'cudagraph_mode': <CUDAGraphMode.NONE: 0>, 'cudagraph_num_of_warmups': 0, 'cudagraph_capture_sizes': [], 'cudagraph_copy_inputs': False, 'cudagraph_specialize_lora': True, 'use_inductor_graph_partition': False, 'pass_config': {'fuse_norm_quant': True, 'fuse_act_quant': True, 'fuse_attn_quant': False, 'enable_sp': False, 'fuse_gemm_comms': False, 'fuse_allreduce_rms': False, 'enable_qk_norm_rope_fusion': False, 'fuse_rope_kvcache_cat_mla': False, 'fuse_act_padding': False, 'fuse_qk_norm_rope_kvcache': False}, 'max_cudagraph_capture_size': 0, 'dynamic_shapes_config': {'type': <DynamicShapesType.BACKED: 'backed'>, 'evaluate_guards': False, 'assume_32_bit_indexing': False}, 'local_cache_dir': None, 'fast_moe_cold_start': False, 'static_all_moe_layers': ['language_model.model.layers.0.mlp.experts', 'language_model.model.layers.1.mlp.experts', 'language_model.model.layers.2.mlp.experts', 'language_model.model.layers.3.mlp.experts', 'language_model.model.layers.4.mlp.experts', 'language_model.model.layers.5.mlp.experts', 'language_model.model.layers.6.mlp.experts', 'language_model.model.layers.7.mlp.experts', 'language_model.model.layers.8.mlp.experts', 'language_model.model.layers.9.mlp.experts', 'language_model.model.layers.10.mlp.experts', 'language_model.model.layers.11.mlp.experts', 'language_model.model.layers.12.mlp.experts', 'language_model.model.layers.13.mlp.experts', 'language_model.model.layers.14.mlp.experts', 'language_model.model.layers.15.mlp.experts', 'language_model.model.layers.16.mlp.experts', 'language_model.model.layers.17.mlp.experts', 'language_model.model.layers.18.mlp.experts', 'language_model.model.layers.19.mlp.experts', 'language_model.model.layers.20.mlp.experts', 'language_model.model.layers.21.mlp.experts', 'language_model.model.layers.22.mlp.experts', 'language_model.model.layers.23.mlp.experts', 'language_model.model.layers.24.mlp.experts', 'language_model.model.layers.25.mlp.experts', 'language_model.model.layers.26.mlp.experts', 'language_model.model.layers.27.mlp.experts', 'language_model.model.layers.28.mlp.experts', 'language_model.model.layers.29.mlp.experts', 'language_model.model.layers.30.mlp.experts', 'language_model.model.layers.31.mlp.experts', 'language_model.model.layers.32.mlp.experts', 'language_model.model.layers.33.mlp.experts', 'language_model.model.layers.34.mlp.experts', 'language_model.model.layers.35.mlp.experts', 'language_model.model.layers.36.mlp.experts', 'language_model.model.layers.37.mlp.experts', 'language_model.model.layers.38.mlp.experts', 'language_model.model.layers.39.mlp.experts']}",
+  "resolved_kv_cache_dtype": "bfloat16",
+  "model_backends": [
+    {
+      "model_class": "Qwen3_5MoeForConditionalGeneration",
+      "quantized_method_counts": {
+        "{\"method\": \"UnquantizedEmbeddingMethod\"}": 1,
+        "{\"method\": \"UnquantizedLinearMethod\"}": 140,
+        "{\"method\": \"ModelOptFp8LinearMethod\"}": 80,
+        "{\"kernel\": \"<class 'vllm.model_executor.kernels.linear.nvfp4.marlin.MarlinNvFp4LinearKernel'>\", \"method\": \"ModelOptNvFp4W4A16LinearMethod\"}": 81,
+        "{\"experts_cls\": \"<class 'vllm.model_executor.layers.fused_moe.experts.marlin_moe.MarlinExperts'>\", \"method\": \"ModelOptNvFp4FusedMoE\", \"nvfp4_backend\": \"NvFp4MoeBackend.MARLIN\", \"use_a16\": \"True\"}": 40
+      },
+      "examples": [
+        {
+          "name": "language_model.model.embed_tokens",
+          "method": "UnquantizedEmbeddingMethod"
+        },
+        {
+          "name": "language_model.model.layers.0.linear_attn.conv1d",
+          "method": "UnquantizedLinearMethod"
+        },
+        {
+          "name": "language_model.model.layers.0.linear_attn.in_proj_qkvz",
+          "method": "ModelOptFp8LinearMethod"
+        },
+        {
+          "name": "language_model.model.layers.0.linear_attn.in_proj_ba",
+          "method": "UnquantizedLinearMethod"
+        },
+        {
+          "name": "language_model.model.layers.0.linear_attn.out_proj",
+          "method": "ModelOptFp8LinearMethod"
+        },
+        {
+          "name": "language_model.model.layers.0.mlp.gate",
+          "method": "UnquantizedLinearMethod"
+        },
+        {
+          "name": "language_model.model.layers.0.mlp.shared_expert_gate",
+          "method": "UnquantizedLinearMethod"
+        },
+        {
+          "name": "language_model.model.layers.0.mlp.shared_expert.gate_up_proj",
+          "method": "ModelOptNvFp4W4A16LinearMethod",
+          "kernel": "<class 'vllm.model_executor.kernels.linear.nvfp4.marlin.MarlinNvFp4LinearKernel'>"
+        },
+        {
+          "name": "language_model.model.layers.0.mlp.shared_expert.down_proj",
+          "method": "ModelOptNvFp4W4A16LinearMethod",
+          "kernel": "<class 'vllm.model_executor.kernels.linear.nvfp4.marlin.MarlinNvFp4LinearKernel'>"
+        },
+        {
+          "name": "language_model.model.layers.0.mlp.experts.routed_experts",
+          "method": "ModelOptNvFp4FusedMoE",
+          "nvfp4_backend": "NvFp4MoeBackend.MARLIN",
+          "use_a16": "True",
+          "experts_cls": "<class 'vllm.model_executor.layers.fused_moe.experts.marlin_moe.MarlinExperts'>"
+        },
+        {
+          "name": "language_model.model.layers.1.linear_attn.conv1d",
+          "method": "UnquantizedLinearMethod"
+        },
+        {
+          "name": "language_model.model.layers.1.linear_attn.in_proj_qkvz",
+          "method": "ModelOptFp8LinearMethod"
+        },
+        {
+          "name": "language_model.model.layers.1.linear_attn.in_proj_ba",
+          "method": "UnquantizedLinearMethod"
+        },
+        {
+          "name": "language_model.model.layers.1.linear_attn.out_proj",
+          "method": "ModelOptFp8LinearMethod"
+        },
+        {
+          "name": "language_model.model.layers.1.mlp.gate",
+          "method": "UnquantizedLinearMethod"
+        },
+        {
+          "name": "language_model.model.layers.1.mlp.shared_expert_gate",
+          "method": "UnquantizedLinearMethod"
+        },
+        {
+          "name": "language_model.model.layers.1.mlp.shared_expert.gate_up_proj",
+          "method": "ModelOptNvFp4W4A16LinearMethod",
+          "kernel": "<class 'vllm.model_executor.kernels.linear.nvfp4.marlin.MarlinNvFp4LinearKernel'>"
+        },
+        {
+          "name": "language_model.model.layers.1.mlp.shared_expert.down_proj",
+          "method": "ModelOptNvFp4W4A16LinearMethod",
+          "kernel": "<class 'vllm.model_executor.kernels.linear.nvfp4.marlin.MarlinNvFp4LinearKernel'>"
+        },
+        {
+          "name": "language_model.model.layers.1.mlp.experts.routed_experts",
+          "method": "ModelOptNvFp4FusedMoE",
+          "nvfp4_backend": "NvFp4MoeBackend.MARLIN",
+          "use_a16": "True",
+          "experts_cls": "<class 'vllm.model_executor.layers.fused_moe.experts.marlin_moe.MarlinExperts'>"
+        },
+        {
+          "name": "language_model.model.layers.2.linear_attn.conv1d",
+          "method": "UnquantizedLinearMethod"
+        },
+        {
+          "name": "language_model.model.layers.2.linear_attn.in_proj_qkvz",
+          "method": "ModelOptFp8LinearMethod"
+        },
+        {
+          "name": "language_model.model.layers.2.linear_attn.in_proj_ba",
+          "method": "UnquantizedLinearMethod"
+        },
+        {
+          "name": "language_model.model.layers.2.linear_attn.out_proj",
+          "method": "ModelOptFp8LinearMethod"
+        },
+        {
+          "name": "language_model.model.layers.2.mlp.gate",
+          "method": "UnquantizedLinearMethod"
+        },
+        {
+          "name": "language_model.model.layers.2.mlp.shared_expert_gate",
+          "method": "UnquantizedLinearMethod"
+        },
+        {
+          "name": "language_model.model.layers.2.mlp.shared_expert.gate_up_proj",
+          "method": "ModelOptNvFp4W4A16LinearMethod",
+          "kernel": "<class 'vllm.model_executor.kernels.linear.nvfp4.marlin.MarlinNvFp4LinearKernel'>"
+        },
+        {
+          "name": "language_model.model.layers.2.mlp.shared_expert.down_proj",
+          "method": "ModelOptNvFp4W4A16LinearMethod",
+          "kernel": "<class 'vllm.model_executor.kernels.linear.nvfp4.marlin.MarlinNvFp4LinearKernel'>"
+        },
+        {
+          "name": "language_model.model.layers.2.mlp.experts.routed_experts",
+          "method": "ModelOptNvFp4FusedMoE",
+          "nvfp4_backend": "NvFp4MoeBackend.MARLIN",
+          "use_a16": "True",
+          "experts_cls": "<class 'vllm.model_executor.layers.fused_moe.experts.marlin_moe.MarlinExperts'>"
+        },
+        {
+          "name": "language_model.model.layers.3.self_attn.qkv_proj",
+          "method": "ModelOptFp8LinearMethod"
+        },
+        {
+          "name": "language_model.model.layers.3.self_attn.o_proj",
+          "method": "ModelOptFp8LinearMethod"
+        },
+        {
+          "name": "language_model.model.layers.3.mlp.gate",
+          "method": "UnquantizedLinearMethod"
+        },
+        {
+          "name": "language_model.model.layers.3.mlp.shared_expert_gate",
+          "method": "UnquantizedLinearMethod"
+        },
+        {
+          "name": "language_model.model.layers.3.mlp.shared_expert.gate_up_proj",
+          "method": "ModelOptNvFp4W4A16LinearMethod",
+          "kernel": "<class 'vllm.model_executor.kernels.linear.nvfp4.marlin.MarlinNvFp4LinearKernel'>"
+        },
+        {
+          "name": "language_model.model.layers.3.mlp.shared_expert.down_proj",
+          "method": "ModelOptNvFp4W4A16LinearMethod",
+          "kernel": "<class 'vllm.model_executor.kernels.linear.nvfp4.marlin.MarlinNvFp4LinearKernel'>"
+        },
+        {
+          "name": "language_model.model.layers.3.mlp.experts.routed_experts",
+          "method": "ModelOptNvFp4FusedMoE",
+          "nvfp4_backend": "NvFp4MoeBackend.MARLIN",
+          "use_a16": "True",
+          "experts_cls": "<class 'vllm.model_executor.layers.fused_moe.experts.marlin_moe.MarlinExperts'>"
+        }
+      ]
+    }
+  ],
+  "generation_seconds": 45.56168482173234,
+  "generated_ids": [
+    5,
+    6,
+    24218,
+    10
+  ],
+  "finish_reason": "length",
+  "logprobs": [
+    {
+      "5": {
+        "logprob": -0.6721125841140747,
+        "rank": 1
+      },
+      "3": {
+        "logprob": -2.609612464904785,
+        "rank": 2
+      },
+      "220": {
+        "logprob": -3.422112464904785,
+        "rank": 3
+      },
+      "2": {
+        "logprob": -3.922112464904785,
+        "rank": 4
+      },
+      "61": {
+        "logprob": -4.172112464904785,
+        "rank": 5
+      }
+    },
+    {
+      "6": {
+        "logprob": -0.1977575719356537,
+        "rank": 1
+      },
+      "4": {
+        "logprob": -4.635257720947266,
+        "rank": 2
+      },
+      "9867": {
+        "logprob": -4.760257720947266,
+        "rank": 3
+      },
+      "56374": {
+        "logprob": -4.760257720947266,
+        "rank": 4
+      },
+      "220": {
+        "logprob": -4.822757720947266,
+        "rank": 5
+      }
+    },
+    {
+      "24218": {
+        "logprob": -0.2472459226846695,
+        "rank": 1
+      },
+      "363": {
+        "logprob": -2.622246026992798,
+        "rank": 2
+      },
+      "1659": {
+        "logprob": -4.247245788574219,
+        "rank": 3
+      },
+      "3935": {
+        "logprob": -4.372245788574219,
+        "rank": 4
+      },
+      "318": {
+        "logprob": -4.497245788574219,
+        "rank": 5
+      }
+    },
+    {
+      "10": {
+        "logprob": -0.14871004223823547,
+        "rank": 1
+      },
+      "43181": {
+        "logprob": -3.398710012435913,
+        "rank": 2
+      },
+      "20815": {
+        "logprob": -4.211210250854492,
+        "rank": 3
+      },
+      "5007": {
+        "logprob": -4.398710250854492,
+        "rank": 4
+      },
+      "1": {
+        "logprob": -4.523710250854492,
+        "rank": 5
+      }
+    }
+  ]
+}

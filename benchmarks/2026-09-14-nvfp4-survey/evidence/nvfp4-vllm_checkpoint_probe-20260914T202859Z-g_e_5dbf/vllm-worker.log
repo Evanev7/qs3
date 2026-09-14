@@ -1,0 +1,107 @@
+{"stage": "checkpoint-read", "status": "starting", "elapsed_seconds": 0.004494199063628912}
+WARNING 09-14 20:29:15 [modelopt.py:379] Detected ModelOpt fp8 checkpoint (quant_algo=FP8). Please note that the format is experimental and could change.
+WARNING 09-14 20:29:15 [modelopt.py:1029] Detected ModelOpt NVFP4 checkpoint (quant_algo=NVFP4). Please note that the format is experimental and could change in future.
+WARNING 09-14 20:29:15 [modelopt.py:1029] Detected ModelOpt NVFP4 checkpoint (quant_algo=W4A16_NVFP4). Please note that the format is experimental and could change in future.
+WARNING 09-14 20:29:15 [modelopt.py:1711] Detected ModelOpt MXFP8 checkpoint. Please note that the format is experimental and could change in future.
+WARNING 09-14 20:29:15 [arg_utils.py:1801] The global random seed is set to 0. Since VLLM_ENABLE_V1_MULTIPROCESSING is set to False, this may affect the random state of the Python process that launched vLLM.
+INFO 09-14 20:29:15 [model.py:684] Resolved architecture: Qwen3_5MoeForConditionalGeneration
+INFO 09-14 20:29:15 [model.py:2021] Using max model len 256
+WARNING 09-14 20:29:15 [model.py:981] Model does not support mm_device_do_normalize, forcing mm_device_do_normalize = False.
+INFO 09-14 20:29:16 [registry.py:141] All limits of multimodal modalities supported by the model are set to 0, running in text-only mode.
+INFO 09-14 20:29:16 [model.py:887] Disabled mm_prefix attention mode because multimodal inputs are configuration-disabled. Attention backends without mm_prefix support may now be selected.
+WARNING 09-14 20:29:16 [arg_utils.py:2780] This model does not officially support disabling chunked prefill. Disabling this manually may cause the engine to crash or produce incorrect outputs.
+WARNING 09-14 20:29:16 [modelopt.py:379] Detected ModelOpt fp8 checkpoint (quant_algo=FP8). Please note that the format is experimental and could change.
+WARNING 09-14 20:29:16 [modelopt.py:1029] Detected ModelOpt NVFP4 checkpoint (quant_algo=NVFP4). Please note that the format is experimental and could change in future.
+WARNING 09-14 20:29:16 [modelopt.py:1029] Detected ModelOpt NVFP4 checkpoint (quant_algo=W4A16_NVFP4). Please note that the format is experimental and could change in future.
+WARNING 09-14 20:29:16 [modelopt.py:1711] Detected ModelOpt MXFP8 checkpoint. Please note that the format is experimental and could change in future.
+WARNING 09-14 20:29:16 [vllm.py:1371] Enforce eager set, disabling torch.compile and CUDAGraphs. This is equivalent to setting -cc.mode=none -cc.cudagraph_mode=none
+WARNING 09-14 20:29:16 [vllm.py:1406] Inductor compilation was disabled by user settings, optimizations settings that are only active during inductor compilation will be ignored.
+INFO 09-14 20:29:16 [kernel.py:369] Final IR op priority after setting platform defaults: IrOpPriorityConfig(rms_norm=['vllm_c', 'native'], fused_add_rms_norm=['vllm_c', 'native'])
+INFO 09-14 20:29:16 [vllm.py:1585] Cudagraph is disabled under eager mode
+INFO 09-14 20:29:16 [compilation.py:329] Enabled custom fusions: norm_quant, act_quant
+INFO 09-14 20:29:16 [__init__.py:1066] Using MarlinNvFp4LinearKernel for NVFP4 GEMM
+{"stage": "quantization-dispatch-checked", "status": "starting", "elapsed_seconds": 16.997685276903212}
+{"stage": "starting-model-load", "status": "starting", "elapsed_seconds": 16.997935232240707}
+INFO 09-14 20:29:16 [api_utils.py:286] non-default args: {'skip_tokenizer_init': True, 'dtype': 'bfloat16', 'kv_cache_dtype': 'bfloat16', 'max_model_len': 256, 'moe_backend': 'marlin', 'enable_prefix_caching': False, 'gpu_memory_utilization': 0.5, 'kv_cache_memory_bytes': 268435456, 'max_num_batched_tokens': 256, 'max_num_seqs': 1, 'disable_log_stats': True, 'enforce_eager': True, 'limit_mm_per_prompt': {'image': 0, 'video': 0}, 'enable_chunked_prefill': False, 'mamba_ssm_cache_dtype': 'float32', 'model': '/hf/models--nvidia--Qwen3.6-35B-A3B-NVFP4/snapshots/6c7f09d4036e97393f82e9f9ecd1a5c35ca5ee92'}
+WARNING 09-14 20:29:16 [arg_utils.py:1801] The global random seed is set to 0. Since VLLM_ENABLE_V1_MULTIPROCESSING is set to False, this may affect the random state of the Python process that launched vLLM.
+INFO 09-14 20:29:16 [model.py:684] Resolved architecture: Qwen3_5MoeForConditionalGeneration
+INFO 09-14 20:29:16 [model.py:2021] Using max model len 256
+WARNING 09-14 20:29:16 [model.py:981] Model does not support mm_device_do_normalize, forcing mm_device_do_normalize = False.
+WARNING 09-14 20:29:16 [modelopt.py:379] Detected ModelOpt fp8 checkpoint (quant_algo=FP8). Please note that the format is experimental and could change.
+WARNING 09-14 20:29:16 [modelopt.py:1029] Detected ModelOpt NVFP4 checkpoint (quant_algo=NVFP4). Please note that the format is experimental and could change in future.
+WARNING 09-14 20:29:16 [modelopt.py:1029] Detected ModelOpt NVFP4 checkpoint (quant_algo=W4A16_NVFP4). Please note that the format is experimental and could change in future.
+WARNING 09-14 20:29:16 [modelopt.py:1711] Detected ModelOpt MXFP8 checkpoint. Please note that the format is experimental and could change in future.
+INFO 09-14 20:29:16 [kernel.py:369] Final IR op priority after setting platform defaults: IrOpPriorityConfig(rms_norm=['vllm_c', 'native'], fused_add_rms_norm=['vllm_c', 'native'])
+INFO 09-14 20:29:16 [core.py:123] Initializing a V1 LLM engine (v0.29.0) with config: model='/hf/models--nvidia--Qwen3.6-35B-A3B-NVFP4/snapshots/6c7f09d4036e97393f82e9f9ecd1a5c35ca5ee92', speculative_config=None, tokenizer='/hf/models--nvidia--Qwen3.6-35B-A3B-NVFP4/snapshots/6c7f09d4036e97393f82e9f9ecd1a5c35ca5ee92', skip_tokenizer_init=True, tokenizer_mode=auto, revision=None, tokenizer_revision=None, trust_remote_code=False, dtype=torch.bfloat16, max_seq_len=256, download_dir=None, load_format=auto, tensor_parallel_size=1, pipeline_parallel_size=1, data_parallel_size=1, decode_context_parallel_size=1, dcp_comm_backend=ag_rs, disable_custom_all_reduce=False, quantization=modelopt_mixed, quantization_config=None, enforce_eager=True, enable_return_routed_experts=False, kv_cache_dtype=bfloat16, device_config=cuda, structured_outputs_config=StructuredOutputsConfig(backend='auto', disable_any_whitespace=False, disable_additional_properties=False, reasoning_parser='', reasoning_parser_plugin='', enable_in_reasoning=False), observability_config=ObservabilityConfig(show_hidden_metrics_for_version=None, otlp_traces_endpoint=None, collect_detailed_traces=None, per_request_spec_decode_metrics='none', kv_cache_metrics=False, kv_cache_metrics_sample=0.01, cudagraph_metrics=False, enable_layerwise_nvtx_tracing=False, enable_mfu_metrics=False, enable_mm_processor_stats=False, enable_logging_iteration_details=False, jit_monitor_mode='warn', jit_monitor_verbose=False), seed=0, served_model_name=/hf/models--nvidia--Qwen3.6-35B-A3B-NVFP4/snapshots/6c7f09d4036e97393f82e9f9ecd1a5c35ca5ee92, enable_prefix_caching=False, enable_chunked_prefill=False, pooler_config=None, compilation_config={'mode': <CompilationMode.NONE: 0>, 'debug_dump_path': None, 'cache_dir': '', 'compile_cache_save_format': 'binary', 'backend': 'inductor', 'custom_ops': ['all'], 'ir_enable_torch_wrap': False, 'splitting_ops': [], 'compile_mm_encoder': False, 'cudagraph_mm_encoder': False, 'encoder_cudagraph_token_budgets': [], 'encoder_cudagraph_max_vision_items_per_batch': 0, 'encoder_cudagraph_max_frames_per_batch': None, 'compile_sizes': [], 'compile_ranges_endpoints': [256], 'inductor_compile_config': {'enable_auto_functionalized_v2': False, 'combo_kernels': True, 'benchmark_combo_kernel': True}, 'inductor_passes': {}, 'cudagraph_mode': <CUDAGraphMode.NONE: 0>, 'cudagraph_num_of_warmups': 0, 'cudagraph_capture_sizes': [], 'cudagraph_copy_inputs': False, 'cudagraph_specialize_lora': True, 'use_inductor_graph_partition': False, 'pass_config': {'fuse_norm_quant': True, 'fuse_act_quant': True, 'fuse_attn_quant': False, 'enable_sp': False, 'fuse_gemm_comms': False, 'fuse_allreduce_rms': False, 'enable_qk_norm_rope_fusion': False, 'fuse_rope_kvcache_cat_mla': False, 'fuse_act_padding': False, 'fuse_qk_norm_rope_kvcache': False}, 'max_cudagraph_capture_size': 0, 'dynamic_shapes_config': {'type': <DynamicShapesType.BACKED: 'backed'>, 'evaluate_guards': False, 'assume_32_bit_indexing': False}, 'local_cache_dir': None, 'fast_moe_cold_start': False, 'static_all_moe_layers': []}, kernel_config=KernelConfig(ir_op_priority=IrOpPriorityConfig(rms_norm=['vllm_c', 'native'], fused_add_rms_norm=['vllm_c', 'native']), enable_flashinfer_autotune=True, enable_cutedsl_warmup=True, enable_jit_warmup=True, enable_bf16x3_router_gemm=False, moe_backend='marlin', linear_backend='auto')
+INFO 09-14 20:29:17 [parallel_state.py:1775] world_size=1 rank=0 local_rank=0 distributed_init_method=file:///tmp/vllm_dist_8e662811a7c64d108f777ec79c7995f1 backend=nccl
+[rank0]:[W914 20:29:17.416814701 ProcessGroupGloo.cpp:524] Warning: Unable to resolve hostname to a (local) address. Using the loopback address as fallback. Manually set the network interface to bind to with GLOO_SOCKET_IFNAME. (function operator())
+INFO 09-14 20:29:17 [parallel_state.py:2119] rank 0 in world size 1 is assigned as DP rank 0, PP rank 0, PCP rank 0, TP rank 0, EP rank 0, EPLB rank N/A
+INFO 09-14 20:29:17 [topk_topp_sampler.py:62] Using FlashInfer for top-p & top-k sampling.
+INFO 09-14 20:29:17 [gpu_model_runner.py:5379] Starting to load model /hf/models--nvidia--Qwen3.6-35B-A3B-NVFP4/snapshots/6c7f09d4036e97393f82e9f9ecd1a5c35ca5ee92...
+INFO 09-14 20:29:17 [cuda.py:551] Using backend AttentionBackendEnum.FLASH_ATTN for vit attention
+INFO 09-14 20:29:17 [mm_encoder_attention.py:372] Using AttentionBackendEnum.FLASH_ATTN for MMEncoderAttention.
+INFO 09-14 20:29:17 [__init__.py:726] Selected FlashInferFP8ScaledMMLinearKernel for ModelOptFp8LinearMethod
+INFO 09-14 20:29:17 [deep_gemm.py:186] deep_gemm not found in site-packages, trying vendored vllm.third_party.deep_gemm
+INFO 09-14 20:29:17 [deep_gemm.py:213] DeepGEMM PDL enabled on vllm.third_party.deep_gemm.
+INFO 09-14 20:29:17 [deep_gemm.py:131] DeepGEMM E8M0 enabled on current platform.
+INFO 09-14 20:29:17 [qwen_gdn_linear_attn.py:167] Using Triton/FLA GDN prefill kernel (requested=auto, head_k_dim=128).
+INFO 09-14 20:29:17 [qwen_gdn_linear_attn.py:519] GDN decode kernel: cuda
+INFO 09-14 20:29:17 [nvfp4.py:261] Using 'MARLIN' NvFp4 MoE backend out of potential backends: ['FLASHINFER_TRTLLM', 'FLASHINFER_CUTEDSL', 'FLASHINFER_CUTEDSL_BATCHED', 'FLASHINFER_CUTLASS', 'VLLM_CUTLASS', 'MARLIN', 'HUMMING', 'EMULATION'].
+INFO 09-14 20:29:18 [cuda.py:492] Using FLASH_ATTN attention backend out of potential backends: ['FLASH_ATTN', 'FLASHINFER', 'TRITON_ATTN', 'FLEX_ATTENTION'].
+INFO 09-14 20:29:18 [flash_attn.py:897] Using FlashAttention version 2
+INFO 09-14 20:29:18 [weight_utils.py:863] Filesystem type for checkpoints: EXT4. Checkpoint size: 21.82 GiB. Available RAM: 94.05 GiB.
+INFO 09-14 20:29:18 [weight_utils.py:886] Auto-prefetch is disabled because the filesystem (EXT4) is not a recognized network FS (NFS/Lustre). If you want to force prefetching, start vLLM with --safetensors-load-strategy=prefetch.
+Loading safetensors checkpoint shards:   0% Completed | 0/3 [00:00<?, ?it/s]
+Loading safetensors checkpoint shards:  33% Completed | 1/3 [00:51<01:43, 51.56s/it]
+Loading safetensors checkpoint shards:  67% Completed | 2/3 [01:48<00:54, 54.94s/it]
+Loading safetensors checkpoint shards: 100% Completed | 3/3 [01:59<00:00, 34.73s/it]
+Loading safetensors checkpoint shards: 100% Completed | 3/3 [01:59<00:00, 39.85s/it]
+
+INFO 09-14 20:31:18 [default_loader.py:430] Loading weights took 119.78 seconds
+WARNING 09-14 20:31:18 [marlin.py:34] Your GPU does not have native support for FP4 computation but FP4 quantization is being used. Weight-only FP4 compression will be used leveraging the Marlin kernel. This may degrade performance for compute-heavy workloads.
+WARNING 09-14 20:31:19 [marlin_utils_fp4.py:354] Your GPU does not have native support for FP4 computation but FP4 quantization is being used. Weight-only FP4 compression will be used leveraging the Marlin kernel. This may degrade performance for compute-heavy workloads.
+INFO 09-14 20:31:19 [nvfp4.py:613] Using MoEPrepareAndFinalizeNoDPEPModular
+INFO 09-14 20:31:23 [gpu_model_runner.py:5471] Model loading took 19.55 GiB memory and 124.960011 seconds
+INFO 09-14 20:31:23 [interface.py:918] Setting attention block size to 1056 tokens to ensure that attention page size is >= mamba page size.
+INFO 09-14 20:31:23 [interface.py:942] Padding mamba page size by 0.76% to ensure that mamba page size and attention page size are exactly equal.
+INFO 09-14 20:31:23 [utils.py:306] Using LBNHC KV cache layout.
+Skipping cuDNN in bmm_fp8 auto candidates on SM12x: override_shape unavailable (cuDNN backend < 9.23.1); policy=ALL per-shape build is unbounded at serving time.
+/usr/local/lib/python3.12/dist-packages/triton/language/core.py:2284: UserWarning: tl.make_block_ptr is deprecated. Use TensorDescriptor or tl.make_tensor_descriptor instead.
+  warn("tl.make_block_ptr is deprecated. Use TensorDescriptor or tl.make_tensor_descriptor instead.")
+INFO 09-14 20:31:58 [marlin_utils.py:625] Marlin kernel can achieve better performance for small size_n with experimental use_atomic_add feature. You can consider set environment variable VLLM_MARLIN_USE_ATOMIC_ADD to 1 if possible.
+INFO 09-14 20:31:59 [gpu_worker.py:544] Initial free memory 114.3 GiB, reserved 0.25 GiB memory for KV Cache as specified by kv_cache_memory_bytes config and skipped memory profiling. This does not respect the gpu_memory_utilization config. Only use kv_cache_memory_bytes config when you want manual control of KV cache memory size. If OOM'ed, check the difference of initial free memory between the current run and the previous run where kv_cache_memory_bytes is suggested and update it correspondingly.
+INFO 09-14 20:31:59 [kv_cache_utils.py:2032] GPU KV cache size: 768 tokens, Maximum concurrency for 256 tokens per request: 3.00x
+INFO 09-14 20:31:59 [kernel_warmup.py:124] JIT kernel warmup starting.
+JIT kernel warmup (2 compile keys):   0%|          | 0/1 [00:00<?, ?kernel/s]JIT kernel warmup (2 compile keys): 100%|██████████| 1/1 [00:00<00:00,  5.59kernel/s, ComputeSlotMappingKernel (2 keys)]JIT kernel warmup (2 compile keys): 100%|██████████| 1/1 [00:00<00:00,  5.59kernel/s, ComputeSlotMappingKernel (2 keys)]
+INFO 09-14 20:31:59 [kernel_warmup.py:134] JIT kernel warmup finished in 0.18s.
+INFO 09-14 20:31:59 [qwen_triton_warmup.py:270] Warming up Qwen Triton kernels for model_type=qwen3_5_moe_text.
+INFO 09-14 20:32:00 [kernel_warmup.py:309] Using FlashInfer autotune cache file: /root/.cache/vllm/flashinfer_autotune_cache/0.6.18/121a/57dc98aaa5797ff6a7ce96ce04dfdfb107b8e1fc267c4320fef6666a357a37a9/autotune_configs.json
+2026-09-14 20:32:00,593 - INFO - autotuner.py:972 - flashinfer.jit: [Autotuner]: Autotuning process starts ...
+INFO 09-14 20:32:00 [kernel_warmup.py:266] Running FlashInfer autotune with 256 tokens.
+[AutoTuner]: Tuning fp8_gemm:   0%|          | 0/9 [00:00<?, ?profile/s][AutoTuner]: Tuning fp8_gemm:  78%|███████▊  | 7/9 [00:00<00:00, 50.51profile/s][AutoTuner]: Tuning fp8_gemm: 100%|██████████| 9/9 [00:00<00:00, 36.70profile/s]
+[AutoTuner]: Tuning fp8_gemm:   0%|          | 0/9 [00:00<?, ?profile/s][AutoTuner]: Tuning fp8_gemm:  78%|███████▊  | 7/9 [00:00<00:00, 23.96profile/s][AutoTuner]: Tuning fp8_gemm: 100%|██████████| 9/9 [00:00<00:00, 24.60profile/s]
+[AutoTuner]: Tuning fp8_gemm:   0%|          | 0/9 [00:00<?, ?profile/s][AutoTuner]: Tuning fp8_gemm:  89%|████████▉ | 8/9 [00:00<00:00, 78.64profile/s][AutoTuner]: Tuning fp8_gemm: 100%|██████████| 9/9 [00:00<00:00, 77.39profile/s]
+2026-09-14 20:32:01,665 - INFO - autotuner.py:995 - flashinfer.jit: [Autotuner]: Autotuning process ends
+2026-09-14 20:32:01,671 - INFO - autotuner.py:2652 - flashinfer.jit: [Autotuner]: Saved 27 configs to /root/.cache/vllm/flashinfer_autotune_cache/0.6.18/121a/57dc98aaa5797ff6a7ce96ce04dfdfb107b8e1fc267c4320fef6666a357a37a9/autotune_configs.json (27 new, 0 from previous config)
+INFO 09-14 20:32:03 [jit_monitor.py:85] Kernel JIT monitor activated; monitored JIT compilations during inference will use mode=warn.
+INFO 09-14 20:32:03 [torch_utils.py:277] Reducing Torch threads from 20 to 1 for serving. Set OMP_NUM_THREADS in the external environment to override.
+INFO 09-14 20:32:03 [core.py:368] init engine (profile, create kv cache, warmup model) took 40.10 s
+WARNING 09-14 20:32:03 [base.py:268] Chat template warmup failed
+WARNING 09-14 20:32:03 [base.py:268] Traceback (most recent call last):
+WARNING 09-14 20:32:03 [base.py:268]   File "/usr/local/lib/python3.12/dist-packages/vllm/renderers/base.py", line 261, in warmup
+WARNING 09-14 20:32:03 [base.py:268]     self.render_chat([[{"role": "user", "content": "warmup"}]], chat_params)
+WARNING 09-14 20:32:03 [base.py:268]   File "/usr/local/lib/python3.12/dist-packages/vllm/renderers/base.py", line 1044, in render_chat
+WARNING 09-14 20:32:03 [base.py:268]     self.render_messages(conversation, chat_params)
+WARNING 09-14 20:32:03 [base.py:268]   File "/usr/local/lib/python3.12/dist-packages/vllm/renderers/hf.py", line 942, in render_messages
+WARNING 09-14 20:32:03 [base.py:268]     tokenizer = self.get_tokenizer()
+WARNING 09-14 20:32:03 [base.py:268]                 ^^^^^^^^^^^^^^^^^^^^
+WARNING 09-14 20:32:03 [base.py:268]   File "/usr/local/lib/python3.12/dist-packages/vllm/renderers/base.py", line 167, in get_tokenizer
+WARNING 09-14 20:32:03 [base.py:268]     raise ValueError("Tokenizer not available when `skip_tokenizer_init=True`")
+WARNING 09-14 20:32:03 [base.py:268] ValueError: Tokenizer not available when `skip_tokenizer_init=True`
+{"stage": "model-loaded", "status": "starting", "elapsed_seconds": 183.78914165589958}
+WARNING 09-14 20:32:03 [base.py:313] Using None for EOS token id because tokenizer is not initialized
+WARNING 09-14 20:32:03 [jit_monitor.py:141] Triton kernel JIT compilation during inference: layer_norm_fwd_kernel. This causes a latency spike; consider extending warmup to cover this shape/config.
+WARNING 09-14 20:32:20 [jit_monitor.py:141] Triton kernel JIT compilation during inference: _causal_conv1d_update_kernel. This causes a latency spike; consider extending warmup to cover this shape/config.
+WARNING 09-14 20:32:20 [jit_monitor.py:141] Triton kernel JIT compilation during inference: fused_recurrent_gated_delta_rule_packed_decode_kernel. This causes a latency spike; consider extending warmup to cover this shape/config.
+{"stage": "generation-complete", "status": "ok", "elapsed_seconds": 229.35114148585126}
+[rank0]:[W914 20:32:49.507251653 ProcessGroupNCCL.cpp:1624] Warning: WARNING: destroy_process_group() was not called before program exit, which can leak resources. For more info, please see https://pytorch.org/docs/stable/distributed.html#shutdown (function operator())

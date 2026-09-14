@@ -1,0 +1,22 @@
+{
+  "vllm_version": "0.29.0",
+  "vllm_source_revision": "98dff2a81d747d1dba01a47f939f48c3526d4206",
+  "image": "vllm/vllm-openai@sha256:c2914767605584b6d8f45686b82de173ecc99e781897aa3d0a66dacd72c51ae1",
+  "models": [
+    {
+      "name": "qwen3.6-35b-a3b",
+      "repo": "Qwen/Qwen3.6-35B-A3B",
+      "rev": "995ad96eacd98c81ed38be0c5b274b04031597b0"
+    },
+    {
+      "name": "qwen3.6-27b",
+      "repo": "Qwen/Qwen3.6-27B",
+      "rev": "6a9e13bd6fc8f0983b9b99948120bc37f49c13e9"
+    },
+    {
+      "name": "qwen3.8-27b",
+      "repo": "Qwen/Qwen3.8-27B",
+      "rev": "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0"
+    }
+  ]
+}

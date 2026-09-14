@@ -1,0 +1,15 @@
+[
+  "nvcc",
+  "-std=c++17",
+  "-O3",
+  "--expt-relaxed-constexpr",
+  "-gencode=arch=compute_121a,code=sm_121a",
+  "-shared",
+  "-Xcompiler=-fPIC",
+  "-I/repo/.prototypes/nvfp4_survey/marlin_native/shim",
+  "-I/repo/3pty/vllm/csrc",
+  "-I/repo/3pty/vllm/csrc/libtorch_stable/quantization/marlin",
+  "/repo/.prototypes/nvfp4_survey/marlin_native/bench.cu",
+  "-o",
+  "/repo/.prototypes/out/nvfp4-native_marlin-20260914T191921Z-o8ndstb3/marlin_native.so"
+]

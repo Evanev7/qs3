@@ -1,0 +1,6 @@
+[
+  "/home/sp10/qs3/build_tools/.venv/bin/python",
+  "/home/sp10/qs3/.prototypes/nvfp4_survey/triton_aot/run.py",
+  "--output",
+  "/home/sp10/qs3/.prototypes/out/nvfp4-triton-20260914T185810Z-99r109yv"
+]

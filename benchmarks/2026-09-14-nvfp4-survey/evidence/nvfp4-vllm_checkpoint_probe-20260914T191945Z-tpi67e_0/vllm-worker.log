@@ -1,0 +1,5 @@
+{"stage": "checkpoint-read", "status": "starting", "elapsed_seconds": 0.003036835230886936}
+WARNING 09-14 19:19:56 [modelopt.py:382] Detected ModelOpt fp8 checkpoint (quant_algo=FP8). Please note that the format is experimental and could change.
+WARNING 09-14 19:19:56 [modelopt.py:1024] Detected ModelOpt NVFP4 checkpoint (quant_algo=NVFP4). Please note that the format is experimental and could change in future.
+{"stage": "quantization-dispatch-checked", "status": "starting", "elapsed_seconds": 10.00202504824847}
+{"stage": "stopped-before-model-allocation", "status": "unsupported_checkpoint_precision", "elapsed_seconds": 10.002175569999963}

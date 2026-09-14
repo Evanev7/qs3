@@ -1,0 +1,5 @@
+{
+  "prefill": true,
+  "iterations": 10,
+  "warmups": 2
+}

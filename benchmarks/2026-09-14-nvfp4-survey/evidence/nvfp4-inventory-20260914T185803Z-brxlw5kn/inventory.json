@@ -1,0 +1,47 @@
+{
+  "torch": "2.11.0+cu130",
+  "cuda": "13.0",
+  "capability": [
+    12,
+    1
+  ],
+  "gpu": "NVIDIA GB10",
+  "flashinfer": "0.6.8.post1",
+  "packages": {
+    "b12x": null,
+    "triton": "3.6.0",
+    "nvidia-cutlass-dsl": "4.4.2",
+    "vllm": "0.21.0",
+    "safetensors": "0.7.0",
+    "flashinfer-python": "0.6.8.post1"
+  },
+  "paths": {
+    "b12x": "None",
+    "cutlass": "ModuleSpec(name='cutlass', loader=<_frozen_importlib_external.SourceFileLoader object at 0xf21a186a8b00>, origin='/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/__init__.py', submodule_search_locations=['/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass'])",
+    "triton": "ModuleSpec(name='triton', loader=<_frozen_importlib_external.SourceFileLoader object at 0xf21804173830>, origin='/usr/local/lib/python3.12/dist-packages/triton/__init__.py', submodule_search_locations=['/usr/local/lib/python3.12/dist-packages/triton'])"
+  },
+  "sources": {
+    "b12x": {
+      "exists": true,
+      "files": 0
+    },
+    "flashinfer": {
+      "exists": true,
+      "files": 37
+    },
+    "vllm": {
+      "exists": true,
+      "files": 45
+    }
+  },
+  "snapshots": [
+    "/hf/models--nvidia--Qwen3.6-35B-A3B-NVFP4/snapshots/6c7f09d4036e97393f82e9f9ecd1a5c35ca5ee92",
+    "/hf/models--Qwen--Qwen3.8-27B/snapshots/1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0",
+    "/hf/models--Qwen--Qwen3.6-35B-A3B/snapshots/995ad96eacd98c81ed38be0c5b274b04031597b0",
+    "/hf/models--Qwen--Qwen3.6-27B/snapshots/6a9e13bd6fc8f0983b9b99948120bc37f49c13e9"
+  ],
+  "signatures": {
+    "nvfp4_quantize": "(a, a_global_sf, sfLayout=<SfLayout.layout_128x4: 0>, do_shuffle=False, sf_vec_size=16, enable_pdl=None, backend: str = 'cuda')",
+    "mm_fp4": "(a: torch.Tensor, b: torch.Tensor, a_descale: torch.Tensor, b_descale: torch.Tensor, alpha: Optional[torch.Tensor] = None, out_dtype: torch.dtype = torch.bfloat16, out: Optional[torch.Tensor] = None, block_size: int = 16, use_8x4_sf_layout: bool = False, backend: Literal['cudnn', 'trtllm', 'cutlass', 'cute-dsl', 'auto'] = 'auto', use_nvfp4: bool = True, enable_pdl: bool = True) -> torch.Tensor"
+  }
+}

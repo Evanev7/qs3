@@ -1,0 +1,16 @@
+{
+  "command": [
+    "/usr/bin/python3",
+    "/repo/.prototypes/nvfp4_survey/vllm_checkpoint_probe.py",
+    "--output",
+    "/repo/.prototypes/out/nvfp4-vllm_checkpoint_probe-20260914T202839Z-nu9s87io",
+    "--model",
+    "qwen3.6-27b-nvfp4",
+    "--worker",
+    "--preflight-only"
+  ],
+  "timeout_seconds": 300,
+  "network": "offline; host container network=none",
+  "returncode": 0,
+  "timed_out": false
+}

@@ -1,0 +1,16 @@
+[
+  "nvcc",
+  "-std=c++17",
+  "-O3",
+  "-gencode=arch=compute_121a,code=sm_121a",
+  "-shared",
+  "-Xcompiler=-fPIC",
+  "-I/repo/.prototypes/out/nvfp4-b12x_probe-20260914T191625Z-alar0p8x/exports",
+  "/repo/.prototypes/nvfp4_survey/native_b12x_export.cu",
+  "/repo/.prototypes/out/nvfp4-b12x_probe-20260914T191625Z-alar0p8x/exports/qs3_b12x_densegemmlaunch_0.o",
+  "/repo/.prototypes/out/nvfp4-b12x_probe-20260914T191625Z-alar0p8x/exports/qs3_b12x_densesplitkreduce_1.o",
+  "/toolchain/nvidia_cutlass_dsl/cu13/lib/libcuda_dialect_runtime_static.a",
+  "-lcuda",
+  "-o",
+  "/repo/.prototypes/out/nvfp4-native_b12x_export-20260914T192348Z-6ahceoop/b12x_export_native.so"
+]

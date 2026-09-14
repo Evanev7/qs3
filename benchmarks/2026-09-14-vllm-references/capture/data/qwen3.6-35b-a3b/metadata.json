@@ -1,0 +1,59 @@
+{
+  "model": "/model-repo/snapshots/995ad96eacd98c81ed38be0c5b274b04031597b0",
+  "model_revision": "995ad96eacd98c81ed38be0c5b274b04031597b0",
+  "model_name": "qwen3.6-35b-a3b",
+  "model_repo": "Qwen/Qwen3.6-35B-A3B",
+  "asset_sha256": {
+    "config.json": "93a4693fa9d8392fbfccd4b3c9873f4bfdcb14fdede978b123d07d19675efe99",
+    "generation_config.json": "e70c136c1b78ddc1fb0905bac8e733a4dc448d4f852a5dd75143fffc70be550e",
+    "tokenizer.json": "5f9e4d4901a92b997e463c1f46055088b6cca5ca61a6522d1b9f64c4bb81cb42",
+    "tokenizer_config.json": "5186f0defcd7f232382c7f0aebcd2252d073bb921ab240e407b7ae8745d2b29b"
+  },
+  "container_image": "sha256:c2914767605584b6d8f45686b82de173ecc99e781897aa3d0a66dacd72c51ae1",
+  "versions": {
+    "vllm": "0.29.0",
+    "torch": "2.13.0+cu130",
+    "transformers": "5.16.1",
+    "flashinfer-python": "0.6.18"
+  },
+  "engine_options": {
+    "model": "/model-repo/snapshots/995ad96eacd98c81ed38be0c5b274b04031597b0",
+    "dtype": "bfloat16",
+    "quantization": null,
+    "skip_tokenizer_init": true,
+    "tensor_parallel_size": 1,
+    "max_num_seqs": 1,
+    "max_model_len": 4805,
+    "enable_prefix_caching": false,
+    "enable_chunked_prefill": false,
+    "enforce_eager": false,
+    "gpu_memory_utilization": 0.85,
+    "kv_cache_memory_bytes": 536870912,
+    "mamba_cache_dtype": "auto",
+    "mamba_ssm_cache_dtype": "float32",
+    "stream_interval": 1,
+    "limit_mm_per_prompt": {
+      "image": 0,
+      "video": 0
+    },
+    "seed": 0
+  },
+  "resolved_vllm_config": "model='/model-repo/snapshots/995ad96eacd98c81ed38be0c5b274b04031597b0', speculative_config=None, tokenizer='/model-repo/snapshots/995ad96eacd98c81ed38be0c5b274b04031597b0', skip_tokenizer_init=True, tokenizer_mode=auto, revision=None, tokenizer_revision=None, trust_remote_code=False, dtype=torch.bfloat16, max_seq_len=4805, download_dir=None, load_format=auto, tensor_parallel_size=1, pipeline_parallel_size=1, data_parallel_size=1, decode_context_parallel_size=1, dcp_comm_backend=ag_rs, disable_custom_all_reduce=False, quantization=None, quantization_config=None, enforce_eager=False, enable_return_routed_experts=False, kv_cache_dtype=auto, device_config=cuda, structured_outputs_config=StructuredOutputsConfig(backend='auto', disable_any_whitespace=False, disable_additional_properties=False, reasoning_parser='', reasoning_parser_plugin='', enable_in_reasoning=False), observability_config=ObservabilityConfig(show_hidden_metrics_for_version=None, otlp_traces_endpoint=None, collect_detailed_traces=None, per_request_spec_decode_metrics='none', kv_cache_metrics=False, kv_cache_metrics_sample=0.01, cudagraph_metrics=False, enable_layerwise_nvtx_tracing=False, enable_mfu_metrics=False, enable_mm_processor_stats=False, enable_logging_iteration_details=False, jit_monitor_mode='warn', jit_monitor_verbose=False), seed=0, served_model_name=/model-repo/snapshots/995ad96eacd98c81ed38be0c5b274b04031597b0, enable_prefix_caching=False, enable_chunked_prefill=False, pooler_config=None, compilation_config={'mode': <CompilationMode.VLLM_COMPILE: 3>, 'debug_dump_path': None, 'cache_dir': '/root/.cache/vllm/torch_compile_cache/962204a293', 'compile_cache_save_format': 'binary', 'backend': 'inductor', 'custom_ops': ['none'], 'ir_enable_torch_wrap': True, 'splitting_ops': ['vllm::unified_attention_with_output', 'vllm::unified_mla_attention_with_output', 'vllm::mamba_mixer2', 'vllm::mamba_mixer', 'vllm::short_conv', 'vllm::qwen4_exp_compute_ple_ngram_ids', 'vllm::qwen4_exp_ple_short_conv', 'vllm::qwen4_exp_qsa_with_output', 'vllm::linear_attention', 'vllm::qwen_gdn_attention_core', 'vllm::qwen_gdn_attention_core_fused_norm_packed', 'vllm::gdn_attention_core_xpu', 'vllm::olmo_hybrid_gdn_full_forward', 'vllm::sparse_attn_indexer', 'vllm::rocm_aiter_sparse_attn_indexer', 'vllm::deepseek_v4_attention', 'vllm::hpc_rope_norm_forward', 'vllm::unified_kv_cache_update', 'vllm::unified_mla_kv_cache_update'], 'compile_mm_encoder': False, 'cudagraph_mm_encoder': False, 'encoder_cudagraph_token_budgets': [], 'encoder_cudagraph_max_vision_items_per_batch': 0, 'encoder_cudagraph_max_frames_per_batch': None, 'compile_sizes': [], 'compile_ranges_endpoints': [4805], 'inductor_compile_config': {'enable_auto_functionalized_v2': False, 'combo_kernels': True, 'benchmark_combo_kernel': True}, 'inductor_passes': {}, 'cudagraph_mode': <CUDAGraphMode.FULL_AND_PIECEWISE: (2, 1)>, 'cudagraph_num_of_warmups': 1, 'cudagraph_capture_sizes': [1, 2], 'cudagraph_copy_inputs': False, 'cudagraph_specialize_lora': True, 'use_inductor_graph_partition': False, 'pass_config': {'fuse_norm_quant': False, 'fuse_act_quant': False, 'fuse_attn_quant': False, 'enable_sp': False, 'fuse_gemm_comms': False, 'fuse_allreduce_rms': False, 'enable_qk_norm_rope_fusion': False, 'fuse_rope_kvcache_cat_mla': False, 'fuse_act_padding': False, 'fuse_qk_norm_rope_kvcache': False}, 'max_cudagraph_capture_size': 2, 'dynamic_shapes_config': {'type': <DynamicShapesType.BACKED: 'backed'>, 'evaluate_guards': False, 'assume_32_bit_indexing': False}, 'local_cache_dir': '/root/.cache/vllm/torch_compile_cache/962204a293/rank_0_0/backbone', 'fast_moe_cold_start': False, 'static_all_moe_layers': ['language_model.model.layers.0.mlp.experts', 'language_model.model.layers.1.mlp.experts', 'language_model.model.layers.2.mlp.experts', 'language_model.model.layers.3.mlp.experts', 'language_model.model.layers.4.mlp.experts', 'language_model.model.layers.5.mlp.experts', 'language_model.model.layers.6.mlp.experts', 'language_model.model.layers.7.mlp.experts', 'language_model.model.layers.8.mlp.experts', 'language_model.model.layers.9.mlp.experts', 'language_model.model.layers.10.mlp.experts', 'language_model.model.layers.11.mlp.experts', 'language_model.model.layers.12.mlp.experts', 'language_model.model.layers.13.mlp.experts', 'language_model.model.layers.14.mlp.experts', 'language_model.model.layers.15.mlp.experts', 'language_model.model.layers.16.mlp.experts', 'language_model.model.layers.17.mlp.experts', 'language_model.model.layers.18.mlp.experts', 'language_model.model.layers.19.mlp.experts', 'language_model.model.layers.20.mlp.experts', 'language_model.model.layers.21.mlp.experts', 'language_model.model.layers.22.mlp.experts', 'language_model.model.layers.23.mlp.experts', 'language_model.model.layers.24.mlp.experts', 'language_model.model.layers.25.mlp.experts', 'language_model.model.layers.26.mlp.experts', 'language_model.model.layers.27.mlp.experts', 'language_model.model.layers.28.mlp.experts', 'language_model.model.layers.29.mlp.experts', 'language_model.model.layers.30.mlp.experts', 'language_model.model.layers.31.mlp.experts', 'language_model.model.layers.32.mlp.experts', 'language_model.model.layers.33.mlp.experts', 'language_model.model.layers.34.mlp.experts', 'language_model.model.layers.35.mlp.experts', 'language_model.model.layers.36.mlp.experts', 'language_model.model.layers.37.mlp.experts', 'language_model.model.layers.38.mlp.experts', 'language_model.model.layers.39.mlp.experts']}, kernel_config=KernelConfig(ir_op_priority=IrOpPriorityConfig(rms_norm=['native'], fused_add_rms_norm=['native']), enable_flashinfer_autotune=True, enable_cutedsl_warmup=True, enable_jit_warmup=True, enable_bf16x3_router_gemm=False, moe_backend='auto', linear_backend='auto')",
+  "model_runner": "v1",
+  "capture_hook": "model.compute_logits",
+  "resolved_gdn_state_dtypes": [
+    "torch.bfloat16",
+    "torch.float32"
+  ],
+  "cuda": "13.0",
+  "gpu": "NVIDIA GB10",
+  "setup_seconds": 302.4687362900004,
+  "logits_format": {
+    "dtype": "little-endian float32",
+    "shape": [
+      248320
+    ],
+    "addressable_token_count": 248070
+  },
+  "timing": "instrumented correctness capture; not a performance baseline"
+}

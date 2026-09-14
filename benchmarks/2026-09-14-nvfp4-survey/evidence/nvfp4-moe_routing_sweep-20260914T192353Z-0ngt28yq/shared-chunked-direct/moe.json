@@ -1,0 +1,317 @@
+{
+  "mode": "a16",
+  "geometry": {
+    "experts": 256,
+    "hidden": 2048,
+    "intermediate": 512,
+    "topk": 8
+  },
+  "routing": "shared",
+  "source": "/repo/.prototypes/nvfp4_survey/vendor/b12x/b12x/__init__.py",
+  "a16_route_mode": "chunked-direct",
+  "gpu": "NVIDIA GB10",
+  "capability": [
+    12,
+    1
+  ],
+  "seed": 6327,
+  "cases": [
+    {
+      "m": 1,
+      "plan_compile_seconds": 0.09756185906007886,
+      "oracle": "b12x tests/_reference/w4a16_reference.py:moe_reference_w4a16",
+      "oracle_seconds": 0.16889936430379748,
+      "quality": {
+        "relative_l2": 0.004861854948103428,
+        "cosine": 0.9999881982803345,
+        "max_abs": 0.0009765625,
+        "finite": true,
+        "nonzero": true,
+        "reference_finite": true,
+        "reference_nonzero": true
+      },
+      "config": {
+        "backend": "w4a16",
+        "route_planner": "internal",
+        "max_active_clusters": null,
+        "dynamic_tile_m": null,
+        "dynamic_route_mode": null,
+        "w4a16_route_mode": "direct"
+      },
+      "moe_calls_per_iteration": 1,
+      "chunk_size": 8,
+      "unique_experts": 8,
+      "routed_rows": 8,
+      "scratch_bytes": 6628384,
+      "thresholds": {
+        "cosine_min": 0.9975,
+        "relative_l2_max": 0.08
+      },
+      "correctness_passed": true,
+      "timing": {
+        "warm": {
+          "median_us": 126.20800733566284,
+          "min_us": 31.840000301599503,
+          "samples_us": [
+            127.96799838542938,
+            35.999998450279236,
+            32.03200176358223,
+            31.840000301599503,
+            31.968001276254654,
+            41.31200164556503,
+            132.32000172138214,
+            130.2720010280609,
+            129.2800009250641,
+            128.22400033473969,
+            125.15200674533844,
+            131.32800161838531,
+            126.20800733566284,
+            126.20800733566284,
+            135.45599579811096,
+            129.2800009250641,
+            126.20800733566284,
+            124.1919994354248,
+            125.15200674533844,
+            125.02400577068329
+          ]
+        },
+        "evicted": {
+          "median_us": 105.45599833130836,
+          "min_us": 103.58399897813797,
+          "samples_us": [
+            105.69600015878677,
+            107.58399963378906,
+            106.36799782514572,
+            112.57600039243698,
+            104.38399761915207,
+            106.52799904346466,
+            105.31199723482132,
+            104.44799810647964,
+            104.35199737548828,
+            103.58399897813797,
+            105.31199723482132,
+            105.43999820947647,
+            104.2879968881607,
+            106.49599879980087,
+            104.35199737548828,
+            106.49599879980087,
+            105.40799796581268,
+            105.47199845314026,
+            105.47199845314026,
+            106.27199709415436
+          ]
+        }
+      },
+      "post_timing_quality": {
+        "relative_l2": 0.004861854948103428,
+        "cosine": 0.9999881982803345,
+        "max_abs": 0.0009765625,
+        "finite": true
+      },
+      "post_timing_passed": true
+    },
+    {
+      "m": 5,
+      "oracle": "b12x tests/_reference/w4a16_reference.py:moe_reference_w4a16",
+      "oracle_seconds": 0.030022998806089163,
+      "quality": {
+        "relative_l2": 0.004967147018760443,
+        "cosine": 0.9999881982803345,
+        "max_abs": 0.0029296875,
+        "finite": true,
+        "nonzero": true,
+        "reference_finite": true,
+        "reference_nonzero": true
+      },
+      "config": {
+        "backend": "w4a16",
+        "route_planner": "internal",
+        "max_active_clusters": null,
+        "dynamic_tile_m": null,
+        "dynamic_route_mode": null,
+        "w4a16_route_mode": "direct"
+      },
+      "moe_calls_per_iteration": 1,
+      "chunk_size": 8,
+      "unique_experts": 8,
+      "routed_rows": 40,
+      "scratch_bytes": 6628384,
+      "thresholds": {
+        "cosine_min": 0.9975,
+        "relative_l2_max": 0.08
+      },
+      "correctness_passed": true,
+      "timing": {
+        "warm": {
+          "median_us": 106.17600008845329,
+          "min_us": 103.45599800348282,
+          "samples_us": [
+            199.5840072631836,
+            120.06399780511856,
+            112.5119999051094,
+            106.11200332641602,
+            106.4319983124733,
+            106.23999685049057,
+            161.69600188732147,
+            128.9599984884262,
+            118.04799735546112,
+            144.03200149536133,
+            130.3360015153885,
+            104.67199981212616,
+            105.6319996714592,
+            105.69600015878677,
+            103.87200117111206,
+            105.50399869680405,
+            103.5199984908104,
+            103.74400019645691,
+            105.47199845314026,
+            103.45599800348282
+          ]
+        },
+        "evicted": {
+          "median_us": 180.14399707317352,
+          "min_us": 177.98399925231934,
+          "samples_us": [
+            178.24000120162964,
+            178.94400656223297,
+            203.5199999809265,
+            183.1039935350418,
+            179.19999361038208,
+            179.1359931230545,
+            181.2479943037033,
+            181.31199479103088,
+            180.31999468803406,
+            180.06399273872375,
+            177.98399925231934,
+            178.24000120162964,
+            179.07199263572693,
+            224.38399493694305,
+            184.32000279426575,
+            277.6640057563782,
+            218.6560034751892,
+            178.14399302005768,
+            180.2240014076233,
+            179.1040003299713
+          ]
+        }
+      },
+      "post_timing_quality": {
+        "relative_l2": 0.004967147018760443,
+        "cosine": 0.9999881982803345,
+        "max_abs": 0.0029296875,
+        "finite": true
+      },
+      "post_timing_passed": true
+    },
+    {
+      "m": 16,
+      "oracle": "b12x tests/_reference/w4a16_reference.py:moe_reference_w4a16",
+      "oracle_seconds": 0.09741859463974833,
+      "quality": {
+        "relative_l2": 0.004563349299132824,
+        "cosine": 0.9999896287918091,
+        "max_abs": 0.001953125,
+        "finite": true,
+        "nonzero": true,
+        "reference_finite": true,
+        "reference_nonzero": true
+      },
+      "config": {
+        "backend": "w4a16",
+        "route_planner": "internal",
+        "max_active_clusters": null,
+        "dynamic_tile_m": null,
+        "dynamic_route_mode": null,
+        "w4a16_route_mode": "direct"
+      },
+      "moe_calls_per_iteration": 2,
+      "chunk_size": 8,
+      "unique_experts": 8,
+      "routed_rows": 128,
+      "scratch_bytes": 6628384,
+      "thresholds": {
+        "cosine_min": 0.9975,
+        "relative_l2_max": 0.08
+      },
+      "correctness_passed": true,
+      "timing": {
+        "warm": {
+          "median_us": 314.5440071821213,
+          "min_us": 312.4159872531891,
+          "samples_us": [
+            407.4240028858185,
+            314.7200047969818,
+            312.51201033592224,
+            314.59200382232666,
+            313.56799602508545,
+            314.59200382232666,
+            312.54398822784424,
+            314.59200382232666,
+            312.54398822784424,
+            312.54398822784424,
+            312.54398822784424,
+            315.61601161956787,
+            312.5759959220886,
+            314.59200382232666,
+            312.4159872531891,
+            314.4960105419159,
+            316.5760040283203,
+            315.3280019760132,
+            313.53598833084106,
+            315.16799330711365
+          ]
+        },
+        "evicted": {
+          "median_us": 391.07200503349304,
+          "min_us": 388.0000114440918,
+          "samples_us": [
+            388.0000114440918,
+            391.03999733924866,
+            388.0000114440918,
+            389.0880048274994,
+            389.1200125217438,
+            390.0800049304962,
+            391.9999897480011,
+            390.0800049304962,
+            391.1040127277374,
+            389.055997133255,
+            391.1040127277374,
+            390.9760117530823,
+            418.8799858093262,
+            483.2960069179535,
+            391.1040127277374,
+            395.2000141143799,
+            449.40799474716187,
+            392.2240138053894,
+            399.32799339294434,
+            390.9440040588379
+          ]
+        }
+      },
+      "post_timing_quality": {
+        "relative_l2": 0.004563349299132824,
+        "cosine": 0.9999896287918091,
+        "max_abs": 0.001953125,
+        "finite": true
+      },
+      "post_timing_passed": true
+    }
+  ],
+  "graph_replay": false,
+  "timing_scope": "internal route dispatch + both projections + SiLU + weighted reduction; supplied topk ids/weights",
+  "scale_contract": "native packed E2M1, swizzled E4M3 K/16, weight-global multipliers, activation quantizer multipliers",
+  "w13_order": "up, gate",
+  "versions": {
+    "torch": "2.11.0+cu130",
+    "triton": "3.6.0",
+    "nvidia-cutlass-dsl": "4.6.2",
+    "apache-tvm-ffi": "0.1.9"
+  },
+  "imported_cutlass": {
+    "path": "/toolchain/nvidia_cutlass_dsl/dsl_packages/cutlass/__init__.py",
+    "version": "4.6.2"
+  },
+  "weight_setup_seconds": 0.11498213605955243,
+  "weight_storage_bytes": 452988928,
+  "native_payload_shared": true
+}

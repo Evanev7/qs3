@@ -1,0 +1,11 @@
+[
+  "nvcc",
+  "-std=c++17",
+  "-O3",
+  "-gencode=arch=compute_121a,code=sm_121a",
+  "/home/sp10/qs3/.prototypes/nvfp4_survey/fp8_cublaslt.cu",
+  "-o",
+  "/home/sp10/qs3/.prototypes/out/nvfp4-fp8_cublaslt-20260914T191121Z-t21ccvew/fp8_probe",
+  "-lcublasLt",
+  "-lcublas"
+]

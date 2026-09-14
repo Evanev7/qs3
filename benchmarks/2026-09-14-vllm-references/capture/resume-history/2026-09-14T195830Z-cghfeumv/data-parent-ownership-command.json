@@ -1,0 +1,15 @@
+[
+  "docker",
+  "run",
+  "--rm",
+  "--network=none",
+  "-v",
+  "/home/sp10/qs3/.prototypes/out/vllm-correctness-2026-09-14T194223Z-jn1cisug:/capture",
+  "--entrypoint",
+  "python3",
+  "sha256:c2914767605584b6d8f45686b82de173ecc99e781897aa3d0a66dacd72c51ae1",
+  "-c",
+  "import os,sys; os.chown('/capture/data', int(sys.argv[1]), int(sys.argv[2]))",
+  "1000",
+  "1000"
+]

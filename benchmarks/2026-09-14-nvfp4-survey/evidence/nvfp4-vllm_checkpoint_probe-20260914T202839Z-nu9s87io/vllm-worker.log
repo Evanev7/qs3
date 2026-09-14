@@ -1,0 +1,24 @@
+{"stage": "checkpoint-read", "status": "starting", "elapsed_seconds": 0.004162729252129793}
+WARNING 09-14 20:28:55 [modelopt.py:379] Detected ModelOpt fp8 checkpoint (quant_algo=FP8). Please note that the format is experimental and could change.
+WARNING 09-14 20:28:55 [modelopt.py:1029] Detected ModelOpt NVFP4 checkpoint (quant_algo=NVFP4). Please note that the format is experimental and could change in future.
+WARNING 09-14 20:28:55 [modelopt.py:1029] Detected ModelOpt NVFP4 checkpoint (quant_algo=W4A16_NVFP4). Please note that the format is experimental and could change in future.
+WARNING 09-14 20:28:55 [modelopt.py:1711] Detected ModelOpt MXFP8 checkpoint. Please note that the format is experimental and could change in future.
+WARNING 09-14 20:28:55 [arg_utils.py:1801] The global random seed is set to 0. Since VLLM_ENABLE_V1_MULTIPROCESSING is set to False, this may affect the random state of the Python process that launched vLLM.
+INFO 09-14 20:28:55 [model.py:684] Resolved architecture: Qwen3_5ForConditionalGeneration
+INFO 09-14 20:28:55 [model.py:2021] Using max model len 256
+WARNING 09-14 20:28:55 [model.py:981] Model does not support mm_device_do_normalize, forcing mm_device_do_normalize = False.
+INFO 09-14 20:28:56 [registry.py:141] All limits of multimodal modalities supported by the model are set to 0, running in text-only mode.
+INFO 09-14 20:28:56 [model.py:887] Disabled mm_prefix attention mode because multimodal inputs are configuration-disabled. Attention backends without mm_prefix support may now be selected.
+WARNING 09-14 20:28:57 [arg_utils.py:2780] This model does not officially support disabling chunked prefill. Disabling this manually may cause the engine to crash or produce incorrect outputs.
+WARNING 09-14 20:28:57 [modelopt.py:379] Detected ModelOpt fp8 checkpoint (quant_algo=FP8). Please note that the format is experimental and could change.
+WARNING 09-14 20:28:57 [modelopt.py:1029] Detected ModelOpt NVFP4 checkpoint (quant_algo=NVFP4). Please note that the format is experimental and could change in future.
+WARNING 09-14 20:28:57 [modelopt.py:1029] Detected ModelOpt NVFP4 checkpoint (quant_algo=W4A16_NVFP4). Please note that the format is experimental and could change in future.
+WARNING 09-14 20:28:57 [modelopt.py:1711] Detected ModelOpt MXFP8 checkpoint. Please note that the format is experimental and could change in future.
+WARNING 09-14 20:28:57 [vllm.py:1371] Enforce eager set, disabling torch.compile and CUDAGraphs. This is equivalent to setting -cc.mode=none -cc.cudagraph_mode=none
+WARNING 09-14 20:28:57 [vllm.py:1406] Inductor compilation was disabled by user settings, optimizations settings that are only active during inductor compilation will be ignored.
+INFO 09-14 20:28:57 [kernel.py:369] Final IR op priority after setting platform defaults: IrOpPriorityConfig(rms_norm=['vllm_c', 'native'], fused_add_rms_norm=['vllm_c', 'native'])
+INFO 09-14 20:28:57 [vllm.py:1585] Cudagraph is disabled under eager mode
+INFO 09-14 20:28:57 [compilation.py:329] Enabled custom fusions: norm_quant, act_quant
+INFO 09-14 20:28:57 [__init__.py:1066] Using MarlinNvFp4LinearKernel for NVFP4 GEMM
+{"stage": "quantization-dispatch-checked", "status": "starting", "elapsed_seconds": 16.74262447282672}
+{"stage": "stopped-before-model-allocation", "status": "preflight_ok", "elapsed_seconds": 16.742852669209242}

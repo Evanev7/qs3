@@ -1,0 +1,14 @@
+[
+  "docker",
+  "run",
+  "--rm",
+  "--network=none",
+  "-v",
+  "/home/sp10/qs3/.prototypes/out/vllm-correctness-2026-09-14T194223Z-jn1cisug:/capture",
+  "--entrypoint",
+  "python3",
+  "sha256:c2914767605584b6d8f45686b82de173ecc99e781897aa3d0a66dacd72c51ae1",
+  "-c",
+  "import json,os,sys; moves=json.loads(sys.argv[1]); assert all(not os.path.lexists(dst) for src,dst in moves); [os.rename(src,dst) for src,dst in moves]",
+  "[[\"/capture/data/qwen3.6-27b\", \"/capture/failed/2026-09-14T200450Z-gtx5tz08/qwen3.6-27b/qwen3.6-27b\"], [\"/capture/qwen3.6-27b.log\", \"/capture/failed/2026-09-14T200450Z-gtx5tz08/qwen3.6-27b/qwen3.6-27b.log\"], [\"/capture/qwen3.6-27b-command.json\", \"/capture/failed/2026-09-14T200450Z-gtx5tz08/qwen3.6-27b/qwen3.6-27b-command.json\"]]"
+]

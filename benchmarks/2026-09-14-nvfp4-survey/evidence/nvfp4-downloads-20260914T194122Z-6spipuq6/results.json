@@ -1,0 +1,52 @@
+[
+  {
+    "name": "qwen3.6-35b-a3b-nvfp4",
+    "repo": "nvidia/Qwen3.6-35B-A3B-NVFP4",
+    "rev": "6c7f09d4036e97393f82e9f9ecd1a5c35ca5ee92",
+    "expected_payload_bytes": 23407580856,
+    "expected_shard_bytes": 23424338320,
+    "shard_count": 3,
+    "tensor_count": 124468,
+    "config_sha256": "58aefa1c9eff7989f431d748f2ddec39446cb1fd2a69acc46e285c6a37b0cecc",
+    "hf_quant_config_sha256": "75fe7cc8d5836b58734e05ee67423a4ce91d602aaad45c8173a1b7597cd57663",
+    "index_sha256": "d67403a4e9793c0ba8a136baf14b3b76ec7b32c822267978084895e07ebd8a3e",
+    "quant_algo": "MIXED_PRECISION",
+    "quantized_layer_counts": {
+      "FP8": 130,
+      "W4A16_NVFP4": 161
+    },
+    "source": "https://huggingface.co/nvidia/Qwen3.6-35B-A3B-NVFP4/tree/6c7f09d4036e97393f82e9f9ecd1a5c35ca5ee92",
+    "kv_cache_quant_algo": "FP8",
+    "started_at": "2026-09-14T19:41:22.874872+00:00",
+    "status": "complete",
+    "snapshot": "/hf/models--nvidia--Qwen3.6-35B-A3B-NVFP4/snapshots/6c7f09d4036e97393f82e9f9ecd1a5c35ca5ee92",
+    "shards": 3,
+    "payload_bytes": 23424338320,
+    "finished_at": "2026-09-14T19:41:28.556256+00:00"
+  },
+  {
+    "name": "qwen3.8-27b-nvfp4",
+    "repo": "nvidia/Qwen3.8-27B-NVFP4",
+    "rev": "dbb8f445b3145f8a4c18ddc769f032d57d32867c",
+    "expected_payload_bytes": 21921428072,
+    "expected_shard_bytes": 21921697280,
+    "shard_count": 3,
+    "tensor_count": 2194,
+    "config_sha256": "71fa01bb64de20971045cd82a82c0ebb25a54e1b0a3f09ef23cf5479e9c54df8",
+    "hf_quant_config_sha256": "5f4aaa9e462ddb26a9790ab459eee69d100b9ade7541f0c86038e925c013f80b",
+    "index_sha256": "7aa103a2582b7d26631988de33dea19e8a308ee9c239e8e14feb374af30905e2",
+    "quant_algo": "MIXED_PRECISION",
+    "quantized_layer_counts": {
+      "FP8": 208,
+      "NVFP4": 193
+    },
+    "source": "https://huggingface.co/nvidia/Qwen3.8-27B-NVFP4/tree/dbb8f445b3145f8a4c18ddc769f032d57d32867c",
+    "kv_cache_quant_algo": null,
+    "started_at": "2026-09-14T19:41:28.556465+00:00",
+    "status": "complete",
+    "snapshot": "/hf/models--nvidia--Qwen3.8-27B-NVFP4/snapshots/dbb8f445b3145f8a4c18ddc769f032d57d32867c",
+    "shards": 3,
+    "payload_bytes": 21921697280,
+    "finished_at": "2026-09-14T20:16:34.005660+00:00"
+  }
+]

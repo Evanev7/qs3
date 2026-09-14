@@ -9,6 +9,83 @@ topic below. Within each topic, observations retain their historical context: an
 early result or proposed next step may be superseded by a later result. Test
 counts and pass claims describe the cited change, not every subsequent revision.
 
+## NVFP4 kernel survey and integration proposal (2026-09-14)
+
+The [GB10 survey](benchmarks/2026-09-14-nvfp4-survey/README.md) covers b12x,
+FlashInfer, vLLM Marlin, native Triton FP4 and native cuBLASLt FP8. The
+[implementation plan](benchmarks/2026-09-14-nvfp4-survey/INTEGRATION.md) proposes
+3.8-27B dense mixed precision first: native FlashInfer W4A4 plus cuBLASLt FP8,
+then checkpoint-faithful W4A16 dense and routed MoE for 35B. This is a plan and
+kernel evidence; no NVFP4 runtime integration or commits were made.
+
+The checkpoints require different activation precision. Cached NVIDIA 35B
+`6c7f09d4036e97393f82e9f9ecd1a5c35ca5ee92` and NVIDIA 3.6-27B
+`0893e1606ff3d5f97a441f405d5fc541a6bdf404` declare W4A16_NVFP4 plus FP8;
+NVIDIA 3.8-27B `dbb8f445b3145f8a4c18ddc769f032d57d32867c` declares W4A4 NVFP4
+plus FP8. Both the 35B and 3.8 payloads now pass eager vLLM load/generation.
+Preserve explicit per-projection precision and global scales;
+choosing A16/A4 based only on row count would change model semantics.
+
+On actual 27B projection dimensions, native Marlin W4A16 takes 265–271 µs;
+FlashInfer W4A4 including activation quantization takes 293–311 µs. Current
+retained qs3 BF16 cuBLASLt plans take 759–841 µs across M=1, 5, and 16. These are
+128 MiB-evicted matrix measurements, not a predicted end-to-end TPS gain.
+Triton native FP4 also passes all 17 variants, including the full padded
+vocabulary-sized matrix. FlashInfer prefill at M=128 and 512 passes as well. Native FP8
+quantization+cuBLASLt passes six shape/row cases.
+
+All 81 sampled real 35B expert-weight checks pass across Marlin, b12x and
+FlashInfer against the appropriate same-operand reference. All 10,240 expert
+gate/up pairs have matching global scales. A complete real-weight layer with
+all 256 experts also passes six A16 route/batch cases at M=1, 5, and 16.
+b12x's exported ARM host objects link and execute without b12x/CuTe/Python dispatch, including dynamic M
+and scale rebinding. Its A16 tuning sweep reduces the default 430–480 µs dense
+path to 279–304 µs; Marlin remains faster for those tested shapes.
+
+The MTP-sized MoE probe supports keeping both simple and grouped routing under
+consideration. At M=16/top-8 with distinct experts, one packed call and two direct
+M=8 calls are effectively tied at 1.08 ms. With the same eight experts reused,
+packed routing takes 133 µs versus 391 µs for two direct calls. These include
+expert compute and route preparation, exclude router/shared-expert work, and
+use Python-dispatched timing; captured real routes and native timing remain
+necessary before choosing a runtime heuristic.
+
+The original vLLM 0.21 reference image does not dispatch the cached 35B mixed
+W4A16 recipe correctly. Its qualification probe stops before model allocation.
+Official vLLM 0.29 resolves that dispatch issue: the pinned 35B NVFP4 model
+loads and generates `[5,6,24218,10]` for `[1,2,3,4]`, with all 40 MoE layers
+using Marlin A16. The 27B constructor probes select FlashInfer W4A4 for 3.8
+and Marlin W4A16 for 3.6. The 3.8 NVFP4 model also generates successfully;
+its small continuation `[5,0,31,0]` differs from BF16 `[5,0,31,46474]` at the
+fourth prediction. This is smoke validation, not a quality or TPS result.
+Historical benchmark pins remain attached to their evidence.
+
+At 20:37 UTC, pinned 35B and 3.8 NVFP4 downloads were complete and checked;
+3.6 NVFP4 was downloading in an independent container using the default HF
+cache. Exact pins, cache location, container and progress are retained in the
+[saved download status](benchmarks/2026-09-14-nvfp4-survey/download-status.json).
+
+## Reference refresh and 3.8 tokenizer boundary (2026-09-14)
+
+The official vLLM 0.29.0 source pin is
+`98dff2a81d747d1dba01a47f939f48c3526d4206`; the immutable ARM64 image and
+three BF16 model revisions are recorded in the
+[reference artifact](benchmarks/2026-09-14-vllm-references/README.md).
+All three captures completed: 1051 rows per model, 3153 rows total, with
+248320 float32 values per row. Verification on sp10 checked all row hashes,
+asset hashes, image/model identities, replay bookkeeping and resume provenance
+(3,131,811,840 bytes of logits; 3264 verified files). This establishes complete
+reference artifacts, not qs3 correctness or a speed comparison.
+
+The pinned 3.8 tokenizer contains 248077 contiguous addressable IDs, versus
+248070 for both 3.6 models. IDs 248070–248076 add audio/tts special tokens.
+All three models still have 248320 logit columns. The collector validates the
+per-model ID set and excludes only that model's actual padding when calculating
+addressable logsumexp. Runtime support still needs the corresponding tokenizer
+asset validation and sampled-ID bounds: `src/model/runner/mod.rs` and the score
+diagnostic currently cap IDs at 248070. This does not affect the existing 3.6
+contract; it is an explicit remaining 3.8 integration item in TODO.md.
+
 ## Latest validated measurements
 
 The kernel-only changes at `efc9444` (2026-09-13) reach **31.735 tok/s** at

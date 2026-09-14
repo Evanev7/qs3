@@ -1,0 +1,10 @@
+{"status": "error", "backend": "cudnn", "shape": "27b_gate", "error_type": "AttributeError", "error": "module 'flashinfer' has no attribute 'prepare_bf16_fp4_weights'"}
+{"status": "error", "backend": "cute-dsl", "shape": "27b_gate", "error_type": "AttributeError", "error": "module 'flashinfer' has no attribute 'prepare_bf16_fp4_weights'"}
+{"status": "error", "backend": "cudnn", "shape": "27b_down", "error_type": "AttributeError", "error": "module 'flashinfer' has no attribute 'prepare_bf16_fp4_weights'"}
+{"status": "error", "backend": "cute-dsl", "shape": "27b_down", "error_type": "AttributeError", "error": "module 'flashinfer' has no attribute 'prepare_bf16_fp4_weights'"}
+{"status": "error", "backend": "cudnn", "shape": "27b_q", "error_type": "AttributeError", "error": "module 'flashinfer' has no attribute 'prepare_bf16_fp4_weights'"}
+{"status": "error", "backend": "cute-dsl", "shape": "27b_q", "error_type": "AttributeError", "error": "module 'flashinfer' has no attribute 'prepare_bf16_fp4_weights'"}
+{"status": "error", "backend": "cudnn", "shape": "35b_gate_up", "error_type": "AttributeError", "error": "module 'flashinfer' has no attribute 'prepare_bf16_fp4_weights'"}
+{"status": "error", "backend": "cute-dsl", "shape": "35b_gate_up", "error_type": "AttributeError", "error": "module 'flashinfer' has no attribute 'prepare_bf16_fp4_weights'"}
+{"status": "error", "backend": "cudnn", "shape": "35b_down", "error_type": "AttributeError", "error": "module 'flashinfer' has no attribute 'prepare_bf16_fp4_weights'"}
+{"status": "error", "backend": "cute-dsl", "shape": "35b_down", "error_type": "AttributeError", "error": "module 'flashinfer' has no attribute 'prepare_bf16_fp4_weights'"}

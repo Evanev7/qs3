@@ -1,0 +1,53 @@
+{
+  "status": "unsupported_checkpoint_precision",
+  "snapshot": "/hf/models--nvidia--Qwen3.6-35B-A3B-NVFP4/snapshots/6c7f09d4036e97393f82e9f9ecd1a5c35ca5ee92",
+  "revision": "6c7f09d4036e97393f82e9f9ecd1a5c35ca5ee92",
+  "prompt_ids": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "max_new_tokens": 4,
+  "graphs": false,
+  "precision": "checkpoint-declared W4A16_NVFP4 and FP8",
+  "versions": {
+    "vllm": "0.21.0",
+    "torch": "2.11.0+cu130",
+    "transformers": "5.8.1",
+    "flashinfer-python": "0.6.8.post1",
+    "nvidia-cutlass-dsl": "4.6.2"
+  },
+  "config_sha256": "58aefa1c9eff7989f431d748f2ddec39446cb1fd2a69acc46e285c6a37b0cecc",
+  "required_layer_algorithms": {
+    "FP8": 130,
+    "W4A16_NVFP4": 161
+  },
+  "stage": "stopped-before-model-allocation",
+  "elapsed_seconds": 10.002175569999963,
+  "installed_vllm": {
+    "path": "/usr/local/lib/python3.12/dist-packages/vllm/__init__.py",
+    "modelopt_path": "/usr/local/lib/python3.12/dist-packages/vllm/model_executor/layers/quantization/modelopt.py",
+    "quant_algorithms": [
+      "FP8",
+      "FP8_PER_CHANNEL_PER_TOKEN",
+      "FP8_PB_WO",
+      "NVFP4",
+      "W4A16_NVFP4",
+      "MXFP8",
+      "MIXED_PRECISION"
+    ],
+    "mixed_class_sha256": "594412ba5117e2544c7a540fbf107665642f7248dc790a40bd7fc973e1e5dc26"
+  },
+  "parsed_quant_config": {
+    "type": "ModelOptMixedPrecisionConfig",
+    "name": "modelopt_mixed"
+  },
+  "preflight_dispatch": {
+    "prefix": "model.language_model.layers.0.mlp.shared_expert.gate_proj",
+    "method": "UnquantizedLinearMethod",
+    "source_mentions_w4a16": false
+  },
+  "requested_moe_backend_accepted": "marlin",
+  "reason": "Installed ModelOptMixedPrecisionConfig does not dispatch this checkpoint's W4A16_NVFP4 layer to a W4A16 method. Refusing allocation of incorrectly unquantized layers; the checkpoint and its activation precision were not changed."
+}

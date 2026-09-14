@@ -1,0 +1,15 @@
+[
+  "/usr/local/cuda/bin/nvcc",
+  "-O3",
+  "-std=c++17",
+  "-arch=sm_121a",
+  "-I/home/sp10/qs3/.prototypes/out/nvfp4-triton-20260914T191423Z-lp19lw3a",
+  "-I/home/sp10/qs3",
+  "/home/sp10/qs3/.prototypes/nvfp4_survey/triton_aot/bench.cu",
+  "/home/sp10/qs3/qscb.cu",
+  "-lcuda",
+  "-lcublas",
+  "-lcublasLt",
+  "-o",
+  "/home/sp10/qs3/.prototypes/out/nvfp4-triton-20260914T191423Z-lp19lw3a/bench"
+]

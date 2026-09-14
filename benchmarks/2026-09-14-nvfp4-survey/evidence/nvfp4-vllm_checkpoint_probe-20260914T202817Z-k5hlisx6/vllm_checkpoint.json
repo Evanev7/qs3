@@ -1,0 +1,89 @@
+{
+  "status": "preflight_ok",
+  "model_name": "qwen3.8-27b-nvfp4",
+  "model_repo": "nvidia/Qwen3.8-27B-NVFP4",
+  "snapshot": "/hf/models--nvidia--Qwen3.8-27B-NVFP4/snapshots/dbb8f445b3145f8a4c18ddc769f032d57d32867c",
+  "revision": "dbb8f445b3145f8a4c18ddc769f032d57d32867c",
+  "prompt_ids": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "max_new_tokens": 4,
+  "graphs": false,
+  "precision": "checkpoint-declared linear precision; explicit BF16 KV cache",
+  "model_runner": "v1",
+  "versions": {
+    "vllm": "0.29.0",
+    "torch": "2.13.0+cu130",
+    "transformers": "5.16.1",
+    "flashinfer-python": "0.6.18",
+    "nvidia-cutlass-dsl": "4.6.2"
+  },
+  "config_sha256": "71fa01bb64de20971045cd82a82c0ebb25a54e1b0a3f09ef23cf5479e9c54df8",
+  "required_layer_algorithms": {
+    "FP8": 208,
+    "NVFP4": 193
+  },
+  "stage": "stopped-before-model-allocation",
+  "elapsed_seconds": 19.5748175191693,
+  "installed_vllm": {
+    "path": "/usr/local/lib/python3.12/dist-packages/vllm/__init__.py",
+    "modelopt_path": "/usr/local/lib/python3.12/dist-packages/vllm/model_executor/layers/quantization/modelopt.py",
+    "quant_algorithms": [
+      "FP8",
+      "FP8_PER_CHANNEL_PER_TOKEN",
+      "FP8_PB_WO",
+      "NVFP4",
+      "W4A16_NVFP4",
+      "MXFP8",
+      "MIXED_PRECISION"
+    ],
+    "mixed_class_sha256": "3472cd7cec50da72a763896ae9b4eb66b0db745ad27ea5ffee8f117c5300b632"
+  },
+  "parsed_quant_config": {
+    "type": "ModelOptMixedPrecisionConfig",
+    "name": "modelopt_mixed"
+  },
+  "options": {
+    "model": "/hf/models--nvidia--Qwen3.8-27B-NVFP4/snapshots/dbb8f445b3145f8a4c18ddc769f032d57d32867c",
+    "dtype": "bfloat16",
+    "quantization": null,
+    "skip_tokenizer_init": true,
+    "tensor_parallel_size": 1,
+    "max_num_seqs": 1,
+    "max_model_len": 256,
+    "max_num_batched_tokens": 256,
+    "enable_prefix_caching": false,
+    "enable_chunked_prefill": false,
+    "enforce_eager": true,
+    "gpu_memory_utilization": 0.5,
+    "kv_cache_memory_bytes": 268435456,
+    "kv_cache_dtype": "bfloat16",
+    "mamba_cache_dtype": "auto",
+    "mamba_ssm_cache_dtype": "float32",
+    "limit_mm_per_prompt": {
+      "image": 0,
+      "video": 0
+    },
+    "moe_backend": "marlin",
+    "seed": 0
+  },
+  "engine_arguments_accepted": "marlin",
+  "preflight_kv_cache_dtype": "bfloat16",
+  "preflight_dispatch": [
+    {
+      "prefix": "model.language_model.layers.0.linear_attn.out_proj",
+      "algorithm": "FP8",
+      "method": "ModelOptFp8LinearMethod",
+      "kernel": "NoneType"
+    },
+    {
+      "prefix": "model.language_model.layers.0.mlp.gate_proj",
+      "algorithm": "NVFP4",
+      "method": "ModelOptNvFp4LinearMethod",
+      "kernel": "FlashInferCutlassNvFp4LinearKernel"
+    }
+  ]
+}
