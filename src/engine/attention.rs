@@ -1,104 +1,30 @@
-use crate::backend::{
-    Operators,
-    qscb::Qscb,
-    qsfi::{Plan, Qsfi},
+use crate::{
+    backend::{
+        Operators,
+        qscb::Qscb,
+        qsfi::{Plan, Qsfi},
+    },
+    engine::{
+        AppendBatch, AttentionLayer, Commit, DecodeBatch, DynDType, EngineConfig, EngineCore,
+        KvLayout, Status, validate_supported_attention_grouping,
+        validate_supported_attention_head_dim,
+    },
+    ext::{SafeVec, try_clone_slice},
+    ffi::{
+        AppendDecode, AppendPrefill, AttentionDesc, BatchDecodeExecuteDesc,
+        BatchPrefillExecuteDesc, DTYPE_F16, MASK_MODE_CAUSAL, MASK_MODE_NONE, MaskModeRaw,
+        PagedKvCache, PagedKvPlan, PagedKvTable, QoPlan, Tensor3, Tensor4,
+    },
+    memory::{CudaCtx, DeviceBuffer, DeviceSpan},
 };
-use crate::engine::{
-    AppendBatch, AttentionLayer, Commit, DecodeBatch, DynDType, EngineConfig, EngineCore, KvLayout,
-    Status, validate_supported_attention_grouping, validate_supported_attention_head_dim,
-};
-use crate::ext::{SafeVec, try_clone_slice};
-use crate::ffi::{
-    AppendDecode, AppendPrefill, AttentionDesc, BatchDecodeExecuteDesc, BatchPrefillExecuteDesc,
-    DTYPE_F16, MASK_MODE_CAUSAL, MASK_MODE_NONE, MaskModeRaw, PagedKvCache, PagedKvPlan,
-    PagedKvTable, QoPlan, Tensor3, Tensor4, cuda,
-};
-use std::ffi::c_void;
-use std::mem;
 use std::ptr;
+use std::rc::Rc;
 
-struct DeviceI32Buffer {
-    data: *mut i32,
-    cap: usize,
-}
-
-impl DeviceI32Buffer {
-    fn new() -> Self {
-        Self {
-            data: ptr::null_mut(),
-            cap: 0,
-        }
-    }
-
-    fn ensure(&mut self, device_ordinal: i32, count: usize) -> Result<(), Status> {
-        if count == 0 || self.cap >= count {
-            return Ok(());
-        }
-        let bytes = count
-            .checked_mul(mem::size_of::<i32>())
-            .ok_or(Status::InvalidArgument)?;
-        activate_device(device_ordinal)?;
-        let mut next = ptr::null_mut();
-        let err = unsafe { cuda::cudaMalloc(&mut next, bytes) };
-        result_from_cuda(err)?;
-        if !self.data.is_null() {
-            unsafe {
-                cuda::cudaFree(self.data.cast());
-            }
-        }
-        self.data = next.cast();
-        self.cap = count;
-        Ok(())
-    }
-
-    fn upload(
-        &mut self,
-        device_ordinal: i32,
-        stream: *mut c_void,
-        values: &[i32],
-    ) -> Result<(), Status> {
-        if values.is_empty() {
-            return Ok(());
-        }
-        self.ensure(device_ordinal, values.len())?;
-        let bytes = values
-            .len()
-            .checked_mul(mem::size_of::<i32>())
-            .ok_or(Status::InvalidArgument)?;
-        let err = unsafe {
-            cuda::cudaMemcpyAsync(
-                self.data.cast(),
-                values.as_ptr().cast(),
-                bytes,
-                cuda::CUDA_MEMCPY_HOST_TO_DEVICE,
-                stream,
-            )
-        };
-        result_from_cuda(err)
-    }
-
-    fn free(&mut self) {
-        if !self.data.is_null() {
-            unsafe {
-                cuda::cudaFree(self.data.cast());
-            }
-        }
-        self.data = ptr::null_mut();
-        self.cap = 0;
-    }
-
-    fn device_ptr_if(&self, present: bool) -> *mut c_void {
-        if present {
-            self.data.cast()
-        } else {
-            ptr::null_mut()
-        }
-    }
-}
-
+// Cache allocation and retirement use the execution stream. Replacing a prefix
+// enqueues release after its prior cache accesses; it does not wait on the host.
 struct LayerCache {
-    k: *mut c_void,
-    v: *mut c_void,
+    k: DeviceBuffer<u8>,
+    v: DeviceBuffer<u8>,
 }
 
 struct PlanCache {
@@ -171,109 +97,71 @@ pub(crate) struct PrefixState {
 }
 
 impl PrefixState {
-    pub(super) fn new(core: EngineCore) -> Result<Self, Status> {
-        let mut state = Self {
-            core,
-            layer_caches: Vec::new(),
-        };
-        state.allocate_layer_caches()?;
-        Ok(state)
-    }
-
-    fn allocate_layer_caches(&mut self) -> Result<(), Status> {
-        let config = self.core.config();
+    pub(super) fn new(ctx: Rc<CudaCtx>, core: EngineCore) -> Result<Self, Status> {
+        let config = core.config();
         let elems = (config.max_pages as usize)
             .checked_mul(config.page_size as usize)
             .and_then(|v| v.checked_mul(config.num_kv_heads as usize))
             .and_then(|v| v.checked_mul(config.head_dim as usize))
             .ok_or(Status::InvalidArgument)?;
         let bytes = config.kv_dtype.storage_bytes_for(elems)?;
-        self.layer_caches.safe_reserve(config.num_layers as usize)?;
-        activate_device(config.device_ordinal)?;
+        let mut layer_caches = Vec::safe_new(config.num_layers as usize)?;
         for _ in 0..config.num_layers {
-            let mut k = ptr::null_mut();
-            let mut v = ptr::null_mut();
-            let err = unsafe { cuda::cudaMalloc(&mut k, bytes) };
-            result_from_cuda(err)?;
-            let err = unsafe { cuda::cudaMalloc(&mut v, bytes) };
-            if err != cuda::CUDA_SUCCESS {
-                unsafe {
-                    cuda::cudaFree(k);
-                }
-                return result_from_cuda(err);
-            }
-            self.layer_caches.push(LayerCache { k, v });
+            layer_caches.push(LayerCache {
+                k: DeviceBuffer::with_capacity(ctx.clone(), bytes)?,
+                v: DeviceBuffer::with_capacity(ctx.clone(), bytes)?,
+            });
         }
-        Ok(())
-    }
-}
-
-impl Drop for PrefixState {
-    fn drop(&mut self) {
-        let _ = activate_device(self.core.config().device_ordinal);
-        for layer in &mut self.layer_caches {
-            if !layer.k.is_null() {
-                unsafe {
-                    cuda::cudaFree(layer.k);
-                }
-                layer.k = ptr::null_mut();
-            }
-            if !layer.v.is_null() {
-                unsafe {
-                    cuda::cudaFree(layer.v);
-                }
-                layer.v = ptr::null_mut();
-            }
-        }
+        Ok(Self { core, layer_caches })
     }
 }
 
 pub(crate) struct AttentionSession {
     pub(crate) prefix: PrefixState,
-    stream: *mut c_void,
+    pub(super) ctx: Rc<CudaCtx>,
     qsfi: Qsfi,
     #[allow(dead_code)]
     qscb: Qscb,
     append_attention: AttentionDesc,
     decode_attention: AttentionDesc,
-    d_batch_tokens: DeviceI32Buffer,
-    d_batch_qo_indptr: DeviceI32Buffer,
-    d_batch_kv_indptr: DeviceI32Buffer,
-    d_batch_kv_indices: DeviceI32Buffer,
-    d_batch_last_page_len: DeviceI32Buffer,
-    d_batch_rope_pos_offset: DeviceI32Buffer,
-    d_batch_append_batch_indices: DeviceI32Buffer,
-    d_batch_append_positions: DeviceI32Buffer,
+    d_batch_tokens: DeviceBuffer<i32>,
+    d_batch_qo_indptr: DeviceBuffer<i32>,
+    d_batch_kv_indptr: DeviceBuffer<i32>,
+    d_batch_kv_indices: DeviceBuffer<i32>,
+    d_batch_last_page_len: DeviceBuffer<i32>,
+    d_batch_rope_pos_offset: DeviceBuffer<i32>,
+    d_batch_append_batch_indices: DeviceBuffer<i32>,
+    d_batch_append_positions: DeviceBuffer<i32>,
     append_plan: PlanCache,
     decode_plan: PlanCache,
 }
 
 impl AttentionSession {
-    pub(crate) fn new(config: EngineConfig) -> Result<Box<Self>, Status> {
+    pub(crate) fn new(ctx: Rc<CudaCtx>, config: EngineConfig) -> Result<Box<Self>, Status> {
         validate_runtime_config(&config)?;
         let core = EngineCore::new(config)?;
-        let mut qsfi = Qsfi::new(config.device_ordinal, config.stream)?;
+        let mut qsfi = Qsfi::new(&ctx)?;
         qsfi.reserve_workspace(
             config.qsfi_float_workspace_bytes,
             config.qsfi_int_workspace_bytes,
             config.qsfi_host_int_workspace_bytes,
         )?;
-        let qscb = Qscb::new(config.device_ordinal, config.stream)?;
+        let qscb = Qscb::new(&ctx)?;
         let session = Box::new(Self {
             append_attention: make_attention(&config, MASK_MODE_CAUSAL),
             decode_attention: make_attention(&config, MASK_MODE_NONE),
-            prefix: PrefixState::new(core)?,
-            stream: config.stream,
+            prefix: PrefixState::new(ctx.clone(), core)?,
+            ctx: ctx.clone(),
             qsfi,
             qscb,
-            d_batch_tokens: DeviceI32Buffer::new(),
-            d_batch_qo_indptr: DeviceI32Buffer::new(),
-            d_batch_kv_indptr: DeviceI32Buffer::new(),
-            d_batch_kv_indices: DeviceI32Buffer::new(),
-            d_batch_last_page_len: DeviceI32Buffer::new(),
-            d_batch_rope_pos_offset: DeviceI32Buffer::new(),
-            d_batch_append_batch_indices: DeviceI32Buffer::new(),
-            d_batch_append_positions: DeviceI32Buffer::new(),
+            d_batch_tokens: DeviceBuffer::with_capacity(ctx.clone(), 1)?,
+            d_batch_qo_indptr: DeviceBuffer::with_capacity(ctx.clone(), 1)?,
+            d_batch_kv_indptr: DeviceBuffer::with_capacity(ctx.clone(), 1)?,
+            d_batch_kv_indices: DeviceBuffer::with_capacity(ctx.clone(), 1)?,
+            d_batch_last_page_len: DeviceBuffer::with_capacity(ctx.clone(), 1)?,
+            d_batch_rope_pos_offset: DeviceBuffer::with_capacity(ctx.clone(), 1)?,
+            d_batch_append_batch_indices: DeviceBuffer::with_capacity(ctx.clone(), 1)?,
+            d_batch_append_positions: DeviceBuffer::with_capacity(ctx.clone(), 1)?,
             append_plan: PlanCache::new(),
             decode_plan: PlanCache::new(),
         });
@@ -282,47 +170,37 @@ impl AttentionSession {
 
     #[allow(dead_code)]
     pub(crate) fn operators(&mut self) -> Operators<'_> {
-        Operators::new(&self.stream, &mut self.qsfi, &mut self.qscb)
+        Operators::new(&self.ctx.stream, &mut self.qsfi, &mut self.qscb)
     }
 
     fn upload_active_batch(&mut self) -> Result<(), Status> {
-        let config = self.prefix.core.config();
         let batch = self.prefix.core.active_batch()?;
         if batch.request_ids.len() != batch.size as usize {
             return Err(Status::InternalError);
         }
-        // The copied metadata lives in AttentionSession-owned device buffers. All
-        // launches that consume these pointers are enqueued on self.stream, and
-        // the buffers are overwritten only by a later prepare on the same
-        // stream, so stream order preserves their lifetime without events.
-        self.d_batch_tokens
-            .upload(config.device_ordinal, self.stream, batch.tokens)?;
-        self.d_batch_qo_indptr
-            .upload(config.device_ordinal, self.stream, batch.qo_indptr)?;
-        self.d_batch_kv_indptr
-            .upload(config.device_ordinal, self.stream, batch.kv_indptr)?;
-        self.d_batch_kv_indices
-            .upload(config.device_ordinal, self.stream, batch.kv_indices)?;
-        self.d_batch_last_page_len.upload(
-            config.device_ordinal,
-            self.stream,
-            batch.last_page_len,
-        )?;
-        self.d_batch_rope_pos_offset.upload(
-            config.device_ordinal,
-            self.stream,
-            batch.rope_pos_offset,
-        )?;
-        self.d_batch_append_batch_indices.upload(
-            config.device_ordinal,
-            self.stream,
-            batch.append_batch_indices,
-        )?;
-        self.d_batch_append_positions.upload(
-            config.device_ordinal,
-            self.stream,
-            batch.append_positions,
-        )
+        // Device storage grows and is reused on the same stream as its consumers.
+        // Host metadata belongs to EngineCore and can be reused on abort/reprepare.
+        // Route upload failures through the completion boundary before callers
+        // can abort the batch and release or overwrite its host storage.
+        let result = (|| -> Result<(), Status> {
+            // SAFETY: all host sources remain borrowed and unchanged through
+            // the stream wait below; destination storage is owned by this session.
+            unsafe {
+                self.d_batch_tokens.upload(batch.tokens)?;
+                self.d_batch_qo_indptr.upload(batch.qo_indptr)?;
+                self.d_batch_kv_indptr.upload(batch.kv_indptr)?;
+                self.d_batch_kv_indices.upload(batch.kv_indices)?;
+                self.d_batch_last_page_len.upload(batch.last_page_len)?;
+                self.d_batch_rope_pos_offset.upload(batch.rope_pos_offset)?;
+                self.d_batch_append_batch_indices
+                    .upload(batch.append_batch_indices)?;
+                self.d_batch_append_positions.upload(batch.append_positions)
+            }
+        })();
+        // TODO(async-upload-lifetimes): retain attention metadata upload sources
+        // until completion across abort/reprepare, then remove this temporary wait.
+        let completion = self.ctx.synchronize();
+        result.and(completion)
     }
 
     fn ensure_append_plan(&mut self) -> Result<(), Status> {
@@ -441,14 +319,14 @@ impl AttentionSession {
             .get(idx)
             .ok_or(Status::InvalidArgument)?;
         Ok(PagedKvCache {
-            k: self.make_cache_tensor(layer.k)?,
-            v: self.make_cache_tensor(layer.v)?,
+            k: self.make_cache_tensor(&layer.k)?,
+            v: self.make_cache_tensor(&layer.v)?,
             k_scale: zero_tensor4(),
             v_scale: zero_tensor4(),
         })
     }
 
-    fn make_cache_tensor(&self, data: *mut c_void) -> Result<Tensor4, Status> {
+    fn make_cache_tensor(&self, data: &DeviceSpan<u8>) -> Result<Tensor4, Status> {
         let config = self.prefix.core.config();
         let mut shape = [0i64; 4];
         let mut stride = [0i64; 4];
@@ -471,7 +349,7 @@ impl AttentionSession {
             stride[2] = config.head_dim as i64;
         }
         Ok(Tensor4 {
-            data,
+            data: data.erase(),
             dtype: config.kv_dtype.to_raw(),
             shape,
             stride,
@@ -481,18 +359,26 @@ impl AttentionSession {
     fn make_active_page_table(&self) -> Result<PagedKvTable, Status> {
         let batch = self.prefix.core.active_batch()?;
         Ok(PagedKvTable {
-            indptr: self
-                .d_batch_kv_indptr
-                .device_ptr_if(!batch.kv_indptr.is_empty()),
-            indices: self
-                .d_batch_kv_indices
-                .device_ptr_if(!batch.kv_indices.is_empty()),
-            last_page_len: self
-                .d_batch_last_page_len
-                .device_ptr_if(!batch.last_page_len.is_empty()),
-            rope_pos_offset: self
-                .d_batch_rope_pos_offset
-                .device_ptr_if(!batch.rope_pos_offset.is_empty()),
+            indptr: if batch.kv_indptr.is_empty() {
+                ptr::null_mut()
+            } else {
+                self.d_batch_kv_indptr.erase()
+            },
+            indices: if batch.kv_indices.is_empty() {
+                ptr::null_mut()
+            } else {
+                self.d_batch_kv_indices.erase()
+            },
+            last_page_len: if batch.last_page_len.is_empty() {
+                ptr::null_mut()
+            } else {
+                self.d_batch_last_page_len.erase()
+            },
+            rope_pos_offset: if batch.rope_pos_offset.is_empty() {
+                ptr::null_mut()
+            } else {
+                self.d_batch_rope_pos_offset.erase()
+            },
             batch_size: batch.size,
             num_indices: u32::try_from(batch.kv_indices.len())
                 .map_err(|_| Status::InvalidArgument)?,
@@ -528,12 +414,16 @@ impl AttentionSession {
         let append = AppendPrefill {
             k: layer.k,
             v: layer.v,
-            batch_indices: self
-                .d_batch_append_batch_indices
-                .device_ptr_if(!batch.append_batch_indices.is_empty()),
-            positions: self
-                .d_batch_append_positions
-                .device_ptr_if(!batch.append_positions.is_empty()),
+            batch_indices: if batch.append_batch_indices.is_empty() {
+                ptr::null_mut()
+            } else {
+                self.d_batch_append_batch_indices.erase()
+            },
+            positions: if batch.append_positions.is_empty() {
+                ptr::null_mut()
+            } else {
+                self.d_batch_append_positions.erase()
+            },
             kv_cache,
             page_table,
             num_tokens: batch.token_count,
@@ -551,9 +441,11 @@ impl AttentionSession {
             q_rope_offset: layer.q_rope_offset,
             o: layer.o,
             lse: layer.lse,
-            qo_indptr: self
-                .d_batch_qo_indptr
-                .device_ptr_if(!batch.qo_indptr.is_empty()),
+            qo_indptr: if batch.qo_indptr.is_empty() {
+                ptr::null_mut()
+            } else {
+                self.d_batch_qo_indptr.erase()
+            },
             kv_cache,
             page_table,
             q_scale: layer.q_scale,
@@ -693,11 +585,7 @@ impl AttentionSession {
     /// session state advances.
     pub(crate) fn commit_batch(&mut self, commit: Commit<'_>) -> Result<(), Status> {
         #[cfg(debug_assertions)]
-        {
-            let config = self.prefix.core.config();
-            activate_device(config.device_ordinal)?;
-            result_from_cuda(unsafe { cuda::cudaStreamSynchronize(self.stream) })?;
-        }
+        self.ctx.synchronize()?;
         self.prefix.core.commit_batch(commit.accepted_token_counts)
     }
 }
@@ -706,34 +594,7 @@ impl Drop for AttentionSession {
     fn drop(&mut self) {
         self.append_plan.destroy();
         self.decode_plan.destroy();
-        let config = self.prefix.core.config();
-        let _ = activate_device(config.device_ordinal);
-        self.d_batch_tokens.free();
-        self.d_batch_qo_indptr.free();
-        self.d_batch_kv_indptr.free();
-        self.d_batch_kv_indices.free();
-        self.d_batch_last_page_len.free();
-        self.d_batch_rope_pos_offset.free();
-        self.d_batch_append_batch_indices.free();
-        self.d_batch_append_positions.free();
     }
-}
-
-fn result_from_cuda(err: i32) -> Result<(), Status> {
-    if err == cuda::CUDA_SUCCESS {
-        Ok(())
-    } else if err == cuda::CUDA_ERROR_MEMORY_ALLOCATION {
-        Err(Status::OutOfMemory)
-    } else {
-        Err(Status::CudaError)
-    }
-}
-
-fn activate_device(device_ordinal: i32) -> Result<(), Status> {
-    if device_ordinal < 0 {
-        return Ok(());
-    }
-    result_from_cuda(unsafe { cuda::cudaSetDevice(device_ordinal) })
 }
 
 fn validate_runtime_config(config: &EngineConfig) -> Result<(), Status> {
@@ -860,8 +721,6 @@ mod tests {
 
     fn tiny_config() -> EngineConfig {
         EngineConfig {
-            device_ordinal: -1,
-            stream: ptr::null_mut(),
             num_layers: 1,
             max_live_requests: 4,
             max_batch_rows: 3,

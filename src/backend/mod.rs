@@ -29,7 +29,7 @@ use std::ptr;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct Workspace {
-    data: ffi::DevicePtr,
+    data: ffi::ErasedDevicePtr,
     bytes: usize,
 }
 
@@ -41,7 +41,7 @@ impl Workspace {
         }
     }
 
-    pub(crate) fn new(data: ffi::DevicePtr, bytes: usize) -> Result<Self, Status> {
+    pub(crate) fn new(data: ffi::ErasedDevicePtr, bytes: usize) -> Result<Self, Status> {
         let workspace = Self { data, bytes };
         workspace.validate()?;
         Ok(workspace)
@@ -68,7 +68,7 @@ impl Workspace {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct Bf16Heads {
-    data: ffi::DevicePtr,
+    data: ffi::ErasedDevicePtr,
     tokens: u32,
     heads: u32,
     head_dim: u32,
@@ -78,7 +78,7 @@ pub(crate) struct Bf16Heads {
 
 impl Bf16Heads {
     pub(crate) fn contiguous(
-        data: ffi::DevicePtr,
+        data: ffi::ErasedDevicePtr,
         tokens: u32,
         heads: u32,
         head_dim: u32,
@@ -94,7 +94,7 @@ impl Bf16Heads {
     }
 
     pub(crate) fn new(
-        data: ffi::DevicePtr,
+        data: ffi::ErasedDevicePtr,
         tokens: u32,
         heads: u32,
         head_dim: u32,
@@ -179,14 +179,14 @@ impl RouterScore {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct GdnConvState {
-    data: ffi::DevicePtr,
+    data: ffi::ErasedDevicePtr,
     dtype: FloatStorage,
     state_pool: u32,
 }
 
 impl GdnConvState {
     pub(crate) fn contiguous(
-        data: ffi::DevicePtr,
+        data: ffi::ErasedDevicePtr,
         dtype: FloatStorage,
         state_pool: u32,
     ) -> Result<Self, Status> {
@@ -219,14 +219,14 @@ impl GdnConvState {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct GdnRecurrentState {
-    data: ffi::DevicePtr,
+    data: ffi::ErasedDevicePtr,
     dtype: FloatStorage,
     state_pool: u32,
 }
 
 impl GdnRecurrentState {
     pub(crate) fn contiguous(
-        data: ffi::DevicePtr,
+        data: ffi::ErasedDevicePtr,
         dtype: FloatStorage,
         state_pool: u32,
     ) -> Result<Self, Status> {
@@ -308,7 +308,7 @@ impl<'a> Operators<'a> {
     }
 }
 
-fn validate_ptr(data: ffi::DevicePtr) -> Result<(), Status> {
+fn validate_ptr(data: ffi::ErasedDevicePtr) -> Result<(), Status> {
     if data.is_null() {
         return Err(Status::InvalidArgument);
     }

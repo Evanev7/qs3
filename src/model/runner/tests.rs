@@ -1,4 +1,5 @@
 use super::{ModelRunner, QwenRequest};
+use crate::memory::{CudaCtx, DeviceBuffer, DeviceSpan};
 use crate::{
     QWEN36_MOE_ROUTER_SCALING_FACTOR, QWEN36_MOE_ROUTER_SCORE,
     backend::{
@@ -16,16 +17,16 @@ use crate::{
     model::{
         ActiveRunKind, MoeShape, QwenBlockKind, QwenConfig, QwenWeights, checked_usize_product,
         constant_bf16_values,
-        scratch::{DeviceBuffer, RunnerScratch},
+        scratch::{MlpScratch, MoeScratch, RunnerScratch, SharedExpertScratch},
         state::{GdnSlotMap, GdnState},
-        synchronize_stream,
         weights::{
             QwenAttentionMlpWeights, QwenGdnWeights, QwenLayerWeights, QwenMlpWeights,
             QwenSharedExpertWeights,
         },
     },
 };
-use std::{ffi::c_void, mem, path::PathBuf, ptr};
+use std::rc::Rc;
+use std::{mem, path::PathBuf};
 
 const DEFAULT_VECTOR_ROOT: &str = "build/vectors/qwen36_semantics";
 const FULL_ATTN_VECTOR_ROWS: u32 = 6;
@@ -62,29 +63,61 @@ const MODEL_LOGITS_ABS_TOL: f32 = 0.35;
 const MODEL_LOGITS_REL_TOL: f32 = 0.03;
 
 fn qwen36_hybrid_fixture_with_supported_attention(num_layers: u32) -> QwenConfig {
-    let mut config = QwenConfig::randomized_qwen36_moe_gdn_one_block_fixture(-1);
+    let mut config = QwenConfig::randomized_qwen36_moe_gdn_one_block_fixture();
     config.fixture_mut().num_layers = num_layers;
     config
 }
 
-fn empty_bf16_buffer() -> DeviceBuffer<u16> {
-    DeviceBuffer::empty(-1)
+fn placeholder_weight() -> crate::model::weights::QwenWeight {
+    Box::new(Rc::new(
+        DeviceSpan::new(std::ptr::NonNull::<u16>::dangling().as_ptr(), 0).unwrap(),
+    ))
+}
+
+fn moe_scratch(scratch: &RunnerScratch) -> &MoeScratch {
+    let MlpScratch::Moe(moe) = &scratch.mlp else {
+        panic!("expected MoE scratch")
+    };
+    moe
+}
+
+fn moe_scratch_mut(scratch: &mut RunnerScratch) -> &mut MoeScratch {
+    let MlpScratch::Moe(moe) = &mut scratch.mlp else {
+        panic!("expected MoE scratch")
+    };
+    moe
+}
+
+fn shared_scratch(scratch: &RunnerScratch) -> &SharedExpertScratch {
+    moe_scratch(scratch).shared.as_ref().unwrap()
+}
+
+// Fixture sources are often temporary Vecs: explicitly finish their uploads.
+fn upload<T: Copy>(
+    ctx: &CudaCtx,
+    buffer: &mut DeviceBuffer<T>,
+    values: &[T],
+) -> Result<(), Status> {
+    unsafe {
+        buffer.upload(values).unwrap();
+    }
+    ctx.synchronize()
 }
 
 fn empty_shared_expert_weights() -> QwenSharedExpertWeights {
     QwenSharedExpertWeights {
-        gate_proj: empty_bf16_buffer(),
-        up_proj: empty_bf16_buffer(),
-        down_proj: empty_bf16_buffer(),
-        shared_expert_gate: empty_bf16_buffer(),
+        gate_proj: placeholder_weight(),
+        up_proj: placeholder_weight(),
+        down_proj: placeholder_weight(),
+        shared_expert_gate: placeholder_weight(),
     }
 }
 
 fn empty_qwen36_moe_mlp_weights() -> QwenMlpWeights {
     QwenMlpWeights::Moe {
-        router_proj: empty_bf16_buffer(),
-        gate_up_proj: empty_bf16_buffer(),
-        down_proj: empty_bf16_buffer(),
+        router_proj: placeholder_weight(),
+        gate_up_proj: placeholder_weight(),
+        down_proj: placeholder_weight(),
         shared: Some(empty_shared_expert_weights()),
     }
 }
@@ -104,35 +137,40 @@ fn cuda_device_available() -> bool {
     true
 }
 
-fn filled_bf16_buffer(
-    device_ordinal: i32,
-    stream: *mut c_void,
-    len: usize,
-    value: f32,
-) -> DeviceBuffer<u16> {
-    DeviceBuffer::from_slice(
-        device_ordinal,
-        stream,
-        &constant_bf16_values(len, value).unwrap(),
-    )
-    .unwrap()
+fn filled_bf16_buffer(ctx: &Rc<CudaCtx>, len: usize, value: f32) -> DeviceBuffer<u16> {
+    DeviceBuffer::from_slice(ctx.clone(), &constant_bf16_values(len, value).unwrap()).unwrap()
 }
 
-fn download_bf16(buffer: &DeviceBuffer<u16>, stream: *mut c_void, len: usize) -> Vec<u16> {
+fn download_bf16(buffer: &DeviceSpan<u16>, ctx: &CudaCtx, len: usize) -> Vec<u16> {
+    buffer.check_view_len(len).unwrap();
     let mut values = vec![0_u16; len];
-    buffer.download(stream, &mut values).unwrap();
+    // SAFETY: test owners keep initialized source storage alive through this wait.
+    unsafe {
+        ctx.download(buffer.as_raw(), &mut values).unwrap();
+    }
+    ctx.synchronize().unwrap();
     values
 }
 
-fn download_i32(buffer: &DeviceBuffer<i32>, stream: *mut c_void, len: usize) -> Vec<i32> {
+fn download_i32(buffer: &DeviceSpan<i32>, ctx: &CudaCtx, len: usize) -> Vec<i32> {
+    buffer.check_view_len(len).unwrap();
     let mut values = vec![0_i32; len];
-    buffer.download(stream, &mut values).unwrap();
+    // SAFETY: test owners keep initialized source storage alive through this wait.
+    unsafe {
+        ctx.download(buffer.as_raw(), &mut values).unwrap();
+    }
+    ctx.synchronize().unwrap();
     values
 }
 
-fn download_f32(buffer: &DeviceBuffer<f32>, stream: *mut c_void, len: usize) -> Vec<f32> {
+fn download_f32(buffer: &DeviceSpan<f32>, ctx: &CudaCtx, len: usize) -> Vec<f32> {
+    buffer.check_view_len(len).unwrap();
     let mut values = vec![0.0_f32; len];
-    buffer.download(stream, &mut values).unwrap();
+    // SAFETY: test owners keep initialized source storage alive through this wait.
+    unsafe {
+        ctx.download(buffer.as_raw(), &mut values).unwrap();
+    }
+    ctx.synchronize().unwrap();
     values
 }
 
@@ -342,18 +380,18 @@ fn assert_moe_router_matches_cpu(runner: &ModelRunner, rows: u32) {
     let experts = moe.num_experts as usize;
     let topk = moe.num_experts_per_tok as usize;
     let logits = download_bf16(
-        &runner.scratch.router_logits,
-        runner.config.stream,
+        &moe_scratch(&runner.scratch).router_logits,
+        &runner.ctx,
         rows as usize * experts,
     );
     let ids = download_i32(
-        &runner.scratch.topk_ids,
-        runner.config.stream,
+        &moe_scratch(&runner.scratch).topk_ids,
+        &runner.ctx,
         rows as usize * topk,
     );
     let weights = download_f32(
-        &runner.scratch.topk_weights,
-        runner.config.stream,
+        &moe_scratch(&runner.scratch).topk_weights,
+        &runner.ctx,
         ids.len(),
     );
     let mut expected_weights = Vec::with_capacity(weights.len());
@@ -432,25 +470,22 @@ fn assert_bf16_close_to_f32_oracle(
 }
 
 fn full_attention_vector_config() -> QwenConfig {
-    let mut config = QwenConfig::randomized_dense_tiny_fixture(0);
+    let mut config = QwenConfig::randomized_dense_tiny_fixture();
     config.fixture_mut().num_layers = 1;
     config
 }
 
-fn empty_weights_for_config(config: QwenConfig) -> QwenWeights {
+fn placeholder_weights() -> QwenWeights {
     QwenWeights {
-        device_ordinal: config.device_ordinal,
-        stream: config.stream,
-        fixture: config.fixture,
-        token_embedding: empty_bf16_buffer(),
-        final_norm: empty_bf16_buffer(),
-        lm_head: empty_bf16_buffer(),
+        token_embedding: placeholder_weight(),
+        final_norm: placeholder_weight(),
+        lm_head: placeholder_weight(),
         layers: Vec::new(),
     }
 }
 
 fn moe_vector_config() -> QwenConfig {
-    let mut config = QwenConfig::randomized_dense_tiny_fixture(0);
+    let mut config = QwenConfig::randomized_dense_tiny_fixture();
     config.fixture_mut().num_layers = 1;
     config.max_seq_len = MOE_VECTOR_ROWS;
     config.max_pages = 2;
@@ -468,8 +503,9 @@ fn moe_vector_config() -> QwenConfig {
 }
 
 fn moe_vector_runner() -> ModelRunner {
+    let ctx = Rc::new(CudaCtx::default().unwrap());
     let config = moe_vector_config();
-    let mut engine = Engine::new(config.engine_config()).unwrap();
+    let mut engine = Engine::new(ctx.clone(), config.engine_config()).unwrap();
     let moe = config.moe_config().unwrap();
     let (moe_plan, workspace_bytes) = {
         let mut ops = engine.operators();
@@ -489,17 +525,17 @@ fn moe_vector_runner() -> ModelRunner {
             unsafe { ops.qsfi().moe_workspace_size(&plan, config.max_seq_len) }.unwrap();
         (plan, workspace_bytes)
     };
-    let mut scratch = RunnerScratch::new(config.device_ordinal);
-    scratch.ensure_moe_workspace(workspace_bytes).unwrap();
-    let mut qscb_workspace = DeviceBuffer::empty(config.device_ordinal);
-    qscb_workspace.ensure(config.qscb_workspace_bytes).unwrap();
+    let scratch = RunnerScratch::new(ctx.clone(), &config, workspace_bytes).unwrap();
+    let qscb_workspace =
+        DeviceBuffer::with_capacity(ctx.clone(), (config.qscb_workspace_bytes).max(1)).unwrap();
 
     ModelRunner {
+        ctx: ctx.clone(),
         sampler: None,
         lm_head: None,
         gdn_qkv: None,
         config,
-        weights: empty_weights_for_config(config),
+        weights: placeholder_weights(),
         engine,
         moe_plan: Some(moe_plan),
         gdn_state: None,
@@ -514,47 +550,40 @@ fn moe_vector_runner() -> ModelRunner {
 }
 
 fn upload_moe_vector_inputs(runner: &mut ModelRunner) {
-    runner
-        .scratch
-        .ensure(&runner.config, MOE_VECTOR_ROWS)
-        .unwrap();
-    runner
-        .scratch
-        .attn_proj
-        .upload(
-            runner.config.stream,
-            &read_moe_bf16_vector("hidden.bf16", MOE_VECTOR_ELEMENTS),
-        )
-        .unwrap();
-    runner
-        .scratch
-        .router_logits
-        .upload(
-            runner.config.stream,
-            &read_moe_bf16_vector(
-                "router_logits.bf16",
-                (MOE_VECTOR_ROWS * NUM_EXPERTS) as usize,
-            ),
-        )
-        .unwrap();
+    runner.scratch.reserve(MOE_VECTOR_ROWS).unwrap();
+    upload(
+        &runner.ctx,
+        &mut runner.scratch.attn_proj,
+        &read_moe_bf16_vector("hidden.bf16", MOE_VECTOR_ELEMENTS),
+    )
+    .unwrap();
+    upload(
+        &runner.ctx,
+        &mut moe_scratch_mut(&mut runner.scratch).router_logits,
+        &read_moe_bf16_vector(
+            "router_logits.bf16",
+            (MOE_VECTOR_ROWS * NUM_EXPERTS) as usize,
+        ),
+    )
+    .unwrap();
 }
 
 fn run_moe_vector_router(runner: &mut ModelRunner, renormalize: bool) {
     let moe = runner.config.moe_config().unwrap();
     let router_logits = DMat::contiguous(
-        runner.scratch.router_logits.as_device_ptr(),
+        moe_scratch(&runner.scratch).router_logits.erase(),
         MOE_VECTOR_ROWS,
         moe.num_experts,
     )
     .unwrap();
     let topk_ids = DMat::contiguous(
-        runner.scratch.topk_ids.as_device_ptr(),
+        moe_scratch(&runner.scratch).topk_ids.erase(),
         MOE_VECTOR_ROWS,
         moe.num_experts_per_tok,
     )
     .unwrap();
     let topk_weights = DMat::contiguous(
-        runner.scratch.topk_weights.as_device_ptr(),
+        moe_scratch(&runner.scratch).topk_weights.erase(),
         MOE_VECTOR_ROWS,
         moe.num_experts_per_tok,
     )
@@ -574,10 +603,10 @@ fn run_moe_vector_router(runner: &mut ModelRunner, renormalize: bool) {
 }
 
 fn execute_moe_vector_routed_output(runner: &mut ModelRunner) {
+    let ctx = runner.ctx.clone();
     let moe = runner.config.moe_config().unwrap();
     let gate_up_weight = DeviceBuffer::from_slice(
-        runner.config.device_ordinal,
-        runner.config.stream,
+        ctx.clone(),
         &read_moe_bf16_vector(
             "gate_up_weight.bf16",
             (NUM_EXPERTS * 2 * MOE_VECTOR_INTERMEDIATE * MOE_VECTOR_HIDDEN) as usize,
@@ -585,8 +614,7 @@ fn execute_moe_vector_routed_output(runner: &mut ModelRunner) {
     )
     .unwrap();
     let down_weight = DeviceBuffer::from_slice(
-        runner.config.device_ordinal,
-        runner.config.stream,
+        ctx.clone(),
         &read_moe_bf16_vector(
             "down_weight.bf16",
             (NUM_EXPERTS * MOE_VECTOR_HIDDEN * MOE_VECTOR_INTERMEDIATE) as usize,
@@ -595,46 +623,46 @@ fn execute_moe_vector_routed_output(runner: &mut ModelRunner) {
     .unwrap();
     let execute = MoeBf16Execute::new(MoeBf16ExecuteArgs {
         hidden: DMat::contiguous(
-            runner.scratch.attn_proj.as_device_ptr(),
+            runner.scratch.attn_proj.erase(),
             MOE_VECTOR_ROWS,
             MOE_VECTOR_HIDDEN,
         )
         .unwrap(),
         topk_ids: DMat::contiguous(
-            runner.scratch.topk_ids.as_device_ptr(),
+            moe_scratch(&runner.scratch).topk_ids.erase(),
             MOE_VECTOR_ROWS,
             moe.num_experts_per_tok,
         )
         .unwrap(),
         topk_weights: DMat::contiguous(
-            runner.scratch.topk_weights.as_device_ptr(),
+            moe_scratch(&runner.scratch).topk_weights.erase(),
             MOE_VECTOR_ROWS,
             moe.num_experts_per_tok,
         )
         .unwrap(),
         gate_up_weight: DTensor3::contiguous(
-            gate_up_weight.as_device_ptr(),
+            gate_up_weight.erase(),
             moe.num_experts,
             2 * MOE_VECTOR_INTERMEDIATE,
             MOE_VECTOR_HIDDEN,
         )
         .unwrap(),
         down_weight: DTensor3::contiguous(
-            down_weight.as_device_ptr(),
+            down_weight.erase(),
             moe.num_experts,
             MOE_VECTOR_HIDDEN,
             MOE_VECTOR_INTERMEDIATE,
         )
         .unwrap(),
         out: DMat::contiguous(
-            runner.scratch.mlp_out.as_device_ptr(),
+            runner.scratch.mlp_out.erase(),
             MOE_VECTOR_ROWS,
             MOE_VECTOR_HIDDEN,
         )
         .unwrap(),
         workspace: Workspace::new(
-            runner.scratch.moe_workspace.as_device_ptr(),
-            runner.scratch.moe_workspace.cap,
+            moe_scratch(&runner.scratch).workspace.erase(),
+            moe_scratch(&runner.scratch).workspace.cap,
         )
         .unwrap(),
     })
@@ -645,13 +673,13 @@ fn execute_moe_vector_routed_output(runner: &mut ModelRunner) {
             .moe_execute_bf16(runner.moe_plan.as_ref().unwrap(), &execute)
     }
     .unwrap();
-    synchronize_stream(runner.config.stream).unwrap();
+    runner.ctx.synchronize().unwrap();
 }
 
 fn execute_moe_vector_shared_gate_add(runner: &mut ModelRunner) {
+    let ctx = runner.ctx.clone();
     let shared_gate_up_weight = DeviceBuffer::from_slice(
-        runner.config.device_ordinal,
-        runner.config.stream,
+        ctx.clone(),
         &read_moe_bf16_vector(
             "shared_gate_up_weight.bf16",
             (2 * MOE_VECTOR_INTERMEDIATE * MOE_VECTOR_HIDDEN) as usize,
@@ -659,8 +687,7 @@ fn execute_moe_vector_shared_gate_add(runner: &mut ModelRunner) {
     )
     .unwrap();
     let shared_down_weight = DeviceBuffer::from_slice(
-        runner.config.device_ordinal,
-        runner.config.stream,
+        ctx.clone(),
         &read_moe_bf16_vector(
             "shared_down_weight.bf16",
             (MOE_VECTOR_HIDDEN * MOE_VECTOR_INTERMEDIATE) as usize,
@@ -685,9 +712,8 @@ fn execute_moe_vector_shared_gate_add(runner: &mut ModelRunner) {
             shared_gate_up_weight
                 .matrix(MOE_VECTOR_INTERMEDIATE, MOE_VECTOR_HIDDEN)
                 .unwrap(),
-            runner
-                .scratch
-                .shared_gate
+            shared_scratch(&runner.scratch)
+                .gate
                 .matrix(MOE_VECTOR_ROWS, MOE_VECTOR_INTERMEDIATE)
                 .unwrap(),
             runner
@@ -705,9 +731,8 @@ fn execute_moe_vector_shared_gate_add(runner: &mut ModelRunner) {
                 .matrix(MOE_VECTOR_ROWS, MOE_VECTOR_HIDDEN)
                 .unwrap(),
             shared_up_proj,
-            runner
-                .scratch
-                .shared_up
+            shared_scratch(&runner.scratch)
+                .up
                 .matrix(MOE_VECTOR_ROWS, MOE_VECTOR_INTERMEDIATE)
                 .unwrap(),
             runner
@@ -719,19 +744,16 @@ fn execute_moe_vector_shared_gate_add(runner: &mut ModelRunner) {
     .unwrap();
     unsafe {
         runner.engine.operators().qscu().silu_and_mul_bf16(
-            runner
-                .scratch
-                .shared_gate
+            shared_scratch(&runner.scratch)
+                .gate
                 .matrix(MOE_VECTOR_ROWS, MOE_VECTOR_INTERMEDIATE)
                 .unwrap(),
-            runner
-                .scratch
-                .shared_up
+            shared_scratch(&runner.scratch)
+                .up
                 .matrix(MOE_VECTOR_ROWS, MOE_VECTOR_INTERMEDIATE)
                 .unwrap(),
-            runner
-                .scratch
-                .shared_mlp
+            shared_scratch(&runner.scratch)
+                .activated
                 .matrix(MOE_VECTOR_ROWS, MOE_VECTOR_INTERMEDIATE)
                 .unwrap(),
         )
@@ -739,17 +761,15 @@ fn execute_moe_vector_shared_gate_add(runner: &mut ModelRunner) {
     .unwrap();
     unsafe {
         runner.engine.operators().qscb().linear(
-            runner
-                .scratch
-                .shared_mlp
+            shared_scratch(&runner.scratch)
+                .activated
                 .matrix(MOE_VECTOR_ROWS, MOE_VECTOR_INTERMEDIATE)
                 .unwrap(),
             shared_down_weight
                 .matrix(MOE_VECTOR_HIDDEN, MOE_VECTOR_INTERMEDIATE)
                 .unwrap(),
-            runner
-                .scratch
-                .shared_out
+            shared_scratch(&runner.scratch)
+                .out
                 .matrix(MOE_VECTOR_ROWS, MOE_VECTOR_HIDDEN)
                 .unwrap(),
             runner
@@ -759,28 +779,29 @@ fn execute_moe_vector_shared_gate_add(runner: &mut ModelRunner) {
         )
     }
     .unwrap();
-    runner
-        .scratch
-        .shared_gate_logits
-        .upload(
-            runner.config.stream,
-            &read_moe_f32_vector("shared_gate_logits.f32", MOE_VECTOR_ROWS as usize),
-        )
-        .unwrap();
+    upload(
+        &runner.ctx,
+        &mut moe_scratch_mut(&mut runner.scratch)
+            .shared
+            .as_mut()
+            .unwrap()
+            .gate_logits,
+        &read_moe_f32_vector("shared_gate_logits.f32", MOE_VECTOR_ROWS as usize),
+    )
+    .unwrap();
+
     unsafe {
         runner
             .engine
             .operators()
             .qscu()
             .qwen36_shared_expert_gate_add_bf16(
-                runner
-                    .scratch
-                    .shared_gate_logits
+                shared_scratch(&runner.scratch)
+                    .gate_logits
                     .matrix(MOE_VECTOR_ROWS, 1)
                     .unwrap(),
-                runner
-                    .scratch
-                    .shared_out
+                shared_scratch(&runner.scratch)
+                    .out
                     .matrix(MOE_VECTOR_ROWS, MOE_VECTOR_HIDDEN)
                     .unwrap(),
                 runner
@@ -791,24 +812,26 @@ fn execute_moe_vector_shared_gate_add(runner: &mut ModelRunner) {
             )
     }
     .unwrap();
-    synchronize_stream(runner.config.stream).unwrap();
+    runner.ctx.synchronize().unwrap();
 }
 
 fn full_attention_vector_runner() -> ModelRunner {
+    let ctx = Rc::new(CudaCtx::default().unwrap());
     let mut config = full_attention_vector_config();
     config.qscb_workspace_bytes = 0; // This fixture runs only attention prep kernels.
-    let engine = Engine::new(config.engine_config()).unwrap();
+    let engine = Engine::new(ctx.clone(), config.engine_config()).unwrap();
     ModelRunner {
+        ctx: ctx.clone(),
         sampler: None,
         gdn_qkv: None,
         lm_head: None,
         config,
-        weights: empty_weights_for_config(config),
+        weights: placeholder_weights(),
         engine,
         moe_plan: None,
         gdn_state: None,
-        scratch: RunnerScratch::new(config.device_ordinal),
-        qscb_workspace: DeviceBuffer::empty(config.device_ordinal),
+        scratch: RunnerScratch::new(ctx.clone(), &config, 0).unwrap(),
+        qscb_workspace: DeviceBuffer::with_capacity(ctx.clone(), 1).unwrap(),
         live_request_id: None,
         live_tokens: Vec::new(),
         last_next_tokens: Vec::new(),
@@ -818,21 +841,23 @@ fn full_attention_vector_runner() -> ModelRunner {
 }
 
 fn full_attention_block_vector_runner() -> ModelRunner {
+    let ctx = Rc::new(CudaCtx::default().unwrap());
     let mut config = full_attention_vector_config();
     config.qscb_workspace_bytes = 0; // This fixture runs only attention prep kernels.
-    let engine = Engine::new(config.engine_config()).unwrap();
-    let mut qscb_workspace = DeviceBuffer::empty(config.device_ordinal);
-    qscb_workspace.ensure(config.qscb_workspace_bytes).unwrap();
+    let engine = Engine::new(ctx.clone(), config.engine_config()).unwrap();
+    let qscb_workspace =
+        DeviceBuffer::with_capacity(ctx.clone(), (config.qscb_workspace_bytes).max(1)).unwrap();
     ModelRunner {
+        ctx: ctx.clone(),
         sampler: None,
         gdn_qkv: None,
         lm_head: None,
         config,
-        weights: empty_weights_for_config(config),
+        weights: placeholder_weights(),
         engine,
         moe_plan: None,
         gdn_state: None,
-        scratch: RunnerScratch::new(config.device_ordinal),
+        scratch: RunnerScratch::new(ctx.clone(), &config, 0).unwrap(),
         qscb_workspace,
         live_request_id: None,
         live_tokens: Vec::new(),
@@ -858,8 +883,9 @@ fn full_attention_block_moe_vector_config() -> QwenConfig {
 }
 
 fn full_attention_block_moe_vector_runner() -> ModelRunner {
+    let ctx = Rc::new(CudaCtx::default().unwrap());
     let config = full_attention_block_moe_vector_config();
-    let mut engine = Engine::new(config.engine_config()).unwrap();
+    let mut engine = Engine::new(ctx.clone(), config.engine_config()).unwrap();
     let moe = config.moe_config().unwrap();
     let (moe_plan, workspace_bytes) = {
         let mut ops = engine.operators();
@@ -879,16 +905,16 @@ fn full_attention_block_moe_vector_runner() -> ModelRunner {
             unsafe { ops.qsfi().moe_workspace_size(&plan, config.max_seq_len) }.unwrap();
         (plan, workspace_bytes)
     };
-    let mut scratch = RunnerScratch::new(config.device_ordinal);
-    scratch.ensure_moe_workspace(workspace_bytes).unwrap();
-    let mut qscb_workspace = DeviceBuffer::empty(config.device_ordinal);
-    qscb_workspace.ensure(config.qscb_workspace_bytes).unwrap();
+    let scratch = RunnerScratch::new(ctx.clone(), &config, workspace_bytes).unwrap();
+    let qscb_workspace =
+        DeviceBuffer::with_capacity(ctx.clone(), (config.qscb_workspace_bytes).max(1)).unwrap();
     ModelRunner {
+        ctx: ctx.clone(),
         sampler: None,
         gdn_qkv: None,
         lm_head: None,
         config,
-        weights: empty_weights_for_config(config),
+        weights: placeholder_weights(),
         engine,
         moe_plan: Some(moe_plan),
         gdn_state: None,
@@ -916,143 +942,157 @@ impl FullAttentionBlockMoeLayer {
     }
 }
 
-fn full_attention_block_moe_layer(device: i32, stream: *mut c_void) -> FullAttentionBlockMoeLayer {
+fn full_attention_block_moe_layer(ctx: &Rc<CudaCtx>) -> FullAttentionBlockMoeLayer {
     let hidden = HIDDEN_SIZE;
     let q_hidden = Q_WIDTH;
     let kv_hidden = KV_WIDTH;
     let intermediate = FULL_ATTN_BLOCK_MOE_INTERMEDIATE;
     let layer = QwenLayerWeights::AttentionMlp(QwenAttentionMlpWeights {
-        attn_norm: DeviceBuffer::from_slice(
-            device,
-            stream,
-            &read_block_bf16_vector("block_attn_norm_raw_weight.bf16", hidden as usize),
-        )
-        .unwrap(),
-        q_norm: DeviceBuffer::from_slice(
-            device,
-            stream,
-            &read_block_bf16_vector("block_q_norm_raw_weight.bf16", HEAD_DIM as usize),
-        )
-        .unwrap(),
-        k_norm: DeviceBuffer::from_slice(
-            device,
-            stream,
-            &read_block_bf16_vector("block_k_norm_raw_weight.bf16", HEAD_DIM as usize),
-        )
-        .unwrap(),
-        q_proj: DeviceBuffer::from_slice(
-            device,
-            stream,
-            &read_block_bf16_vector(
-                "block_q_proj_weight.bf16",
-                checked_usize_product(&[PACKED_Q_GATE_WIDTH, hidden]).unwrap(),
-            ),
-        )
-        .unwrap(),
-        k_proj: DeviceBuffer::from_slice(
-            device,
-            stream,
-            &read_block_bf16_vector(
-                "block_k_proj_weight.bf16",
-                checked_usize_product(&[kv_hidden, hidden]).unwrap(),
-            ),
-        )
-        .unwrap(),
-        v_proj: DeviceBuffer::from_slice(
-            device,
-            stream,
-            &read_block_bf16_vector(
-                "block_v_proj_weight.bf16",
-                checked_usize_product(&[kv_hidden, hidden]).unwrap(),
-            ),
-        )
-        .unwrap(),
-        o_proj: DeviceBuffer::from_slice(
-            device,
-            stream,
-            &read_block_bf16_vector(
-                "block_o_proj_weight.bf16",
-                checked_usize_product(&[hidden, q_hidden]).unwrap(),
-            ),
-        )
-        .unwrap(),
-        mlp_norm: DeviceBuffer::from_slice(
-            device,
-            stream,
-            &read_block_bf16_vector("block_post_attn_norm_raw_weight.bf16", hidden as usize),
-        )
-        .unwrap(),
+        attn_norm: Box::new(
+            DeviceBuffer::from_slice(
+                ctx.clone(),
+                &read_block_bf16_vector("block_attn_norm_raw_weight.bf16", hidden as usize),
+            )
+            .unwrap(),
+        ),
+        q_norm: Box::new(
+            DeviceBuffer::from_slice(
+                ctx.clone(),
+                &read_block_bf16_vector("block_q_norm_raw_weight.bf16", HEAD_DIM as usize),
+            )
+            .unwrap(),
+        ),
+        k_norm: Box::new(
+            DeviceBuffer::from_slice(
+                ctx.clone(),
+                &read_block_bf16_vector("block_k_norm_raw_weight.bf16", HEAD_DIM as usize),
+            )
+            .unwrap(),
+        ),
+        q_proj: Box::new(
+            DeviceBuffer::from_slice(
+                ctx.clone(),
+                &read_block_bf16_vector(
+                    "block_q_proj_weight.bf16",
+                    checked_usize_product(&[PACKED_Q_GATE_WIDTH, hidden]).unwrap(),
+                ),
+            )
+            .unwrap(),
+        ),
+        k_proj: Box::new(
+            DeviceBuffer::from_slice(
+                ctx.clone(),
+                &read_block_bf16_vector(
+                    "block_k_proj_weight.bf16",
+                    checked_usize_product(&[kv_hidden, hidden]).unwrap(),
+                ),
+            )
+            .unwrap(),
+        ),
+        v_proj: Box::new(
+            DeviceBuffer::from_slice(
+                ctx.clone(),
+                &read_block_bf16_vector(
+                    "block_v_proj_weight.bf16",
+                    checked_usize_product(&[kv_hidden, hidden]).unwrap(),
+                ),
+            )
+            .unwrap(),
+        ),
+        o_proj: Box::new(
+            DeviceBuffer::from_slice(
+                ctx.clone(),
+                &read_block_bf16_vector(
+                    "block_o_proj_weight.bf16",
+                    checked_usize_product(&[hidden, q_hidden]).unwrap(),
+                ),
+            )
+            .unwrap(),
+        ),
+        mlp_norm: Box::new(
+            DeviceBuffer::from_slice(
+                ctx.clone(),
+                &read_block_bf16_vector("block_post_attn_norm_raw_weight.bf16", hidden as usize),
+            )
+            .unwrap(),
+        ),
         mlp: QwenMlpWeights::Moe {
-            router_proj: DeviceBuffer::from_slice(
-                device,
-                stream,
-                &read_block_bf16_vector(
-                    "block_moe_router_proj_weight.bf16",
-                    checked_usize_product(&[NUM_EXPERTS, hidden]).unwrap(),
-                ),
-            )
-            .unwrap(),
-            gate_up_proj: DeviceBuffer::from_slice(
-                device,
-                stream,
-                &read_block_bf16_vector(
-                    "block_moe_gate_up_proj_weight.bf16",
-                    checked_usize_product(&[NUM_EXPERTS, 2, intermediate, hidden]).unwrap(),
-                ),
-            )
-            .unwrap(),
-            down_proj: DeviceBuffer::from_slice(
-                device,
-                stream,
-                &read_block_bf16_vector(
-                    "block_moe_down_proj_weight.bf16",
-                    checked_usize_product(&[NUM_EXPERTS, hidden, intermediate]).unwrap(),
-                ),
-            )
-            .unwrap(),
+            router_proj: Box::new(
+                DeviceBuffer::from_slice(
+                    ctx.clone(),
+                    &read_block_bf16_vector(
+                        "block_moe_router_proj_weight.bf16",
+                        checked_usize_product(&[NUM_EXPERTS, hidden]).unwrap(),
+                    ),
+                )
+                .unwrap(),
+            ),
+            gate_up_proj: Box::new(
+                DeviceBuffer::from_slice(
+                    ctx.clone(),
+                    &read_block_bf16_vector(
+                        "block_moe_gate_up_proj_weight.bf16",
+                        checked_usize_product(&[NUM_EXPERTS, 2, intermediate, hidden]).unwrap(),
+                    ),
+                )
+                .unwrap(),
+            ),
+            down_proj: Box::new(
+                DeviceBuffer::from_slice(
+                    ctx.clone(),
+                    &read_block_bf16_vector(
+                        "block_moe_down_proj_weight.bf16",
+                        checked_usize_product(&[NUM_EXPERTS, hidden, intermediate]).unwrap(),
+                    ),
+                )
+                .unwrap(),
+            ),
             shared: Some(QwenSharedExpertWeights {
-                gate_proj: DeviceBuffer::from_slice(
-                    device,
-                    stream,
-                    &read_block_bf16_vector(
-                        "block_moe_shared_gate_proj_weight.bf16",
-                        checked_usize_product(&[intermediate, hidden]).unwrap(),
-                    ),
-                )
-                .unwrap(),
-                up_proj: DeviceBuffer::from_slice(
-                    device,
-                    stream,
-                    &read_block_bf16_vector(
-                        "block_moe_shared_up_proj_weight.bf16",
-                        checked_usize_product(&[intermediate, hidden]).unwrap(),
-                    ),
-                )
-                .unwrap(),
-                down_proj: DeviceBuffer::from_slice(
-                    device,
-                    stream,
-                    &read_block_bf16_vector(
-                        "block_moe_shared_down_proj_weight.bf16",
-                        checked_usize_product(&[hidden, intermediate]).unwrap(),
-                    ),
-                )
-                .unwrap(),
-                shared_expert_gate: DeviceBuffer::from_slice(
-                    device,
-                    stream,
-                    &read_block_bf16_vector(
-                        "block_moe_shared_expert_gate_weight.bf16",
-                        hidden as usize,
-                    ),
-                )
-                .unwrap(),
+                gate_proj: Box::new(
+                    DeviceBuffer::from_slice(
+                        ctx.clone(),
+                        &read_block_bf16_vector(
+                            "block_moe_shared_gate_proj_weight.bf16",
+                            checked_usize_product(&[intermediate, hidden]).unwrap(),
+                        ),
+                    )
+                    .unwrap(),
+                ),
+                up_proj: Box::new(
+                    DeviceBuffer::from_slice(
+                        ctx.clone(),
+                        &read_block_bf16_vector(
+                            "block_moe_shared_up_proj_weight.bf16",
+                            checked_usize_product(&[intermediate, hidden]).unwrap(),
+                        ),
+                    )
+                    .unwrap(),
+                ),
+                down_proj: Box::new(
+                    DeviceBuffer::from_slice(
+                        ctx.clone(),
+                        &read_block_bf16_vector(
+                            "block_moe_shared_down_proj_weight.bf16",
+                            checked_usize_product(&[hidden, intermediate]).unwrap(),
+                        ),
+                    )
+                    .unwrap(),
+                ),
+                shared_expert_gate: Box::new(
+                    DeviceBuffer::from_slice(
+                        ctx.clone(),
+                        &read_block_bf16_vector(
+                            "block_moe_shared_expert_gate_weight.bf16",
+                            hidden as usize,
+                        ),
+                    )
+                    .unwrap(),
+                ),
             }),
         },
     });
     let next_norm = DeviceBuffer::from_slice(
-        device,
-        stream,
+        ctx.clone(),
         &read_block_bf16_vector("block_next_layer_norm_raw_weight.bf16", hidden as usize),
     )
     .unwrap();
@@ -1060,7 +1100,7 @@ fn full_attention_block_moe_layer(device: i32, stream: *mut c_void) -> FullAtten
 }
 
 fn gdn_decoder_layer_vector_config() -> QwenConfig {
-    let mut config = QwenConfig::randomized_qwen36_moe_gdn_one_block_fixture(0);
+    let mut config = QwenConfig::randomized_qwen36_moe_gdn_one_block_fixture();
     config.max_seq_len = GDN_DECODER_LAYER_VECTOR_ROWS;
     config.max_pages = 2;
     config.page_size = 4;
@@ -1076,8 +1116,9 @@ fn gdn_decoder_layer_vector_config() -> QwenConfig {
 }
 
 fn gdn_decoder_layer_vector_runner() -> ModelRunner {
+    let ctx = Rc::new(CudaCtx::default().unwrap());
     let config = gdn_decoder_layer_vector_config();
-    let mut engine = Engine::new(config.engine_config()).unwrap();
+    let mut engine = Engine::new(ctx.clone(), config.engine_config()).unwrap();
     let moe = config.moe_config().unwrap();
     let (moe_plan, workspace_bytes) = {
         let mut ops = engine.operators();
@@ -1097,18 +1138,18 @@ fn gdn_decoder_layer_vector_runner() -> ModelRunner {
             unsafe { ops.qsfi().moe_workspace_size(&plan, config.max_seq_len) }.unwrap();
         (plan, workspace_bytes)
     };
-    let mut scratch = RunnerScratch::new(config.device_ordinal);
-    scratch.ensure_moe_workspace(workspace_bytes).unwrap();
-    let mut qscb_workspace = DeviceBuffer::empty(config.device_ordinal);
-    qscb_workspace.ensure(config.qscb_workspace_bytes).unwrap();
-    let gdn_state = Some(GdnState::new(&config).unwrap());
+    let scratch = RunnerScratch::new(ctx.clone(), &config, workspace_bytes).unwrap();
+    let qscb_workspace =
+        DeviceBuffer::with_capacity(ctx.clone(), (config.qscb_workspace_bytes).max(1)).unwrap();
+    let gdn_state = Some(GdnState::new(ctx.clone(), &config).unwrap());
 
     ModelRunner {
+        ctx: ctx.clone(),
         sampler: None,
         gdn_qkv: None,
         lm_head: None,
         config,
-        weights: empty_weights_for_config(config),
+        weights: placeholder_weights(),
         engine,
         moe_plan: Some(moe_plan),
         gdn_state,
@@ -1138,169 +1179,192 @@ impl GdnDecoderLayerFixture {
     }
 }
 
-fn gdn_decoder_layer_fixture(device: i32, stream: *mut c_void) -> GdnDecoderLayerFixture {
+fn gdn_decoder_layer_fixture(ctx: &Rc<CudaCtx>) -> GdnDecoderLayerFixture {
     let hidden = HIDDEN_SIZE;
     let intermediate = GDN_DECODER_LAYER_MOE_INTERMEDIATE;
     let layer = QwenLayerWeights::Gdn(QwenGdnWeights {
-        norm: filled_bf16_buffer(device, stream, hidden as usize, 0.0),
-        in_proj: DeviceBuffer::from_slice(
-            device,
-            stream,
-            &read_gdn_decoder_bf16_vector(
-                "gdn_decoder_in_proj_weight.bf16",
-                checked_usize_product(&[PACKED_QKV_CHANNELS, hidden]).unwrap(),
-            ),
-        )
-        .unwrap(),
-        gate_proj: DeviceBuffer::from_slice(
-            device,
-            stream,
-            &read_gdn_decoder_bf16_vector(
-                "gdn_decoder_gate_proj_weight.bf16",
-                checked_usize_product(&[OUTPUT_WIDTH, hidden]).unwrap(),
-            ),
-        )
-        .unwrap(),
-        a_proj: DeviceBuffer::from_slice(
-            device,
-            stream,
-            &read_gdn_decoder_bf16_vector(
-                "gdn_decoder_a_proj_weight.bf16",
-                checked_usize_product(&[NUM_VALUE_HEADS, hidden]).unwrap(),
-            ),
-        )
-        .unwrap(),
-        b_proj: DeviceBuffer::from_slice(
-            device,
-            stream,
-            &read_gdn_decoder_bf16_vector(
-                "gdn_decoder_b_proj_weight.bf16",
-                checked_usize_product(&[NUM_VALUE_HEADS, hidden]).unwrap(),
-            ),
-        )
-        .unwrap(),
-        conv_weight: DeviceBuffer::from_slice(
-            device,
-            stream,
-            &read_gdn_decoder_bf16_vector(
-                "gdn_decoder_conv_weight.bf16",
-                checked_usize_product(&[PACKED_QKV_CHANNELS, CONV_WIDTH]).unwrap(),
-            ),
-        )
-        .unwrap(),
-        conv_bias: DeviceBuffer::from_slice(
-            device,
-            stream,
-            &read_gdn_decoder_bf16_vector(
-                "gdn_decoder_conv_bias.bf16",
-                PACKED_QKV_CHANNELS as usize,
-            ),
-        )
-        .unwrap(),
-        a_log: DeviceBuffer::from_slice(
-            device,
-            stream,
-            &read_gdn_decoder_bf16_vector("gdn_decoder_A_log.bf16", NUM_VALUE_HEADS as usize),
-        )
-        .unwrap(),
-        dt_bias: DeviceBuffer::from_slice(
-            device,
-            stream,
-            &read_gdn_decoder_bf16_vector("gdn_decoder_dt_bias.bf16", NUM_VALUE_HEADS as usize),
-        )
-        .unwrap(),
-        rms_weight: DeviceBuffer::from_slice(
-            device,
-            stream,
-            &read_gdn_decoder_bf16_vector("gdn_decoder_rms_weight.bf16", VALUE_HEAD_DIM as usize),
-        )
-        .unwrap(),
-        out_proj: DeviceBuffer::from_slice(
-            device,
-            stream,
-            &read_gdn_decoder_bf16_vector(
-                "gdn_decoder_out_proj_weight.bf16",
-                checked_usize_product(&[hidden, OUTPUT_WIDTH]).unwrap(),
-            ),
-        )
-        .unwrap(),
-        mlp_norm: DeviceBuffer::from_slice(
-            device,
-            stream,
-            &read_gdn_decoder_bf16_vector("gdn_decoder_mlp_norm_raw_weight.bf16", hidden as usize),
-        )
-        .unwrap(),
+        norm: Box::new(filled_bf16_buffer(ctx, hidden as usize, 0.0)),
+        in_proj: Box::new(
+            DeviceBuffer::from_slice(
+                ctx.clone(),
+                &read_gdn_decoder_bf16_vector(
+                    "gdn_decoder_in_proj_weight.bf16",
+                    checked_usize_product(&[PACKED_QKV_CHANNELS, hidden]).unwrap(),
+                ),
+            )
+            .unwrap(),
+        ),
+        gate_proj: Box::new(
+            DeviceBuffer::from_slice(
+                ctx.clone(),
+                &read_gdn_decoder_bf16_vector(
+                    "gdn_decoder_gate_proj_weight.bf16",
+                    checked_usize_product(&[OUTPUT_WIDTH, hidden]).unwrap(),
+                ),
+            )
+            .unwrap(),
+        ),
+        a_proj: Box::new(
+            DeviceBuffer::from_slice(
+                ctx.clone(),
+                &read_gdn_decoder_bf16_vector(
+                    "gdn_decoder_a_proj_weight.bf16",
+                    checked_usize_product(&[NUM_VALUE_HEADS, hidden]).unwrap(),
+                ),
+            )
+            .unwrap(),
+        ),
+        b_proj: Box::new(
+            DeviceBuffer::from_slice(
+                ctx.clone(),
+                &read_gdn_decoder_bf16_vector(
+                    "gdn_decoder_b_proj_weight.bf16",
+                    checked_usize_product(&[NUM_VALUE_HEADS, hidden]).unwrap(),
+                ),
+            )
+            .unwrap(),
+        ),
+        conv_weight: Box::new(
+            DeviceBuffer::from_slice(
+                ctx.clone(),
+                &read_gdn_decoder_bf16_vector(
+                    "gdn_decoder_conv_weight.bf16",
+                    checked_usize_product(&[PACKED_QKV_CHANNELS, CONV_WIDTH]).unwrap(),
+                ),
+            )
+            .unwrap(),
+        ),
+        conv_bias: Box::new(
+            DeviceBuffer::from_slice(
+                ctx.clone(),
+                &read_gdn_decoder_bf16_vector(
+                    "gdn_decoder_conv_bias.bf16",
+                    PACKED_QKV_CHANNELS as usize,
+                ),
+            )
+            .unwrap(),
+        ),
+        a_log: Box::new(
+            DeviceBuffer::from_slice(
+                ctx.clone(),
+                &read_gdn_decoder_bf16_vector("gdn_decoder_A_log.bf16", NUM_VALUE_HEADS as usize),
+            )
+            .unwrap(),
+        ),
+        dt_bias: Box::new(
+            DeviceBuffer::from_slice(
+                ctx.clone(),
+                &read_gdn_decoder_bf16_vector("gdn_decoder_dt_bias.bf16", NUM_VALUE_HEADS as usize),
+            )
+            .unwrap(),
+        ),
+        rms_weight: Box::new(
+            DeviceBuffer::from_slice(
+                ctx.clone(),
+                &read_gdn_decoder_bf16_vector(
+                    "gdn_decoder_rms_weight.bf16",
+                    VALUE_HEAD_DIM as usize,
+                ),
+            )
+            .unwrap(),
+        ),
+        out_proj: Box::new(
+            DeviceBuffer::from_slice(
+                ctx.clone(),
+                &read_gdn_decoder_bf16_vector(
+                    "gdn_decoder_out_proj_weight.bf16",
+                    checked_usize_product(&[hidden, OUTPUT_WIDTH]).unwrap(),
+                ),
+            )
+            .unwrap(),
+        ),
+        mlp_norm: Box::new(
+            DeviceBuffer::from_slice(
+                ctx.clone(),
+                &read_gdn_decoder_bf16_vector(
+                    "gdn_decoder_mlp_norm_raw_weight.bf16",
+                    hidden as usize,
+                ),
+            )
+            .unwrap(),
+        ),
         mlp: QwenMlpWeights::Moe {
-            router_proj: DeviceBuffer::from_slice(
-                device,
-                stream,
-                &read_gdn_decoder_bf16_vector(
-                    "gdn_decoder_moe_router_proj_weight.bf16",
-                    checked_usize_product(&[NUM_EXPERTS, hidden]).unwrap(),
-                ),
-            )
-            .unwrap(),
-            gate_up_proj: DeviceBuffer::from_slice(
-                device,
-                stream,
-                &read_gdn_decoder_bf16_vector(
-                    "gdn_decoder_moe_gate_up_proj_weight.bf16",
-                    checked_usize_product(&[NUM_EXPERTS, 2, intermediate, hidden]).unwrap(),
-                ),
-            )
-            .unwrap(),
-            down_proj: DeviceBuffer::from_slice(
-                device,
-                stream,
-                &read_gdn_decoder_bf16_vector(
-                    "gdn_decoder_moe_down_proj_weight.bf16",
-                    checked_usize_product(&[NUM_EXPERTS, hidden, intermediate]).unwrap(),
-                ),
-            )
-            .unwrap(),
+            router_proj: Box::new(
+                DeviceBuffer::from_slice(
+                    ctx.clone(),
+                    &read_gdn_decoder_bf16_vector(
+                        "gdn_decoder_moe_router_proj_weight.bf16",
+                        checked_usize_product(&[NUM_EXPERTS, hidden]).unwrap(),
+                    ),
+                )
+                .unwrap(),
+            ),
+            gate_up_proj: Box::new(
+                DeviceBuffer::from_slice(
+                    ctx.clone(),
+                    &read_gdn_decoder_bf16_vector(
+                        "gdn_decoder_moe_gate_up_proj_weight.bf16",
+                        checked_usize_product(&[NUM_EXPERTS, 2, intermediate, hidden]).unwrap(),
+                    ),
+                )
+                .unwrap(),
+            ),
+            down_proj: Box::new(
+                DeviceBuffer::from_slice(
+                    ctx.clone(),
+                    &read_gdn_decoder_bf16_vector(
+                        "gdn_decoder_moe_down_proj_weight.bf16",
+                        checked_usize_product(&[NUM_EXPERTS, hidden, intermediate]).unwrap(),
+                    ),
+                )
+                .unwrap(),
+            ),
             shared: Some(QwenSharedExpertWeights {
-                gate_proj: DeviceBuffer::from_slice(
-                    device,
-                    stream,
-                    &read_gdn_decoder_bf16_vector(
-                        "gdn_decoder_moe_shared_gate_proj_weight.bf16",
-                        checked_usize_product(&[intermediate, hidden]).unwrap(),
-                    ),
-                )
-                .unwrap(),
-                up_proj: DeviceBuffer::from_slice(
-                    device,
-                    stream,
-                    &read_gdn_decoder_bf16_vector(
-                        "gdn_decoder_moe_shared_up_proj_weight.bf16",
-                        checked_usize_product(&[intermediate, hidden]).unwrap(),
-                    ),
-                )
-                .unwrap(),
-                down_proj: DeviceBuffer::from_slice(
-                    device,
-                    stream,
-                    &read_gdn_decoder_bf16_vector(
-                        "gdn_decoder_moe_shared_down_proj_weight.bf16",
-                        checked_usize_product(&[hidden, intermediate]).unwrap(),
-                    ),
-                )
-                .unwrap(),
-                shared_expert_gate: DeviceBuffer::from_slice(
-                    device,
-                    stream,
-                    &read_gdn_decoder_bf16_vector(
-                        "gdn_decoder_moe_shared_expert_gate_weight.bf16",
-                        hidden as usize,
-                    ),
-                )
-                .unwrap(),
+                gate_proj: Box::new(
+                    DeviceBuffer::from_slice(
+                        ctx.clone(),
+                        &read_gdn_decoder_bf16_vector(
+                            "gdn_decoder_moe_shared_gate_proj_weight.bf16",
+                            checked_usize_product(&[intermediate, hidden]).unwrap(),
+                        ),
+                    )
+                    .unwrap(),
+                ),
+                up_proj: Box::new(
+                    DeviceBuffer::from_slice(
+                        ctx.clone(),
+                        &read_gdn_decoder_bf16_vector(
+                            "gdn_decoder_moe_shared_up_proj_weight.bf16",
+                            checked_usize_product(&[intermediate, hidden]).unwrap(),
+                        ),
+                    )
+                    .unwrap(),
+                ),
+                down_proj: Box::new(
+                    DeviceBuffer::from_slice(
+                        ctx.clone(),
+                        &read_gdn_decoder_bf16_vector(
+                            "gdn_decoder_moe_shared_down_proj_weight.bf16",
+                            checked_usize_product(&[hidden, intermediate]).unwrap(),
+                        ),
+                    )
+                    .unwrap(),
+                ),
+                shared_expert_gate: Box::new(
+                    DeviceBuffer::from_slice(
+                        ctx.clone(),
+                        &read_gdn_decoder_bf16_vector(
+                            "gdn_decoder_moe_shared_expert_gate_weight.bf16",
+                            hidden as usize,
+                        ),
+                    )
+                    .unwrap(),
+                ),
             }),
         },
     });
     let next_norm = DeviceBuffer::from_slice(
-        device,
-        stream,
+        ctx.clone(),
         &read_gdn_decoder_bf16_vector(
             "gdn_decoder_next_layer_norm_raw_weight.bf16",
             hidden as usize,
@@ -1311,7 +1375,7 @@ fn gdn_decoder_layer_fixture(device: i32, stream: *mut c_void) -> GdnDecoderLaye
 }
 
 fn model_logits_vector_config() -> QwenConfig {
-    let mut config = QwenConfig::randomized_dense_tiny_fixture(0);
+    let mut config = QwenConfig::randomized_dense_tiny_fixture();
     config.fixture_mut().num_layers = 1;
     config.max_seq_len = MODEL_LOGITS_TOTAL_ROWS as u32;
     config.max_pages = 2;
@@ -1327,9 +1391,7 @@ fn model_logits_vector_config() -> QwenConfig {
     config
 }
 
-fn model_logits_vector_weights(config: QwenConfig) -> QwenWeights {
-    let device = config.device_ordinal;
-    let stream = config.stream;
+fn model_logits_vector_weights(ctx: &Rc<CudaCtx>, config: QwenConfig) -> QwenWeights {
     let hidden = config.hidden_size();
     let q_hidden = config.q_hidden_size().unwrap();
     let kv_hidden = config.kv_hidden_size().unwrap();
@@ -1337,8 +1399,7 @@ fn model_logits_vector_weights(config: QwenConfig) -> QwenWeights {
     let moe = config.moe_config().unwrap();
 
     let token_embedding = DeviceBuffer::from_slice(
-        device,
-        stream,
+        ctx.clone(),
         &read_model_logits_bf16_vector(
             "model_token_embedding_weight.bf16",
             checked_usize_product(&[vocab, hidden]).unwrap(),
@@ -1346,14 +1407,12 @@ fn model_logits_vector_weights(config: QwenConfig) -> QwenWeights {
     )
     .unwrap();
     let final_norm = DeviceBuffer::from_slice(
-        device,
-        stream,
+        ctx.clone(),
         &read_model_logits_bf16_vector("model_final_norm_raw_weight.bf16", hidden as usize),
     )
     .unwrap();
     let lm_head = DeviceBuffer::from_slice(
-        device,
-        stream,
+        ctx.clone(),
         &read_model_logits_bf16_vector(
             "model_lm_head_weight.bf16",
             checked_usize_product(&[vocab, hidden]).unwrap(),
@@ -1361,153 +1420,174 @@ fn model_logits_vector_weights(config: QwenConfig) -> QwenWeights {
     )
     .unwrap();
     let layer = QwenLayerWeights::AttentionMlp(QwenAttentionMlpWeights {
-        attn_norm: DeviceBuffer::from_slice(
-            device,
-            stream,
-            &read_model_logits_bf16_vector("model_attn_norm_raw_weight.bf16", hidden as usize),
-        )
-        .unwrap(),
-        q_norm: DeviceBuffer::from_slice(
-            device,
-            stream,
-            &read_model_logits_bf16_vector(
-                "model_q_norm_raw_weight.bf16",
-                config.head_dim() as usize,
-            ),
-        )
-        .unwrap(),
-        k_norm: DeviceBuffer::from_slice(
-            device,
-            stream,
-            &read_model_logits_bf16_vector(
-                "model_k_norm_raw_weight.bf16",
-                config.head_dim() as usize,
-            ),
-        )
-        .unwrap(),
-        q_proj: DeviceBuffer::from_slice(
-            device,
-            stream,
-            &read_model_logits_bf16_vector(
-                "model_q_proj_weight.bf16",
-                checked_usize_product(&[PACKED_Q_GATE_WIDTH, hidden]).unwrap(),
-            ),
-        )
-        .unwrap(),
-        k_proj: DeviceBuffer::from_slice(
-            device,
-            stream,
-            &read_model_logits_bf16_vector(
-                "model_k_proj_weight.bf16",
-                checked_usize_product(&[kv_hidden, hidden]).unwrap(),
-            ),
-        )
-        .unwrap(),
-        v_proj: DeviceBuffer::from_slice(
-            device,
-            stream,
-            &read_model_logits_bf16_vector(
-                "model_v_proj_weight.bf16",
-                checked_usize_product(&[kv_hidden, hidden]).unwrap(),
-            ),
-        )
-        .unwrap(),
-        o_proj: DeviceBuffer::from_slice(
-            device,
-            stream,
-            &read_model_logits_bf16_vector(
-                "model_o_proj_weight.bf16",
-                checked_usize_product(&[hidden, q_hidden]).unwrap(),
-            ),
-        )
-        .unwrap(),
-        mlp_norm: DeviceBuffer::from_slice(
-            device,
-            stream,
-            &read_model_logits_bf16_vector("model_mlp_norm_raw_weight.bf16", hidden as usize),
-        )
-        .unwrap(),
+        attn_norm: Box::new(
+            DeviceBuffer::from_slice(
+                ctx.clone(),
+                &read_model_logits_bf16_vector("model_attn_norm_raw_weight.bf16", hidden as usize),
+            )
+            .unwrap(),
+        ),
+        q_norm: Box::new(
+            DeviceBuffer::from_slice(
+                ctx.clone(),
+                &read_model_logits_bf16_vector(
+                    "model_q_norm_raw_weight.bf16",
+                    config.head_dim() as usize,
+                ),
+            )
+            .unwrap(),
+        ),
+        k_norm: Box::new(
+            DeviceBuffer::from_slice(
+                ctx.clone(),
+                &read_model_logits_bf16_vector(
+                    "model_k_norm_raw_weight.bf16",
+                    config.head_dim() as usize,
+                ),
+            )
+            .unwrap(),
+        ),
+        q_proj: Box::new(
+            DeviceBuffer::from_slice(
+                ctx.clone(),
+                &read_model_logits_bf16_vector(
+                    "model_q_proj_weight.bf16",
+                    checked_usize_product(&[PACKED_Q_GATE_WIDTH, hidden]).unwrap(),
+                ),
+            )
+            .unwrap(),
+        ),
+        k_proj: Box::new(
+            DeviceBuffer::from_slice(
+                ctx.clone(),
+                &read_model_logits_bf16_vector(
+                    "model_k_proj_weight.bf16",
+                    checked_usize_product(&[kv_hidden, hidden]).unwrap(),
+                ),
+            )
+            .unwrap(),
+        ),
+        v_proj: Box::new(
+            DeviceBuffer::from_slice(
+                ctx.clone(),
+                &read_model_logits_bf16_vector(
+                    "model_v_proj_weight.bf16",
+                    checked_usize_product(&[kv_hidden, hidden]).unwrap(),
+                ),
+            )
+            .unwrap(),
+        ),
+        o_proj: Box::new(
+            DeviceBuffer::from_slice(
+                ctx.clone(),
+                &read_model_logits_bf16_vector(
+                    "model_o_proj_weight.bf16",
+                    checked_usize_product(&[hidden, q_hidden]).unwrap(),
+                ),
+            )
+            .unwrap(),
+        ),
+        mlp_norm: Box::new(
+            DeviceBuffer::from_slice(
+                ctx.clone(),
+                &read_model_logits_bf16_vector("model_mlp_norm_raw_weight.bf16", hidden as usize),
+            )
+            .unwrap(),
+        ),
         mlp: QwenMlpWeights::Moe {
-            router_proj: DeviceBuffer::from_slice(
-                device,
-                stream,
-                &read_model_logits_bf16_vector(
-                    "model_moe_router_proj_weight.bf16",
-                    checked_usize_product(&[moe.num_experts, hidden]).unwrap(),
-                ),
-            )
-            .unwrap(),
-            gate_up_proj: DeviceBuffer::from_slice(
-                device,
-                stream,
-                &read_model_logits_bf16_vector(
-                    "model_moe_gate_up_proj_weight.bf16",
-                    checked_usize_product(&[moe.num_experts, 2, moe.moe_intermediate_size, hidden])
+            router_proj: Box::new(
+                DeviceBuffer::from_slice(
+                    ctx.clone(),
+                    &read_model_logits_bf16_vector(
+                        "model_moe_router_proj_weight.bf16",
+                        checked_usize_product(&[moe.num_experts, hidden]).unwrap(),
+                    ),
+                )
+                .unwrap(),
+            ),
+            gate_up_proj: Box::new(
+                DeviceBuffer::from_slice(
+                    ctx.clone(),
+                    &read_model_logits_bf16_vector(
+                        "model_moe_gate_up_proj_weight.bf16",
+                        checked_usize_product(&[
+                            moe.num_experts,
+                            2,
+                            moe.moe_intermediate_size,
+                            hidden,
+                        ])
                         .unwrap(),
-                ),
-            )
-            .unwrap(),
-            down_proj: DeviceBuffer::from_slice(
-                device,
-                stream,
-                &read_model_logits_bf16_vector(
-                    "model_moe_down_proj_weight.bf16",
-                    checked_usize_product(&[moe.num_experts, hidden, moe.moe_intermediate_size])
+                    ),
+                )
+                .unwrap(),
+            ),
+            down_proj: Box::new(
+                DeviceBuffer::from_slice(
+                    ctx.clone(),
+                    &read_model_logits_bf16_vector(
+                        "model_moe_down_proj_weight.bf16",
+                        checked_usize_product(&[
+                            moe.num_experts,
+                            hidden,
+                            moe.moe_intermediate_size,
+                        ])
                         .unwrap(),
-                ),
-            )
-            .unwrap(),
+                    ),
+                )
+                .unwrap(),
+            ),
             shared: Some(QwenSharedExpertWeights {
-                gate_proj: DeviceBuffer::from_slice(
-                    device,
-                    stream,
-                    &read_model_logits_bf16_vector(
-                        "model_moe_shared_gate_proj_weight.bf16",
-                        checked_usize_product(&[moe.shared_expert_intermediate_size, hidden])
-                            .unwrap(),
-                    ),
-                )
-                .unwrap(),
-                up_proj: DeviceBuffer::from_slice(
-                    device,
-                    stream,
-                    &read_model_logits_bf16_vector(
-                        "model_moe_shared_up_proj_weight.bf16",
-                        checked_usize_product(&[moe.shared_expert_intermediate_size, hidden])
-                            .unwrap(),
-                    ),
-                )
-                .unwrap(),
-                down_proj: DeviceBuffer::from_slice(
-                    device,
-                    stream,
-                    &read_model_logits_bf16_vector(
-                        "model_moe_shared_down_proj_weight.bf16",
-                        checked_usize_product(&[hidden, moe.shared_expert_intermediate_size])
-                            .unwrap(),
-                    ),
-                )
-                .unwrap(),
-                shared_expert_gate: DeviceBuffer::from_slice(
-                    device,
-                    stream,
-                    &read_model_logits_bf16_vector(
-                        "model_moe_shared_expert_gate_weight.bf16",
-                        hidden as usize,
-                    ),
-                )
-                .unwrap(),
+                gate_proj: Box::new(
+                    DeviceBuffer::from_slice(
+                        ctx.clone(),
+                        &read_model_logits_bf16_vector(
+                            "model_moe_shared_gate_proj_weight.bf16",
+                            checked_usize_product(&[moe.shared_expert_intermediate_size, hidden])
+                                .unwrap(),
+                        ),
+                    )
+                    .unwrap(),
+                ),
+                up_proj: Box::new(
+                    DeviceBuffer::from_slice(
+                        ctx.clone(),
+                        &read_model_logits_bf16_vector(
+                            "model_moe_shared_up_proj_weight.bf16",
+                            checked_usize_product(&[moe.shared_expert_intermediate_size, hidden])
+                                .unwrap(),
+                        ),
+                    )
+                    .unwrap(),
+                ),
+                down_proj: Box::new(
+                    DeviceBuffer::from_slice(
+                        ctx.clone(),
+                        &read_model_logits_bf16_vector(
+                            "model_moe_shared_down_proj_weight.bf16",
+                            checked_usize_product(&[hidden, moe.shared_expert_intermediate_size])
+                                .unwrap(),
+                        ),
+                    )
+                    .unwrap(),
+                ),
+                shared_expert_gate: Box::new(
+                    DeviceBuffer::from_slice(
+                        ctx.clone(),
+                        &read_model_logits_bf16_vector(
+                            "model_moe_shared_expert_gate_weight.bf16",
+                            hidden as usize,
+                        ),
+                    )
+                    .unwrap(),
+                ),
             }),
         },
     });
 
     QwenWeights {
-        device_ordinal: config.device_ordinal,
-        stream: config.stream,
-        fixture: config.fixture,
-        token_embedding,
-        final_norm,
-        lm_head,
+        token_embedding: Box::new(token_embedding),
+        final_norm: Box::new(final_norm),
+        lm_head: Box::new(lm_head),
         layers: vec![layer],
     }
 }
@@ -1590,15 +1670,13 @@ fn qwen36_packed_attention_q_gate_extraction_preserves_rows_heads_and_lanes() {
         }
     }
 
-    let stream = ptr::null_mut();
-    let packed_device = DeviceBuffer::from_slice(-1, stream, &packed).unwrap();
-    let mut q_device = DeviceBuffer::empty(-1);
-    let mut gate_device = DeviceBuffer::empty(-1);
-    q_device.ensure(expected_q.len()).unwrap();
-    gate_device.ensure(expected_gate.len()).unwrap();
+    let ctx = Rc::new(CudaCtx::default().unwrap());
+    let packed_device = DeviceBuffer::from_slice(ctx.clone(), &packed).unwrap();
+    let q_device = DeviceBuffer::with_capacity(ctx.clone(), expected_q.len()).unwrap();
+    let gate_device = DeviceBuffer::with_capacity(ctx.clone(), expected_gate.len()).unwrap();
 
     unsafe {
-        crate::engine::Engine::new(full_attention_vector_config().engine_config())
+        crate::engine::Engine::new(ctx.clone(), full_attention_vector_config().engine_config())
             .unwrap()
             .operators()
             .qscu()
@@ -1611,14 +1689,11 @@ fn qwen36_packed_attention_q_gate_extraction_preserves_rows_heads_and_lanes() {
             )
             .unwrap();
     }
-    synchronize_stream(stream).unwrap();
+    ctx.synchronize().unwrap();
 
+    assert_eq!(download_bf16(&q_device, &ctx, expected_q.len()), expected_q);
     assert_eq!(
-        download_bf16(&q_device, stream, expected_q.len()),
-        expected_q
-    );
-    assert_eq!(
-        download_bf16(&gate_device, stream, expected_gate.len()),
+        download_bf16(&gate_device, &ctx, expected_gate.len()),
         expected_gate
     );
 }
@@ -1630,16 +1705,16 @@ fn qwen36_full_attention_vectors_validate_packed_q_gate_extraction() {
     }
 
     let mut runner = full_attention_vector_runner();
-    let stream = runner.config.stream;
+    let ctx = runner.ctx.clone();
     let rows = FULL_ATTN_VECTOR_ROWS;
     let q_len = full_attention_q_len();
-    runner.scratch.ensure(&runner.config, rows).unwrap();
+    runner.scratch.reserve(rows).unwrap();
 
     let packed = read_bf16_vector(
         "attention_packed_q_gate.bf16",
         full_attention_packed_q_gate_len(),
     );
-    runner.scratch.q_proj_out.upload(stream, &packed).unwrap();
+    upload(&runner.ctx, &mut runner.scratch.q_proj_out, &packed).unwrap();
 
     unsafe {
         runner
@@ -1657,10 +1732,10 @@ fn qwen36_full_attention_vectors_validate_packed_q_gate_extraction() {
             )
     }
     .unwrap();
-    synchronize_stream(stream).unwrap();
+    ctx.synchronize().unwrap();
 
-    let got_q = download_bf16(&runner.scratch.q, stream, q_len);
-    let got_gate = download_bf16(&runner.scratch.attn_gate, stream, q_len);
+    let got_q = download_bf16(&runner.scratch.q, &ctx, q_len);
+    let got_gate = download_bf16(&runner.scratch.attn_gate, &ctx, q_len);
     let expected_q = read_bf16_vector("attention_q_extracted.bf16", q_len);
     let expected_gate = read_bf16_vector("attention_gate_extracted.bf16", q_len);
     assert_bf16_exact("attention q extraction vector", &got_q, &expected_q);
@@ -1678,13 +1753,12 @@ fn qwen36_full_attention_vectors_validate_qk_norm_and_rope_pipeline() {
     }
 
     let mut runner = full_attention_vector_runner();
-    let stream = runner.config.stream;
-    let device = runner.config.device_ordinal;
+    let ctx = runner.ctx.clone();
     let rows = FULL_ATTN_VECTOR_ROWS;
     let q_len = full_attention_q_len();
     let kv_len = full_attention_kv_len();
     let head_dim = HEAD_DIM as usize;
-    runner.scratch.ensure(&runner.config, rows).unwrap();
+    runner.scratch.reserve(rows).unwrap();
 
     let packed = read_bf16_vector(
         "attention_packed_q_gate.bf16",
@@ -1692,9 +1766,9 @@ fn qwen36_full_attention_vectors_validate_qk_norm_and_rope_pipeline() {
     );
     let k_input = read_bf16_vector("attention_k_input.bf16", kv_len);
     let positions = read_i32_vector("attention_positions.i32", rows as usize);
-    runner.scratch.q_proj_out.upload(stream, &packed).unwrap();
-    runner.scratch.k.upload(stream, &k_input).unwrap();
-    runner.scratch.positions.upload(stream, &positions).unwrap();
+    upload(&runner.ctx, &mut runner.scratch.q_proj_out, &packed).unwrap();
+    upload(&runner.ctx, &mut runner.scratch.k, &k_input).unwrap();
+    upload(&runner.ctx, &mut runner.scratch.positions, &positions).unwrap();
 
     unsafe {
         runner
@@ -1714,14 +1788,12 @@ fn qwen36_full_attention_vectors_validate_qk_norm_and_rope_pipeline() {
     .unwrap();
 
     let q_norm_weight = DeviceBuffer::from_slice(
-        device,
-        stream,
+        ctx.clone(),
         &read_bf16_vector("attention_q_norm_raw_weight.bf16", head_dim),
     )
     .unwrap();
     let k_norm_weight = DeviceBuffer::from_slice(
-        device,
-        stream,
+        ctx.clone(),
         &read_bf16_vector("attention_k_norm_raw_weight.bf16", head_dim),
     )
     .unwrap();
@@ -1763,10 +1835,10 @@ fn qwen36_full_attention_vectors_validate_qk_norm_and_rope_pipeline() {
         )
     }
     .unwrap();
-    synchronize_stream(stream).unwrap();
+    ctx.synchronize().unwrap();
 
-    let got_q_norm = download_bf16(&runner.scratch.q, stream, q_len);
-    let got_k_norm = download_bf16(&runner.scratch.k, stream, kv_len);
+    let got_q_norm = download_bf16(&runner.scratch.q, &ctx, q_len);
+    let got_k_norm = download_bf16(&runner.scratch.k, &ctx, kv_len);
     let expected_q_norm = read_bf16_vector("attention_q_norm_bf16.bf16", q_len);
     let expected_k_norm = read_bf16_vector("attention_k_norm_bf16.bf16", kv_len);
     assert_bf16_exact(
@@ -1788,10 +1860,10 @@ fn qwen36_full_attention_vectors_validate_qk_norm_and_rope_pipeline() {
             .apply_attention_rope(rows)
             .unwrap();
     }
-    synchronize_stream(stream).unwrap();
+    ctx.synchronize().unwrap();
 
-    let got_q_rope = download_bf16(&runner.scratch.q, stream, q_len);
-    let got_k_rope = download_bf16(&runner.scratch.k, stream, kv_len);
+    let got_q_rope = download_bf16(&runner.scratch.q, &ctx, q_len);
+    let got_k_rope = download_bf16(&runner.scratch.k, &ctx, kv_len);
     let expected_q_rope = read_bf16_vector("attention_q_rope_bf16.bf16", q_len);
     let expected_k_rope = read_bf16_vector("attention_k_rope_bf16.bf16", kv_len);
     let expected_q_rope_f32 = read_f32_vector("attention_q_rope_f32.f32", q_len);
@@ -1819,19 +1891,15 @@ fn qwen36_full_attention_vectors_validate_output_gate() {
     }
 
     let mut runner = full_attention_vector_runner();
-    let stream = runner.config.stream;
+    let ctx = runner.ctx.clone();
     let rows = FULL_ATTN_VECTOR_ROWS;
     let q_len = full_attention_q_len();
-    runner.scratch.ensure(&runner.config, rows).unwrap();
+    runner.scratch.reserve(rows).unwrap();
 
     let gate = read_bf16_vector("attention_gate_extracted.bf16", q_len);
     let out_initial = read_bf16_vector("attention_gate_out_initial.bf16", q_len);
-    runner.scratch.attn_gate.upload(stream, &gate).unwrap();
-    runner
-        .scratch
-        .attn_out
-        .upload(stream, &out_initial)
-        .unwrap();
+    upload(&runner.ctx, &mut runner.scratch.attn_gate, &gate).unwrap();
+    upload(&runner.ctx, &mut runner.scratch.attn_out, &out_initial).unwrap();
 
     unsafe {
         runner
@@ -1844,9 +1912,9 @@ fn qwen36_full_attention_vectors_validate_output_gate() {
             )
     }
     .unwrap();
-    synchronize_stream(stream).unwrap();
+    ctx.synchronize().unwrap();
 
-    let got = download_bf16(&runner.scratch.attn_out, stream, q_len);
+    let got = download_bf16(&runner.scratch.attn_out, &ctx, q_len);
     let expected = read_bf16_vector("attention_gated_output_bf16.bf16", q_len);
     assert_bf16_exact("attention output gate vector", &got, &expected);
 }
@@ -1858,8 +1926,7 @@ fn qwen36_full_attention_block_vector_validates_attention_residual_norm_composit
     }
 
     let mut runner = full_attention_block_vector_runner();
-    let stream = runner.config.stream;
-    let device = runner.config.device_ordinal;
+    let ctx = runner.ctx.clone();
     let rows = FULL_ATTN_BLOCK_VECTOR_ROWS;
     let hidden = HIDDEN_SIZE;
     let q_hidden = Q_WIDTH;
@@ -1868,44 +1935,35 @@ fn qwen36_full_attention_block_vector_validates_attention_residual_norm_composit
     let q_len = full_attention_block_q_len();
     let kv_len = full_attention_block_kv_len();
     let q_proj_len = full_attention_block_q_proj_len();
-    runner.scratch.ensure(&runner.config, rows).unwrap();
+    runner.scratch.reserve(rows).unwrap();
 
     let input_residual = read_block_bf16_vector("block_input_residual.bf16", hidden_len);
     let positions = read_block_i32_vector("block_positions.i32", rows as usize);
-    runner
-        .scratch
-        .residual
-        .upload(stream, &input_residual)
-        .unwrap();
-    runner.scratch.positions.upload(stream, &positions).unwrap();
+    upload(&runner.ctx, &mut runner.scratch.residual, &input_residual).unwrap();
+    upload(&runner.ctx, &mut runner.scratch.positions, &positions).unwrap();
 
     let attn_norm_weight = DeviceBuffer::from_slice(
-        device,
-        stream,
+        ctx.clone(),
         &read_block_bf16_vector("block_attn_norm_raw_weight.bf16", hidden as usize),
     )
     .unwrap();
     let q_norm_weight = DeviceBuffer::from_slice(
-        device,
-        stream,
+        ctx.clone(),
         &read_block_bf16_vector("block_q_norm_raw_weight.bf16", HEAD_DIM as usize),
     )
     .unwrap();
     let k_norm_weight = DeviceBuffer::from_slice(
-        device,
-        stream,
+        ctx.clone(),
         &read_block_bf16_vector("block_k_norm_raw_weight.bf16", HEAD_DIM as usize),
     )
     .unwrap();
     let post_norm_weight = DeviceBuffer::from_slice(
-        device,
-        stream,
+        ctx.clone(),
         &read_block_bf16_vector("block_post_attn_norm_raw_weight.bf16", hidden as usize),
     )
     .unwrap();
     let q_proj_weight = DeviceBuffer::from_slice(
-        device,
-        stream,
+        ctx.clone(),
         &read_block_bf16_vector(
             "block_q_proj_weight.bf16",
             checked_usize_product(&[PACKED_Q_GATE_WIDTH, hidden]).unwrap(),
@@ -1913,8 +1971,7 @@ fn qwen36_full_attention_block_vector_validates_attention_residual_norm_composit
     )
     .unwrap();
     let k_proj_weight = DeviceBuffer::from_slice(
-        device,
-        stream,
+        ctx.clone(),
         &read_block_bf16_vector(
             "block_k_proj_weight.bf16",
             checked_usize_product(&[kv_hidden, hidden]).unwrap(),
@@ -1922,8 +1979,7 @@ fn qwen36_full_attention_block_vector_validates_attention_residual_norm_composit
     )
     .unwrap();
     let v_proj_weight = DeviceBuffer::from_slice(
-        device,
-        stream,
+        ctx.clone(),
         &read_block_bf16_vector(
             "block_v_proj_weight.bf16",
             checked_usize_product(&[kv_hidden, hidden]).unwrap(),
@@ -1931,8 +1987,7 @@ fn qwen36_full_attention_block_vector_validates_attention_residual_norm_composit
     )
     .unwrap();
     let o_proj_weight = DeviceBuffer::from_slice(
-        device,
-        stream,
+        ctx.clone(),
         &read_block_bf16_vector(
             "block_o_proj_weight.bf16",
             checked_usize_product(&[hidden, q_hidden]).unwrap(),
@@ -1956,8 +2011,8 @@ fn qwen36_full_attention_block_vector_validates_attention_residual_norm_composit
         )
     }
     .unwrap();
-    synchronize_stream(stream).unwrap();
-    let got_attn_norm = download_bf16(&runner.scratch.norm, stream, hidden_len);
+    ctx.synchronize().unwrap();
+    let got_attn_norm = download_bf16(&runner.scratch.norm, &ctx, hidden_len);
     assert_bf16_close_to_f32_oracle(
         "full-attention block input Gemma RMSNorm",
         &got_attn_norm,
@@ -2022,9 +2077,9 @@ fn qwen36_full_attention_block_vector_validates_attention_residual_norm_composit
         )
     }
     .unwrap();
-    synchronize_stream(stream).unwrap();
+    ctx.synchronize().unwrap();
 
-    let got_q_proj = download_bf16(&runner.scratch.q_proj_out, stream, q_proj_len);
+    let got_q_proj = download_bf16(&runner.scratch.q_proj_out, &ctx, q_proj_len);
     assert_bf16_close_to_f32_oracle(
         "full-attention block q projection",
         &got_q_proj,
@@ -2034,24 +2089,24 @@ fn qwen36_full_attention_block_vector_validates_attention_residual_norm_composit
     );
     assert_bf16_exact(
         "full-attention block q extraction",
-        &download_bf16(&runner.scratch.q, stream, q_len),
+        &download_bf16(&runner.scratch.q, &ctx, q_len),
         &read_block_bf16_vector("block_expected_q_extracted_bf16.bf16", q_len),
     );
     assert_bf16_exact(
         "full-attention block output-gate extraction",
-        &download_bf16(&runner.scratch.attn_gate, stream, q_len),
+        &download_bf16(&runner.scratch.attn_gate, &ctx, q_len),
         &read_block_bf16_vector("block_expected_gate_extracted_bf16.bf16", q_len),
     );
     assert_bf16_close_to_f32_oracle(
         "full-attention block k projection",
-        &download_bf16(&runner.scratch.k, stream, kv_len),
+        &download_bf16(&runner.scratch.k, &ctx, kv_len),
         &read_block_bf16_vector("block_expected_k_proj_output_bf16.bf16", kv_len),
         &read_block_f32_vector("block_expected_k_proj_output_f32.f32", kv_len),
         BF16_BLOCK_PROJ_ABS_TOL,
     );
     assert_bf16_close_to_f32_oracle(
         "full-attention block v projection",
-        &download_bf16(&runner.scratch.v, stream, kv_len),
+        &download_bf16(&runner.scratch.v, &ctx, kv_len),
         &read_block_bf16_vector("block_expected_v_proj_output_bf16.bf16", kv_len),
         &read_block_f32_vector("block_expected_v_proj_output_f32.f32", kv_len),
         BF16_BLOCK_PROJ_ABS_TOL,
@@ -2094,17 +2149,17 @@ fn qwen36_full_attention_block_vector_validates_attention_residual_norm_composit
         )
     }
     .unwrap();
-    synchronize_stream(stream).unwrap();
+    ctx.synchronize().unwrap();
     assert_bf16_close_to_f32_oracle(
         "full-attention block q Gemma RMSNorm",
-        &download_bf16(&runner.scratch.q, stream, q_len),
+        &download_bf16(&runner.scratch.q, &ctx, q_len),
         &read_block_bf16_vector("block_expected_q_norm_output_bf16.bf16", q_len),
         &read_block_f32_vector("block_expected_q_norm_output_f32.f32", q_len),
         BF16_BLOCK_NORM_ABS_TOL,
     );
     assert_bf16_close_to_f32_oracle(
         "full-attention block k Gemma RMSNorm",
-        &download_bf16(&runner.scratch.k, stream, kv_len),
+        &download_bf16(&runner.scratch.k, &ctx, kv_len),
         &read_block_bf16_vector("block_expected_k_norm_output_bf16.bf16", kv_len),
         &read_block_f32_vector("block_expected_k_norm_output_f32.f32", kv_len),
         BF16_BLOCK_NORM_ABS_TOL,
@@ -2118,17 +2173,17 @@ fn qwen36_full_attention_block_vector_validates_attention_residual_norm_composit
             .apply_attention_rope(rows)
             .unwrap();
     }
-    synchronize_stream(stream).unwrap();
+    ctx.synchronize().unwrap();
     assert_bf16_close_to_f32_oracle(
         "full-attention block q partial RoPE",
-        &download_bf16(&runner.scratch.q, stream, q_len),
+        &download_bf16(&runner.scratch.q, &ctx, q_len),
         &read_block_bf16_vector("block_expected_q_rope_output_bf16.bf16", q_len),
         &read_block_f32_vector("block_expected_q_rope_output_f32.f32", q_len),
         BF16_BLOCK_ROPE_ABS_TOL,
     );
     assert_bf16_close_to_f32_oracle(
         "full-attention block k partial RoPE",
-        &download_bf16(&runner.scratch.k, stream, kv_len),
+        &download_bf16(&runner.scratch.k, &ctx, kv_len),
         &read_block_bf16_vector("block_expected_k_rope_output_bf16.bf16", kv_len),
         &read_block_f32_vector("block_expected_k_rope_output_f32.f32", kv_len),
         BF16_BLOCK_ROPE_ABS_TOL,
@@ -2169,10 +2224,10 @@ fn qwen36_full_attention_block_vector_validates_attention_residual_norm_composit
         runner.scratch.positions.vector(rows).unwrap(),
     );
     unsafe { runner.engine.append_attention(&engine_layer) }.unwrap();
-    synchronize_stream(stream).unwrap();
+    ctx.synchronize().unwrap();
     assert_bf16_close_to_f32_oracle(
         "full-attention block raw causal GQA attention",
-        &download_bf16(&runner.scratch.attn_out, stream, q_len),
+        &download_bf16(&runner.scratch.attn_out, &ctx, q_len),
         &read_block_bf16_vector("block_expected_raw_attention_output_bf16.bf16", q_len),
         &read_block_f32_vector("block_expected_raw_attention_output_f32.f32", q_len),
         BF16_BLOCK_ATTN_ABS_TOL,
@@ -2189,10 +2244,10 @@ fn qwen36_full_attention_block_vector_validates_attention_residual_norm_composit
             )
     }
     .unwrap();
-    synchronize_stream(stream).unwrap();
+    ctx.synchronize().unwrap();
     assert_bf16_close_to_f32_oracle(
         "full-attention block sigmoid output gate",
-        &download_bf16(&runner.scratch.attn_out, stream, q_len),
+        &download_bf16(&runner.scratch.attn_out, &ctx, q_len),
         &read_block_bf16_vector("block_expected_gated_attention_output_bf16.bf16", q_len),
         &read_block_f32_vector("block_expected_gated_attention_output_f32.f32", q_len),
         BF16_BLOCK_ATTN_ABS_TOL,
@@ -2210,10 +2265,10 @@ fn qwen36_full_attention_block_vector_validates_attention_residual_norm_composit
         )
     }
     .unwrap();
-    synchronize_stream(stream).unwrap();
+    ctx.synchronize().unwrap();
     assert_bf16_close_to_f32_oracle(
         "full-attention block output projection",
-        &download_bf16(&runner.scratch.attn_proj, stream, hidden_len),
+        &download_bf16(&runner.scratch.attn_proj, &ctx, hidden_len),
         &read_block_bf16_vector("block_expected_o_proj_output_bf16.bf16", hidden_len),
         &read_block_f32_vector("block_expected_o_proj_output_f32.f32", hidden_len),
         BF16_BLOCK_PROJ_ABS_TOL,
@@ -2241,10 +2296,10 @@ fn qwen36_full_attention_block_vector_validates_attention_residual_norm_composit
         )
     }
     .unwrap();
-    synchronize_stream(stream).unwrap();
+    ctx.synchronize().unwrap();
     assert_bf16_close_to_f32_oracle(
         "full-attention block residual after attention add",
-        &download_bf16(&runner.scratch.residual, stream, hidden_len),
+        &download_bf16(&runner.scratch.residual, &ctx, hidden_len),
         &read_block_bf16_vector(
             "block_expected_residual_after_attention_bf16.bf16",
             hidden_len,
@@ -2257,7 +2312,7 @@ fn qwen36_full_attention_block_vector_validates_attention_residual_norm_composit
     );
     assert_bf16_close_to_f32_oracle(
         "full-attention block post-attention Gemma RMSNorm",
-        &download_bf16(&runner.scratch.attn_proj, stream, hidden_len),
+        &download_bf16(&runner.scratch.attn_proj, &ctx, hidden_len),
         &read_block_bf16_vector("block_expected_post_attn_norm_output_bf16.bf16", hidden_len),
         &read_block_f32_vector("block_expected_post_attn_norm_output_f32.f32", hidden_len),
         BF16_BLOCK_NORM_ABS_TOL,
@@ -2273,31 +2328,26 @@ fn qwen36_full_attention_decoder_slice_chains_attention_into_moe_and_next_norm()
     }
 
     let mut runner = full_attention_block_moe_vector_runner();
-    let stream = runner.config.stream;
-    let device = runner.config.device_ordinal;
+    let ctx = runner.ctx.clone();
     let rows = FULL_ATTN_BLOCK_VECTOR_ROWS;
     let hidden = HIDDEN_SIZE;
     let hidden_len = full_attention_block_hidden_len();
-    runner.scratch.ensure(&runner.config, rows).unwrap();
+    runner.scratch.reserve(rows).unwrap();
 
-    let layer = full_attention_block_moe_layer(device, stream);
+    let layer = full_attention_block_moe_layer(&ctx);
     let layer_weights = layer.weights();
-    runner
-        .scratch
-        .residual
-        .upload(
-            stream,
-            &read_block_bf16_vector("block_input_residual.bf16", hidden_len),
-        )
-        .unwrap();
-    runner
-        .scratch
-        .positions
-        .upload(
-            stream,
-            &read_block_i32_vector("block_positions.i32", rows as usize),
-        )
-        .unwrap();
+    upload(
+        &runner.ctx,
+        &mut runner.scratch.residual,
+        &read_block_bf16_vector("block_input_residual.bf16", hidden_len),
+    )
+    .unwrap();
+    upload(
+        &runner.ctx,
+        &mut runner.scratch.positions,
+        &read_block_i32_vector("block_positions.i32", rows as usize),
+    )
+    .unwrap();
 
     let residual_ptr = runner.scratch.residual.matrix(rows, hidden).unwrap();
     let norm_ptr = runner.scratch.norm.matrix(rows, hidden).unwrap();
@@ -2342,10 +2392,10 @@ fn qwen36_full_attention_decoder_slice_chains_attention_into_moe_and_next_norm()
             )
             .unwrap();
     }
-    synchronize_stream(stream).unwrap();
+    ctx.synchronize().unwrap();
     assert_bf16_close_to_f32_oracle(
         "decoder slice produced attention output projection",
-        &download_bf16(&runner.scratch.attn_proj, stream, hidden_len),
+        &download_bf16(&runner.scratch.attn_proj, &ctx, hidden_len),
         &read_block_bf16_vector("block_expected_o_proj_output_bf16.bf16", hidden_len),
         &read_block_f32_vector("block_expected_o_proj_output_f32.f32", hidden_len),
         BF16_BLOCK_PROJ_ABS_TOL,
@@ -2364,25 +2414,25 @@ fn qwen36_full_attention_decoder_slice_chains_attention_into_moe_and_next_norm()
             )
             .unwrap();
     }
-    synchronize_stream(stream).unwrap();
+    ctx.synchronize().unwrap();
 
     assert_bf16_close_to_f32_oracle(
         "decoder slice post-attention Gemma RMSNorm handoff",
-        &download_bf16(&runner.scratch.attn_proj, stream, hidden_len),
+        &download_bf16(&runner.scratch.attn_proj, &ctx, hidden_len),
         &read_block_bf16_vector("block_expected_post_attn_norm_output_bf16.bf16", hidden_len),
         &read_block_f32_vector("block_expected_post_attn_norm_output_f32.f32", hidden_len),
         BF16_BLOCK_NORM_ABS_TOL,
     );
     assert_bf16_close_to_f32_oracle(
         "decoder slice residual after attention plus MoE/shared expert",
-        &download_bf16(&runner.scratch.residual, stream, hidden_len),
+        &download_bf16(&runner.scratch.residual, &ctx, hidden_len),
         &read_block_bf16_vector("block_expected_residual_after_mlp_bf16.bf16", hidden_len),
         &read_block_f32_vector("block_expected_residual_after_mlp_f32.f32", hidden_len),
         BF16_BLOCK_FINAL_NORM_ABS_TOL,
     );
     assert_bf16_close_to_f32_oracle(
         "decoder slice next-layer Gemma RMSNorm",
-        &download_bf16(&runner.scratch.mlp_out, stream, hidden_len),
+        &download_bf16(&runner.scratch.mlp_out, &ctx, hidden_len),
         &read_block_bf16_vector(
             "block_expected_next_layer_norm_output_bf16.bf16",
             hidden_len,
@@ -2401,11 +2451,10 @@ fn qwen36_gdn_qkv_triton_decode_matches_cublaslt() {
     }
 
     let mut runner = gdn_decoder_layer_vector_runner();
-    let stream = runner.config.stream;
-    let device = runner.config.device_ordinal;
+    let ctx = runner.ctx.clone();
     let hidden = runner.config.hidden_size();
     let packed = PACKED_QKV_CHANNELS;
-    runner.scratch.ensure(&runner.config, 1).unwrap();
+    runner.scratch.reserve(1).unwrap();
     runner.gdn_qkv = Some(unsafe { crate::backend::qstriton::GdnQkv::load().unwrap() });
     assert_eq!(runner.gdn_qkv_provider(), "triton");
 
@@ -2416,10 +2465,10 @@ fn qwen36_gdn_qkv_triton_decode_matches_cublaslt() {
             (value.to_bits() >> 16) as u16
         })
         .collect();
-    let input = DeviceBuffer::from_slice(device, stream, &values).unwrap();
-    let layer = gdn_decoder_layer_fixture(device, stream);
-    let mut reference = DeviceBuffer::<u16>::empty(device);
-    reference.ensure(packed as usize).unwrap();
+    let input = DeviceBuffer::from_slice(ctx.clone(), &values).unwrap();
+    let layer = gdn_decoder_layer_fixture(&ctx);
+    let reference =
+        DeviceBuffer::<u16>::with_capacity(ctx.clone(), (packed as usize).max(1)).unwrap();
     unsafe {
         runner
             .engine
@@ -2440,6 +2489,7 @@ fn qwen36_gdn_qkv_triton_decode_matches_cublaslt() {
             .unwrap()
             .1
             .execute_gdn_layer(
+                &ctx,
                 0,
                 1,
                 input.matrix(1, hidden).unwrap(),
@@ -2449,8 +2499,12 @@ fn qwen36_gdn_qkv_triton_decode_matches_cublaslt() {
             .unwrap();
     }
 
-    let actual = download_bf16(&runner.scratch.gdn_packed, stream, packed as usize);
-    let expected = download_bf16(&reference, stream, packed as usize);
+    let actual = download_bf16(
+        &runner.scratch.gdn.as_ref().unwrap().packed,
+        &ctx,
+        packed as usize,
+    );
+    let expected = download_bf16(&reference, &ctx, packed as usize);
     let mut max_error = 0.0_f32;
     for (index, (&actual, &expected)) in actual.iter().zip(&expected).enumerate() {
         let actual = bf16_bits_to_f32(actual);
@@ -2473,33 +2527,28 @@ fn qwen36_gdn_decoder_layer_vector_chains_gdn_into_moe_and_next_norm() {
     }
 
     let mut runner = gdn_decoder_layer_vector_runner();
-    let stream = runner.config.stream;
-    let device = runner.config.device_ordinal;
+    let ctx = runner.ctx.clone();
     let rows = GDN_DECODER_LAYER_VECTOR_ROWS;
     let hidden = HIDDEN_SIZE;
     let hidden_len = gdn_decoder_layer_hidden_len();
     let gdn_out_len = checked_usize_product(&[rows, OUTPUT_WIDTH]).unwrap();
     let topk_len = gdn_decoder_layer_topk_len();
-    runner.scratch.ensure(&runner.config, rows).unwrap();
+    runner.scratch.reserve(rows).unwrap();
 
-    runner
-        .scratch
-        .norm
-        .upload(
-            stream,
-            &read_gdn_decoder_bf16_vector("gdn_decoder_layer_input.bf16", hidden_len),
-        )
-        .unwrap();
-    runner
-        .scratch
-        .residual
-        .upload(
-            stream,
-            &read_gdn_decoder_bf16_vector("gdn_decoder_input_residual.bf16", hidden_len),
-        )
-        .unwrap();
+    upload(
+        &runner.ctx,
+        &mut runner.scratch.norm,
+        &read_gdn_decoder_bf16_vector("gdn_decoder_layer_input.bf16", hidden_len),
+    )
+    .unwrap();
+    upload(
+        &runner.ctx,
+        &mut runner.scratch.residual,
+        &read_gdn_decoder_bf16_vector("gdn_decoder_input_residual.bf16", hidden_len),
+    )
+    .unwrap();
 
-    let layer = gdn_decoder_layer_fixture(device, stream);
+    let layer = gdn_decoder_layer_fixture(&ctx);
     let layer_weights = layer.weights();
     let norm_ptr = runner.scratch.norm.matrix(rows, hidden).unwrap();
     unsafe {
@@ -2507,14 +2556,25 @@ fn qwen36_gdn_decoder_layer_vector_chains_gdn_into_moe_and_next_norm() {
             .execution()
             .unwrap()
             .1
-            .execute_gdn_layer(0, rows, norm_ptr, layer_weights, ActiveRunKind::Append)
+            .execute_gdn_layer(
+                &ctx,
+                0,
+                rows,
+                norm_ptr,
+                layer_weights,
+                ActiveRunKind::Append,
+            )
             .unwrap();
     }
-    synchronize_stream(stream).unwrap();
+    ctx.synchronize().unwrap();
 
     assert_bf16_close_to_f32_oracle(
         "GDN decoder slice gated recurrent RMSNorm",
-        &download_bf16(&runner.scratch.gdn_norm_out, stream, gdn_out_len),
+        &download_bf16(
+            &runner.scratch.gdn.as_ref().unwrap().norm_out,
+            &ctx,
+            gdn_out_len,
+        ),
         &read_gdn_decoder_bf16_vector(
             "gdn_decoder_expected_gated_norm_output_bf16.bf16",
             gdn_out_len,
@@ -2527,7 +2587,7 @@ fn qwen36_gdn_decoder_layer_vector_chains_gdn_into_moe_and_next_norm() {
     );
     assert_bf16_close_to_f32_oracle(
         "GDN decoder slice output projection",
-        &download_bf16(&runner.scratch.attn_proj, stream, hidden_len),
+        &download_bf16(&runner.scratch.attn_proj, &ctx, hidden_len),
         &read_gdn_decoder_bf16_vector("gdn_decoder_expected_output_proj_bf16.bf16", hidden_len),
         &read_gdn_decoder_f32_vector("gdn_decoder_expected_output_proj_f32.f32", hidden_len),
         BF16_GDN_DECODER_PROJ_ABS_TOL,
@@ -2546,11 +2606,11 @@ fn qwen36_gdn_decoder_layer_vector_chains_gdn_into_moe_and_next_norm() {
             )
             .unwrap();
     }
-    synchronize_stream(stream).unwrap();
+    ctx.synchronize().unwrap();
 
     assert_bf16_close_to_f32_oracle(
         "GDN decoder slice post-attention Gemma RMSNorm handoff",
-        &download_bf16(&runner.scratch.attn_proj, stream, hidden_len),
+        &download_bf16(&runner.scratch.attn_proj, &ctx, hidden_len),
         &read_gdn_decoder_bf16_vector(
             "gdn_decoder_expected_post_attn_norm_output_bf16.bf16",
             hidden_len,
@@ -2564,8 +2624,8 @@ fn qwen36_gdn_decoder_layer_vector_chains_gdn_into_moe_and_next_norm() {
     assert_bf16_close_to_f32_oracle(
         "GDN decoder slice MoE router logits",
         &download_bf16(
-            &runner.scratch.router_logits,
-            stream,
+            &moe_scratch(&runner.scratch).router_logits,
+            &ctx,
             (rows * NUM_EXPERTS) as usize,
         ),
         &read_gdn_decoder_bf16_vector(
@@ -2579,14 +2639,18 @@ fn qwen36_gdn_decoder_layer_vector_chains_gdn_into_moe_and_next_norm() {
         BF16_GDN_DECODER_PROJ_ABS_TOL,
     );
     assert_eq!(
-        download_i32(&runner.scratch.topk_ids, stream, topk_len),
+        download_i32(&moe_scratch(&runner.scratch).topk_ids, &ctx, topk_len),
         read_gdn_decoder_i32_vector("gdn_decoder_expected_moe_topk_ids.i32", topk_len),
         "GDN decoder slice MoE router top-k ids changed"
     );
     assert_moe_router_matches_cpu(&runner, rows);
     assert_f32_close(
         "GDN decoder slice shared expert gate logits",
-        &download_f32(&runner.scratch.shared_gate_logits, stream, rows as usize),
+        &download_f32(
+            &shared_scratch(&runner.scratch).gate_logits,
+            &ctx,
+            rows as usize,
+        ),
         &read_gdn_decoder_f32_vector(
             "gdn_decoder_expected_shared_gate_logits_f32.f32",
             rows as usize,
@@ -2596,7 +2660,7 @@ fn qwen36_gdn_decoder_layer_vector_chains_gdn_into_moe_and_next_norm() {
     );
     assert_bf16_close_to_f32_oracle(
         "GDN decoder slice shared expert output",
-        &download_bf16(&runner.scratch.shared_out, stream, hidden_len),
+        &download_bf16(&shared_scratch(&runner.scratch).out, &ctx, hidden_len),
         &read_gdn_decoder_bf16_vector(
             "gdn_decoder_expected_shared_expert_output_bf16.bf16",
             hidden_len,
@@ -2609,7 +2673,7 @@ fn qwen36_gdn_decoder_layer_vector_chains_gdn_into_moe_and_next_norm() {
     );
     assert_bf16_close_to_f32_oracle(
         "GDN decoder slice residual after MoE/shared expert",
-        &download_bf16(&runner.scratch.residual, stream, hidden_len),
+        &download_bf16(&runner.scratch.residual, &ctx, hidden_len),
         &read_gdn_decoder_bf16_vector(
             "gdn_decoder_expected_residual_after_mlp_bf16.bf16",
             hidden_len,
@@ -2622,7 +2686,7 @@ fn qwen36_gdn_decoder_layer_vector_chains_gdn_into_moe_and_next_norm() {
     );
     assert_bf16_close_to_f32_oracle(
         "GDN decoder slice next-layer Gemma RMSNorm",
-        &download_bf16(&runner.scratch.mlp_out, stream, hidden_len),
+        &download_bf16(&runner.scratch.mlp_out, &ctx, hidden_len),
         &read_gdn_decoder_bf16_vector(
             "gdn_decoder_expected_next_layer_norm_output_bf16.bf16",
             hidden_len,
@@ -2644,34 +2708,29 @@ fn qwen36_full_attention_block_vector_validates_oracle_seeded_moe_shared_and_nex
     }
 
     let mut runner = full_attention_block_moe_vector_runner();
-    let stream = runner.config.stream;
-    let device = runner.config.device_ordinal;
+    let ctx = runner.ctx.clone();
     let rows = FULL_ATTN_BLOCK_VECTOR_ROWS;
     let hidden_len = full_attention_block_hidden_len();
     let topk_len = full_attention_block_moe_topk_len();
-    runner.scratch.ensure(&runner.config, rows).unwrap();
+    runner.scratch.reserve(rows).unwrap();
 
-    runner
-        .scratch
-        .attn_proj
-        .upload(
-            stream,
-            &read_block_bf16_vector("block_expected_post_attn_norm_output_bf16.bf16", hidden_len),
-        )
-        .unwrap();
-    runner
-        .scratch
-        .residual
-        .upload(
-            stream,
-            &read_block_bf16_vector(
-                "block_expected_residual_after_attention_bf16.bf16",
-                hidden_len,
-            ),
-        )
-        .unwrap();
+    upload(
+        &runner.ctx,
+        &mut runner.scratch.attn_proj,
+        &read_block_bf16_vector("block_expected_post_attn_norm_output_bf16.bf16", hidden_len),
+    )
+    .unwrap();
+    upload(
+        &runner.ctx,
+        &mut runner.scratch.residual,
+        &read_block_bf16_vector(
+            "block_expected_residual_after_attention_bf16.bf16",
+            hidden_len,
+        ),
+    )
+    .unwrap();
 
-    let layer = full_attention_block_moe_layer(device, stream);
+    let layer = full_attention_block_moe_layer(&ctx);
     let layer_weights = layer.weights();
     let (router_proj, gate_up_proj, down_proj, shared) = match &layer_weights.mlp {
         QwenMlpWeights::Moe {
@@ -2691,13 +2750,13 @@ fn qwen36_full_attention_block_vector_validates_oracle_seeded_moe_shared_and_nex
             .execute_moe_mlp(rows, router_proj, gate_up_proj, down_proj, shared)
             .unwrap();
     }
-    synchronize_stream(stream).unwrap();
+    ctx.synchronize().unwrap();
 
     assert_bf16_close_to_f32_oracle(
         "full-attention block MoE router logits",
         &download_bf16(
-            &runner.scratch.router_logits,
-            stream,
+            &moe_scratch(&runner.scratch).router_logits,
+            &ctx,
             (rows * NUM_EXPERTS) as usize,
         ),
         &read_block_bf16_vector(
@@ -2711,28 +2770,32 @@ fn qwen36_full_attention_block_vector_validates_oracle_seeded_moe_shared_and_nex
         BF16_BLOCK_PROJ_ABS_TOL,
     );
     assert_eq!(
-        download_i32(&runner.scratch.topk_ids, stream, topk_len),
+        download_i32(&moe_scratch(&runner.scratch).topk_ids, &ctx, topk_len),
         read_block_i32_vector("block_expected_moe_topk_ids.i32", topk_len),
         "full-attention block MoE router top-k ids changed"
     );
     assert_moe_router_matches_cpu(&runner, rows);
     assert_f32_close(
         "full-attention block shared expert gate logits",
-        &download_f32(&runner.scratch.shared_gate_logits, stream, rows as usize),
+        &download_f32(
+            &shared_scratch(&runner.scratch).gate_logits,
+            &ctx,
+            rows as usize,
+        ),
         &read_block_f32_vector("block_expected_shared_gate_logits_f32.f32", rows as usize),
         BF16_BLOCK_PROJ_ABS_TOL,
         1.0e-4,
     );
     assert_bf16_close_to_f32_oracle(
         "full-attention block shared expert output",
-        &download_bf16(&runner.scratch.shared_out, stream, hidden_len),
+        &download_bf16(&shared_scratch(&runner.scratch).out, &ctx, hidden_len),
         &read_block_bf16_vector("block_expected_shared_expert_output_bf16.bf16", hidden_len),
         &read_block_f32_vector("block_expected_shared_expert_output_f32.f32", hidden_len),
         BF16_BLOCK_MOE_ABS_TOL,
     );
     assert_bf16_close_to_f32_oracle(
         "full-attention block MoE/shared expert output",
-        &download_bf16(&runner.scratch.mlp_out, stream, hidden_len),
+        &download_bf16(&runner.scratch.mlp_out, &ctx, hidden_len),
         &read_block_bf16_vector("block_expected_moe_shared_output_bf16.bf16", hidden_len),
         &read_block_f32_vector("block_expected_moe_shared_output_f32.f32", hidden_len),
         BF16_BLOCK_MOE_ABS_TOL,
@@ -2758,17 +2821,17 @@ fn qwen36_full_attention_block_vector_validates_oracle_seeded_moe_shared_and_nex
         )
     }
     .unwrap();
-    synchronize_stream(stream).unwrap();
+    ctx.synchronize().unwrap();
     assert_bf16_close_to_f32_oracle(
         "full-attention block residual after MoE/shared expert",
-        &download_bf16(&runner.scratch.residual, stream, hidden_len),
+        &download_bf16(&runner.scratch.residual, &ctx, hidden_len),
         &read_block_bf16_vector("block_expected_residual_after_mlp_bf16.bf16", hidden_len),
         &read_block_f32_vector("block_expected_residual_after_mlp_f32.f32", hidden_len),
         BF16_BLOCK_FINAL_NORM_ABS_TOL,
     );
     assert_bf16_close_to_f32_oracle(
         "full-attention block next-layer Gemma RMSNorm",
-        &download_bf16(&runner.scratch.mlp_out, stream, hidden_len),
+        &download_bf16(&runner.scratch.mlp_out, &ctx, hidden_len),
         &read_block_bf16_vector(
             "block_expected_next_layer_norm_output_bf16.bf16",
             hidden_len,
@@ -2784,11 +2847,11 @@ fn qwen36_model_logits_vector_validates_public_run_moe_logits_handoff() {
         return;
     }
 
+    let ctx = Rc::new(CudaCtx::default().unwrap());
     let config = model_logits_vector_config();
-    let stream = config.stream;
     let request_id = 0x4D4C_0001;
-    let weights = model_logits_vector_weights(config);
-    let mut runner = ModelRunner::new(config, weights).unwrap();
+    let weights = model_logits_vector_weights(&ctx, config);
+    let mut runner = ModelRunner::new(ctx.clone(), config, weights).unwrap();
     let prompt = read_model_logits_i32_vector("model_prompt_tokens.i32", MODEL_LOGITS_PROMPT_LEN);
     assert_eq!(prompt.len() as u32, runner.config.page_size);
 
@@ -2799,7 +2862,7 @@ fn qwen36_model_logits_vector_validates_public_run_moe_logits_handoff() {
             max_new_tokens: 0,
         })
         .unwrap();
-    synchronize_stream(stream).unwrap();
+    ctx.synchronize().unwrap();
     assert_eq!(prefill_result.request_id, request_id);
     assert_eq!(prefill_result.prompt_tokens, MODEL_LOGITS_PROMPT_LEN as u32);
     assert!(prefill_result.generated_tokens.is_empty());
@@ -2816,12 +2879,12 @@ fn qwen36_model_logits_vector_validates_public_run_moe_logits_handoff() {
         read_model_logits_f32_vector("model_expected_prefill_logits_f32.f32", prefill_logits_len);
     assert_f32_close(
         "model logits final prefill row",
-        &download_f32(&runner.scratch.logits, stream, vocab),
+        &download_f32(&runner.scratch.logits, &ctx, vocab),
         &expected_prefill[prefill_logits_len - vocab..],
         MODEL_LOGITS_ABS_TOL,
         MODEL_LOGITS_REL_TOL,
     );
-    let prefill_top = download_i32(&runner.scratch.next_token_ids, stream, 1);
+    let prefill_top = download_i32(&runner.scratch.next_token_ids, &ctx, 1);
     let expected_prefill_top = read_model_logits_i32_vector(
         "model_expected_prefill_top_ids.i32",
         MODEL_LOGITS_PROMPT_LEN,
@@ -2858,7 +2921,7 @@ fn qwen36_model_logits_vector_validates_public_run_moe_logits_handoff() {
             max_new_tokens: 1,
         })
         .unwrap();
-    synchronize_stream(stream).unwrap();
+    ctx.synchronize().unwrap();
     assert_eq!(decode_result.request_id, request_id);
     assert_eq!(decode_result.prompt_tokens, MODEL_LOGITS_PROMPT_LEN as u32);
     assert_eq!(decode_result.generated_tokens, vec![decode_input]);
@@ -2877,7 +2940,7 @@ fn qwen36_model_logits_vector_validates_public_run_moe_logits_handoff() {
 
     assert_f32_close(
         "model logits decode row",
-        &download_f32(&runner.scratch.logits, stream, MODEL_LOGITS_VOCAB as usize),
+        &download_f32(&runner.scratch.logits, &ctx, MODEL_LOGITS_VOCAB as usize),
         &read_model_logits_f32_vector(
             "model_expected_decode_logits_f32.f32",
             MODEL_LOGITS_VOCAB as usize,
@@ -2887,7 +2950,7 @@ fn qwen36_model_logits_vector_validates_public_run_moe_logits_handoff() {
     );
     let expected_decode_top = read_model_logits_i32_vector("model_expected_decode_top_ids.i32", 1);
     assert_eq!(
-        download_i32(&runner.scratch.next_token_ids, stream, 1),
+        download_i32(&runner.scratch.next_token_ids, &ctx, 1),
         expected_decode_top,
         "decode greedy top id changed"
     );
@@ -2914,8 +2977,16 @@ fn qwen36_moe_vectors_validate_router_topk_and_renormalized_weights() {
     run_moe_vector_router(&mut runner, true);
 
     let topk_len = (MOE_VECTOR_ROWS * NUM_EXPERTS_PER_TOKEN) as usize;
-    let got_ids = download_i32(&runner.scratch.topk_ids, runner.config.stream, topk_len);
-    let got_weights = download_f32(&runner.scratch.topk_weights, runner.config.stream, topk_len);
+    let got_ids = download_i32(
+        &moe_scratch(&runner.scratch).topk_ids,
+        &runner.ctx,
+        topk_len,
+    );
+    let got_weights = download_f32(
+        &moe_scratch(&runner.scratch).topk_weights,
+        &runner.ctx,
+        topk_len,
+    );
     assert_eq!(
         got_ids,
         read_moe_i32_vector("topk_ids.i32", topk_len),
@@ -2941,8 +3012,16 @@ fn qwen36_moe_vectors_validate_router_unrenormalized_weights() {
     run_moe_vector_router(&mut runner, false);
 
     let topk_len = (MOE_VECTOR_ROWS * NUM_EXPERTS_PER_TOKEN) as usize;
-    let got_ids = download_i32(&runner.scratch.topk_ids, runner.config.stream, topk_len);
-    let got_weights = download_f32(&runner.scratch.topk_weights, runner.config.stream, topk_len);
+    let got_ids = download_i32(
+        &moe_scratch(&runner.scratch).topk_ids,
+        &runner.ctx,
+        topk_len,
+    );
+    let got_weights = download_f32(
+        &moe_scratch(&runner.scratch).topk_weights,
+        &runner.ctx,
+        topk_len,
+    );
     assert_eq!(
         got_ids,
         read_moe_i32_vector("topk_ids.i32", topk_len),
@@ -2968,11 +3047,7 @@ fn qwen36_moe_vectors_validate_staged_bf16_routed_output() {
     run_moe_vector_router(&mut runner, true);
     execute_moe_vector_routed_output(&mut runner);
 
-    let got = download_bf16(
-        &runner.scratch.mlp_out,
-        runner.config.stream,
-        MOE_VECTOR_ELEMENTS,
-    );
+    let got = download_bf16(&runner.scratch.mlp_out, &runner.ctx, MOE_VECTOR_ELEMENTS);
     assert_bf16_close_to_f32_oracle(
         "routed MoE staged BF16 vector",
         &got,
@@ -2994,11 +3069,7 @@ fn qwen36_moe_vectors_validate_shared_expert_gate_add_output() {
     execute_moe_vector_routed_output(&mut runner);
     execute_moe_vector_shared_gate_add(&mut runner);
 
-    let got = download_bf16(
-        &runner.scratch.mlp_out,
-        runner.config.stream,
-        MOE_VECTOR_ELEMENTS,
-    );
+    let got = download_bf16(&runner.scratch.mlp_out, &runner.ctx, MOE_VECTOR_ELEMENTS);
     assert_bf16_close_to_f32_oracle(
         "shared expert gate-add BF16 vector",
         &got,
@@ -3010,7 +3081,7 @@ fn qwen36_moe_vectors_validate_shared_expert_gate_add_output() {
 
 #[test]
 fn qwen36_one_schedule_block_engine_config_uses_real_attention_dimensions() {
-    let config = QwenConfig::randomized_qwen36_moe_gdn_one_block_fixture(-1);
+    let config = QwenConfig::randomized_qwen36_moe_gdn_one_block_fixture();
     assert_eq!(config.validate(), Ok(()));
     assert_eq!(config.attention_layer_count(), 1);
     assert_eq!(config.gdn_layer_count(), 3);
@@ -3032,14 +3103,16 @@ fn qwen36_one_schedule_block_engine_config_uses_real_attention_dimensions() {
 fn loaded_qwen36_factories_request_every_manifest_target_once() {
     use std::collections::BTreeSet;
 
-    let config = QwenConfig::new(0, ptr::null_mut(), 8).unwrap();
+    let config = QwenConfig::new(8).unwrap();
     let mut seen = BTreeSet::new();
-    let weights = QwenWeights::from_bf16_buffers(config, |layer, slot| {
+    let _weights = QwenWeights::from_bf16_allocations(config, |layer, slot| {
         assert!(
             seen.insert((layer, slot)),
             "duplicate target {layer:?}/{slot}"
         );
-        Ok(DeviceBuffer::empty(config.device_ordinal))
+        Ok(Rc::new(
+            DeviceSpan::new(std::ptr::NonNull::<u16>::dangling().as_ptr(), 0).unwrap(),
+        ))
     })
     .unwrap();
 
@@ -3050,7 +3123,6 @@ fn loaded_qwen36_factories_request_every_manifest_target_once() {
     assert!(seen.contains(&(Some(0), "gdn.in_proj_qkv")));
     assert!(seen.contains(&(Some(3), "attn.q_proj")));
     assert!(seen.contains(&(Some(39), "mlp.shared.gate_score")));
-    weights.validate_for(&config).unwrap();
 }
 
 #[test]
@@ -3059,14 +3131,15 @@ fn randomized_full_attention_weights_seed_qwen_norm_raw_weights_as_zero() {
         return;
     }
 
-    let config = QwenConfig::randomized_dense_tiny_fixture(0);
-    let weights = QwenWeights::random_bf16(&config, 0x5153_3300_7177_6e6b).unwrap();
+    let config = QwenConfig::randomized_dense_tiny_fixture();
+    let ctx = Rc::new(CudaCtx::default().unwrap());
+    let weights = QwenWeights::random_bf16(ctx.clone(), &config, 0x5153_3300_7177_6e6b).unwrap();
     let hidden = config.hidden_size() as usize;
     let head_dim = config.head_dim() as usize;
 
     assert_eq!(weights.final_norm.cap, hidden);
     assert_eq!(
-        download_bf16(&weights.final_norm, config.stream, hidden),
+        download_bf16(&weights.final_norm, &ctx, hidden),
         vec![0_u16; hidden]
     );
 
@@ -3081,19 +3154,19 @@ fn randomized_full_attention_weights_seed_qwen_norm_raw_weights_as_zero() {
                 checked_usize_product(&[PACKED_Q_GATE_WIDTH, config.hidden_size()]).unwrap()
             );
             assert_eq!(
-                download_bf16(&layer.attn_norm, config.stream, hidden),
+                download_bf16(&layer.attn_norm, &ctx, hidden),
                 vec![0_u16; hidden]
             );
             assert_eq!(
-                download_bf16(&layer.mlp_norm, config.stream, hidden),
+                download_bf16(&layer.mlp_norm, &ctx, hidden),
                 vec![0_u16; hidden]
             );
             assert_eq!(
-                download_bf16(&layer.q_norm, config.stream, head_dim),
+                download_bf16(&layer.q_norm, &ctx, head_dim),
                 vec![0_u16; head_dim]
             );
             assert_eq!(
-                download_bf16(&layer.k_norm, config.stream, head_dim),
+                download_bf16(&layer.k_norm, &ctx, head_dim),
                 vec![0_u16; head_dim]
             );
         }
@@ -3104,27 +3177,20 @@ fn randomized_full_attention_weights_seed_qwen_norm_raw_weights_as_zero() {
 #[test]
 fn qwen36_gdn_weights_carry_post_attention_shared_moe() {
     let layer = QwenLayerWeights::Gdn(QwenGdnWeights {
-        norm: empty_bf16_buffer(),
-        in_proj: empty_bf16_buffer(),
-        gate_proj: empty_bf16_buffer(),
-        a_proj: empty_bf16_buffer(),
-        b_proj: empty_bf16_buffer(),
-        conv_weight: empty_bf16_buffer(),
-        conv_bias: empty_bf16_buffer(),
-        a_log: empty_bf16_buffer(),
-        dt_bias: empty_bf16_buffer(),
-        rms_weight: empty_bf16_buffer(),
-        out_proj: empty_bf16_buffer(),
-        mlp_norm: empty_bf16_buffer(),
+        norm: placeholder_weight(),
+        in_proj: placeholder_weight(),
+        gate_proj: placeholder_weight(),
+        a_proj: placeholder_weight(),
+        b_proj: placeholder_weight(),
+        conv_weight: placeholder_weight(),
+        conv_bias: placeholder_weight(),
+        a_log: placeholder_weight(),
+        dt_bias: placeholder_weight(),
+        rms_weight: placeholder_weight(),
+        out_proj: placeholder_weight(),
+        mlp_norm: placeholder_weight(),
         mlp: empty_qwen36_moe_mlp_weights(),
     });
-
-    match &layer {
-        QwenLayerWeights::Gdn(gdn) => {
-            assert_eq!(gdn.mlp.validate_for(Some(MoeShape::compiled())), Ok(()));
-        }
-        QwenLayerWeights::AttentionMlp(_) => unreachable!(),
-    }
 
     match &layer {
         QwenLayerWeights::Gdn(gdn) => match gdn.mlp {
@@ -3143,36 +3209,30 @@ fn shared_moe_execution_produces_routed_and_shared_outputs() {
         return;
     }
 
-    let config = QwenConfig::randomized_shared_moe_tiny_fixture(0);
-    let mut runner = ModelRunner::random_bf16(config, 0x5153_3300_5a5a_5a5a).unwrap();
+    let config = QwenConfig::randomized_shared_moe_tiny_fixture();
+    let ctx = Rc::new(CudaCtx::default().unwrap());
+    let mut runner = ModelRunner::random_bf16(ctx.clone(), config, 0x5153_3300_5a5a_5a5a).unwrap();
     let rows = 1;
     let hidden = config.hidden_size();
     let hidden_len = hidden as usize;
     let moe = config.moe_config().unwrap();
-    runner.scratch.ensure(&config, rows).unwrap();
+    runner.scratch.reserve(rows).unwrap();
 
     let input = constant_bf16_values(hidden_len, 1.0).unwrap();
-    runner
-        .scratch
-        .attn_proj
-        .upload(config.stream, &input)
-        .unwrap();
+    upload(&runner.ctx, &mut runner.scratch.attn_proj, &input).unwrap();
 
     let router_proj = filled_bf16_buffer(
-        config.device_ordinal,
-        config.stream,
+        &ctx,
         checked_usize_product(&[moe.num_experts, hidden]).unwrap(),
         0.0,
     );
     let gate_up_proj = filled_bf16_buffer(
-        config.device_ordinal,
-        config.stream,
+        &ctx,
         checked_usize_product(&[moe.num_experts, 2, moe.moe_intermediate_size, hidden]).unwrap(),
         0.003,
     );
     let down_proj = filled_bf16_buffer(
-        config.device_ordinal,
-        config.stream,
+        &ctx,
         checked_usize_product(&[moe.num_experts, hidden, moe.moe_intermediate_size]).unwrap(),
         0.01,
     );
@@ -3185,39 +3245,31 @@ fn shared_moe_execution_produces_routed_and_shared_outputs() {
             .execute_moe_mlp(rows, &router_proj, &gate_up_proj, &down_proj, None)
             .unwrap();
     }
-    let routed = download_bf16(&runner.scratch.mlp_out, config.stream, hidden_len);
+    let routed = download_bf16(&runner.scratch.mlp_out, &ctx, hidden_len);
     assert!(has_nonzero_bf16(&routed));
 
-    runner
-        .scratch
-        .attn_proj
-        .upload(config.stream, &input)
-        .unwrap();
+    upload(&runner.ctx, &mut runner.scratch.attn_proj, &input).unwrap();
     let shared_gate_proj = filled_bf16_buffer(
-        config.device_ordinal,
-        config.stream,
+        &ctx,
         checked_usize_product(&[moe.shared_expert_intermediate_size, hidden]).unwrap(),
         0.004,
     );
     let shared_up_proj = filled_bf16_buffer(
-        config.device_ordinal,
-        config.stream,
+        &ctx,
         checked_usize_product(&[moe.shared_expert_intermediate_size, hidden]).unwrap(),
         0.004,
     );
     let shared_down_proj = filled_bf16_buffer(
-        config.device_ordinal,
-        config.stream,
+        &ctx,
         checked_usize_product(&[hidden, moe.shared_expert_intermediate_size]).unwrap(),
         0.02,
     );
-    let shared_expert_gate =
-        filled_bf16_buffer(config.device_ordinal, config.stream, hidden_len, 0.02);
+    let shared_expert_gate = filled_bf16_buffer(&ctx, hidden_len, 0.02);
     let shared = QwenSharedExpertWeights {
-        gate_proj: shared_gate_proj,
-        up_proj: shared_up_proj,
-        down_proj: shared_down_proj,
-        shared_expert_gate: shared_expert_gate,
+        gate_proj: Box::new(shared_gate_proj),
+        up_proj: Box::new(shared_up_proj),
+        down_proj: Box::new(shared_down_proj),
+        shared_expert_gate: Box::new(shared_expert_gate),
     };
 
     unsafe {
@@ -3229,14 +3281,13 @@ fn shared_moe_execution_produces_routed_and_shared_outputs() {
             .unwrap();
     }
 
-    let shared_out = download_bf16(&runner.scratch.shared_out, config.stream, hidden_len);
-    let combined = download_bf16(&runner.scratch.mlp_out, config.stream, hidden_len);
-    let mut gate_logits = vec![0.0_f32; rows as usize];
-    runner
-        .scratch
-        .shared_gate_logits
-        .download(config.stream, &mut gate_logits)
-        .unwrap();
+    let shared_out = download_bf16(&shared_scratch(&runner.scratch).out, &ctx, hidden_len);
+    let combined = download_bf16(&runner.scratch.mlp_out, &ctx, hidden_len);
+    let gate_logits = download_f32(
+        &shared_scratch(&runner.scratch).gate_logits,
+        &ctx,
+        rows as usize,
+    );
 
     assert!(has_nonzero_bf16(&shared_out));
     assert!(gate_logits.iter().any(|value| *value != 0.0));
@@ -3309,17 +3360,14 @@ fn sampling_rejects_padded_tokenizer_ids() {
     if !cuda_device_available() {
         return;
     }
-    let config = QwenConfig::randomized_shared_moe_tiny_fixture(0);
-    let mut runner = ModelRunner::random_bf16(config, 78).unwrap();
+    let config = QwenConfig::randomized_shared_moe_tiny_fixture();
+    let ctx = Rc::new(CudaCtx::default().unwrap());
+    let mut runner = ModelRunner::random_bf16(ctx.clone(), config, 78).unwrap();
     // Exercise sampling directly with synthetic full-width logits; no model
     // execution uses these tiny weights with the larger vocabulary.
     runner.config.fixture_mut().vocab_size = 248320;
-    runner.scratch.ensure(&runner.config, 1).unwrap();
-    runner
-        .scratch
-        .positions
-        .upload(runner.config.stream, &[0])
-        .unwrap();
+    runner.scratch.reserve(1).unwrap();
+    upload(&runner.ctx, &mut runner.scratch.positions, &[0]).unwrap();
     let mut logits = vec![f32::NEG_INFINITY; 248320];
     logits[248070] = 1.0;
     for temperature in [0.0, 1.0] {
@@ -3330,11 +3378,7 @@ fn sampling_rejects_padded_tokenizer_ids() {
                 ..Default::default()
             })
             .unwrap();
-        runner
-            .scratch
-            .logits
-            .upload(runner.config.stream, &logits)
-            .unwrap();
+        upload(&runner.ctx, &mut runner.scratch.logits, &logits).unwrap();
         assert_eq!(runner.sample_logits(0), Err(Status::InternalError));
         assert!(runner.live_tokens.is_empty());
     }
@@ -3345,8 +3389,9 @@ fn stochastic_sampling_survives_reset_release_and_failed_rebuild() {
     if !cuda_device_available() {
         return;
     }
-    let config = QwenConfig::randomized_shared_moe_tiny_fixture(0);
-    let mut runner = ModelRunner::random_bf16(config, 78).unwrap();
+    let config = QwenConfig::randomized_shared_moe_tiny_fixture();
+    let ctx = Rc::new(CudaCtx::default().unwrap());
+    let mut runner = ModelRunner::random_bf16(ctx.clone(), config, 78).unwrap();
     let params = crate::model::SamplingParams {
         temperature: 0.8,
         top_k: 8,
@@ -3407,11 +3452,12 @@ fn failed_rebuild_after_final_layer_preserves_prefix_and_continuation() {
     if !cuda_device_available() {
         return;
     }
-    let config = QwenConfig::randomized_shared_moe_tiny_fixture(0);
+    let config = QwenConfig::randomized_shared_moe_tiny_fixture();
     let seed = 0x5245_4255_494c_4401;
     let prompt = [1, 2, 3];
     let request_id = 41;
-    let mut runner = ModelRunner::random_bf16(config, seed).unwrap();
+    let ctx = Rc::new(CudaCtx::default().unwrap());
+    let mut runner = ModelRunner::random_bf16(ctx.clone(), config, seed).unwrap();
     let initial = runner
         .run(QwenRequest {
             request_id,
@@ -3431,7 +3477,7 @@ fn failed_rebuild_after_final_layer_preserves_prefix_and_continuation() {
     let continued_logits = runner.last_logits_row_for_test().unwrap();
     drop(runner);
 
-    let mut control = ModelRunner::random_bf16(config, seed).unwrap();
+    let mut control = ModelRunner::random_bf16(ctx.clone(), config, seed).unwrap();
     let expected = control
         .run(QwenRequest {
             request_id,
@@ -3452,11 +3498,12 @@ fn failed_rebuild_after_final_layer_preserves_prefix_and_continuation() {
 
 impl ModelRunner {
     pub(crate) fn assert_lm_head_matches_cublaslt(&mut self, rows: u32) {
+        let ctx = self.ctx.clone();
         assert_eq!(self.lm_head_provider(), "triton");
         let vocab = self.config.vocab_size();
         let hidden = self.config.hidden_size();
-        let mut reference = DeviceBuffer::<f32>::empty(self.config.device_ordinal);
-        reference.ensure(vocab as usize).unwrap();
+        let reference =
+            DeviceBuffer::<f32>::with_capacity(ctx.clone(), (vocab as usize).max(1)).unwrap();
         unsafe {
             self.engine
                 .operators()
@@ -3477,9 +3524,10 @@ impl ModelRunner {
                 .unwrap();
         }
         let mut expected = vec![0.0; vocab as usize];
-        reference
-            .download(self.config.stream, &mut expected)
-            .unwrap();
+        unsafe {
+            reference.download(&mut expected).unwrap();
+        }
+        self.ctx.synchronize().unwrap();
         let actual = self.last_logits_row_for_test().unwrap();
         let mut max_error = 0.0_f32;
         for (index, (&actual, &expected)) in actual.iter().zip(&expected).enumerate() {
@@ -3509,14 +3557,13 @@ impl ModelRunner {
         let logits_before = self.last_logits_row_for_test().unwrap();
         // Fail after all candidate decoder layers, before replacing logits.
         // Restore ownership before assertions or dropping the runner.
-        let final_norm = self.weights.final_norm.ptr;
-        self.weights.final_norm.ptr = ptr::null_mut();
+        let final_norm = std::mem::replace(&mut self.weights.final_norm, placeholder_weight());
         let failed = self.run(QwenRequest {
             request_id,
             tokens: rewritten_prompt,
             max_new_tokens: 0,
         });
-        self.weights.final_norm.ptr = final_norm;
+        self.weights.final_norm = final_norm;
         assert_eq!(failed.unwrap_err(), Status::InvalidArgument);
         assert_eq!(self.live_tokens(), live_before);
         assert_eq!(self.last_logits_row_for_test().unwrap(), logits_before);

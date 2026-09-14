@@ -4,7 +4,6 @@ use crate::{
     constants::{attention, model},
     engine::Status,
 };
-use std::ptr;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct FixtureShape {
@@ -45,17 +44,16 @@ impl FixtureShape {
         if !self.full_attention_only && !self.num_layers.is_multiple_of(4) {
             return Err(Status::InvalidArgument);
         }
-        if let Some(moe) = self.moe {
-            if moe.num_experts == 0
+        if let Some(moe) = self.moe
+            && (moe.num_experts == 0
                 || moe.num_experts_per_tok == 0
                 || moe.num_experts_per_tok > moe.num_experts
                 || moe.num_experts > crate::QWEN36_MOE_MAX_EXPERTS
                 || moe.num_experts_per_tok > crate::QWEN36_MOE_MAX_TOP_K
                 || moe.moe_intermediate_size != self.intermediate_size
-                || !moe.shared_expert_intermediate_size.is_multiple_of(8)
-            {
-                return Err(Status::InvalidArgument);
-            }
+                || !moe.shared_expert_intermediate_size.is_multiple_of(8))
+        {
+            return Err(Status::InvalidArgument);
         }
         Ok(())
     }
@@ -68,16 +66,16 @@ impl QwenConfig {
             .expect("explicit test fixture required")
     }
 
-    pub(super) fn randomized_dense_tiny_fixture(device_ordinal: i32) -> Self {
-        let mut config = Self::new(device_ordinal, ptr::null_mut(), 16).unwrap();
+    pub(super) fn randomized_dense_tiny_fixture() -> Self {
+        let mut config = Self::new(16).unwrap();
         config.max_pages = 8;
         config.qscb_workspace_bytes = 16 << 20;
         config.fixture = Some(FixtureShape::dense());
         config
     }
 
-    pub(super) fn randomized_moe_tiny_fixture(device_ordinal: i32) -> Self {
-        let mut config = Self::randomized_dense_tiny_fixture(device_ordinal);
+    pub(super) fn randomized_moe_tiny_fixture() -> Self {
+        let mut config = Self::randomized_dense_tiny_fixture();
         let fixture = config.fixture_mut();
         fixture.intermediate_size = 64;
         fixture.moe = Some(MoeShape {
@@ -89,8 +87,8 @@ impl QwenConfig {
         config
     }
 
-    pub(super) fn randomized_shared_moe_tiny_fixture(device_ordinal: i32) -> Self {
-        let mut config = Self::randomized_moe_tiny_fixture(device_ordinal);
+    pub(super) fn randomized_shared_moe_tiny_fixture() -> Self {
+        let mut config = Self::randomized_moe_tiny_fixture();
         config
             .fixture_mut()
             .moe
@@ -100,8 +98,8 @@ impl QwenConfig {
         config
     }
 
-    pub(super) fn randomized_qwen36_moe_gdn_one_block_fixture(device_ordinal: i32) -> Self {
-        let mut config = Self::randomized_dense_tiny_fixture(device_ordinal);
+    pub(super) fn randomized_qwen36_moe_gdn_one_block_fixture() -> Self {
+        let mut config = Self::randomized_dense_tiny_fixture();
         config.max_seq_len = 8;
         config.max_batch_tokens = 8;
         config.max_pages = 2;
@@ -115,14 +113,8 @@ impl QwenConfig {
         config
     }
 
-    pub(crate) fn loaded_fixture(
-        device_ordinal: i32,
-        stream: *mut std::ffi::c_void,
-        num_layers: u32,
-        vocab_size: u32,
-        max_seq_len: u32,
-    ) -> Self {
-        let mut config = Self::new(device_ordinal, stream, max_seq_len).unwrap();
+    pub(crate) fn loaded_fixture(num_layers: u32, vocab_size: u32, max_seq_len: u32) -> Self {
+        let mut config = Self::new(max_seq_len).unwrap();
         config.fixture = Some(FixtureShape {
             num_layers,
             vocab_size,

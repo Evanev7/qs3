@@ -2,9 +2,10 @@ use super::{PINNED_UPLOAD_BUFFER_BYTES, PINNED_UPLOAD_BUFFER_COUNT};
 use crate::{
     engine::{DynDType, Status},
     ffi,
+    memory::DeviceSpan,
 };
 
-use std::{ffi::c_void, fs::File, io, os::fd::AsRawFd, ptr, time::Instant};
+use std::{ffi::c_void, fs::File, io, ops::Deref, os::fd::AsRawFd, ptr, time::Instant};
 
 pub(super) fn result_from_cuda(err: i32) -> Result<(), Status> {
     if err == ffi::cuda::CUDA_SUCCESS {
@@ -104,11 +105,15 @@ fn read_exact_at_raw(file: &File, dst: *mut u8, bytes: usize, offset: u64) -> io
 /// `QwenWeights` will wrap after load completion. `seal` is the only load-time
 /// synchronization point required before the runner uses the weights.
 pub(crate) trait WeightLoadBackend {
+    /// Owns one final BF16 tensor. Its Drop implementation belongs to the
+    /// backend; consumers only borrow the device span through Deref.
+    type Allocation: Deref<Target = DeviceSpan<u16>> + 'static;
+
     fn device_ordinal(&self) -> i32;
     fn allocations(&self) -> &[WeightLoadSpan];
     /// Returns exactly the spans currently exposed by `allocations`, in the
     /// same order, and leaves `allocations()` empty.
-    fn take_allocations(&mut self) -> Vec<WeightLoadSpan>;
+    fn take_allocations(&mut self) -> Vec<Self::Allocation>;
     fn alloc_tensor(&mut self, desc: WeightTensorDesc<'_>) -> Result<WeightLoadSpan, Status>;
     fn read_exact(
         &mut self,
@@ -136,9 +141,44 @@ pub(crate) enum WeightLoadMemory {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct WeightLoadSpan {
-    pub(super) ptr: ffi::DevicePtr,
+    pub(super) ptr: ffi::ErasedDevicePtr,
     pub(super) bytes: usize,
     pub(super) memory: WeightLoadMemory,
+}
+
+/// Final allocation owned by the existing managed and pinned-upload loaders.
+/// Loading/staging resources stay with the backend; only this owner is handed off.
+pub(crate) struct CudaWeightAllocation {
+    device_ordinal: i32,
+    span: DeviceSpan<u16>,
+}
+
+impl CudaWeightAllocation {
+    fn from_loaded(device_ordinal: i32, allocation: WeightLoadSpan) -> Self {
+        Self {
+            device_ordinal,
+            span: DeviceSpan::new(allocation.ptr.cast(), allocation.bytes / size_of::<u16>())
+                .expect("loader allocation is non-null"),
+        }
+    }
+}
+
+impl Deref for CudaWeightAllocation {
+    type Target = DeviceSpan<u16>;
+    fn deref(&self) -> &Self::Target {
+        &self.span
+    }
+}
+
+impl Drop for CudaWeightAllocation {
+    fn drop(&mut self) {
+        // This is the loader's original release policy. DeviceBuffer never
+        // adopts these allocations or decides how they are released.
+        let _ = activate_device(self.device_ordinal);
+        unsafe {
+            ffi::cuda::cudaFree(self.span.erase());
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -213,6 +253,7 @@ impl ManagedUmaBackend {
 }
 
 impl WeightLoadBackend for ManagedUmaBackend {
+    type Allocation = CudaWeightAllocation;
     fn device_ordinal(&self) -> i32 {
         self.device_ordinal
     }
@@ -221,8 +262,11 @@ impl WeightLoadBackend for ManagedUmaBackend {
         &self.allocations
     }
 
-    fn take_allocations(&mut self) -> Vec<WeightLoadSpan> {
-        std::mem::take(&mut self.allocations)
+    fn take_allocations(&mut self) -> Vec<Self::Allocation> {
+        self.allocations
+            .drain(..)
+            .map(|span| CudaWeightAllocation::from_loaded(self.device_ordinal, span))
+            .collect()
     }
 
     fn alloc_tensor(&mut self, desc: WeightTensorDesc<'_>) -> Result<WeightLoadSpan, Status> {
@@ -406,11 +450,7 @@ impl PinnedUploadBackend {
     }
 
     fn validate_span(&self, span: &WeightLoadSpan, bytes: usize) -> Result<(), Status> {
-        if span.memory != WeightLoadMemory::Device
-            || span.ptr.is_null()
-            || span.bytes != bytes
-            || !self.owns_span(span)
-        {
+        if span.memory != WeightLoadMemory::Device || span.bytes != bytes || !self.owns_span(span) {
             return Err(Status::InvalidArgument);
         }
         Ok(())
@@ -445,6 +485,7 @@ impl PinnedUploadBackend {
 }
 
 impl WeightLoadBackend for PinnedUploadBackend {
+    type Allocation = CudaWeightAllocation;
     fn device_ordinal(&self) -> i32 {
         self.device_ordinal
     }
@@ -453,8 +494,11 @@ impl WeightLoadBackend for PinnedUploadBackend {
         &self.allocations
     }
 
-    fn take_allocations(&mut self) -> Vec<WeightLoadSpan> {
-        std::mem::take(&mut self.allocations)
+    fn take_allocations(&mut self) -> Vec<Self::Allocation> {
+        self.allocations
+            .drain(..)
+            .map(|span| CudaWeightAllocation::from_loaded(self.device_ordinal, span))
+            .collect()
     }
 
     fn alloc_tensor(&mut self, desc: WeightTensorDesc<'_>) -> Result<WeightLoadSpan, Status> {

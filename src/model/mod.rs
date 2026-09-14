@@ -3,8 +3,6 @@ use crate::engine::Status;
 use crate::ext::SafeVec;
 use crate::ffi::cuda;
 
-use std::ffi::c_void;
-
 mod config;
 mod runner;
 mod sampling;
@@ -35,11 +33,9 @@ enum ActiveRunKind {
     Decode,
 }
 
+mod scratch;
 mod state;
 
-mod scratch;
-
-pub(crate) use scratch::DeviceBuffer;
 #[cfg(test)]
 struct DeterministicRng {
     state: u64,
@@ -116,27 +112,7 @@ fn checked_usize_product(values: &[u32]) -> Result<usize, Status> {
     Ok(product)
 }
 
-fn activate_device(device_ordinal: i32) -> Result<(), Status> {
-    if device_ordinal < 0 {
-        return Ok(());
-    }
-    result_from_cuda(unsafe { cuda::cudaSetDevice(device_ordinal) })
-}
-
-fn resolve_device_ordinal(device_ordinal: i32) -> Result<i32, Status> {
-    if device_ordinal >= 0 {
-        return Ok(device_ordinal);
-    }
-    let mut current = 0;
-    result_from_cuda(unsafe { cuda::cudaGetDevice(&mut current) })?;
-    Ok(current)
-}
-
-fn synchronize_stream(stream: *mut c_void) -> Result<(), Status> {
-    result_from_cuda(unsafe { cuda::cudaStreamSynchronize(stream) })
-}
-
-fn result_from_cuda(err: i32) -> Result<(), Status> {
+pub(crate) fn result_from_cuda(err: i32) -> Result<(), Status> {
     if err == cuda::CUDA_SUCCESS {
         Ok(())
     } else if err == cuda::CUDA_ERROR_MEMORY_ALLOCATION {

@@ -8,14 +8,21 @@ pub(crate) const CUDA_MEMCPY_DEVICE_TO_DEVICE: i32 = 3;
 pub(crate) const CUDA_MEM_ATTACH_GLOBAL: u32 = 1;
 pub(crate) const CUDA_HOST_ALLOC_DEFAULT: u32 = 0;
 pub(crate) const CUDA_EVENT_DISABLE_TIMING: u32 = 2;
+pub(crate) const CUDA_STREAM_NON_BLOCKING: u32 = 1;
 
 unsafe extern "C" {
     pub(crate) fn cudaGetErrorString(error: i32) -> *const libc::c_char;
     pub(crate) fn cudaGetDevice(device: *mut i32) -> i32;
     pub(crate) fn cudaSetDevice(device: i32) -> i32;
     pub(crate) fn cudaMalloc(dev_ptr: *mut *mut c_void, size: usize) -> i32;
+    pub(crate) fn cudaMallocAsync(
+        dev_ptr: *mut *mut c_void,
+        size: usize,
+        stream: *mut c_void,
+    ) -> i32;
     pub(crate) fn cudaMallocManaged(dev_ptr: *mut *mut c_void, size: usize, flags: u32) -> i32;
     pub(crate) fn cudaFree(dev_ptr: *mut c_void) -> i32;
+    pub(crate) fn cudaFreeAsync(dev_ptr: *mut c_void, stream: *mut c_void) -> i32;
     pub(crate) fn cudaHostAlloc(host_ptr: *mut *mut c_void, size: usize, flags: u32) -> i32;
     pub(crate) fn cudaFreeHost(ptr: *mut c_void) -> i32;
     pub(crate) fn cudaEventCreateWithFlags(event: *mut *mut c_void, flags: u32) -> i32;
@@ -46,4 +53,6 @@ unsafe extern "C" {
         stream: *mut c_void,
     ) -> i32;
     pub(crate) fn cudaStreamSynchronize(stream: *mut c_void) -> i32;
+    pub(crate) fn cudaStreamCreateWithFlags(stream: *mut *mut c_void, flags: u32) -> i32;
+    pub(crate) fn cudaStreamDestroy(stream: *mut c_void) -> i32;
 }

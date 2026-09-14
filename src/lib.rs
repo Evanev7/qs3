@@ -18,6 +18,7 @@ pub mod engine;
 pub(crate) mod ext;
 pub mod ffi;
 mod loader;
+pub mod memory;
 pub mod model;
 pub mod tokenizer;
 

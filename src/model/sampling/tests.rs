@@ -4,8 +4,6 @@ use std::ptr;
 
 unsafe extern "C" {
     fn cudaGetDeviceCount(count: *mut i32) -> i32;
-    fn cudaStreamCreateWithFlags(stream: *mut ffi::CudaStream, flags: u32) -> i32;
-    fn cudaStreamDestroy(stream: ffi::CudaStream) -> i32;
     fn cudaStreamBeginCapture(stream: ffi::CudaStream, mode: i32) -> i32;
     fn cudaStreamEndCapture(stream: ffi::CudaStream, graph: *mut *mut std::ffi::c_void) -> i32;
     fn cudaGraphInstantiateWithFlags(
@@ -93,7 +91,8 @@ fn triton_sampling_filter_matches_sorted_reference() {
     if !device_available() {
         return;
     }
-    let stream = ptr::null_mut();
+    let ctx = Rc::new(CudaCtx::default().unwrap());
+    let stream = ctx.stream;
     let vocab = kernels::prepare::constants::VOCAB as usize;
     let mut logits = vec![-40.0; vocab];
     // Winners span tiles and the padded vocabulary tail. The padded winner is
@@ -102,10 +101,10 @@ fn triton_sampling_filter_matches_sorted_reference() {
     for (&id, value) in ids.iter().zip([4.0, 3.0, 2.0, 1.0, 0.0, -1.0]) {
         logits[id] = value;
     }
-    let mut input = DeviceBuffer::from_slice(0, stream, &logits).unwrap();
-    let positions = DeviceBuffer::from_slice(0, stream, &[53]).unwrap();
-    let output = DeviceBuffer::from_slice(0, stream, &[0_i32]).unwrap();
-    let mut sampler = Sampler::new(0, stream, vocab as u32, params(1.0, 0, 1.0)).unwrap();
+    let mut input = DeviceBuffer::from_slice(ctx.clone(), &logits).unwrap();
+    let positions = DeviceBuffer::from_slice(ctx.clone(), &[53]).unwrap();
+    let output = DeviceBuffer::from_slice(ctx.clone(), &[0_i32]).unwrap();
+    let mut sampler = Sampler::new(ctx.clone(), vocab as u32, params(1.0, 0, 1.0)).unwrap();
     for p in [
         params(1.0, 1, 1.0),
         params(0.7, 3, 1.0),
@@ -119,7 +118,10 @@ fn triton_sampling_filter_matches_sorted_reference() {
             .launch(stream, &input, &positions, 0, &output)
             .unwrap();
         let mut filtered = vec![0.0; vocab];
-        sampler.processed.download(stream, &mut filtered).unwrap();
+        unsafe {
+            sampler.processed.download(&mut filtered).unwrap();
+        }
+        ctx.synchronize().unwrap();
         let kept: Vec<_> = filtered
             .iter()
             .enumerate()
@@ -138,7 +140,10 @@ fn triton_sampling_filter_matches_sorted_reference() {
     for id in ids {
         logits[id] = 0.0;
     }
-    input.upload(stream, &logits).unwrap();
+    unsafe {
+        input.upload(&logits).unwrap();
+    }
+    ctx.synchronize().unwrap();
     for p in [
         params(1.0, 3, 1.0),
         params(1.0, 0, 0.5),
@@ -149,7 +154,10 @@ fn triton_sampling_filter_matches_sorted_reference() {
             .launch(stream, &input, &positions, 0, &output)
             .unwrap();
         let mut filtered = vec![0.0; vocab];
-        sampler.processed.download(stream, &mut filtered).unwrap();
+        unsafe {
+            sampler.processed.download(&mut filtered).unwrap();
+        }
+        ctx.synchronize().unwrap();
         let kept: Vec<_> = filtered
             .iter()
             .enumerate()
@@ -165,7 +173,10 @@ fn triton_sampling_filter_matches_sorted_reference() {
     for i in 0..127 {
         logits[i * 1931] = ((i * 71 % 127) / 3) as f32 * 0.125 - 2.0;
     }
-    input.upload(stream, &logits).unwrap();
+    unsafe {
+        input.upload(&logits).unwrap();
+    }
+    ctx.synchronize().unwrap();
     for k in [0, 1, 7, 40, 200] {
         for p in [0.1, 0.7, 0.95, 1.0] {
             let settings = params(0.8, k, p);
@@ -174,7 +185,10 @@ fn triton_sampling_filter_matches_sorted_reference() {
                 .launch(stream, &input, &positions, 0, &output)
                 .unwrap();
             let mut filtered = vec![0.0; vocab];
-            sampler.processed.download(stream, &mut filtered).unwrap();
+            unsafe {
+                sampler.processed.download(&mut filtered).unwrap();
+            }
+            ctx.synchronize().unwrap();
             let kept: Vec<_> = filtered
                 .iter()
                 .enumerate()
@@ -193,17 +207,18 @@ fn triton_sampling_distribution_and_position_reproducibility() {
     if !device_available() {
         return;
     }
-    let stream = ptr::null_mut();
+    let ctx = Rc::new(CudaCtx::default().unwrap());
+    let stream = ctx.stream;
     let mut logits = vec![f32::NEG_INFINITY; 2051];
     for (id, probability) in [(0, 0.5_f32), (1024, 0.3), (2050, 0.15), (9, 0.05)] {
         logits[id] = probability.ln();
     }
-    let input = DeviceBuffer::from_slice(0, stream, &logits).unwrap();
+    let input = DeviceBuffer::from_slice(ctx.clone(), &logits).unwrap();
     let draws = 4096;
     let positions =
-        DeviceBuffer::from_slice(0, stream, &(0..draws as i32).collect::<Vec<_>>()).unwrap();
-    let output = DeviceBuffer::from_slice(0, stream, &[0_i32]).unwrap();
-    let mut sampler = Sampler::new(0, stream, logits.len() as u32, params(1.0, 0, 1.0)).unwrap();
+        DeviceBuffer::from_slice(ctx.clone(), &(0..draws as i32).collect::<Vec<_>>()).unwrap();
+    let output = DeviceBuffer::from_slice(ctx.clone(), &[0_i32]).unwrap();
+    let mut sampler = Sampler::new(ctx.clone(), logits.len() as u32, params(1.0, 0, 1.0)).unwrap();
     for p in [
         params(1.0, 0, 1.0),
         params(0.7, 0, 1.0),
@@ -217,7 +232,10 @@ fn triton_sampling_distribution_and_position_reproducibility() {
                 .launch(stream, &input, &positions, pos, &output)
                 .unwrap();
             let mut token = [0_i32];
-            output.download(stream, &mut token).unwrap();
+            unsafe {
+                output.download(&mut token).unwrap();
+            }
+            ctx.synchronize().unwrap();
             counts[token[0] as usize] += 1;
             if pos < 32 {
                 first.push(token[0]);
@@ -238,7 +256,10 @@ fn triton_sampling_distribution_and_position_reproducibility() {
                 .launch(stream, &input, &positions, pos, &output)
                 .unwrap();
             let mut token = [0_i32];
-            output.download(stream, &mut token).unwrap();
+            unsafe {
+                output.download(&mut token).unwrap();
+            }
+            ctx.synchronize().unwrap();
             assert_eq!(token[0], first[pos as usize]);
         }
     }
@@ -249,30 +270,37 @@ fn triton_sampling_invalid_logits_fail_and_negative_infinity_masks() {
     if !device_available() {
         return;
     }
-    let stream = ptr::null_mut();
-    let positions = DeviceBuffer::from_slice(0, stream, &[42]).unwrap();
-    let output = DeviceBuffer::from_slice(0, stream, &[0_i32]).unwrap();
-    let mut sampler = Sampler::new(0, stream, 17, params(1.0, 0, 1.0)).unwrap();
+    let ctx = Rc::new(CudaCtx::default().unwrap());
+    let stream = ctx.stream;
+    let positions = DeviceBuffer::from_slice(ctx.clone(), &[42]).unwrap();
+    let output = DeviceBuffer::from_slice(ctx.clone(), &[0_i32]).unwrap();
+    let mut sampler = Sampler::new(ctx.clone(), 17, params(1.0, 0, 1.0)).unwrap();
     for bad in [f32::NEG_INFINITY, f32::NAN, f32::INFINITY, f32::MAX] {
         sampler.params = params(0.5, 3, 0.9);
         let mut logits = [f32::NEG_INFINITY; 17];
         logits[16] = bad;
-        let input = DeviceBuffer::from_slice(0, stream, &logits).unwrap();
+        let input = DeviceBuffer::from_slice(ctx.clone(), &logits).unwrap();
         sampler
             .launch(stream, &input, &positions, 0, &output)
             .unwrap();
         let mut token = [0_i32];
-        output.download(stream, &mut token).unwrap();
+        unsafe {
+            output.download(&mut token).unwrap();
+        }
+        ctx.synchronize().unwrap();
         assert_eq!(token[0], -1);
     }
     let mut logits = [f32::NEG_INFINITY; 17];
     logits[16] = -100.0;
-    let input = DeviceBuffer::from_slice(0, stream, &logits).unwrap();
+    let input = DeviceBuffer::from_slice(ctx.clone(), &logits).unwrap();
     sampler
         .launch(stream, &input, &positions, 0, &output)
         .unwrap();
     let mut token = [0_i32];
-    output.download(stream, &mut token).unwrap();
+    unsafe {
+        output.download(&mut token).unwrap();
+    }
+    ctx.synchronize().unwrap();
     assert_eq!(token[0], 16);
     assert_eq!(
         sampler.launch(stream, &input, &positions, 1, &output),
@@ -286,46 +314,49 @@ fn triton_sampling_graph_replay_reads_updated_device_position() {
         return;
     }
     struct Capture {
-        stream: ffi::CudaStream,
+        ctx: Rc<CudaCtx>,
         graph: *mut std::ffi::c_void,
         exec: *mut std::ffi::c_void,
     }
     impl Drop for Capture {
         fn drop(&mut self) {
             unsafe {
-                cuda::cudaStreamSynchronize(self.stream);
+                cuda::cudaStreamSynchronize(self.ctx.stream);
                 if !self.exec.is_null() {
                     cudaGraphExecDestroy(self.exec);
                 }
                 if !self.graph.is_null() {
                     cudaGraphDestroy(self.graph);
                 }
-                cudaStreamDestroy(self.stream);
             }
         }
     }
+    let ctx = Rc::new(CudaCtx::default().unwrap());
     let mut capture = Capture {
-        stream: ptr::null_mut(),
+        ctx: ctx.clone(),
         graph: ptr::null_mut(),
         exec: ptr::null_mut(),
     };
-    assert_eq!(
-        unsafe { cudaStreamCreateWithFlags(&mut capture.stream, 1) },
-        0
-    );
-    let stream = capture.stream;
-    let input = DeviceBuffer::from_slice(0, stream, &[0.0_f32, -0.3, -0.6, -3.0]).unwrap();
-    let mut positions = DeviceBuffer::from_slice(0, stream, &[0_i32]).unwrap();
-    let output = DeviceBuffer::from_slice(0, stream, &[0_i32]).unwrap();
-    let mut sampler = Sampler::new(0, stream, 4, params(0.8, 3, 0.95)).unwrap();
+    let stream = ctx.stream;
+    let input = DeviceBuffer::from_slice(ctx.clone(), &[0.0_f32, -0.3, -0.6, -3.0]).unwrap();
+    let mut positions = DeviceBuffer::from_slice(ctx.clone(), &[0_i32]).unwrap();
+    let output = DeviceBuffer::from_slice(ctx.clone(), &[0_i32]).unwrap();
+    let mut sampler = Sampler::new(ctx.clone(), 4, params(0.8, 3, 0.95)).unwrap();
     let mut expected = Vec::new();
     for pos in 0..32 {
-        positions.upload(stream, &[pos]).unwrap();
+        let position = [pos];
+        unsafe {
+            positions.upload(&position).unwrap();
+        }
+        ctx.synchronize().unwrap();
         sampler
             .launch(stream, &input, &positions, 0, &output)
             .unwrap();
         let mut token = [0];
-        output.download(stream, &mut token).unwrap();
+        unsafe {
+            output.download(&mut token).unwrap();
+        }
+        ctx.synchronize().unwrap();
         expected.push(token[0]);
     }
     assert!(expected.iter().any(|x| *x != expected[0]));
@@ -342,10 +373,17 @@ fn triton_sampling_graph_replay_reads_updated_device_position() {
         0
     );
     for pos in (0..32).rev() {
-        positions.upload(stream, &[pos as i32]).unwrap();
+        let position = [pos as i32];
+        unsafe {
+            positions.upload(&position).unwrap();
+        }
+        ctx.synchronize().unwrap();
         assert_eq!(unsafe { cudaGraphLaunch(capture.exec, stream) }, 0);
         let mut token = [0];
-        output.download(stream, &mut token).unwrap();
+        unsafe {
+            output.download(&mut token).unwrap();
+        }
+        ctx.synchronize().unwrap();
         assert_eq!(token[0], expected[pos]);
     }
     // Destroy graphs before their module/allocation owners.

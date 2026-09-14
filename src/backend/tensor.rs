@@ -7,7 +7,7 @@ use super::dtype::DType;
 /*
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct DTensor<const Dim: usize, DT: dtype::DType> {
-    pub(super) data: ffi::DevicePtr,
+    pub(super) data: ffi::ErasedDevicePtr,
     pub(super) shape: [i32; Dim],
     stride: [i32; Dim],
     _p: PhantomData<DT>,
@@ -16,18 +16,18 @@ pub(crate) struct DTensor<const Dim: usize, DT: dtype::DType> {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct DVec<DT: DType> {
-    pub(super) data: ffi::DevicePtr,
+    pub(super) data: ffi::ErasedDevicePtr,
     pub(super) len: u32,
     stride: u32,
     _p: PhantomData<DT>,
 }
 
 impl<DT: DType> DVec<DT> {
-    pub(crate) fn contiguous(data: ffi::DevicePtr, len: u32) -> Result<Self, Status> {
+    pub(crate) fn contiguous(data: ffi::ErasedDevicePtr, len: u32) -> Result<Self, Status> {
         Self::new(data, len, 1)
     }
 
-    pub(crate) fn new(data: ffi::DevicePtr, len: u32, stride: u32) -> Result<Self, Status> {
+    pub(crate) fn new(data: ffi::ErasedDevicePtr, len: u32, stride: u32) -> Result<Self, Status> {
         validate_ptr(data)?;
         validate_nonzero(&[len, stride])?;
         Ok(Self {
@@ -62,7 +62,7 @@ impl<DT: DType> DVec<DT> {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct DMat<DT: DType> {
-    data: ffi::DevicePtr,
+    data: ffi::ErasedDevicePtr,
     pub(super) rows: u32,
     pub(super) cols: u32,
     row_stride: u32,
@@ -70,12 +70,16 @@ pub(crate) struct DMat<DT: DType> {
 }
 
 impl<DT: DType> DMat<DT> {
-    pub(crate) fn contiguous(data: ffi::DevicePtr, rows: u32, cols: u32) -> Result<Self, Status> {
+    pub(crate) fn contiguous(
+        data: ffi::ErasedDevicePtr,
+        rows: u32,
+        cols: u32,
+    ) -> Result<Self, Status> {
         Self::new(data, rows, cols, cols)
     }
 
     pub(crate) fn new(
-        data: ffi::DevicePtr,
+        data: ffi::ErasedDevicePtr,
         rows: u32,
         cols: u32,
         row_stride: u32,
@@ -148,7 +152,7 @@ impl<DT: DType> DMat<DT> {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct DTensor3<DT: DType> {
-    data: ffi::DevicePtr,
+    data: ffi::ErasedDevicePtr,
     dim0: u32,
     dim1: u32,
     dim2: u32,
@@ -160,7 +164,7 @@ pub(crate) struct DTensor3<DT: DType> {
 
 impl<DT: DType> DTensor3<DT> {
     pub(crate) fn contiguous(
-        data: ffi::DevicePtr,
+        data: ffi::ErasedDevicePtr,
         dim0: u32,
         dim1: u32,
         dim2: u32,
@@ -171,7 +175,7 @@ impl<DT: DType> DTensor3<DT> {
     }
 
     pub(crate) fn new(
-        data: ffi::DevicePtr,
+        data: ffi::ErasedDevicePtr,
         dim0: u32,
         dim1: u32,
         dim2: u32,
@@ -227,7 +231,7 @@ impl<DT: DType> DTensor3<DT> {
     }
 }
 
-fn validate_ptr(data: ffi::DevicePtr) -> Result<(), Status> {
+fn validate_ptr(data: ffi::ErasedDevicePtr) -> Result<(), Status> {
     if data.is_null() {
         return Err(Status::InvalidArgument);
     }

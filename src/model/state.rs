@@ -1,6 +1,7 @@
-use super::{QwenConfig, checked_usize_product, scratch::DeviceBuffer};
+use super::{QwenConfig, checked_usize_product};
 use crate::{
     QWEN36_GDN_STATE_SLOTS_PER_LAYER,
+    backend::{FloatStorage, GdnRecurrentState},
     constants::{
         GdnRecurrentElement,
         gdn::{
@@ -9,10 +10,9 @@ use crate::{
     },
     engine::Status,
     ext::SafeVec,
+    memory::{CudaCtx, DeviceBuffer},
 };
-
-use crate::backend::{FloatStorage, GdnRecurrentState};
-use std::mem;
+use std::{mem, rc::Rc};
 
 const GDN_RECURRENT_STORAGE: FloatStorage =
     match crate::constants::precision::GDN_RECURRENT_STATE.as_bytes() {
@@ -102,38 +102,36 @@ pub(super) struct GdnState {
 }
 
 impl GdnState {
-    pub(super) fn new(config: &QwenConfig) -> Result<Self, Status> {
+    pub(super) fn new(ctx: Rc<CudaCtx>, config: &QwenConfig) -> Result<Self, Status> {
         let slots = GdnSlotMap::new(config.gdn_layer_count())?;
         let state_pool = slots.state_pool;
         let conv_len = checked_usize_product(&[state_pool, PACKED_QKV_CHANNELS, CONV_HISTORY_LEN])?;
         let recurrent_len =
             checked_usize_product(&[state_pool, NUM_VALUE_HEADS, VALUE_HEAD_DIM, KEY_HEAD_DIM])?;
         let mut state = Self {
-            conv: DeviceBuffer::empty(config.device_ordinal),
-            recurrent: DeviceBuffer::empty(config.device_ordinal),
+            conv: DeviceBuffer::with_capacity(ctx.clone(), conv_len)?,
+            recurrent: DeviceBuffer::with_capacity(ctx.clone(), recurrent_len)?,
             slots,
         };
-        state.conv.ensure(conv_len)?;
-        state.recurrent.ensure(recurrent_len)?;
-        state.zero(config)?;
+        state.zero()?;
         Ok(state)
     }
 
     pub(super) fn reset(&mut self, config: &QwenConfig) -> Result<(), Status> {
         self.slots.reset(config.gdn_layer_count())?;
-        self.zero(config)
+        self.zero()
     }
 
-    pub(super) fn zero(&mut self, config: &QwenConfig) -> Result<(), Status> {
-        self.conv.zero(self.conv.cap, config.stream)?;
-        self.recurrent.zero(self.recurrent.cap, config.stream)
+    pub(super) fn zero(&mut self) -> Result<(), Status> {
+        self.conv.zero(self.conv.cap)?;
+        self.recurrent.zero(self.recurrent.cap)
     }
 
     pub(super) fn conv_view(&self) -> Result<crate::backend::GdnConvState, Status> {
         self.conv
             .tensor3(self.slots.state_pool, PACKED_QKV_CHANNELS, CONV_HISTORY_LEN)?;
         crate::backend::GdnConvState::contiguous(
-            self.conv.as_device_ptr(),
+            self.conv.erase(),
             FloatStorage::Bf16,
             self.slots.state_pool,
         )
@@ -141,7 +139,7 @@ impl GdnState {
 
     pub(super) fn recurrent_view(&self) -> Result<GdnRecurrentState, Status> {
         GdnRecurrentState::contiguous(
-            self.recurrent.as_device_ptr(),
+            self.recurrent.erase(),
             GDN_RECURRENT_STORAGE,
             self.slots.state_pool,
         )

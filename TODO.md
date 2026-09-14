@@ -249,3 +249,15 @@
 - [Qwen3.6-27B config](https://huggingface.co/Qwen/Qwen3.6-27B/blob/main/config.json)
 
 These links describe the model shapes; validation runs must use pinned snapshots.
+
+- [ ] Resolve `TODO(async-upload-lifetimes)` in `src/model/runner/gdn.rs`: retain
+  GDN host metadata until batch completion, then remove the temporary per-layer
+  stream wait. The explicit wait currently keeps stack upload sources alive,
+  including when an enqueue or validation step returns an error.
+- [ ] Resolve `TODO(async-upload-lifetimes)` in `src/model/runner/mod.rs`:
+  retain batch input staging until batch completion, then remove the temporary
+  wait in `upload_batch_inputs` for its local positions vector.
+- [ ] Resolve `TODO(async-upload-lifetimes)` in `src/engine/attention.rs`:
+  retain attention metadata upload sources until completion across abort/reprepare,
+  then remove the temporary wait after `upload_active_batch`. Device buffer reuse
+  is stream ordered; the wait currently protects EngineCore-owned host sources.

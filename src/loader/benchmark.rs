@@ -11,7 +11,6 @@ use crate::test_assets::require_real_qwen36_model_dir;
 use crate::{
     QwenTokenizer,
     backend::qsfi::MoeBf16Kernel,
-    ffi,
     model::{ModelRunner, QwenRequest},
 };
 use std::{ptr, time::Instant};
@@ -121,11 +120,6 @@ fn tokens_per_second(tokens: usize, elapsed: Duration) -> Option<f64> {
     Some(tokens as f64 / elapsed.as_secs_f64())
 }
 
-fn synchronize_stream() {
-    result_from_cuda(unsafe { ffi::cuda::cudaStreamSynchronize(ptr::null_mut()) })
-        .expect("benchmark stream synchronization failed");
-}
-
 fn positive_env(name: &str, default: usize) -> usize {
     match std::env::var(name) {
         Err(std::env::VarError::NotPresent) => default,
@@ -138,9 +132,15 @@ fn positive_env(name: &str, default: usize) -> usize {
     }
 }
 
-fn measure_fresh_prefill(runner: &mut ModelRunner, prompt: &[i32], profile: bool) -> Duration {
+fn measure_fresh_prefill(
+    ctx: &crate::memory::CudaCtx,
+    runner: &mut ModelRunner,
+    prompt: &[i32],
+    profile: bool,
+) -> Duration {
     runner.reset().expect("benchmark runner reset failed");
-    synchronize_stream();
+    ctx.synchronize()
+        .expect("benchmark stream synchronization failed");
     if profile {
         result_from_cuda(unsafe { cudaProfilerStart() }).expect("start prefill profiling range");
     }
@@ -242,20 +242,23 @@ pub fn run_core_benchmark() -> JsonValue {
 
     let started = Instant::now();
     let (config, weights) = loaded
-        .into_qwen_model(ptr::null_mut(), max_seq_len)
+        .into_qwen_model(max_seq_len)
         .expect("failed to materialize Qwen model weights");
     let weight_materialize = started.elapsed();
     let started = Instant::now();
-    let mut runner = ModelRunner::new(config, weights).expect("failed to construct ModelRunner");
+    let ctx = std::rc::Rc::new(crate::memory::CudaCtx::default().unwrap());
+    let mut runner =
+        ModelRunner::new(ctx.clone(), config, weights).expect("failed to construct ModelRunner");
     let runner_init = started.elapsed();
 
     let mut prefill_warmup_times = Vec::with_capacity(PREFILL_WARMUPS);
     for _ in 0..PREFILL_WARMUPS {
-        prefill_warmup_times.push(measure_fresh_prefill(&mut runner, &prompt, false));
+        prefill_warmup_times.push(measure_fresh_prefill(&ctx, &mut runner, &prompt, false));
     }
     let mut prefill_times = Vec::with_capacity(PREFILL_SAMPLES);
     for sample in 0..PREFILL_SAMPLES {
         prefill_times.push(measure_fresh_prefill(
+            &ctx,
             &mut runner,
             &prompt,
             profile_phase == "prefill" && sample == 0,

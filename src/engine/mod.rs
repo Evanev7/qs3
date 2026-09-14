@@ -1,7 +1,9 @@
+use crate::memory::CudaCtx;
 use crate::{
     constants::attention::{HEAD_DIM, NUM_KV_HEADS, NUM_Q_HEADS},
     ffi,
 };
+use std::rc::Rc;
 
 mod attention;
 mod core;
@@ -19,12 +21,15 @@ impl Engine {
 }
 
 impl Engine {
-    pub fn new(config: EngineConfig) -> Result<Self, Status> {
-        attention::AttentionSession::new(config).map(|inner| Self { inner })
+    pub fn new(ctx: Rc<CudaCtx>, config: EngineConfig) -> Result<Self, Status> {
+        attention::AttentionSession::new(ctx, config).map(|inner| Self { inner })
     }
 
     pub(crate) fn fresh_prefix_state(&self) -> Result<attention::PrefixState, Status> {
-        attention::PrefixState::new(EngineCore::new(self.inner.prefix.core.config())?)
+        attention::PrefixState::new(
+            self.inner.ctx.clone(),
+            EngineCore::new(self.inner.prefix.core.config())?,
+        )
     }
 
     pub(crate) fn replace_prefix_state(
@@ -196,8 +201,6 @@ pub enum BatchKind {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct EngineConfig {
-    pub device_ordinal: i32,
-    pub stream: *mut std::ffi::c_void,
     pub num_layers: u32,
     pub max_live_requests: u32,
     pub max_batch_rows: u32,
@@ -247,8 +250,8 @@ pub struct AttentionLayer {
     pub k: ffi::Tensor3,
     pub v: ffi::Tensor3,
     pub o: ffi::Tensor3,
-    pub q_rope_offset: ffi::DevicePtr,
-    pub lse: ffi::DevicePtr,
+    pub q_rope_offset: ffi::ErasedDevicePtr,
+    pub lse: ffi::ErasedDevicePtr,
     pub q_scale: f32,
     pub k_scale: f32,
     pub v_scale: f32,

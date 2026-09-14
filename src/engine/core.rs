@@ -1103,8 +1103,6 @@ mod tests {
 
     fn tiny_config() -> EngineConfig {
         EngineConfig {
-            device_ordinal: 0,
-            stream: std::ptr::null_mut(),
             num_layers: 1,
             max_live_requests: 4,
             max_batch_rows: 3,

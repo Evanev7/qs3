@@ -18,7 +18,7 @@ use crate::{
 use std::ffi::c_void;
 use std::ptr;
 
-fn device_ptr(offset: usize) -> ffi::DevicePtr {
+fn device_ptr(offset: usize) -> ffi::ErasedDevicePtr {
     (0x1000usize + offset) as *mut c_void
 }
 

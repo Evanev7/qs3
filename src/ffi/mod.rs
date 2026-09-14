@@ -11,7 +11,10 @@ pub type StatusRaw = sys::qsfi_status;
 pub type ErrorInfo = sys::qsfi_error_info;
 pub type ErrorSourceRaw = sys::qsfi_error_source;
 pub type CudaStream = sys::qsfi_cuda_stream;
-pub type DevicePtr = sys::qsfi_device_ptr;
+mod device_ptr;
+pub use device_ptr::DevicePtr;
+/// Type-erased device address used by the C ABI.
+pub type ErasedDevicePtr = sys::qsfi_device_ptr;
 pub type DTypeRaw = sys::qsfi_dtype;
 pub type KvLayoutRaw = sys::qsfi_kv_layout;
 pub type MaskModeRaw = sys::qsfi_mask_mode;

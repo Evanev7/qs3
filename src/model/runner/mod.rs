@@ -12,17 +12,18 @@ use crate::{
     constants::gdn::PACKED_QKV_CHANNELS,
     engine::{AppendBatch, Commit, DecodeBatch, Engine, RequestId, Status},
     ext::{SafeVec, try_clone_slice},
+    memory::{CudaCtx, DeviceBuffer},
     model::{
         ActiveRunKind, BatchRun, QwenConfig, QwenWeights,
         sampling::{Sampler, SamplingParams},
-        scratch::{DeviceBuffer, RunnerScratch},
+        scratch::RunnerScratch,
         state::GdnState,
         validate_token_ids,
         weights::QwenLayerWeights,
     },
 };
 
-use std::mem;
+use std::{mem, rc::Rc};
 
 #[derive(Clone, Copy, Debug)]
 pub struct QwenRequest<'a> {
@@ -43,6 +44,7 @@ pub struct QwenResult {
 }
 
 pub struct ModelRunner {
+    ctx: Rc<CudaCtx>,
     config: QwenConfig,
     weights: QwenWeights,
     engine: Engine,
@@ -61,13 +63,10 @@ pub struct ModelRunner {
 }
 
 impl ModelRunner {
-    pub fn new(config: QwenConfig, weights: QwenWeights) -> Result<Self, Status> {
+    pub fn new(ctx: Rc<CudaCtx>, config: QwenConfig, weights: QwenWeights) -> Result<Self, Status> {
         config.validate()?;
-        let config = config.resolved_device_config()?;
-        weights.validate_for(&config)?;
-        let mut engine = Engine::new(config.engine_config())?;
-        let mut scratch = RunnerScratch::new(config.device_ordinal);
-        let moe_plan = if let Some(moe) = config.moe_config() {
+        let mut engine = Engine::new(ctx.clone(), config.engine_config())?;
+        let (moe_plan, moe_workspace_bytes) = if let Some(moe) = config.moe_config() {
             let (plan, workspace_bytes) = {
                 let mut ops = engine.operators();
                 let plan = unsafe {
@@ -84,16 +83,15 @@ impl ModelRunner {
                     unsafe { ops.qsfi().moe_workspace_size(&plan, config.max_seq_len)? };
                 (plan, workspace_bytes)
             };
-            scratch.ensure_moe_workspace(workspace_bytes)?;
-            Some(plan)
+            (Some(plan), workspace_bytes)
         } else {
-            None
+            (None, 0)
         };
-        let mut qscb_workspace = DeviceBuffer::empty(config.device_ordinal);
-        qscb_workspace.ensure(config.qscb_workspace_bytes)?;
+        let scratch = RunnerScratch::new(ctx.clone(), &config, moe_workspace_bytes)?;
+        let qscb_workspace = DeviceBuffer::with_capacity(ctx.clone(), config.qscb_workspace_bytes)?;
         let gdn_state = config
             .has_gdn_layers()
-            .then(|| GdnState::new(&config))
+            .then(|| GdnState::new(ctx.clone(), &config))
             .transpose()?;
         let gdn_qkv = (gdn_state.is_some()
             && GdnQkv::supports(config.hidden_size(), PACKED_QKV_CHANNELS))
@@ -104,6 +102,7 @@ impl ModelRunner {
             .then(|| unsafe { LmHead::load() })
             .transpose()?;
         Ok(Self {
+            ctx,
             sampler: None,
             lm_head,
             gdn_qkv,
@@ -123,9 +122,13 @@ impl ModelRunner {
     }
 
     #[cfg(test)]
-    pub(crate) fn random_bf16(config: QwenConfig, seed: u64) -> Result<Self, Status> {
-        let weights = QwenWeights::random_bf16(&config, seed)?;
-        Self::new(config, weights)
+    pub(crate) fn random_bf16(
+        ctx: Rc<CudaCtx>,
+        config: QwenConfig,
+        seed: u64,
+    ) -> Result<Self, Status> {
+        let weights = QwenWeights::random_bf16(ctx.clone(), &config, seed)?;
+        Self::new(ctx, config, weights)
     }
 
     /// Configure before starting a request, or after reset/release. Reset keeps
@@ -140,8 +143,7 @@ impl ModelRunner {
             None
         } else {
             Some(Sampler::new(
-                self.config.device_ordinal,
-                self.config.stream,
+                self.ctx.clone(),
                 self.config.vocab_size(),
                 params,
             )?)
@@ -212,9 +214,10 @@ impl ModelRunner {
             .ok_or(Status::InvalidArgument)?;
         let mut logits = Vec::safe_new(vocab)?;
         logits.resize(vocab, 0.0);
-        self.scratch
-            .logits
-            .download_range(self.config.stream, offset, &mut logits)?;
+        unsafe {
+            self.scratch.logits.download_range(offset, &mut logits)?;
+        }
+        self.ctx.synchronize()?;
         Ok(logits)
     }
 
@@ -287,14 +290,14 @@ impl ModelRunner {
     ) -> Result<(), Status> {
         validate_token_ids(tokens, self.config.vocab_size())?;
         let rows = u32::try_from(tokens.len()).map_err(|_| Status::InvalidArgument)?;
-        self.scratch.ensure(&self.config, rows)?;
+        self.scratch.reserve(rows)?;
 
         let mut rebuilt_live_tokens = Vec::new();
         rebuilt_live_tokens.safe_reserve(total_tokens as usize)?;
 
         let fresh_prefix = self.engine.fresh_prefix_state()?;
         let fresh_gdn_state = if self.config.has_gdn_layers() {
-            Some(GdnState::new(&self.config)?)
+            Some(GdnState::new(self.ctx.clone(), &self.config)?)
         } else {
             None
         };
@@ -414,14 +417,16 @@ impl ModelRunner {
             return Err(Status::InvalidArgument);
         }
         validate_token_ids(run.tokens, self.config.vocab_size())?;
-        self.scratch.ensure(&self.config, rows)?;
+        self.scratch.reserve(rows)?;
         self.upload_batch_inputs(run.tokens, run.start_pos)?;
+
+        let ctx = self.ctx.clone();
 
         let (weights, mut execution) = self.execution()?;
         // SAFETY: weights, state and workspace remain owned by this runner,
         // including on error. Inputs are uploaded on the engine stream; scratch
         // reuse is ordered on that stream and successful sampling waits for it.
-        unsafe { execution.run(weights, rows, run.kind)? };
+        unsafe { execution.run(&ctx, weights, rows, run.kind)? };
         self.sample_logits(rows - 1)
     }
 
@@ -429,10 +434,6 @@ impl ModelRunner {
         let linear_workspace = self
             .qscb_workspace
             .workspace(self.config.qscb_workspace_bytes)?;
-        let moe_workspace = self
-            .scratch
-            .moe_workspace
-            .workspace(self.scratch.moe_workspace.cap)?;
         Ok((
             &self.weights,
             BatchExecution {
@@ -444,13 +445,14 @@ impl ModelRunner {
                 lm_head: self.lm_head.as_ref(),
                 gdn_qkv: self.gdn_qkv.as_ref(),
                 linear_workspace,
-                moe_workspace,
             },
         ))
     }
 
     fn upload_batch_inputs(&mut self, tokens: &[i32], start_pos: u32) -> Result<(), Status> {
-        self.scratch.token_ids.upload(self.config.stream, tokens)?;
+        unsafe {
+            self.scratch.token_ids.upload(tokens)?;
+        }
         let mut positions = Vec::safe_new(tokens.len())?;
         for idx in 0..tokens.len() {
             let pos = start_pos
@@ -458,9 +460,13 @@ impl ModelRunner {
                 .ok_or(Status::InvalidArgument)?;
             positions.push(i32::try_from(pos).map_err(|_| Status::InvalidArgument)?);
         }
-        self.scratch
-            .positions
-            .upload(self.config.stream, &positions)
+        unsafe {
+            self.scratch.positions.upload(&positions)?;
+        }
+        // TODO(async-upload-lifetimes): retain batch input staging until batch
+        // completion, then remove this temporary wait for local positions.
+        self.ctx.synchronize()?;
+        Ok(())
     }
 
     fn commit_gdn_state(&mut self) {
@@ -490,7 +496,7 @@ impl ModelRunner {
         let next_token_ids = self.scratch.next_token_ids.vector(rows)?;
         if let Some(sampler) = self.sampler.as_mut() {
             sampler.launch(
-                self.config.stream,
+                self.ctx.stream,
                 &self.scratch.logits,
                 &self.scratch.positions,
                 position_index,
@@ -504,9 +510,11 @@ impl ModelRunner {
         let row_count = rows as usize;
         let mut sampled = Vec::safe_new(row_count)?;
         sampled.resize(row_count, 0_i32);
-        self.scratch
-            .next_token_ids
-            .download(self.config.stream, &mut sampled)?;
+        unsafe {
+            self.scratch.next_token_ids.download(&mut sampled)?;
+        }
+        // NOTE: THE SYNCHRONIZE CALL
+        self.ctx.synchronize()?;
         for token in &sampled {
             validate_token_ids(&[*token], self.config.vocab_size().min(248070))
                 .map_err(|_| Status::InternalError)?;
@@ -532,12 +540,12 @@ struct BatchExecution<'a> {
     lm_head: Option<&'a LmHead>,
     gdn_qkv: Option<&'a GdnQkv>,
     linear_workspace: Workspace,
-    moe_workspace: Workspace,
 }
 
 impl BatchExecution<'_> {
     unsafe fn run(
         &mut self,
+        ctx: &CudaCtx,
         weights: &QwenWeights,
         rows: u32,
         kind: ActiveRunKind,
@@ -577,6 +585,7 @@ impl BatchExecution<'_> {
                         kind,
                     )?,
                     QwenLayerWeights::Gdn(layer) => self.execute_gdn_layer(
+                        ctx,
                         self.config.gdn_layer_index(index as u32)?,
                         rows,
                         input,
@@ -588,7 +597,9 @@ impl BatchExecution<'_> {
             let next_norm = weights
                 .layers
                 .get(index + 1)
-                .map_or(&weights.final_norm, |next| next.input_norm());
+                .map_or::<&crate::memory::DeviceSpan<u16>, _>(&weights.final_norm, |next| {
+                    next.input_norm()
+                });
             let (norm, mlp) = layer.post_attention_mlp();
             unsafe { self.execute_post_attention_mlp(rows, norm, mlp, next_norm)? };
             input = self.scratch.mlp_out.matrix(rows, hidden)?;
@@ -598,7 +609,7 @@ impl BatchExecution<'_> {
             let weight = weights.lm_head.matrix(self.config.vocab_size(), hidden)?;
             let output = self.scratch.logits.matrix(1, self.config.vocab_size())?;
             if let Some(lm_head) = self.lm_head {
-                lm_head.launch(self.config.stream, input, weight, output)
+                lm_head.launch(ctx.stream, input, weight, output)
             } else {
                 self.engine
                     .operators()

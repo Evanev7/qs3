@@ -67,7 +67,7 @@ struct QscuQwen36GdnCausalConv1dDesc {
     state: ffi::Tensor3,
     state_read_indices: ffi::Tensor1,
     state_write_indices: ffi::Tensor1,
-    seq_indptr: ffi::DevicePtr,
+    seq_indptr: ffi::ErasedDevicePtr,
     out: ffi::Tensor2,
     num_tokens: u32,
     batch_size: u32,
@@ -117,7 +117,7 @@ struct QscuGdnPrefillDesc {
     a_log: ffi::Tensor1,
     dt_bias: ffi::Tensor1,
     state: ffi::Tensor4,
-    seq_indptr: ffi::DevicePtr,
+    seq_indptr: ffi::ErasedDevicePtr,
     state_indices: ffi::Tensor1,
     state_out_indices: ffi::Tensor1,
     out: ffi::Tensor3,
@@ -561,7 +561,7 @@ where
 }
 
 impl<T> DeviceTensor<T> {
-    fn as_device_ptr(&self) -> ffi::DevicePtr {
+    fn as_device_ptr(&self) -> ffi::ErasedDevicePtr {
         self.ptr.cast()
     }
 

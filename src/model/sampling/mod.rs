@@ -1,5 +1,10 @@
-use super::scratch::DeviceBuffer;
-use crate::{Status, backend::qstriton::sampling as kernels, ffi};
+use crate::{
+    Status,
+    backend::qstriton::sampling as kernels,
+    ffi,
+    memory::{CudaCtx, DeviceBuffer, DeviceSpan},
+};
+use std::rc::Rc;
 
 mod tables;
 
@@ -66,8 +71,7 @@ pub(super) struct Sampler {
 
 impl Sampler {
     pub(super) fn new(
-        device: i32,
-        stream: ffi::CudaStream,
+        ctx: Rc<CudaCtx>,
         vocab: u32,
         params: SamplingParams,
     ) -> Result<Self, Status> {
@@ -75,17 +79,16 @@ impl Sampler {
         if vocab == 0 || i64::from(vocab) > kernels::prepare::constants::VOCAB {
             return Err(Status::Unsupported);
         }
-        let mut processed = DeviceBuffer::empty(device);
-        let mut buffer = DeviceBuffer::empty(device);
-        let mut local_max = DeviceBuffer::empty(device);
-        let mut local_ids = DeviceBuffer::empty(device);
-        processed.ensure(kernels::prepare::constants::VOCAB as usize)?;
-        buffer.ensure(kernels::prepare::constants::VOCAB as usize)?;
-        local_max.ensure(kernels::gumbel::GRID[0] as usize)?;
-        local_ids.ensure(kernels::gumbel::GRID[0] as usize)?;
-        let percentile =
-            DeviceBuffer::from_slice(device, stream, &tables::PERCENTILE_TO_STD_TABLE)?;
-        let normal = DeviceBuffer::from_slice(device, stream, &tables::NORMAL_CDF_TO_SIGMA_TABLE)?;
+        let processed =
+            DeviceBuffer::with_capacity(ctx.clone(), kernels::prepare::constants::VOCAB as usize)?;
+        let buffer =
+            DeviceBuffer::with_capacity(ctx.clone(), kernels::prepare::constants::VOCAB as usize)?;
+        let local_max =
+            DeviceBuffer::with_capacity(ctx.clone(), kernels::gumbel::GRID[0] as usize)?;
+        let local_ids =
+            DeviceBuffer::with_capacity(ctx.clone(), kernels::gumbel::GRID[0] as usize)?;
+        let percentile = DeviceBuffer::from_slice(ctx.clone(), &tables::PERCENTILE_TO_STD_TABLE)?;
+        let normal = DeviceBuffer::from_slice(ctx.clone(), &tables::NORMAL_CDF_TO_SIGMA_TABLE)?;
         // Allocations establish the device's primary context before module load.
         unsafe {
             Ok(Self {
@@ -110,10 +113,10 @@ impl Sampler {
     pub(super) fn launch(
         &mut self,
         stream: ffi::CudaStream,
-        logits: &DeviceBuffer<f32>,
-        positions: &DeviceBuffer<i32>,
+        logits: &DeviceSpan<f32>,
+        positions: &DeviceSpan<i32>,
         position_index: u32,
-        output: &DeviceBuffer<i32>,
+        output: &DeviceSpan<i32>,
     ) -> Result<(), Status> {
         logits.vector(self.vocab)?;
         positions.vector(
@@ -132,8 +135,8 @@ impl Sampler {
             self.prepare
                 .launch(
                     stream,
-                    logits.ptr,
-                    self.processed.ptr,
+                    logits.as_raw(),
+                    self.processed.as_raw(),
                     self.vocab as i32,
                     self.params.temperature,
                 )
@@ -142,11 +145,11 @@ impl Sampler {
                 self.filter
                     .launch(
                         stream,
-                        self.processed.ptr,
+                        self.processed.as_raw(),
                         compiled_vocab,
-                        self.buffer.ptr,
-                        self.percentile.ptr,
-                        self.normal.ptr,
+                        self.buffer.as_raw(),
+                        self.percentile.as_raw(),
+                        self.normal.as_raw(),
                         k,
                         self.params.top_p,
                     )
@@ -155,18 +158,23 @@ impl Sampler {
             self.gumbel
                 .launch(
                     stream,
-                    self.processed.ptr,
-                    logits.ptr,
-                    self.local_max.ptr,
-                    self.local_ids.ptr,
-                    positions.ptr.add(position_index as usize),
+                    self.processed.as_raw(),
+                    logits.as_raw(),
+                    self.local_max.as_raw(),
+                    self.local_ids.as_raw(),
+                    positions.as_raw().add(position_index as usize),
                     self.params.seed,
                     self.vocab as i32,
                     self.params.temperature,
                 )
                 .map_err(|_| Status::CudaError)?;
             self.reduce
-                .launch(stream, self.local_max.ptr, self.local_ids.ptr, output.ptr)
+                .launch(
+                    stream,
+                    self.local_max.as_raw(),
+                    self.local_ids.as_raw(),
+                    output.as_raw(),
+                )
                 .map_err(|_| Status::CudaError)
         }
     }

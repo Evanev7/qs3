@@ -4,6 +4,7 @@ use crate::{
     constants::attention::{HEAD_DIM, NUM_KV_HEADS, NUM_Q_HEADS, ROTARY_DIM},
     engine::Status,
     ffi,
+    memory::CudaCtx,
 };
 
 use crate::backend::result_from_raw;
@@ -25,12 +26,13 @@ use std::{
 
 use crate::ffi::{
     AppendDecode, AppendPrefill, AttentionDesc, BatchDecodeExecuteDesc, BatchPrefillExecuteDesc,
-    CudaStream, DTYPE_BF16, DTYPE_F16, DTYPE_F32, DTYPE_FP8_E4M3, DTYPE_FP8_E5M2, DTYPE_I8,
-    DTYPE_I32, DTYPE_MXFP4_E2M1, DTYPE_MXFP8_E4M3, DTYPE_NVFP4_E2M1, DTYPE_U8, DTYPE_U32, DTypeRaw,
-    DevicePtr, FusedAddRmsnormDesc, KV_LAYOUT_HND, KV_LAYOUT_NHD, MASK_MODE_CAUSAL, MASK_MODE_NONE,
-    MOE_BACKEND_FLASHINFER_NVFP4, MOE_BACKEND_FLASHINFER_STAGED_BF16, MOE_ROUTE_PRECOMPUTED_TOPK,
-    MoeBf16ExecuteDesc, MoeNvfp4ExecuteDesc, MoePlanDesc, PagedKvCache, PagedKvPlan, PagedKvTable,
-    QoPlan, RmsnormDesc, RopeApplyDesc, Tensor1, Tensor2, Tensor3, Tensor4, Tensor5, Tensor6,
+    DTYPE_BF16, DTYPE_F16, DTYPE_F32, DTYPE_FP8_E4M3, DTYPE_FP8_E5M2, DTYPE_I8, DTYPE_I32,
+    DTYPE_MXFP4_E2M1, DTYPE_MXFP8_E4M3, DTYPE_NVFP4_E2M1, DTYPE_U8, DTYPE_U32, DTypeRaw,
+    ErasedDevicePtr, FusedAddRmsnormDesc, KV_LAYOUT_HND, KV_LAYOUT_NHD, MASK_MODE_CAUSAL,
+    MASK_MODE_NONE, MOE_BACKEND_FLASHINFER_NVFP4, MOE_BACKEND_FLASHINFER_STAGED_BF16,
+    MOE_ROUTE_PRECOMPUTED_TOPK, MoeBf16ExecuteDesc, MoeNvfp4ExecuteDesc, MoePlanDesc, PagedKvCache,
+    PagedKvPlan, PagedKvTable, QoPlan, RmsnormDesc, RopeApplyDesc, Tensor1, Tensor2, Tensor3,
+    Tensor4, Tensor5, Tensor6,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -73,7 +75,7 @@ fn supported_attention_dtype(dtype: DTypeRaw) -> bool {
 }
 
 trait TensorLike {
-    fn data(&self) -> DevicePtr;
+    fn data(&self) -> ErasedDevicePtr;
     fn dtype(&self) -> DTypeRaw;
     fn shape(&self) -> &[i64];
     fn stride(&self) -> &[i64];
@@ -82,7 +84,7 @@ trait TensorLike {
 macro_rules! impl_tensor_like {
     ($ty:ty) => {
         impl TensorLike for $ty {
-            fn data(&self) -> DevicePtr {
+            fn data(&self) -> ErasedDevicePtr {
                 self.data
             }
 
@@ -508,9 +510,9 @@ fn moe_workspace_bytes(desc: &MoePlanDesc, num_tokens: u32) -> Result<usize, Sta
     take_bf16_workspace_bytes(&mut offset, act_elems)?;
     take_bf16_workspace_bytes(&mut offset, down_elems)?;
     take_workspace_bytes::<i32>(&mut offset, local_experts * 3)?;
-    take_workspace_bytes::<DevicePtr>(&mut offset, local_experts)?;
-    take_workspace_bytes::<DevicePtr>(&mut offset, local_experts)?;
-    take_workspace_bytes::<DevicePtr>(&mut offset, local_experts)?;
+    take_workspace_bytes::<ErasedDevicePtr>(&mut offset, local_experts)?;
+    take_workspace_bytes::<ErasedDevicePtr>(&mut offset, local_experts)?;
+    take_workspace_bytes::<ErasedDevicePtr>(&mut offset, local_experts)?;
     take_workspace_bytes::<i64>(&mut offset, local_experts)?;
     take_workspace_bytes::<i64>(&mut offset, local_experts)?;
     take_workspace_bytes::<i64>(&mut offset, local_experts)?;
@@ -1018,10 +1020,10 @@ pub(crate) struct Qsfi {
 }
 
 impl Qsfi {
-    pub(crate) fn new(device_ordinal: i32, stream: CudaStream) -> Result<Self, Status> {
+    pub(crate) fn new(ctx: &CudaCtx) -> Result<Self, Status> {
         let desc = sys::qsfi_context_desc {
-            device_ordinal,
-            stream,
+            device_ordinal: ctx.device_ordinal(),
+            stream: ctx.stream,
         };
         let mut raw = ptr::null_mut();
         result_from_raw(unsafe { sys::qsfi_context_create(&desc, &mut raw) })?;
@@ -1351,7 +1353,7 @@ mod tests {
     use super::{
         AppendDecode, AppendPrefill, AttentionDesc, BatchDecodeExecuteDesc,
         BatchPrefillExecuteDesc, DTYPE_BF16, DTYPE_F16, DTYPE_F32, DTYPE_FP8_E4M3, DTYPE_I32,
-        DTYPE_NVFP4_E2M1, DTYPE_U8, DTYPE_U32, DTypeRaw, DevicePtr, FusedAddRmsnormDesc,
+        DTYPE_NVFP4_E2M1, DTYPE_U8, DTYPE_U32, DTypeRaw, ErasedDevicePtr, FusedAddRmsnormDesc,
         KV_LAYOUT_HND, KV_LAYOUT_NHD, MASK_MODE_NONE, MOE_BACKEND_FLASHINFER_NVFP4,
         MOE_BACKEND_FLASHINFER_STAGED_BF16, MOE_ROUTE_PRECOMPUTED_TOPK, MoeBf16ExecuteDesc,
         MoeNvfp4ExecuteDesc, MoePlanDesc, PagedKvCache, PagedKvPlan, PagedKvPlanHost, PagedKvTable,
@@ -1375,11 +1377,16 @@ mod tests {
     use std::ffi::c_void;
     use std::ptr;
 
-    fn device_ptr(offset: usize) -> DevicePtr {
+    fn device_ptr(offset: usize) -> ErasedDevicePtr {
         (0x1000usize + offset) as *mut c_void
     }
 
-    fn tensor1(data: DevicePtr, dtype: DTypeRaw, shape: [i64; 1], stride: [i64; 1]) -> Tensor1 {
+    fn tensor1(
+        data: ErasedDevicePtr,
+        dtype: DTypeRaw,
+        shape: [i64; 1],
+        stride: [i64; 1],
+    ) -> Tensor1 {
         Tensor1 {
             data,
             dtype,
@@ -1388,7 +1395,12 @@ mod tests {
         }
     }
 
-    fn tensor2(data: DevicePtr, dtype: DTypeRaw, shape: [i64; 2], stride: [i64; 2]) -> Tensor2 {
+    fn tensor2(
+        data: ErasedDevicePtr,
+        dtype: DTypeRaw,
+        shape: [i64; 2],
+        stride: [i64; 2],
+    ) -> Tensor2 {
         Tensor2 {
             data,
             dtype,
@@ -1406,7 +1418,12 @@ mod tests {
         }
     }
 
-    fn tensor3(data: DevicePtr, dtype: DTypeRaw, shape: [i64; 3], stride: [i64; 3]) -> Tensor3 {
+    fn tensor3(
+        data: ErasedDevicePtr,
+        dtype: DTypeRaw,
+        shape: [i64; 3],
+        stride: [i64; 3],
+    ) -> Tensor3 {
         Tensor3 {
             data,
             dtype,
@@ -1415,7 +1432,12 @@ mod tests {
         }
     }
 
-    fn tensor4(data: DevicePtr, dtype: DTypeRaw, shape: [i64; 4], stride: [i64; 4]) -> Tensor4 {
+    fn tensor4(
+        data: ErasedDevicePtr,
+        dtype: DTypeRaw,
+        shape: [i64; 4],
+        stride: [i64; 4],
+    ) -> Tensor4 {
         Tensor4 {
             data,
             dtype,

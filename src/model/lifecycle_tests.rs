@@ -1,4 +1,6 @@
-use crate::{ModelRunner, QwenConfig, QwenRequest, QwenResult, QwenWeights, Status};
+use crate::memory::CudaCtx;
+use crate::{ModelRunner, QwenConfig, QwenRequest, QwenResult, Status};
+use std::rc::Rc;
 
 use std::ffi::{CStr, c_char};
 
@@ -65,7 +67,12 @@ fn run_random_model(
     tokens: &[i32],
     max_new_tokens: u32,
 ) -> QwenResult {
-    let mut runner = ModelRunner::random_bf16(config, RANDOM_MODEL_SEED).unwrap();
+    let mut runner = ModelRunner::random_bf16(
+        Rc::new(CudaCtx::default().unwrap()),
+        config,
+        RANDOM_MODEL_SEED,
+    )
+    .unwrap();
     runner
         .run(QwenRequest {
             request_id,
@@ -81,8 +88,13 @@ fn randomized_dense_model_runs_prefill_and_two_decodes() {
         return;
     }
 
-    let config = QwenConfig::randomized_dense_tiny_fixture(0);
-    let mut runner = ModelRunner::random_bf16(config, RANDOM_MODEL_SEED).unwrap();
+    let config = QwenConfig::randomized_dense_tiny_fixture();
+    let mut runner = ModelRunner::random_bf16(
+        Rc::new(CudaCtx::default().unwrap()),
+        config,
+        RANDOM_MODEL_SEED,
+    )
+    .unwrap();
 
     assert_eq!(
         runner
@@ -145,8 +157,13 @@ fn exact_prefix_extension_accepts_caller_suffix_tokens() {
         return;
     }
 
-    let config = QwenConfig::randomized_dense_tiny_fixture(0);
-    let mut runner = ModelRunner::random_bf16(config, RANDOM_MODEL_SEED).unwrap();
+    let config = QwenConfig::randomized_dense_tiny_fixture();
+    let mut runner = ModelRunner::random_bf16(
+        Rc::new(CudaCtx::default().unwrap()),
+        config,
+        RANDOM_MODEL_SEED,
+    )
+    .unwrap();
 
     let base = runner
         .run(QwenRequest {
@@ -189,8 +206,13 @@ fn randomized_moe_model_runs_prefill_decode_rebuild_and_failed_rewrite() {
         return;
     }
 
-    let config = QwenConfig::randomized_moe_tiny_fixture(0);
-    let mut runner = ModelRunner::random_bf16(config, RANDOM_MODEL_SEED).unwrap();
+    let config = QwenConfig::randomized_moe_tiny_fixture();
+    let mut runner = ModelRunner::random_bf16(
+        Rc::new(CudaCtx::default().unwrap()),
+        config,
+        RANDOM_MODEL_SEED,
+    )
+    .unwrap();
 
     let prefill = runner
         .run(QwenRequest {
@@ -287,8 +309,13 @@ fn randomized_shared_moe_model_runs_prefill_and_decode() {
         return;
     }
 
-    let config = QwenConfig::randomized_shared_moe_tiny_fixture(0);
-    let mut runner = ModelRunner::random_bf16(config, RANDOM_MODEL_SEED).unwrap();
+    let config = QwenConfig::randomized_shared_moe_tiny_fixture();
+    let mut runner = ModelRunner::random_bf16(
+        Rc::new(CudaCtx::default().unwrap()),
+        config,
+        RANDOM_MODEL_SEED,
+    )
+    .unwrap();
 
     let result = runner
         .run(QwenRequest {
@@ -318,7 +345,7 @@ fn randomized_dense_model_is_repeatable_for_same_seed_and_request() {
         return;
     }
 
-    let config = QwenConfig::randomized_dense_tiny_fixture(0);
+    let config = QwenConfig::randomized_dense_tiny_fixture();
     let first = run_random_model(config, 21, &[3, 5, 8, 13], 3);
     let second = run_random_model(config, 21, &[3, 5, 8, 13], 3);
 
@@ -341,8 +368,13 @@ fn prompt_rewrite_behind_live_tail_rebuilds_like_fresh_runner() {
         return;
     }
 
-    let config = QwenConfig::randomized_dense_tiny_fixture(0);
-    let mut runner = ModelRunner::random_bf16(config, RANDOM_MODEL_SEED).unwrap();
+    let config = QwenConfig::randomized_dense_tiny_fixture();
+    let mut runner = ModelRunner::random_bf16(
+        Rc::new(CudaCtx::default().unwrap()),
+        config,
+        RANDOM_MODEL_SEED,
+    )
+    .unwrap();
     let original = runner
         .run(QwenRequest {
             request_id: 31,
@@ -383,8 +415,13 @@ fn failed_prompt_rewrite_keeps_previous_live_state() {
         return;
     }
 
-    let config = QwenConfig::randomized_dense_tiny_fixture(0);
-    let mut runner = ModelRunner::random_bf16(config, RANDOM_MODEL_SEED).unwrap();
+    let config = QwenConfig::randomized_dense_tiny_fixture();
+    let mut runner = ModelRunner::random_bf16(
+        Rc::new(CudaCtx::default().unwrap()),
+        config,
+        RANDOM_MODEL_SEED,
+    )
+    .unwrap();
     let original = runner
         .run(QwenRequest {
             request_id: 37,
@@ -431,8 +468,13 @@ fn oversized_run_request_is_rejected_without_mutating_live_state() {
         return;
     }
 
-    let config = QwenConfig::randomized_dense_tiny_fixture(0);
-    let mut runner = ModelRunner::random_bf16(config, RANDOM_MODEL_SEED).unwrap();
+    let config = QwenConfig::randomized_dense_tiny_fixture();
+    let mut runner = ModelRunner::random_bf16(
+        Rc::new(CudaCtx::default().unwrap()),
+        config,
+        RANDOM_MODEL_SEED,
+    )
+    .unwrap();
     let original = runner
         .run(QwenRequest {
             request_id: 41,
@@ -474,85 +516,6 @@ fn oversized_run_request_is_rejected_without_mutating_live_state() {
 }
 
 #[test]
-fn qwen_weights_are_bound_to_device_and_stream_config() {
-    if !cuda_device_available() {
-        return;
-    }
-
-    let config = QwenConfig::randomized_dense_tiny_fixture(0);
-    let weights = QwenWeights::random_bf16(&config, RANDOM_MODEL_SEED).unwrap();
-
-    let mut mismatched_device = config;
-    mismatched_device.device_ordinal = 1;
-    assert_eq!(
-        ModelRunner::new(mismatched_device, weights).err(),
-        Some(Status::InvalidArgument)
-    );
-
-    let weights = QwenWeights::random_bf16(&config, RANDOM_MODEL_SEED).unwrap();
-    let mut mismatched_stream = config;
-    mismatched_stream.stream = 1_usize as *mut _;
-    assert_eq!(
-        ModelRunner::new(mismatched_stream, weights).err(),
-        Some(Status::InvalidArgument)
-    );
-}
-
-#[test]
-fn current_device_sentinel_is_resolved_for_weights_and_runner() {
-    if !cuda_device_available() {
-        return;
-    }
-
-    let explicit = QwenConfig::randomized_dense_tiny_fixture(0);
-    let sentinel = QwenConfig::randomized_dense_tiny_fixture(-1);
-
-    assert_cuda(
-        unsafe { cudaSetDevice(0) },
-        "set CUDA current device before sentinel weights",
-    );
-    let weights = QwenWeights::random_bf16(&sentinel, RANDOM_MODEL_SEED).unwrap();
-    let runner = ModelRunner::new(explicit, weights).unwrap();
-    drop(runner);
-
-    assert_cuda(
-        unsafe { cudaSetDevice(0) },
-        "set CUDA current device before sentinel runner",
-    );
-    let weights = QwenWeights::random_bf16(&explicit, RANDOM_MODEL_SEED).unwrap();
-    let runner = ModelRunner::new(sentinel, weights).unwrap();
-    drop(runner);
-}
-
-#[test]
-fn sentinel_weights_reject_runner_after_current_device_switch() {
-    let Some(device_count) = cuda_device_count() else {
-        return;
-    };
-    if device_count < 2 {
-        eprintln!("SKIP: requires at least two CUDA devices");
-        return;
-    }
-
-    let sentinel = QwenConfig::randomized_dense_tiny_fixture(-1);
-    assert_cuda(
-        unsafe { cudaSetDevice(0) },
-        "set CUDA current device before sentinel weights",
-    );
-    let weights = QwenWeights::random_bf16(&sentinel, RANDOM_MODEL_SEED).unwrap();
-
-    assert_cuda(
-        unsafe { cudaSetDevice(1) },
-        "switch CUDA current device before runner",
-    );
-    assert_eq!(
-        ModelRunner::new(sentinel, weights).err(),
-        Some(Status::InvalidArgument)
-    );
-    assert_cuda(unsafe { cudaSetDevice(0) }, "restore CUDA test device");
-}
-
-#[test]
 fn runner_reactivates_bound_device_when_reusing_buffers() {
     let Some(device_count) = cuda_device_count() else {
         return;
@@ -566,8 +529,13 @@ fn runner_reactivates_bound_device_when_reusing_buffers() {
         unsafe { cudaSetDevice(0) },
         "set CUDA current device before runner",
     );
-    let config = QwenConfig::randomized_dense_tiny_fixture(0);
-    let mut runner = ModelRunner::random_bf16(config, RANDOM_MODEL_SEED).unwrap();
+    let config = QwenConfig::randomized_dense_tiny_fixture();
+    let mut runner = ModelRunner::random_bf16(
+        Rc::new(CudaCtx::default().unwrap()),
+        config,
+        RANDOM_MODEL_SEED,
+    )
+    .unwrap();
     let first = runner
         .run(QwenRequest {
             request_id: 61,

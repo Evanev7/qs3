@@ -2,6 +2,7 @@ use super::{BF16, DMat, F32, Workspace, dtype::DType, result_from_raw};
 use crate::{
     Status,
     ffi::{self, sys},
+    memory::CudaCtx,
 };
 use std::{
     collections::{HashMap, hash_map::Entry},
@@ -16,10 +17,10 @@ pub(crate) struct Qscb {
 }
 
 impl Qscb {
-    pub(crate) fn new(device_ordinal: i32, stream: ffi::CudaStream) -> Result<Self, Status> {
+    pub(crate) fn new(ctx: &CudaCtx) -> Result<Self, Status> {
         let desc = sys::qscb_context_desc {
-            device_ordinal,
-            stream,
+            device_ordinal: ctx.device_ordinal(),
+            stream: ctx.stream,
         };
         let mut raw = ptr::null_mut();
         result_from_raw(unsafe { sys::qscb_context_create(&desc, &mut raw) })?;

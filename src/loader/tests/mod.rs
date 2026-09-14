@@ -21,6 +21,7 @@ use crate::{
     constants::{attention::HEAD_DIM, gdn::PACKED_QKV_CHANNELS, model::HIDDEN_SIZE},
     engine::{DynDType, Status},
     ffi,
+    memory::DeviceSpan,
 };
 use std::collections::BTreeMap;
 use std::ffi::c_void;
@@ -296,6 +297,30 @@ struct TinyBackendState {
     take_calls: std::cell::Cell<usize>,
     drop_calls: std::cell::Cell<usize>,
     remaining_at_drop: std::cell::Cell<usize>,
+    allocation_drops: std::cell::Cell<usize>,
+}
+
+// A test backend's allocation policy is retained through QwenWeights' boxes.
+// Synthetic backends expose metadata only; TinyCudaBackend owns real CUDA storage.
+struct TestWeightAllocation {
+    span: DeviceSpan<u16>,
+    state: Option<std::rc::Rc<TinyBackendState>>,
+}
+impl std::ops::Deref for TestWeightAllocation {
+    type Target = DeviceSpan<u16>;
+    fn deref(&self) -> &Self::Target {
+        &self.span
+    }
+}
+impl Drop for TestWeightAllocation {
+    fn drop(&mut self) {
+        if let Some(state) = &self.state {
+            state.allocation_drops.set(state.allocation_drops.get() + 1);
+            unsafe {
+                ffi::cuda::cudaFree(self.span.erase());
+            }
+        }
+    }
 }
 
 struct TinyCudaBackend {
@@ -315,6 +340,7 @@ impl TinyCudaBackend {
 }
 
 impl WeightLoadBackend for TinyCudaBackend {
+    type Allocation = TestWeightAllocation;
     fn device_ordinal(&self) -> i32 {
         self.device_ordinal
     }
@@ -323,9 +349,15 @@ impl WeightLoadBackend for TinyCudaBackend {
         &self.allocations
     }
 
-    fn take_allocations(&mut self) -> Vec<WeightLoadSpan> {
+    fn take_allocations(&mut self) -> Vec<Self::Allocation> {
         self.state.take_calls.set(self.state.take_calls.get() + 1);
-        std::mem::take(&mut self.allocations)
+        self.allocations
+            .drain(..)
+            .map(|span| TestWeightAllocation {
+                span: DeviceSpan::new(span.ptr.cast(), span.bytes / 2).unwrap(),
+                state: Some(self.state.clone()),
+            })
+            .collect()
     }
 
     fn alloc_tensor(&mut self, desc: WeightTensorDesc<'_>) -> Result<WeightLoadSpan, Status> {
@@ -381,9 +413,9 @@ struct AdversarialBackendState {
 
 #[derive(Clone, Copy)]
 enum AdversarialTake {
-    ReturnEmptyAndKeep,
-    ReturnEmptyAndClear,
-    ReturnEmptyThenRetain(WeightLoadSpan),
+    KeepAllocations,
+    ClearAllocations,
+    RetainAllocation(WeightLoadSpan),
 }
 
 struct AdversarialBackend {
@@ -393,6 +425,7 @@ struct AdversarialBackend {
 }
 
 impl WeightLoadBackend for AdversarialBackend {
+    type Allocation = TestWeightAllocation;
     fn device_ordinal(&self) -> i32 {
         0
     }
@@ -401,15 +434,15 @@ impl WeightLoadBackend for AdversarialBackend {
         &self.allocations
     }
 
-    fn take_allocations(&mut self) -> Vec<WeightLoadSpan> {
+    fn take_allocations(&mut self) -> Vec<Self::Allocation> {
         self.state.take_calls.set(self.state.take_calls.get() + 1);
         match self.take {
-            AdversarialTake::ReturnEmptyAndKeep => Vec::new(),
-            AdversarialTake::ReturnEmptyAndClear => {
+            AdversarialTake::KeepAllocations => Vec::new(),
+            AdversarialTake::ClearAllocations => {
                 self.allocations.clear();
                 Vec::new()
             }
-            AdversarialTake::ReturnEmptyThenRetain(allocation) => {
+            AdversarialTake::RetainAllocation(allocation) => {
                 self.allocations.push(allocation);
                 Vec::new()
             }
@@ -447,7 +480,7 @@ impl Drop for AdversarialBackend {
 
 fn fake_span(address: usize, bytes: usize) -> WeightLoadSpan {
     WeightLoadSpan {
-        ptr: address as ffi::DevicePtr,
+        ptr: address as ffi::ErasedDevicePtr,
         bytes,
         memory: WeightLoadMemory::Device,
     }
@@ -645,6 +678,7 @@ impl Drop for RecordingBackend {
 }
 
 impl WeightLoadBackend for RecordingBackend {
+    type Allocation = TestWeightAllocation;
     fn device_ordinal(&self) -> i32 {
         0
     }
@@ -653,8 +687,14 @@ impl WeightLoadBackend for RecordingBackend {
         &self.allocations
     }
 
-    fn take_allocations(&mut self) -> Vec<WeightLoadSpan> {
-        std::mem::take(&mut self.allocations)
+    fn take_allocations(&mut self) -> Vec<Self::Allocation> {
+        self.allocations
+            .drain(..)
+            .map(|span| TestWeightAllocation {
+                span: DeviceSpan::new(span.ptr.cast(), span.bytes / 2).unwrap(),
+                state: None,
+            })
+            .collect()
     }
 
     fn alloc_tensor(&mut self, desc: WeightTensorDesc<'_>) -> Result<WeightLoadSpan, Status> {
@@ -666,7 +706,7 @@ impl WeightLoadBackend for RecordingBackend {
             desc.bytes,
         ));
         let span = WeightLoadSpan {
-            ptr: self.next_addr as ffi::DevicePtr,
+            ptr: self.next_addr as ffi::ErasedDevicePtr,
             bytes: desc.bytes,
             memory: WeightLoadMemory::ManagedUma,
         };
@@ -781,14 +821,15 @@ fn loaded_plan_transfers_allocations_into_qwen_weights_once() {
     let backend = TinyCudaBackend::new(0, state.clone());
 
     let loaded = execute_qwen36_bf16_load_plan(&plan, backend, ptr::null_mut()).unwrap();
-    let (config, weights) = loaded.into_fixture_model(ptr::null_mut(), 8).unwrap();
+    let (_, weights) = loaded.into_fixture_model(8).unwrap();
 
     assert_eq!(count, 75);
     assert_eq!(state.take_calls.get(), 1);
     assert_eq!(state.drop_calls.get(), 1);
     assert_eq!(state.remaining_at_drop.get(), 0);
-    weights.validate_for(&config).unwrap();
+    assert_eq!(state.allocation_drops.get(), 0);
     drop(weights);
+    assert_eq!(state.allocation_drops.get(), count);
 }
 
 #[test]
@@ -810,12 +851,12 @@ fn materialization_rejects_duplicate_targets_before_transfer() {
         text,
         specs,
         spans,
-        AdversarialTake::ReturnEmptyAndKeep,
+        AdversarialTake::KeepAllocations,
         state.clone(),
     );
 
     let err = loaded
-        .into_fixture_model(ptr::null_mut(), 8)
+        .into_fixture_model(8)
         .err()
         .expect("duplicate target must fail materialization");
 
@@ -842,12 +883,12 @@ fn materialization_rejects_duplicate_pointers_before_transfer() {
         text,
         specs,
         spans,
-        AdversarialTake::ReturnEmptyAndKeep,
+        AdversarialTake::KeepAllocations,
         state.clone(),
     );
 
     let err = loaded
-        .into_fixture_model(ptr::null_mut(), 8)
+        .into_fixture_model(8)
         .err()
         .expect("duplicate pointer must fail materialization");
 
@@ -874,12 +915,12 @@ fn materialization_rejects_changed_taken_allocations_before_adoption() {
         text,
         specs,
         spans,
-        AdversarialTake::ReturnEmptyAndClear,
+        AdversarialTake::ClearAllocations,
         state.clone(),
     );
 
     let err = loaded
-        .into_fixture_model(ptr::null_mut(), 8)
+        .into_fixture_model(8)
         .err()
         .expect("changed allocation list must fail materialization");
 
@@ -900,12 +941,12 @@ fn materialization_rejects_backend_that_retains_allocations_after_take() {
         text,
         Vec::new(),
         Vec::new(),
-        AdversarialTake::ReturnEmptyThenRetain(fake_span(0x1000, 2)),
+        AdversarialTake::RetainAllocation(fake_span(0x1000, 2)),
         state.clone(),
     );
 
     let err = loaded
-        .into_fixture_model(ptr::null_mut(), 8)
+        .into_fixture_model(8)
         .err()
         .expect("retained allocation list must fail materialization");
 
@@ -964,8 +1005,13 @@ fn real_qwen36_bf16_generates_reference_tokens() {
     let plan = QwenBf16LoadPlan::read(model_dir).unwrap();
     let backend = ManagedUmaBackend::new(cuda_device_from_env()).unwrap();
     let loaded = execute_qwen36_bf16_load_plan(&plan, backend, ptr::null_mut()).unwrap();
-    let (config, weights) = loaded.into_qwen_model(ptr::null_mut(), 8).unwrap();
-    let mut runner = crate::model::ModelRunner::new(config, weights).unwrap();
+    let (config, weights) = loaded.into_qwen_model(8).unwrap();
+    let mut runner = crate::model::ModelRunner::new(
+        std::rc::Rc::new(crate::memory::CudaCtx::default().unwrap()),
+        config,
+        weights,
+    )
+    .unwrap();
     assert_eq!(runner.gdn_qkv_provider(), "triton");
     let request_id = 0xBF16_0001;
 

@@ -47,13 +47,15 @@ fn real_qwen36_same_prefix_scores() {
     let backend = PinnedUploadBackend::new(cuda_device_from_env()).unwrap();
     let loaded = execute_qwen36_bf16_load_plan(&plan, backend, ptr::null_mut()).unwrap();
     let (config, weights) = loaded
-        .into_qwen_model(
-            ptr::null_mut(),
-            u32::try_from(prompt.len() + forced.len() + 1).unwrap(),
-        )
+        .into_qwen_model(u32::try_from(prompt.len() + forced.len() + 1).unwrap())
         .unwrap();
     assert_eq!(GDN_RECURRENT_STATE, "f32");
-    let mut runner = crate::model::ModelRunner::new(config, weights).unwrap();
+    let mut runner = crate::model::ModelRunner::new(
+        std::rc::Rc::new(crate::memory::CudaCtx::default().unwrap()),
+        config,
+        weights,
+    )
+    .unwrap();
     assert_eq!(runner.gdn_qkv_provider(), "triton");
     const REQUEST: u64 = 0x53434f5245;
     runner

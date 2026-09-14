@@ -1,7 +1,9 @@
+use qs3::memory::CudaCtx;
 use qs3::{
     AppendBatch, AttentionLayer, Commit, DecodeBatch, DynDType, Engine, EngineConfig, KvLayout, ffi,
 };
 use std::ffi::{CStr, c_char, c_void};
+use std::rc::Rc;
 use std::{mem, ptr};
 
 const CUDA_SUCCESS: i32 = 0;
@@ -50,7 +52,7 @@ impl<T> DeviceBuffer<T> {
         buffer
     }
 
-    fn as_device_ptr(&self) -> ffi::DevicePtr {
+    fn as_device_ptr(&self) -> ffi::ErasedDevicePtr {
         self.ptr.cast()
     }
 
@@ -213,7 +215,7 @@ fn cuda_device_available() -> bool {
 }
 
 fn tensor3(
-    data: ffi::DevicePtr,
+    data: ffi::ErasedDevicePtr,
     dtype: ffi::DTypeRaw,
     n: usize,
     heads: u32,
@@ -231,8 +233,6 @@ fn tensor3(
 
 fn tiny_config() -> EngineConfig {
     EngineConfig {
-        device_ordinal: 0,
-        stream: std::ptr::null_mut(),
         num_layers: 1,
         max_live_requests: 4,
         max_batch_rows: 3,
@@ -259,30 +259,46 @@ fn tiny_config() -> EngineConfig {
 }
 
 #[test]
-fn engine_rejects_unsupported_native_attention_shapes_before_cuda_setup() {
+fn engine_rejects_unsupported_native_attention_shapes() {
+    if !cuda_device_available() {
+        return;
+    }
+    let ctx = Rc::new(CudaCtx::default().unwrap());
     let mut config = tiny_config();
     config.num_q_heads = 2;
     config.num_kv_heads = 2;
     config.head_dim = 64;
     config.hidden_size = config.num_q_heads * config.head_dim;
-    assert_eq!(Engine::new(config).err(), Some(qs3::Status::Unsupported));
+    assert_eq!(
+        Engine::new(ctx.clone(), config).err(),
+        Some(qs3::Status::Unsupported)
+    );
 
     let mut config = tiny_config();
     config.head_dim = 128;
     config.hidden_size = config.num_q_heads * config.head_dim;
-    assert_eq!(Engine::new(config).err(), Some(qs3::Status::Unsupported));
+    assert_eq!(
+        Engine::new(ctx.clone(), config).err(),
+        Some(qs3::Status::Unsupported)
+    );
 
     let mut config = tiny_config();
     config.num_q_heads = 8;
     config.num_kv_heads = 1;
     config.hidden_size = config.num_q_heads * config.head_dim;
-    assert_eq!(Engine::new(config).err(), Some(qs3::Status::Unsupported));
+    assert_eq!(
+        Engine::new(ctx.clone(), config).err(),
+        Some(qs3::Status::Unsupported)
+    );
 
     let mut config = tiny_config();
     config.num_q_heads = 32;
     config.num_kv_heads = 4;
     config.hidden_size = config.num_q_heads * config.head_dim;
-    assert_eq!(Engine::new(config).err(), Some(qs3::Status::Unsupported));
+    assert_eq!(
+        Engine::new(ctx.clone(), config).err(),
+        Some(qs3::Status::Unsupported)
+    );
 }
 
 #[test]
@@ -318,7 +334,8 @@ fn append_and_decode_layer_execute() {
     decode_v.copy_from_slice(&vec![F16_ONE; decode_kv_elems]);
     decode_o.memset(0xA5);
 
-    let mut session = Engine::new(config).unwrap();
+    let ctx = Rc::new(CudaCtx::default().unwrap());
+    let mut session = Engine::new(ctx.clone(), config).unwrap();
     session
         .begin_append(AppendBatch {
             request_ids: &[request_id],
@@ -459,7 +476,8 @@ fn run_attention_with_q_rope_offsets(
     append_o.memset(0xA5);
     decode_o.memset(0xA5);
 
-    let mut session = Engine::new(config).unwrap();
+    let ctx = Rc::new(CudaCtx::default().unwrap());
+    let mut session = Engine::new(ctx.clone(), config).unwrap();
     session
         .begin_append(AppendBatch {
             request_ids: &[request_id],

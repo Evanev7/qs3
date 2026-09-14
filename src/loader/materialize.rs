@@ -3,36 +3,28 @@ use super::{
     plan::LoadedWeightPlan,
     transfer::WeightLoadBackend,
 };
-use crate::engine::Status;
-use crate::model::{DeviceBuffer, QwenConfig, QwenWeights};
+use crate::{
+    engine::Status,
+    model::{QwenConfig, QwenWeights},
+};
 use std::collections::{BTreeMap, BTreeSet};
-use std::ffi::c_void;
 use std::mem;
 
 impl<B: WeightLoadBackend> LoadedWeightPlan<B> {
-    pub(crate) fn into_qwen_model(
-        self,
-        stream: *mut c_void,
-        max_seq_len: u32,
-    ) -> LoadResult<(QwenConfig, QwenWeights)> {
+    pub(crate) fn into_qwen_model(self, max_seq_len: u32) -> LoadResult<(QwenConfig, QwenWeights)> {
         self.config.validate_compiled_model()?;
-        let config = QwenConfig::new(self.backend.device_ordinal(), stream, max_seq_len).map_err(
-            |status| {
-                WeightLoadError::invalid_config(format!("invalid runtime resources: {status:?}"))
-            },
-        )?;
+        let config = QwenConfig::new(max_seq_len).map_err(|status| {
+            WeightLoadError::invalid_config(format!("invalid runtime resources: {status:?}"))
+        })?;
         self.into_model_with_config(config)
     }
 
     #[cfg(test)]
     pub(super) fn into_fixture_model(
         self,
-        stream: *mut c_void,
         max_seq_len: u32,
     ) -> LoadResult<(QwenConfig, QwenWeights)> {
         let config = QwenConfig::loaded_fixture(
-            self.backend.device_ordinal(),
-            stream,
             self.config.num_hidden_layers,
             self.config.vocab_size,
             max_seq_len,
@@ -86,7 +78,15 @@ impl<B: WeightLoadBackend> LoadedWeightPlan<B> {
 
         let expected_allocations = backend.allocations().to_vec();
         let allocations = backend.take_allocations();
-        if allocations != expected_allocations {
+        if allocations.len() != expected_allocations.len()
+            || allocations
+                .iter()
+                .zip(&expected_allocations)
+                .any(|(owner, expected)| {
+                    owner.erase() != expected.ptr
+                        || owner.cap.checked_mul(mem::size_of::<u16>()) != Some(expected.bytes)
+                })
+        {
             return Err(WeightLoadError::tensor_table(
                 "backend returned allocation list does not match validated allocations",
             ));
@@ -96,23 +96,19 @@ impl<B: WeightLoadBackend> LoadedWeightPlan<B> {
                 "backend retained allocations after transfer",
             ));
         }
-        let device_ordinal = backend.device_ordinal();
-        let mut buffers: BTreeMap<(Option<u32>, &'static str), DeviceBuffer<u16>> = BTreeMap::new();
+        let mut allocations_by_target: BTreeMap<(Option<u32>, &'static str), B::Allocation> =
+            BTreeMap::new();
 
         for (tensor, allocation) in tensors.into_iter().zip(allocations) {
             let key = (tensor.spec.target.layer, tensor.spec.target.slot);
-            let cap = allocation.bytes / mem::size_of::<u16>();
-            let buffer = unsafe {
-                DeviceBuffer::from_raw_parts(device_ordinal, allocation.ptr.cast::<u16>(), cap)
-            };
-            let replaced = buffers.insert(key, buffer);
+            let replaced = allocations_by_target.insert(key, allocation);
             debug_assert!(replaced.is_none());
         }
         drop(backend);
 
         let mut missing = None;
-        let weights = QwenWeights::from_bf16_buffers(config, |layer, slot| {
-            buffers.remove(&(layer, slot)).ok_or_else(|| {
+        let weights = QwenWeights::from_bf16_allocations(config, |layer, slot| {
+            allocations_by_target.remove(&(layer, slot)).ok_or_else(|| {
                 missing = Some((layer, slot));
                 Status::InternalError
             })
@@ -124,7 +120,7 @@ impl<B: WeightLoadBackend> LoadedWeightPlan<B> {
             WeightLoadError::tensor_table(detail)
         })?;
 
-        if let Some(((layer, slot), _)) = buffers.into_iter().next() {
+        if let Some(((layer, slot), _)) = allocations_by_target.into_iter().next() {
             return Err(WeightLoadError::tensor_table(format!(
                 "unused loaded target {layer:?}/{slot}"
             )));

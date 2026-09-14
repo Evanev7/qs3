@@ -1,9 +1,7 @@
 use crate::{
     constants::{attention, model},
     engine::{DynDType, EngineConfig, KvLayout, Status},
-    model::resolve_device_ordinal,
 };
-use std::ffi::c_void;
 
 use super::weights::MoeShape;
 
@@ -17,8 +15,6 @@ pub(super) enum QwenBlockKind {
 /// Model geometry and layer ordering come from `crate::constants`.
 #[derive(Clone, Copy, Debug)]
 pub struct QwenConfig {
-    pub device_ordinal: i32,
-    pub stream: *mut c_void,
     pub max_live_requests: u32,
     pub max_batch_rows: u32,
     pub max_batch_tokens: u32,
@@ -48,11 +44,9 @@ macro_rules! model_values {
 }
 
 impl QwenConfig {
-    pub fn new(device_ordinal: i32, stream: *mut c_void, max_seq_len: u32) -> Result<Self, Status> {
+    pub fn new(max_seq_len: u32) -> Result<Self, Status> {
         let page_size = 4;
         let config = Self {
-            device_ordinal,
-            stream,
             max_live_requests: 1,
             max_batch_rows: 1,
             max_batch_tokens: max_seq_len,
@@ -128,12 +122,6 @@ impl QwenConfig {
         Ok(())
     }
 
-    pub(super) fn resolved_device_config(&self) -> Result<Self, Status> {
-        let mut config = *self;
-        config.device_ordinal = resolve_device_ordinal(config.device_ordinal)?;
-        Ok(config)
-    }
-
     pub(super) fn kv_hidden_size(&self) -> Result<u32, Status> {
         self.num_kv_heads()
             .checked_mul(self.head_dim())
@@ -202,8 +190,6 @@ impl QwenConfig {
 
     pub(super) fn engine_config(&self) -> EngineConfig {
         EngineConfig {
-            device_ordinal: self.device_ordinal,
-            stream: self.stream,
             num_layers: self.attention_layer_count(),
             max_live_requests: self.max_live_requests,
             max_batch_rows: self.max_batch_rows,
