@@ -23,6 +23,7 @@ let
   models = {
     "qwen3.6-35b-a3b" = readModel ./qwen3.6-35b-a3b;
     "qwen3.6-27b" = readModel ./qwen3.6-27b;
+    "qwen3.8-27b" = readModel ./qwen3.8-27b;
   };
   model = models.${engine.model};
   text = model.config;

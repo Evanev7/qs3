@@ -4,7 +4,8 @@ qstriton = ../build_tools/.venv/bin/qstriton
 
 build config_inputs: phony ../models/config.nix $
     ../models/qwen3.6-35b-a3b/model.json ../models/qwen3.6-35b-a3b/source.nix $
-    ../models/qwen3.6-27b/model.json ../models/qwen3.6-27b/source.nix
+    ../models/qwen3.6-27b/model.json ../models/qwen3.6-27b/source.nix $
+    ../models/qwen3.8-27b/model.json ../models/qwen3.8-27b/source.nix
 
 rule nix_eval
   command = nix eval --offline --raw --file $in > $out
