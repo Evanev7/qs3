@@ -259,7 +259,7 @@ static void test_qscu_utils_qwen36_shared_expert_gate_add_bf16()
 static void test_qscu_utils_qwen36_full_attention_output_gate_bf16()
 {
     constexpr int tokens = 2;
-    constexpr int q_hidden = 4096;
+    constexpr int q_hidden = QSFI_QWEN36_FULL_ATTENTION_Q_HIDDEN;
     constexpr size_t elems = static_cast<size_t>(tokens) * q_hidden;
 
     std::vector<uint16_t> h_gate(elems);
@@ -324,9 +324,9 @@ static void test_qscu_utils_qwen36_full_attention_output_gate_bf16()
     for (size_t i = 0; i < elems; ++i) {
         const int gate_pattern = static_cast<int>(i % 4);
         const float gate_f32 = gate_pattern == 0 ? -3.0f
-            : gate_pattern == 1                    ? -1.25f
-            : gate_pattern == 2                    ? 0.75f
-                                                  : 2.25f;
+            : gate_pattern == 1                  ? -1.25f
+            : gate_pattern == 2                  ? 0.75f
+                                                 : 2.25f;
         const float magnitude = static_cast<float>((i % 13) + 1) * 0.125f;
         const float out_f32 = (i % 2 == 0) ? magnitude : -magnitude;
         h_adjacent[i] = qscu_utils_f32_to_bf16(gate_f32);
@@ -883,7 +883,8 @@ static void test_qscu_utils_negative_validation()
     uint16_t* d_up = nullptr;
     uint16_t* d_out = nullptr;
     uint16_t* d_full_attn_overlap = nullptr;
-    std::vector<uint16_t> h_full_attn_overlap(4097, kBf16One);
+    constexpr int q_hidden = QSFI_QWEN36_FULL_ATTENTION_Q_HIDDEN;
+    std::vector<uint16_t> h_full_attn_overlap(q_hidden + 1, kBf16One);
     if (!copy_to_device(&d_gate, h_bf16, 1, "copy qscu negative silu gate")
         || !copy_to_device(&d_up, h_bf16, 1, "copy qscu negative silu up")
         || !copy_to_device(&d_out, h_bf16, 1, "copy qscu negative silu out")
@@ -963,7 +964,7 @@ static void test_qscu_utils_negative_validation()
     full_attn_gate_desc.gate = tensor2_bf16(d_gate, 1, 1);
     full_attn_gate_desc.out = tensor2_bf16(d_out, 1, 1);
     full_attn_gate_desc.num_tokens = 1;
-    full_attn_gate_desc.q_hidden = 4096;
+    full_attn_gate_desc.q_hidden = q_hidden;
     check_status(
         qscu_qwen36_full_attention_output_gate_bf16(&full_attn_gate_desc, nullptr),
         QSFI_STATUS_INVALID_ARGUMENT,
@@ -975,31 +976,31 @@ static void test_qscu_utils_negative_validation()
         QSFI_STATUS_INVALID_ARGUMENT,
         "qscu extracted full-attn output gate rejects non-qwen q_hidden"
     );
-    full_attn_gate_desc.gate = tensor2_bf16(d_gate, 1, 4096);
-    full_attn_gate_desc.out = tensor2_bf16(d_out, 1, 4096);
-    full_attn_gate_desc.q_hidden = 4096;
+    full_attn_gate_desc.gate = tensor2_bf16(d_gate, 1, q_hidden);
+    full_attn_gate_desc.out = tensor2_bf16(d_out, 1, q_hidden);
+    full_attn_gate_desc.q_hidden = q_hidden;
     full_attn_gate_desc.gate.dtype = QSFI_DTYPE_F32;
     check_status(
         qscu_qwen36_full_attention_output_gate_bf16(&full_attn_gate_desc, nullptr),
         QSFI_STATUS_INVALID_ARGUMENT,
         "qscu extracted full-attn output gate rejects f32 gate"
     );
-    full_attn_gate_desc.gate = tensor2_bf16(d_gate, 1, 4096);
-    full_attn_gate_desc.gate.stride[0] = 4097;
+    full_attn_gate_desc.gate = tensor2_bf16(d_gate, 1, q_hidden);
+    full_attn_gate_desc.gate.stride[0] = q_hidden + 1;
     check_status(
         qscu_qwen36_full_attention_output_gate_bf16(&full_attn_gate_desc, nullptr),
         QSFI_STATUS_INVALID_ARGUMENT,
         "qscu extracted full-attn output gate rejects padded gate"
     );
-    full_attn_gate_desc.gate = tensor2_bf16(d_out, 1, 4096);
-    full_attn_gate_desc.out = tensor2_bf16(d_out, 1, 4096);
+    full_attn_gate_desc.gate = tensor2_bf16(d_out, 1, q_hidden);
+    full_attn_gate_desc.out = tensor2_bf16(d_out, 1, q_hidden);
     check_status(
         qscu_qwen36_full_attention_output_gate_bf16(&full_attn_gate_desc, nullptr),
         QSFI_STATUS_INVALID_ARGUMENT,
         "qscu extracted full-attn output gate rejects exact gate/out alias"
     );
-    full_attn_gate_desc.gate = tensor2_bf16(d_full_attn_overlap + 1, 1, 4096);
-    full_attn_gate_desc.out = tensor2_bf16(d_full_attn_overlap, 1, 4096);
+    full_attn_gate_desc.gate = tensor2_bf16(d_full_attn_overlap + 1, 1, q_hidden);
+    full_attn_gate_desc.out = tensor2_bf16(d_full_attn_overlap, 1, q_hidden);
     check_status(
         qscu_qwen36_full_attention_output_gate_bf16(&full_attn_gate_desc, nullptr),
         QSFI_STATUS_INVALID_ARGUMENT,

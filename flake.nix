@@ -115,14 +115,12 @@
               || builtins.match "[^/]*\\.(c|cu|h|inc)" relative != null
               || builtins.elem relative [
                 "build_tools/cuda.ninja"
-                "build_tools/generate_macros.c"
               ];
           };
           strictDeps = true;
           buildInputs = cudaLibs;
           nativeBuildInputs = with pkgs; [
             ninja
-            tinycc
             cudaPackages.cuda_nvcc
           ];
           dontConfigure = true;
@@ -131,6 +129,7 @@
             mkdir -p 3pty build
             ln -s ${flashinferSrc} 3pty/flashinfer
             cp build_tools/cuda.ninja build/build.ninja
+            cp ${cConstants} build/qsfi_macros.h
             ninja -C build -j "$NIX_BUILD_CORES" libqs_native.a
             runHook postBuild
           '';
@@ -147,6 +146,7 @@
           "qstriton = ${buildTools}/bin/qstriton\n" + import ./build_tools/nixsrc/ninja.nix
         );
         rustConstants = pkgs.writeText "qs3-constants.rs" (import ./build_tools/nixsrc/rust.nix);
+        cConstants = pkgs.writeText "qs3-macros.h" (import ./build_tools/nixsrc/c.nix);
         commonArgs = {
           inherit src;
           inherit (craneLib.crateNameFromCargoToml { inherit src; }) version;

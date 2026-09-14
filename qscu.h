@@ -54,7 +54,8 @@ qsfi_status qscu_qwen36_shared_expert_gate_add_bf16(
 /*
  * Qwen3.6 full-attention output gate: out *= sigmoid(gate). gate is read-only.
  * gate/out are bf16 [num_tokens, q_hidden] and q_hidden must be the Qwen3.6
- * full-attention q projection width, 4096. All tensors must be contiguous
+ * full-attention q projection width selected at build time (4096 or 6144).
+ * All tensors must be contiguous
  * row-major. This helper does not split q_proj's interleaved per-head
  * [q, gate] layout or apply q_norm/RoPE; callers pass an already-extracted
  * contiguous gate tensor.

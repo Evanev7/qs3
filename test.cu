@@ -1,6 +1,7 @@
 #include "qscb.h"
 #include "qscu.h"
 #include "qsfi.h"
+#include "qsfi_macros.h"
 
 #include <cuda_bf16.h>
 #include <cuda_runtime.h>
@@ -2717,7 +2718,6 @@ int main()
     test_qscb_linear_bf16_logits_f32_output_beta();
     test_qscu_utils_silu_and_mul_bf16();
     test_qscu_utils_qwen36_shared_expert_gate_add_bf16();
-    test_qscu_utils_qwen36_full_attention_output_gate_bf16();
     test_qscu_utils_embedding_gather_bf16();
     test_qscu_utils_logits_soft_cap_f32();
     test_qscu_utils_greedy_argmax_f32();
@@ -2725,6 +2725,8 @@ int main()
     test_qscu_utils_negative_validation();
     test_qscu_gdn_router_helpers();
 #endif
+
+    test_qscu_utils_qwen36_full_attention_output_gate_bf16();
 
     if (failures != 0) {
         std::fprintf(stderr, "%d failure(s)\n", failures);

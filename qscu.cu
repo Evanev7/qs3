@@ -14,12 +14,6 @@
 
 namespace {
 
-constexpr uint32_t kQwen36GdnNumQHeads = QSFI_QWEN36_GDN_NUM_Q_HEADS;
-constexpr uint32_t kQwen36GdnNumKHeads = QSFI_QWEN36_GDN_NUM_K_HEADS;
-constexpr uint32_t kQwen36GdnKeyDim = QSFI_QWEN36_GDN_KEY_DIM;
-constexpr uint32_t kQwen36GdnValueDim = QSFI_QWEN36_GDN_VALUE_DIM;
-constexpr uint32_t kQwen36GdnConvWidth = 4;
-constexpr uint32_t kQwen36GdnConvState = kQwen36GdnConvWidth - 1;
 constexpr bool qwen36_gdn_value_heads_supported(int64_t heads)
 {
     return heads == 32 || heads == 48;
@@ -27,18 +21,19 @@ constexpr bool qwen36_gdn_value_heads_supported(int64_t heads)
 
 constexpr uint32_t qwen36_gdn_packed_dim(uint32_t value_heads)
 {
-    return 2 * kQwen36GdnNumKHeads * kQwen36GdnKeyDim + value_heads * kQwen36GdnValueDim;
+    return 2 * QSFI_QWEN36_GDN_NUM_K_HEADS * QSFI_QWEN36_GDN_KEY_DIM
+        + value_heads * QSFI_QWEN36_GDN_VALUE_DIM;
 }
-constexpr uint32_t kQwen36FullAttentionQHidden = 4096;
-constexpr uint32_t kQwen36GdnThreads = QSFI_QWEN36_GDN_THREADS;
 constexpr uint32_t kElementwiseThreads = 256;
 constexpr uint32_t kRouterMaxTopK = 8;
 constexpr uint32_t kRouterMaxExperts = 256;
 constexpr float kRouterNegInf = -3.4028234663852886e38f;
 
-static_assert(kQwen36GdnNumQHeads == kQwen36GdnNumKHeads, "qwen3.6 GDN maps q/k heads");
-static_assert(kQwen36GdnKeyDim == kQwen36GdnThreads, "one thread per GDN head dim");
-static_assert(kQwen36GdnValueDim == kQwen36GdnThreads, "one thread per GDN value dim");
+static_assert(
+    QSFI_QWEN36_GDN_NUM_Q_HEADS == QSFI_QWEN36_GDN_NUM_K_HEADS, "qwen3.6 GDN maps q/k heads"
+);
+static_assert(QSFI_QWEN36_GDN_KEY_DIM == QSFI_QWEN36_GDN_THREADS, "one thread per GDN head dim");
+static_assert(QSFI_QWEN36_GDN_VALUE_DIM == QSFI_QWEN36_GDN_THREADS, "one thread per GDN value dim");
 
 template <typename Tensor> bool tensor_present(const Tensor& tensor)
 {
@@ -831,11 +826,11 @@ struct post_conv_params {
 
 __device__ float block_sum_128(float value)
 {
-    __shared__ float scratch[kQwen36GdnThreads];
+    __shared__ float scratch[QSFI_QWEN36_GDN_THREADS];
     const uint32_t tid = threadIdx.x;
     scratch[tid] = value;
     __syncthreads();
-    for (uint32_t stride = kQwen36GdnThreads / 2; stride > 0; stride >>= 1) {
+    for (uint32_t stride = QSFI_QWEN36_GDN_THREADS / 2; stride > 0; stride >>= 1) {
         if (tid < stride)
             scratch[tid] += scratch[tid + stride];
         __syncthreads();
@@ -848,17 +843,18 @@ __device__ float block_sum_128(float value)
 template <uint32_t NumVHeads>
 __global__ void qwen36_gdn_post_conv_prepare_kernel(post_conv_params p)
 {
-    const uint32_t head_slot = blockIdx.x % (kQwen36GdnNumKHeads + NumVHeads);
-    const uint32_t token = blockIdx.x / (kQwen36GdnNumKHeads + NumVHeads);
+    const uint32_t head_slot = blockIdx.x % (QSFI_QWEN36_GDN_NUM_K_HEADS + NumVHeads);
+    const uint32_t token = blockIdx.x / (QSFI_QWEN36_GDN_NUM_K_HEADS + NumVHeads);
     const uint32_t tid = threadIdx.x;
 
-    if (head_slot < kQwen36GdnNumKHeads) {
+    if (head_slot < QSFI_QWEN36_GDN_NUM_K_HEADS) {
         const uint32_t head = head_slot;
         const int64_t q_offset = static_cast<int64_t>(token) * p.conv_stride0
-            + static_cast<int64_t>(head * kQwen36GdnKeyDim + tid) * p.conv_stride1;
+            + static_cast<int64_t>(head * QSFI_QWEN36_GDN_KEY_DIM + tid) * p.conv_stride1;
         const int64_t k_offset = static_cast<int64_t>(token) * p.conv_stride0
             + static_cast<int64_t>(
-                  kQwen36GdnNumKHeads * kQwen36GdnKeyDim + head * kQwen36GdnKeyDim + tid
+                  QSFI_QWEN36_GDN_NUM_K_HEADS * QSFI_QWEN36_GDN_KEY_DIM
+                  + head * QSFI_QWEN36_GDN_KEY_DIM + tid
               ) * p.conv_stride1;
 
         float q_value = load_bf16(p.conv_out + q_offset);
@@ -885,10 +881,11 @@ __global__ void qwen36_gdn_post_conv_prepare_kernel(post_conv_params p)
         return;
     }
 
-    const uint32_t v_head = head_slot - kQwen36GdnNumKHeads;
+    const uint32_t v_head = head_slot - QSFI_QWEN36_GDN_NUM_K_HEADS;
     const int64_t v_offset = static_cast<int64_t>(token) * p.conv_stride0
         + static_cast<int64_t>(
-              2 * kQwen36GdnNumKHeads * kQwen36GdnKeyDim + v_head * kQwen36GdnValueDim + tid
+              2 * QSFI_QWEN36_GDN_NUM_K_HEADS * QSFI_QWEN36_GDN_KEY_DIM
+              + v_head * QSFI_QWEN36_GDN_VALUE_DIM + tid
           ) * p.conv_stride1;
     const float v_value = load_bf16(p.conv_out + v_offset);
     store_bf16(
@@ -959,7 +956,7 @@ __global__ void qwen36_gdn_rmsnorm_gated_kernel(rmsnorm_gated_params p)
         + static_cast<int64_t>(tid) * p.x_stride2
     );
     const float sum = block_sum_128(x_value * x_value);
-    const float rstd = rsqrtf(sum / static_cast<float>(kQwen36GdnValueDim) + p.eps);
+    const float rstd = rsqrtf(sum / static_cast<float>(QSFI_QWEN36_GDN_VALUE_DIM) + p.eps);
     const float weight = load_optional_weight(
         p.weight_bf16 == nullptr ? nullptr
                                  : p.weight_bf16 + static_cast<int64_t>(tid) * p.weight_stride0,
@@ -1145,9 +1142,11 @@ qsfi_status validate_conv_desc(const qscu_qwen36_gdn_causal_conv1d_desc* desc)
         return QSFI_STATUS_INVALID_ARGUMENT;
 
     if (desc->x.shape[0] != static_cast<int64_t>(desc->num_tokens)
-        || desc->weight.shape[0] != packed_dim || desc->weight.shape[1] != kQwen36GdnConvWidth
+        || desc->weight.shape[0] != packed_dim
+        || desc->weight.shape[1] != QSFI_QWEN36_GDN_CONV_WIDTH
         || (tensor_present(desc->bias) && desc->bias.shape[0] != packed_dim)
-        || desc->state.shape[1] != packed_dim || desc->state.shape[2] != kQwen36GdnConvState
+        || desc->state.shape[1] != packed_dim
+        || desc->state.shape[2] != QSFI_QWEN36_GDN_CONV_HISTORY_LEN
         || desc->out.shape[0] != static_cast<int64_t>(desc->num_tokens)
         || desc->out.shape[1] != packed_dim
         || (tensor_present(desc->state_read_indices)
@@ -1270,11 +1269,13 @@ qsfi_status validate_post_conv_desc(const qscu_qwen36_gdn_post_conv_prepare_desc
         || desc->b.shape[1] != value_heads || desc->a_log.shape[0] != value_heads
         || desc->dt_bias.shape[0] != value_heads
         || desc->q.shape[0] != static_cast<int64_t>(desc->num_tokens)
-        || desc->q.shape[1] != kQwen36GdnNumQHeads || desc->q.shape[2] != kQwen36GdnKeyDim
+        || desc->q.shape[1] != QSFI_QWEN36_GDN_NUM_Q_HEADS
+        || desc->q.shape[2] != QSFI_QWEN36_GDN_KEY_DIM
         || desc->k.shape[0] != static_cast<int64_t>(desc->num_tokens)
-        || desc->k.shape[1] != kQwen36GdnNumKHeads || desc->k.shape[2] != kQwen36GdnKeyDim
+        || desc->k.shape[1] != QSFI_QWEN36_GDN_NUM_K_HEADS
+        || desc->k.shape[2] != QSFI_QWEN36_GDN_KEY_DIM
         || desc->v.shape[0] != static_cast<int64_t>(desc->num_tokens)
-        || desc->v.shape[2] != kQwen36GdnValueDim
+        || desc->v.shape[2] != QSFI_QWEN36_GDN_VALUE_DIM
         || (tensor_present(desc->g_out)
             && (desc->g_out.shape[0] != static_cast<int64_t>(desc->num_tokens)
                 || desc->g_out.shape[1] != value_heads))
@@ -1316,12 +1317,12 @@ qsfi_status validate_rmsnorm_gated_desc(const qscu_qwen36_gdn_rmsnorm_gated_desc
         return QSFI_STATUS_INVALID_ARGUMENT;
 
     if (desc->x.shape[0] != static_cast<int64_t>(desc->num_tokens)
-        || desc->x.shape[2] != kQwen36GdnValueDim
+        || desc->x.shape[2] != QSFI_QWEN36_GDN_VALUE_DIM
         || desc->gate.shape[0] != static_cast<int64_t>(desc->num_tokens)
-        || desc->gate.shape[1] != value_heads || desc->gate.shape[2] != kQwen36GdnValueDim
-        || desc->weight.shape[0] != kQwen36GdnValueDim
+        || desc->gate.shape[1] != value_heads || desc->gate.shape[2] != QSFI_QWEN36_GDN_VALUE_DIM
+        || desc->weight.shape[0] != QSFI_QWEN36_GDN_VALUE_DIM
         || desc->out.shape[0] != static_cast<int64_t>(desc->num_tokens)
-        || desc->out.shape[1] != value_heads || desc->out.shape[2] != kQwen36GdnValueDim) {
+        || desc->out.shape[1] != value_heads || desc->out.shape[2] != QSFI_QWEN36_GDN_VALUE_DIM) {
         return QSFI_STATUS_INVALID_ARGUMENT;
     }
     return QSFI_STATUS_OK;
@@ -1424,7 +1425,8 @@ qsfi_status validate_qwen36_full_attention_output_gate_desc(
     const qscu_qwen36_full_attention_output_gate_desc* desc
 )
 {
-    if (desc == nullptr || desc->num_tokens == 0 || desc->q_hidden != kQwen36FullAttentionQHidden)
+    if (desc == nullptr || desc->num_tokens == 0
+        || desc->q_hidden != QSFI_QWEN36_FULL_ATTENTION_Q_HIDDEN)
         return QSFI_STATUS_INVALID_ARGUMENT;
 
     qsfi_status status = validate_tensor(desc->gate, QSFI_DTYPE_BF16);
@@ -1911,19 +1913,19 @@ qsfi_status qscu_qwen36_gdn_post_conv_prepare_bf16(
 
     const uint32_t value_heads = static_cast<uint32_t>(desc->v.shape[1]);
     const uint64_t items
-        = static_cast<uint64_t>(desc->num_tokens) * (kQwen36GdnNumKHeads + value_heads);
+        = static_cast<uint64_t>(desc->num_tokens) * (QSFI_QWEN36_GDN_NUM_K_HEADS + value_heads);
     if (items > std::numeric_limits<uint32_t>::max())
         return QSFI_STATUS_UNSUPPORTED;
     if (value_heads == 32) {
         qwen36_gdn_post_conv_prepare_kernel<32>
             <<<static_cast<uint32_t>(items),
-               kQwen36GdnThreads,
+               QSFI_QWEN36_GDN_THREADS,
                0,
                static_cast<cudaStream_t>(stream)>>>(params);
     } else {
         qwen36_gdn_post_conv_prepare_kernel<48>
             <<<static_cast<uint32_t>(items),
-               kQwen36GdnThreads,
+               QSFI_QWEN36_GDN_THREADS,
                0,
                static_cast<cudaStream_t>(stream)>>>(params);
     }
@@ -1966,13 +1968,13 @@ qsfi_status qscu_qwen36_gdn_rmsnorm_gated_bf16(
     if (value_heads == 32) {
         qwen36_gdn_rmsnorm_gated_kernel<32>
             <<<static_cast<uint32_t>(items),
-               kQwen36GdnThreads,
+               QSFI_QWEN36_GDN_THREADS,
                0,
                static_cast<cudaStream_t>(stream)>>>(params);
     } else {
         qwen36_gdn_rmsnorm_gated_kernel<48>
             <<<static_cast<uint32_t>(items),
-               kQwen36GdnThreads,
+               QSFI_QWEN36_GDN_THREADS,
                0,
                static_cast<cudaStream_t>(stream)>>>(params);
     }

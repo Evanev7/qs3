@@ -13,7 +13,6 @@ namespace {
 
 constexpr uint32_t kDefaultNumQHeads = QSFI_QWEN36_GDN_NUM_Q_HEADS;
 constexpr uint32_t kDefaultNumKHeads = QSFI_QWEN36_GDN_NUM_K_HEADS;
-constexpr uint32_t kDefaultNumVHeads = QSFI_QWEN36_GDN_NUM_V_HEADS;
 constexpr uint32_t kDefaultKeyDim = QSFI_QWEN36_GDN_KEY_DIM;
 constexpr uint32_t kDefaultValueDim = QSFI_QWEN36_GDN_VALUE_DIM;
 constexpr uint32_t kWarpsPerBlock = 4;
@@ -339,14 +338,13 @@ __global__ void validate_gdn_prefill_metadata_kernel(
 qsfi_status require_exact_shape(qsfi_context* ctx, const gdn_shape& shape)
 {
     if (shape.num_q_heads != kDefaultNumQHeads || shape.num_k_heads != kDefaultNumKHeads
-        || (shape.num_v_heads != kDefaultNumVHeads && shape.num_v_heads != 48)
-        || shape.key_dim != kDefaultKeyDim || shape.value_dim != kDefaultValueDim) {
+        || (shape.num_v_heads != 32 && shape.num_v_heads != 48) || shape.key_dim != kDefaultKeyDim
+        || shape.value_dim != kDefaultValueDim) {
         return set_unsupported(
             ctx,
-            "only qwen3.6 GDN shapes q=%u k=%u v=%u/48 key_dim=%u value_dim=%u are wired",
+            "only qwen3.6 GDN shapes q=%u k=%u v=32/48 key_dim=%u value_dim=%u are wired",
             kDefaultNumQHeads,
             kDefaultNumKHeads,
-            kDefaultNumVHeads,
             kDefaultKeyDim,
             kDefaultValueDim
         );

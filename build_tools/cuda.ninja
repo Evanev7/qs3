@@ -21,10 +21,6 @@ nvcc_common_flags = -std=c++17 -arch=sm_121 --expt-relaxed-constexpr -diag-suppr
 nvccflags = $nvcc_common_flags -DQSFI_ENABLE_CHECKED_VALIDATION=0
 nvcc_checked_flags = $nvcc_common_flags -DQSFI_ENABLE_CHECKED_VALIDATION=1
 
-rule run
-  command = $in > $out
-  description = GEN $out
-
 rule nvcc
   command = nvcc $nvccflags $extraflags -c $in -o $out
   description = NVCC $out
@@ -50,8 +46,6 @@ rule qwen36_vectors
   depfile = $out.d
   deps = gcc
   description = VECTORS qwen36_semantics
-
-build qsfi_macros.h: run $src/build_tools/generate_macros.c
 
 build vectors/qwen36_semantics/.oracle-ok: qwen36_vectors $
     $src/build_tools/pyproject.toml $
@@ -100,7 +94,7 @@ build qsfi_checked.o: nvcc_checked $src/qsfi.cu | $
   extraflags = $fi_includes
 build libqs_native.a: ar qsfi.o qscu_gdn.o qscu.o qscb.o
 
-build qsfi_test_release: link_test $src/test.cu qsfi.o qscu_gdn.o qscu.o qscb.o | $
+build qsfi_test_release: link_test $src/test.cu qsfi.o qscu_gdn.o qscu.o qscb.o | qsfi_macros.h $
     $src/qs_tensor.h $
     $src/qs_info.h $
     $src/qsfi.h $
@@ -112,7 +106,7 @@ build qsfi_test_release: link_test $src/test.cu qsfi.o qscu_gdn.o qscu.o qscb.o 
     $src/tests_cuda_qscu_gdn_router.inc
   libs = -lcublas -lcublasLt
 
-build qsfi_test_checked: link_test_checked $src/test.cu qsfi_checked.o qscu_gdn_checked.o qscu_checked.o qscb.o | $
+build qsfi_test_checked: link_test_checked $src/test.cu qsfi_checked.o qscu_gdn_checked.o qscu_checked.o qscb.o | qsfi_macros.h $
     $src/qs_tensor.h $
     $src/qs_info.h $
     $src/qsfi.h $
@@ -124,7 +118,7 @@ build qsfi_test_checked: link_test_checked $src/test.cu qsfi_checked.o qscu_gdn_
     $src/tests_cuda_qscu_gdn_router.inc
   libs = -lcublas -lcublasLt
 
-build qsfi_test_qwen27_release: link_test $src/test.cu qsfi.o qscu_gdn.o qscu.o qscb.o | $
+build qsfi_test_qwen27_release: link_test $src/test.cu qsfi.o qscu_gdn.o qscu.o qscb.o | qsfi_macros.h $
     $src/qs_tensor.h $
     $src/qs_info.h $
     $src/qsfi.h $
@@ -137,7 +131,7 @@ build qsfi_test_qwen27_release: link_test $src/test.cu qsfi.o qscu_gdn.o qscu.o 
   libs = -lcublas -lcublasLt
   extraflags = -DQS3_TEST_QWEN27 -diag-suppress 177
 
-build qsfi_test_qwen27_checked: link_test_checked $src/test.cu qsfi_checked.o qscu_gdn_checked.o qscu_checked.o qscb.o | $
+build qsfi_test_qwen27_checked: link_test_checked $src/test.cu qsfi_checked.o qscu_gdn_checked.o qscu_checked.o qscb.o | qsfi_macros.h $
     $src/qs_tensor.h $
     $src/qs_info.h $
     $src/qsfi.h $

@@ -17,6 +17,7 @@ rule regenerate
   description = REGENERATE
 
 build constants.rs: nix_eval ../build_tools/nixsrc/rust.nix | config_inputs
+build qsfi_macros.h: nix_eval ../build_tools/nixsrc/c.nix | config_inputs
 build triton/kernels.ninja: nix_eval ../build_tools/nixsrc/ninja.nix | config_inputs
 
 build build.ninja cuda.ninja: regenerate | $
