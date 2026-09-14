@@ -12,7 +12,8 @@ use crate::{
             PACKED_QKV_CHANNELS, VALUE_HEAD_DIM,
         },
         mlp::{
-            INTERMEDIATE_SIZE, NUM_EXPERTS, NUM_EXPERTS_PER_TOKEN, SHARED_EXPERT_INTERMEDIATE_SIZE,
+            HAS_EXPERTS, INTERMEDIATE_SIZE, NUM_EXPERTS, NUM_EXPERTS_PER_TOKEN,
+            SHARED_EXPERT_INTERMEDIATE_SIZE,
         },
         model::HIDDEN_SIZE,
     },
@@ -380,10 +381,37 @@ impl Qwen36TextConfig {
         )?;
         let num_attention_heads = u32_field(text, "num_attention_heads")?;
         let hidden_size = u32_field(text, "hidden_size")?;
-        let head_dim =
-            opt_u32_field(text, "head_dim")?.unwrap_or_else(|| hidden_size / num_attention_heads);
-        let intermediate_size = opt_u32_field(text, "intermediate_size")?
-            .unwrap_or(u32_field(text, "moe_intermediate_size")?);
+        let head_dim = u32_field(text, "head_dim")?;
+        let (
+            intermediate_size,
+            num_experts,
+            num_experts_per_tok,
+            moe_intermediate_size,
+            shared_expert_intermediate_size,
+        ) = if HAS_EXPERTS {
+            let moe_intermediate_size = u32_field(text, "moe_intermediate_size")?;
+            (
+                opt_u32_field(text, "intermediate_size")?.unwrap_or(moe_intermediate_size),
+                u32_field(text, "num_experts")?,
+                u32_field(text, "num_experts_per_tok")?,
+                moe_intermediate_size,
+                u32_field(text, "shared_expert_intermediate_size")?,
+            )
+        } else {
+            for field in [
+                "num_experts",
+                "num_experts_per_tok",
+                "moe_intermediate_size",
+                "shared_expert_intermediate_size",
+            ] {
+                if text.contains_key(field) {
+                    return Err(WeightLoadError::invalid_config(format!(
+                        "dense checkpoint must not contain MoE field {field:?}"
+                    )));
+                }
+            }
+            (u32_field(text, "intermediate_size")?, 0, 0, 0, 0)
+        };
         let rope_parameters = match text.get("rope_parameters") {
             Some(value) if value.is_null() => None,
             Some(value) => Some(value.get::<HashMap<String, JsonValue>>().ok_or_else(|| {
@@ -432,10 +460,10 @@ impl Qwen36TextConfig {
             rms_norm_eps: f32_field_with_default(text, "rms_norm_eps", 1.0e-6)?,
             rope_theta,
             logits_soft_cap: f32_field_with_default(text, "logits_soft_cap", 0.0)?,
-            num_experts: u32_field(text, "num_experts")?,
-            num_experts_per_tok: u32_field(text, "num_experts_per_tok")?,
-            moe_intermediate_size: u32_field(text, "moe_intermediate_size")?,
-            shared_expert_intermediate_size: u32_field(text, "shared_expert_intermediate_size")?,
+            num_experts,
+            num_experts_per_tok,
+            moe_intermediate_size,
+            shared_expert_intermediate_size,
             linear_num_key_heads: u32_field(text, "linear_num_key_heads")?,
             linear_num_value_heads: u32_field(text, "linear_num_value_heads")?,
             linear_key_head_dim: u32_field(text, "linear_key_head_dim")?,
@@ -547,14 +575,19 @@ impl Qwen36TextConfig {
                 self.num_attention_heads, self.num_key_value_heads, self.head_dim
             )));
         }
+        if self.intermediate_size != INTERMEDIATE_SIZE {
+            return Err(WeightLoadError::invalid_config(format!(
+                "MLP intermediate_size must be {INTERMEDIATE_SIZE}, got {}",
+                self.intermediate_size
+            )));
+        }
         if self.num_experts != NUM_EXPERTS
             || self.num_experts_per_tok != NUM_EXPERTS_PER_TOKEN
-            || self.moe_intermediate_size != INTERMEDIATE_SIZE
-            || self.intermediate_size != INTERMEDIATE_SIZE
+            || self.moe_intermediate_size != if HAS_EXPERTS { INTERMEDIATE_SIZE } else { 0 }
             || self.shared_expert_intermediate_size != SHARED_EXPERT_INTERMEDIATE_SIZE
         {
             return Err(WeightLoadError::invalid_config(
-                "MoE fields do not match qs3 Qwen3.6-35B-A3B constants",
+                "expert fields do not match the compiled model",
             ));
         }
         if self.linear_num_key_heads != NUM_KEY_HEADS
@@ -1191,6 +1224,36 @@ pub(crate) fn expected_qwen36_bf16_specs(
         }
 
         let mlp = format!("{prefix}.mlp");
+        if !HAS_EXPERTS {
+            for (name, slot, shape) in [
+                (
+                    "gate_proj.weight",
+                    "mlp.gate",
+                    [config.intermediate_size, hidden],
+                ),
+                (
+                    "up_proj.weight",
+                    "mlp.up",
+                    [config.intermediate_size, hidden],
+                ),
+                (
+                    "down_proj.weight",
+                    "mlp.down",
+                    [hidden, config.intermediate_size],
+                ),
+            ] {
+                push_spec(
+                    &mut specs,
+                    format!("{mlp}.{name}"),
+                    WeightTensorDType::Bf16,
+                    &shape,
+                    WeightTensorSource::Safetensors,
+                    Some(layer),
+                    slot,
+                );
+            }
+            continue;
+        }
         push_spec(
             &mut specs,
             format!("{mlp}.gate.weight"),

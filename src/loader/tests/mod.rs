@@ -26,6 +26,7 @@ use std::collections::BTreeMap;
 use std::ffi::c_void;
 use std::{env, ptr, time::Instant};
 
+mod checkpoint;
 mod scores;
 
 const REAL_PROMPT: [i32; 4] = [1, 2, 3, 4];
