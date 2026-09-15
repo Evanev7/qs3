@@ -1,0 +1,17 @@
+mkdir -p build/triton
+nix eval --offline --raw --file build_tools/nixsrc/ninja.nix > build/triton/kernels.ninja
+cp build_tools/build.ninja build/build.ninja
+cp build_tools/cuda.ninja build/cuda.ninja
+ninja: Entering directory `build'
+[1/2] NIX EVAL triton/kernels.ninja
+[2/2] REGENERATE
+[1/8] NIX EVAL constants.rs
+[2/8] NIX EVAL qsfi_macros.h
+[3/8] QSTRITON gdn_qkv
+triton/gdn_qkv (kernel): 3 runtime args, grid=[10240, 1, 1], shared=32
+[4/8] QSTRITON lm_head
+triton/lm_head (kernel): 3 runtime args, grid=[248320, 1, 1], shared=32
+[5/8] NVCC qscu_gdn.o
+[6/8] NVCC qscu.o
+[7/8] NVCC qsfi.o
+[8/8] ARCHIVE libqs_native.a

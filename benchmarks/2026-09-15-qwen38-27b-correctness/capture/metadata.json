@@ -1,0 +1,11 @@
+{
+  "commit": "78cfbe52f2bc0b7f4aa9ecac099bae9de457f9cf",
+  "reference": "../vllm-correctness-2026-09-14T194223Z-jn1cisug/data/qwen3.8-27b",
+  "profile": "release",
+  "model_name": "qwen3.8-27b",
+  "model_revision": "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0",
+  "snapshot": "/home/sp10/.cache/huggingface/hub/models--Qwen--Qwen3.8-27B/snapshots/1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0",
+  "reference_rows_verified": 1051,
+  "weight_backend": "pinned_upload",
+  "timing": "instrumented correctness replay; not a performance benchmark"
+}

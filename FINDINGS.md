@@ -1,13 +1,60 @@
 # Findings and direction
 
-This is an evidence log for Qwen3.6 on Spark. TODO.md remains the completion
-checklist; the 35B BF16 eager decode target of **31 tok/s** is now measured
-at both routine core workloads. Broader cross-runtime correctness remains open.
+This is the qs3 evidence log on Spark. TODO.md remains the completion checklist.
+The current 3.8-27B BF16 baseline is about **4.5 tok/s**, effectively tied with
+pinned vLLM; NVFP4 is the next priority. Earlier 35B BF16 results reached the
+**31 tok/s** eager decode target. Broader cross-runtime correctness remains open.
 
 The current measurements are first; detailed investigations are grouped by
 topic below. Within each topic, observations retain their historical context: an
 early result or proposed next step may be superseded by a later result. Test
 counts and pass claims describe the cited change, not every subsequent revision.
+
+## Qwen3.8-27B BF16 performance baseline (2026-09-15)
+
+The [unprofiled baseline](benchmarks/2026-09-15-qwen38-27b-performance/README.md)
+measures qs3 eager at **4.509 tok/s** for 102/32 and **4.491 tok/s** for 1024/256.
+Pinned vLLM 0.29.0, model runner v1 with CUDA graphs, measures **4.508** and
+**4.487 tok/s**. Decode p50 is 221.605 / 222.602 ms for qs3 versus
+221.786 / 222.820 ms for vLLM. Differences below 0.1% establish no decode
+performance advantage. vLLM prefill is faster: 267.016 / 796.080 ms versus
+qs3's 295.535 / 1026.327 ms.
+
+Both use the pinned 3.8-27B BF16 snapshot and FP32 GDN state on sp10/GB10.
+Prompt fingerprints and decode context ranges match, but independent greedy
+continuations first differ at output indices 18 and 3. These timings therefore
+do not establish identical-prefix numerical agreement. Loading/graph preparation
+are excluded from steady samples; no profiler or logit capture ran alongside
+them. All four benchmark contract tests pass, and the full timing artifacts,
+software identities, raw samples and sources are retained at the link above.
+
+The production-code change only corrects model/GQA/dense-MLP benchmark labels;
+`remote.sh` and inference kernels are unchanged. Use this as the BF16 starting
+point for NVFP4 work, without starting a deep BF16 tuning campaign.
+
+## Qwen3.8-27B BF16 reference replay (2026-09-15)
+
+The [full-model comparison](benchmarks/2026-09-15-qwen38-27b-correctness/README.md)
+completes all four release score replays on sp10 after selecting 3.8-27B in the
+build and retargeting the diagnostic recipe. Native/Triton builds succeed;
+all 1,051 saved vLLM reference rows pass fresh size/SHA256 checks. Argmax matches
+are **4/4, 36/37, 204/205 and 794/805** for the small, 102/32, 500/200 and
+4000/800 cases. Six of thirteen differing choices attain tied maxima in vLLM.
+Both runtimes use BF16 weights/activations and FP32 GDN state; qs3 retains FP32
+LM-head output while the reference has BF16 output saved as FP32.
+
+This establishes executable full 3.8-27B prefill and sustained forced decode,
+but numerical correctness remains open. The 500/200 prefill has KL(vLLM || qs3)
+**0.5045** despite agreeing on its winner. At 4000/800 step 1, qs3 selects
+248046 versus vLLM's 492, with KL **19.6994**; final BF16 logit rounding cannot
+explain that difference. Long-prompt prefill and its first decode are the next
+investigation targets. Later agreement under forced tokens does not clear the
+early mismatch. No cause, independent quality parity, rebuild/reset correctness,
+or 27B throughput is established here.
+
+Compact scores, comparisons, raw-row hashes, sources and logs are retained in
+the linked artifact. Complete raw rows remain on sp10; the local raw download
+is partial. Historical sections below retain their earlier model-support status.
 
 ## NVFP4 kernel survey and integration proposal (2026-09-14)
 

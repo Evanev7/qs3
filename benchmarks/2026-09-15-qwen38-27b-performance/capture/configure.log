@@ -1,0 +1,4 @@
+mkdir -p build/triton
+nix eval --offline --raw --file build_tools/nixsrc/ninja.nix > build/triton/kernels.ninja
+cp build_tools/build.ninja build/build.ninja
+cp build_tools/cuda.ninja build/cuda.ninja

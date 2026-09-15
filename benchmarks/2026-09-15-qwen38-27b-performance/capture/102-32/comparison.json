@@ -1,0 +1,19 @@
+{
+  "started_utc": "2026-09-15T15:52:43.661632+00:00",
+  "finished_utc": "2026-09-15T16:01:27.511208+00:00",
+  "context": 102,
+  "decode_samples": 32,
+  "prompt_fingerprint": "6ca602a4cc15238d",
+  "first_generated_token_difference": 18,
+  "matching_generated_tokens": 18,
+  "qs3": {
+    "prefill_p50_ms": 295.535372,
+    "decode_p50_ms": 221.60454199999998,
+    "decode_tok_s": 4.508655621958582
+  },
+  "vllm": {
+    "prefill_p50_ms": 267.0156601816416,
+    "decode_p50_ms": 221.786439884454,
+    "decode_tok_s": 4.507717781974517
+  }
+}

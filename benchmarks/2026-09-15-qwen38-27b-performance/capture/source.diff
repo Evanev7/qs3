@@ -1,0 +1,1399 @@
+diff --git a/3pty/vllm b/3pty/vllm
+index 98dff2a..51a9956 160000
+--- a/3pty/vllm
++++ b/3pty/vllm
+@@ -1 +1 @@
+-Subproject commit 98dff2a81d747d1dba01a47f939f48c3526d4206
++Subproject commit 51a99565c398c8320de8131e07731c75c52eb87c
+diff --git a/Cargo.toml b/Cargo.toml
+index 8abda02..3ea631a 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -2,6 +2,7 @@
+ name = "qs3"
+ version = "0.1.0"
+ edition = "2024"
++license = "GPL-3.0-or-later WITH GPL-3.0-linking-exception"
+ 
+ [lib]
+ crate-type = ["rlib", "staticlib"]
+diff --git a/FINDINGS.md b/FINDINGS.md
+index 6061f5c..8f6a6b4 100644
+--- a/FINDINGS.md
++++ b/FINDINGS.md
+@@ -9,6 +9,30 @@ topic below. Within each topic, observations retain their historical context: an
+ early result or proposed next step may be superseded by a later result. Test
+ counts and pass claims describe the cited change, not every subsequent revision.
+ 
++## Qwen3.8-27B BF16 reference replay (2026-09-15)
++
++The [full-model comparison](benchmarks/2026-09-15-qwen38-27b-correctness/README.md)
++completes all four release score replays on sp10 after selecting 3.8-27B in the
++build and retargeting the diagnostic recipe. Native/Triton builds succeed;
++all 1,051 saved vLLM reference rows pass fresh size/SHA256 checks. Argmax matches
++are **4/4, 36/37, 204/205 and 794/805** for the small, 102/32, 500/200 and
++4000/800 cases. Six of thirteen differing choices attain tied maxima in vLLM.
++Both runtimes use BF16 weights/activations and FP32 GDN state; qs3 retains FP32
++LM-head output while the reference has BF16 output saved as FP32.
++
++This establishes executable full 3.8-27B prefill and sustained forced decode,
++but numerical correctness remains open. The 500/200 prefill has KL(vLLM || qs3)
++**0.5045** despite agreeing on its winner. At 4000/800 step 1, qs3 selects
++248046 versus vLLM's 492, with KL **19.6994**; final BF16 logit rounding cannot
++explain that difference. Long-prompt prefill and its first decode are the next
++investigation targets. Later agreement under forced tokens does not clear the
++early mismatch. No cause, independent quality parity, rebuild/reset correctness,
++or 27B throughput is established here.
++
++Compact scores, comparisons, raw-row hashes, sources and logs are retained in
++the linked artifact. Complete raw rows remain on sp10; the local raw download
++is partial. Historical sections below retain their earlier model-support status.
++
+ ## NVFP4 kernel survey and integration proposal (2026-09-14)
+ 
+ The [GB10 survey](benchmarks/2026-09-14-nvfp4-survey/README.md) covers b12x,
+diff --git a/TODO.md b/TODO.md
+index 3dc72c7..21d8461 100644
+--- a/TODO.md
++++ b/TODO.md
+@@ -2,7 +2,9 @@
+ 
+ ## Scope
+ 
+-- Support Qwen3.6-35B-A3B and Qwen3.6-27B, initially text-only.
++- Prioritize Qwen3.8-27B, initially text-only: this is the model that matters
++  for the next runtime work. Decide whether to pivot the entire test suite to
++  it; continued 3.6-35B-A3B / 3.6-27B coverage is not yet a settled requirement.
+ - Competitive single-user decode latency and tokens/sec against vLLM on Spark
+   is a completion criterion. Compare matched precision, context lengths, and
+   generation settings; record the exact models, kernels, and software revisions.
+@@ -23,10 +25,15 @@
+ 
+ ## Current BF16 priorities
+ 
+-- Prioritize prepared CUDA graph replay, GPU non-greedy sampling, sustained
+-  correctness comparisons, and repeatable provider experiments. These complete
+-  useful BF16 functionality and carry into NVFP4 without requiring a generic DAG
+-  runner or an exhaustive BF16 kernel-tuning campaign.
++- First establish Qwen3.8-27B BF16 end-to-end correctness and settle the test
++  pivot in section 3. Models are downloaded on the other device; use the cached
++  assets and verify their paths/revisions when running there. Downloads are not
++  the outstanding implementation task.
++- Then prioritize prepared CUDA graph replay, sustained correctness comparisons,
++  and repeatable provider experiments on 3.8-27B. GPU non-greedy sampling is
++  already implemented; valid-vocabulary normalization remains open below.
++- The 35B results and unfinished comparisons below record prior work. They do
++  not establish 27B correctness or require more 35B work before the target pivot.
+ - [x] Beat the recorded vLLM 35B BF16 **102/32** result: **30.573 tok/s**,
+   **32.640 ms/token p50**. The separate **500/200** baseline is **30.396 tok/s**,
+   **32.892 ms/token p50**. Throughput uses mean latency, not p50. Reference
+@@ -126,7 +133,24 @@
+   mostly overlaps GPU work. See FINDINGS.md. Device dispatch versus profiling
+   effects and the benefit of graph replay remain unmeasured.
+ 
+-## 3. Add the exact 27B path
++## 3. Establish Qwen3.8-27B and decide the test pivot
++
++- [ ] Decide whether to hard-pivot all tests and routine benchmarks to 3.8-27B.
++  It is the priority model; whether any 35B/MoE or 3.6-27B coverage remains is
++  still open. Audit model fixtures, native targets, loader/reference assertions,
++  tokenizer tests, vector generation, and benchmark defaults as part of this
++  decision. The build now selects 3.8-27B for the comparison run; the real-model
++  asset helper and older regression constants still target 3.6-35B-A3B. The
++  comparison recipe supplies the explicit 3.8 snapshot and saved replay inputs.
++- [x] Pin 3.8-27B assets: BF16
++  `1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0` and NVIDIA NVFP4
++  `dbb8f445b3145f8a4c18ddc769f032d57d32867c`. Model configs and source pins are
++  in `models/`; downloads are complete on the other device.
++- [x] Capture and verify external BF16 references for 3.8-27B: 1,051 full-logit
++  rows across 102/32, 500/200, and 4000/800 workloads. The small prompt
++  `[1,2,3,4]` generates `[5,0,31,46474]` in vLLM. See
++  `benchmarks/2026-09-14-vllm-references/README.md`; full rows remain on sp10.
++  These are reference artifacts, not a qs3 27B correctness pass.
+ 
+ - [ ] Normalize sampling over valid tokenizer IDs: exclude padded logit slots
+   before greedy selection or stochastic probability normalization, instead of
+@@ -142,19 +166,39 @@
+ - [x] Probe native full attention with 24 Q heads, 4 KV heads, head dimension
+   256, and GQA ratio 6. The isolated AOT probe passes CPU-reference prefill/decode
+   and append cases on sp10; see FINDINGS.md. Production native dispatch now
+-  supports the tested 6/8 cases; dedicated checked/release 27B tests pass. Rust
+-  model shape validation still needs to adopt the 27B geometry.
+-- [ ] Validate GDN with 16 key heads and 48 value heads, head dimensions 128,
+-  and convolution width 4. Audit fixed 35B constants in native kernels, Rust
+-  views, scratch allocation, and recurrent state. Native 32/48-head dispatch and
+-  AOT prep specializations now pass dedicated tests, including BF16/FP32 state.
+-  Rust views and allocation changes remain open.
+-- [ ] Add the 64-layer, hidden-size-5120 dense model path with MLP intermediate
+-  size 17408. Preserve the three-GDN/one-full-attention schedule and explicit
+-  support for the 35B shape; reject unsupported model configurations.
+-- [ ] Implement dense weight materialization and validate public-runner prefill,
+-  decode, prefix extension, and rebuilds against external reference results.
+-  Check recurrent-state precision and sustained decode, not just a short prompt.
++  supports the tested 6/8 cases; dedicated checked/release 27B tests pass.
++- [x] Add native GDN dispatch for 16 key heads and 48 value heads, head dimensions
++  128, and convolution width 4. Native 32/48-head dispatch and AOT prep
++  specializations pass dedicated tests, including BF16/FP32 state.
++- [x] Wire Rust model geometry, layer schedule, GDN views, scratch allocation,
++  and recurrent state to build-selected constants. The 27B config describes
++  64 layers, hidden size 5120, dense MLP intermediate size 17408, and the
++  three-GDN/one-full-attention schedule. This records implementation, not a
++  full-model validation pass.
++- [x] Implement dense BF16 weight materialization and gate/up/down execution.
++  The loader validates against the compiled model; dense weights and scratch
++  have their own paths.
++- [x] Run full 3.8-27B BF16 forced-prefix comparisons on sp10 against the saved
++  vLLM 0.29 references. All 1,051 reference rows passed fresh hash checks and all
++  four release replay tests completed: argmax matches 4/4, 36/37, 204/205 and
++  794/805 for 4/4, 102/32, 500/200 and 4000/800. Six of thirteen differing
++  choices are tied maxima in vLLM. See
++  `benchmarks/2026-09-15-qwen38-27b-correctness/README.md` for raw-row locations,
++  score margins, distribution errors, precision differences and exact sources.
++- [ ] Isolate the long-prompt numerical differences before claiming correctness:
++  500/200 prefill has KL 0.5045 despite the same winner; 4000/800 first decode
++  has KL 19.6994 and chooses 248046 versus vLLM's 492 on the same prefix.
++  Final-logit BF16 rounding cannot explain the latter. Investigate prefill and
++  its first decode; later forced-prefix agreement does not clear this gate.
++- [ ] Complete the remaining full-checkpoint public-runner validation for
++  3.8-27B: prefix extension, failed rebuild continuation, and reset/replay,
++  alongside resolving the numerical differences above. The initial prefill and
++  forced-decode captures used FP32 recurrent state. Audit remaining fixed 35B
++  assumptions and fix failures exposed by these lifecycle checks.
++- [ ] Establish 3.8-27B core latency/TPS and GPU timelines with the selected
++  test/benchmark defaults and matched vLLM settings. No qs3 end-to-end 27B
++  throughput result is currently recorded; the forced-prefix capture is an
++  instrumented correctness diagnostic, not a performance measurement.
+ 
+ ## 4. Capture steady decode
+ 
+@@ -165,7 +209,7 @@
+   across graph replays; test page boundaries and prefix resets/rebuilds.
+ - [ ] Separate enqueueing from output delivery. Keep the sampled token available
+   on-device for the next step and make host completion points explicit.
+-- [ ] Compare prepared eager execution with graph replay for both models,
++- [ ] Compare prepared eager execution with graph replay for 3.8-27B,
+   including output correctness across page boundaries and prefix reset/reuse.
+   Measure the core workloads and record the selected execution mode.
+ 
+@@ -206,6 +250,10 @@
+   against vLLM using the same pinned NVFP4 checkpoint and generation settings.
+   Separate quantization differences from implementation errors using identical
+   prefixes; retain BF16 as a correctness baseline.
++  Prioritize 3.8-27B's mixed W4A4 NVFP4 / FP8 recipe. Native kernel probes and
++  an integration proposal are recorded in
++  `benchmarks/2026-09-14-nvfp4-survey/INTEGRATION.md`; runtime integration remains
++  open. Its recipe differs from 3.6-27B's W4A16 recipe.
+ - [ ] Make a forced provider selection easy to compare through the same
+   correctness checks and both core workloads. Prefer bounded upstream-kernel
+   adoption experiments; extend build/launch support only as an actual provider
+diff --git a/docs/superpowers/plans/2026-07-10-backend-ffi-consolidation.md b/docs/superpowers/plans/2026-07-10-backend-ffi-consolidation.md
+deleted file mode 100644
+index 2726d98..0000000
+--- a/docs/superpowers/plans/2026-07-10-backend-ffi-consolidation.md
++++ /dev/null
+@@ -1,168 +0,0 @@
+-# Backend FFI Consolidation Implementation Plan
+-
+-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
+-
+-**Goal:** Make `backend::qscu`, `backend::qscb`, and `backend::qsfi` the sole typed Rust/native boundaries and reduce `ffi` to raw declarations.
+-
+-**Architecture:** `ffi` contains generated raw bindings, ABI aliases/constants, and direct CUDA Runtime declarations only. Each named backend module owns its native context or borrowed launch state, typed validation and descriptor lowering, status conversion, and direct ABI calls. Model and runtime consumers use backend qsc types rather than forwarding FFI facades.
+-
+-**Tech Stack:** Rust, bindgen-generated C ABI declarations, CUDA Runtime API, qscu, qscb, qsfi/FlashInfer.
+-
+-## Global Constraints
+-
+-- Do not retain compatibility modules, aliases, re-exports, or legacy handle names.
+-- Keep Qwen3.6 tensor validation in the typed backend methods.
+-- Preserve existing asynchronous stream behavior and context ownership.
+-- Run tests through the gitignored `./run_cuda_test.sh`.
+-- Do not introduce CMake.
+-
+----
+-
+-### Task 1: Establish the module contract
+-
+-**Files:**
+-- Modify: `src/lib.rs`
+-- Modify: `src/backend/mod.rs`
+-
+-**Interfaces:**
+-- Consumes: existing `backend::{Cublas, Cuda, FlashInfer}` compile-contract checks.
+-- Produces: compile-contract checks for `backend::qscu::Qscu`, `backend::qscb::Qscb`, and `backend::qsfi::Qsfi`; no `ffi::{qscu,qscb,qsfi}` modules.
+-
+-- [x] **Step 1: Change the compile-contract test to import the desired modules and handle names**
+-
+-  Make the contract refer to `qscu::Qscu`, `qscb::Qscb`, and `qsfi::Qsfi` before those names exist.
+-
+-- [x] **Step 2: Run `cargo check --tests` and verify the red phase**
+-
+-  Expected: unresolved imports or types for the desired backend modules and handles.
+-
+-- [x] **Step 3: Declare the three backend modules without compatibility aliases**
+-
+-  Rename the current backend files to `qscu.rs`, `qscb.rs`, and `qsfi.rs`, export only `Qscu`, `Qscb`, and `Qsfi`, and update `Operators` accessors to the same names.
+-
+-- [x] **Step 4: Run `cargo check --tests`**
+-
+-  Expected: compilation advances to unresolved raw-FFI ownership, proving the public module contract is installed.
+-
+-### Task 2: Move qscb into its backend boundary
+-
+-**Files:**
+-- Modify: `src/backend/qscb.rs`
+-- Modify: `src/backend/mod.rs`
+-- Delete: `src/ffi/qscb.rs`
+-
+-**Interfaces:**
+-- Consumes: `DMat<BF16>`, `DMat<F32>`, `Workspace`, device ordinal, and CUDA stream.
+-- Produces: `Qscb::new`, `Qscb::linear_bf16`, and `Qscb::linear_f32`, with private qscb context creation, destruction, last-error handling, and direct `sys::qscb_linear` invocation.
+-
+-- [x] **Step 1: Move qscb context RAII into `Qscb`**
+-
+-  Store `NonNull<sys::qscb_context>` directly in `Qscb`; create it from `sys::qscb_context_desc` and destroy it in `Drop`.
+-
+-- [x] **Step 2: Lower typed operands and invoke `sys::qscb_linear` directly**
+-
+-  Keep the existing linear shape checks and output specializations, then convert raw status with the shared private status helper.
+-
+-- [x] **Step 3: Update runtime construction and run `cargo check --tests`**
+-
+-  Expected: qscb consumers compile without `ffi::qscb`.
+-
+-### Task 3: Move qscu into its backend boundary
+-
+-**Files:**
+-- Modify: `src/backend/qscu.rs`
+-- Modify: `src/backend/tests.rs`
+-- Delete: `src/ffi/qscu.rs`
+-
+-**Interfaces:**
+-- Consumes: typed tensor/state views, a borrowed CUDA stream, and a borrowed mutable `Qsfi` context where GDN requires it.
+-- Produces: `Qscu` methods that validate, construct private `sys::qscu_*_desc` values, and directly invoke every qscu ABI function.
+-
+-- [x] **Step 1: Replace qscu facade descriptor aliases with private `sys` types**
+-
+-  Descriptor builders return the corresponding generated `sys::qscu_*_desc` type and use raw generated constants internally.
+-
+-- [x] **Step 2: Replace forwarding calls with direct ABI calls**
+-
+-  Every launch converts `sys::qscu_*` status through the shared private helper; GDN calls use `Qsfi`'s crate-private raw-context accessor.
+-
+-- [x] **Step 3: Update backend tests and run `cargo check --tests`**
+-
+-  Expected: qscu descriptor tests and consumers compile without `ffi::qscu`.
+-
+-### Task 4: Move qsfi into its backend boundary
+-
+-**Files:**
+-- Modify: `src/backend/qsfi.rs`
+-- Modify: `src/engine/attention.rs`
+-- Modify: `src/backend/tests.rs`
+-- Delete: `src/ffi/qsfi.rs`
+-
+-**Interfaces:**
+-- Consumes: device ordinal, CUDA stream, attention/page-table descriptors, and typed operation descriptors.
+-- Produces: `Qsfi`, attention `Plan`, `MoePlan`, plan RAII, native error reporting, and direct qsfi ABI calls.
+-
+-- [x] **Step 1: Combine the existing typed FlashInfer operations with qsfi context and plan ownership**
+-
+-  Keep context/plan `Drop` implementations adjacent to the direct ABI calls and retain descriptor validation next to typed constructors.
+-
+-- [x] **Step 2: Rename `Context` to `Qsfi` and remove the temporary wrapper handle**
+-
+-  Operation methods execute directly on `Qsfi`; `Operators::qsfi()` returns a mutable borrow of that context rather than constructing another facade.
+-
+-- [x] **Step 3: Update attention planning/execution consumers and run `cargo check --tests`**
+-
+-  Expected: attention, model, and backend tests compile without `ffi::qsfi`.
+-
+-### Task 5: Reduce ffi to raw ABI declarations
+-
+-**Files:**
+-- Modify: `src/backend/dtype.rs`
+-- Modify: `src/backend/tensor.rs`
+-- Modify: `src/backend/mod.rs`
+-- Modify: `src/ffi/mod.rs`
+-
+-**Interfaces:**
+-- Consumes: bindgen output from `OUT_DIR`, direct CUDA Runtime declarations, and native status codes.
+-- Produces: a raw-only `ffi` namespace with no qsc contexts, plans, status conversion, descriptor construction, or forwarding calls.
+-
+-- [x] **Step 1: Expose generated bindings crate-internally to backend modules**
+-
+-  Keep `ffi_bindings.rs` included only in `ffi::sys`; backend qsc modules call those generated symbols directly.
+-
+-- [x] **Step 2: Remove status conversion and forwarding responsibilities from ffi**
+-
+-  Move qsc status conversion into backend and retain `ffi::cuda` solely as direct CUDA Runtime declarations used by allocation and transfer code.
+-
+-- [x] **Step 3: Delete the three qsc facade files**
+-
+-  Delete `src/ffi/qscu.rs`, `src/ffi/qscb.rs`, and `src/ffi/qsfi.rs`. Run `rg -n 'ffi::(qscu|qscb|qsfi)' src` and expect no matches.
+-
+-- [x] **Step 4: Run `cargo fmt --all` and `cargo check --tests`**
+-
+-  Expected: clean formatting and compilation with no warnings.
+-
+-### Task 6: Verify the replacement boundary
+-
+-**Files:**
+-- Modify: `docs/superpowers/plans/2026-07-10-backend-ffi-consolidation.md`
+-
+-**Interfaces:**
+-- Consumes: completed consolidated backend.
+-- Produces: evidence that Rust, native CUDA, end-to-end, and benchmark paths still work.
+-
+-- [x] **Step 1: Run `git diff --check` and scan for legacy names**
+-
+-  Run `rg -n '\b(Cublas|Cuda|FlashInfer)\b|ffi::(qscu|qscb|qsfi)' src` and expect no legacy qsc facade matches.
+-
+-- [x] **Step 2: Run `./run_cuda_test.sh`**
+-
+-  Expected: all currently enabled Rust, integration, vector, checked-native, and release-native tests pass.
+-
+-- [x] **Step 3: Build the native benchmark target**
+-
+-  Run the repository's existing remote benchmark build command and expect `qsfi_bench_native` to link successfully.
+-
+-- [x] **Step 4: Mark every completed plan checkbox and review the final diff**
+-
+-  Confirm that no compatibility facade was introduced and each backend module directly owns its ABI calls.
+diff --git a/docs/superpowers/plans/2026-07-10-model-visibility-boundaries.md b/docs/superpowers/plans/2026-07-10-model-visibility-boundaries.md
+deleted file mode 100644
+index 139c84c..0000000
+--- a/docs/superpowers/plans/2026-07-10-model-visibility-boundaries.md
++++ /dev/null
+@@ -1,107 +0,0 @@
+-# Model Visibility Boundaries Implementation Plan
+-
+-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
+-
+-**Goal:** Remove accidental model-wide visibility while retaining narrow parent interfaces for runner recipe modules.
+-
+-**Architecture:** `ModelRunner` owns private state and private orchestration helpers. `runner::{attention,gdn,mlp}` expose only the operations invoked by their parent as `pub(super)`; helpers used within one recipe stay private. White-box tests become descendants of `runner` so test placement does not widen production visibility.
+-
+-**Tech Stack:** Rust module privacy, existing CUDA-backed model tests.
+-
+-## Global Constraints
+-
+-- A scoped visibility must have a concrete consumer in the named parent module.
+-- Use private items when descendants can already access them.
+-- Use `pub(super)` only for a child-to-parent runner operation.
+-- Do not add test-only production accessors.
+-- Preserve the existing test behavior and run verification with `./run_cuda_test.sh`.
+-
+----
+-
+-### Task 1: Prove the current tests force model-wide visibility
+-
+-**Files:**
+-- Modify: `src/model/runner/mod.rs`
+-
+-**Interfaces:**
+-- Consumes: existing `model::tests` white-box accesses.
+-- Produces: compiler evidence identifying sibling-test dependencies on runner internals.
+-
+-- [x] **Step 1: Make `ModelRunner` fields and parent-defined helpers private**
+-
+-  Remove `pub(in crate::model)` from the twelve fields and twenty parent-defined helper methods without changing their signatures.
+-
+-- [x] **Step 2: Run `cargo check --tests` and verify the red phase**
+-
+-  Expected: privacy errors originate from `model::tests` and from parent calls into child recipe modules.
+-
+-### Task 2: Put white-box tests under their owner
+-
+-**Files:**
+-- Move: `src/model/tests.rs` to `src/model/runner/tests.rs`
+-- Modify: `src/model/mod.rs`
+-- Modify: `src/model/runner/mod.rs`
+-
+-**Interfaces:**
+-- Consumes: existing model and runner tests unchanged in behavior.
+-- Produces: `runner::tests`, which can inspect private `ModelRunner` state through descendant privacy.
+-
+-- [x] **Step 1: Move the test module declaration from `model` to `model::runner`**
+-
+-  Declare `#[cfg(test)] mod tests;` in `runner/mod.rs` and remove it from `model/mod.rs`.
+-
+-- [x] **Step 2: Update test imports for the new parent module**
+-
+-  Import model-level helpers through `crate::model` and runner-owned types through `super`; do not add production visibility.
+-
+-- [x] **Step 3: Run `cargo check --tests`**
+-
+-  Expected: field and parent-helper privacy errors disappear; only genuine child-to-parent method visibility remains.
+-
+-### Task 3: Narrow child recipe interfaces
+-
+-**Files:**
+-- Modify: `src/model/runner/attention.rs`
+-- Modify: `src/model/runner/gdn.rs`
+-- Modify: `src/model/runner/mlp.rs`
+-
+-**Interfaces:**
+-- Consumes: private `ModelRunner` state and parent helper methods.
+-- Produces: `pub(super)` recipe entrypoints used by `runner/mod.rs`; private operation-local helpers.
+-
+-- [x] **Step 1: Make every child method private and run `cargo check --tests`**
+-
+-  Expected: the compiler identifies the attention, GDN, and post-attention MLP entrypoints called by the parent or sibling runner tests.
+-
+-- [x] **Step 2: Restore `pub(super)` only on methods with demonstrated parent/sibling consumers**
+-
+-  Keep all helpers used solely inside their defining child module private.
+-
+-- [x] **Step 3: Run `cargo check --tests`**
+-
+-  Expected: clean compilation with no `pub(in crate::model)` declarations.
+-
+-### Task 4: Verify visibility and behavior
+-
+-**Files:**
+-- Modify: `docs/superpowers/plans/2026-07-10-model-visibility-boundaries.md`
+-
+-**Interfaces:**
+-- Consumes: narrowed model module graph.
+-- Produces: structural and behavioral verification evidence.
+-
+-- [x] **Step 1: Run structural scans**
+-
+-  Run `rg -n 'pub\\(in ' src` and inspect every remaining match; the model and backend refactor should contribute none.
+-
+-- [x] **Step 2: Run local checks**
+-
+-  Run `cargo fmt --all -- --check`, `cargo check --tests`, and `git diff --check` with no errors or warnings.
+-
+-- [x] **Step 3: Run `./run_cuda_test.sh`**
+-
+-  Expected: all enabled Rust, integration, vector, checked-native, and release-native tests pass.
+-
+-- [x] **Step 4: Mark the completed checklist and review the final diff**
+-
+-  Confirm every remaining restricted visibility has a named production consumer rather than a test-only justification.
+diff --git a/docs/superpowers/plans/2026-07-10-native-operation-boundaries.md b/docs/superpowers/plans/2026-07-10-native-operation-boundaries.md
+deleted file mode 100644
+index 537a9dd..0000000
+--- a/docs/superpowers/plans/2026-07-10-native-operation-boundaries.md
++++ /dev/null
+@@ -1,72 +0,0 @@
+-# Native Operation Boundaries Implementation Plan
+-
+-**Goal:** Replace one-call Rust descriptor wrappers with direct typed tensor
+-interfaces, specialize qscb linear output types, internalize fixed Qwen3.6
+-choices, and remove wildcard imports.
+-
+-**Architecture:** Model recipes pass `DVec`/`DMat`/head/state views to backend
+-methods. Backend-private lowering validates and creates raw FFI descriptors at
+-the point of launch. qscb exposes the actual linear-layer contract rather than a
+-generic GEMM façade.
+-
+-**Constraints:** No compatibility aliases, no generic-model abstraction, no
+-release stream synchronizes, no CMake, and no shared execution-context redesign
+-in this pass.
+-
+-### Task 1: Make qscb linear semantics explicit
+-
+-**Files:** `src/backend/cublas.rs`, `src/backend/tests.rs`, `src/model/mod.rs`,
+-`src/model/runner/mod.rs`, model runner submodules, `src/ffi/qscb.rs`, `qscb.h`,
+-`qscb.cu`, `bench_native.cu`, and `tests_cuda_qscb_linear.inc`
+-
+-- [x] Add failing backend tests for BF16-output and F32-output linear lowering,
+-  including `[tokens, in] x [out, in] -> [tokens, out]` validation.
+-- [x] Replace `Bf16Gemm` and `gemm_bf16` with direct `linear_bf16` and
+-  `linear_f32` methods and a private raw-descriptor builder.
+-- [x] Rename the qscb native descriptor and entrypoint to linear terminology and
+-  delete the old names.
+-- [x] Split the model helper by output type and remove `GemmOut`.
+-- [x] Run backend and model compile/tests for the green phase.
+-
+-### Task 2: Collapse qscu wrapper/args pairs
+-
+-**Files:** `src/backend/cuda.rs`, `src/backend/tests.rs`, model runner submodules
+-
+-- [x] Add failing tests against the desired private lowering contracts, starting
+-  with Qwen GDN gated RMSNorm and then each remaining qscu operation.
+-- [x] Change `Cuda` methods to accept typed operands directly and construct raw
+-  descriptors internally.
+-- [x] Remove all one-call public descriptor and `Args` types.
+-- [x] Update model and vector call sites without introducing forwarding helpers.
+-- [x] Run backend tests and the relevant vector tests for the green phase.
+-
+-### Task 3: Internalize Qwen-fixed choices
+-
+-**Files:** `src/backend/mod.rs`, `src/backend/cuda.rs`, `src/model/runner/gdn.rs`,
+-`src/model/runner/mod.rs`
+-
+-- [x] Add failing tests proving Qwen GDN specializations reject non-Qwen shapes
+-  without accepting activation, scale, or normalization toggles.
+-- [x] Add only the native Qwen tensor-view constructors that remove duplicated
+-  shape arithmetic.
+-- [x] Fix SiLU gating/convolution, recurrence scale and normalization, and fixed
+-  dimensions inside the specialized backend operations.
+-- [x] Keep actual batch/sequence/state choices explicit.
+-
+-### Task 4: Make module dependencies explicit
+-
+-**Files:** `src/backend/*.rs`, `src/model/runner/*.rs`
+-
+-- [x] Replace wildcard parent imports with explicit type, constant, and module
+-  imports.
+-- [x] Remove enums and shared aliases made obsolete by specialization.
+-- [x] Use `rg` to confirm removed wrappers, generic GEMM names, `GemmOut`, and
+-  wildcard imports have no remaining call sites.
+-
+-### Task 5: Verify the replacement boundary
+-
+-- [x] Run `cargo fmt --all -- --check`.
+-- [x] Run fast local compile/unit checks where CUDA linkage permits.
+-- [x] Run the repository's gitignored `./run_cuda_test.sh` in full after final review fixes.
+-- [x] Review the final diff specifically for wrapper reintroduction, constants
+-  leaking back into model calls, unrelated edits, and compatibility shims.
+diff --git a/docs/superpowers/plans/2026-07-10-rust-runtime-architecture.md b/docs/superpowers/plans/2026-07-10-rust-runtime-architecture.md
+deleted file mode 100644
+index 9464b17..0000000
+--- a/docs/superpowers/plans/2026-07-10-rust-runtime-architecture.md
++++ /dev/null
+@@ -1,363 +0,0 @@
+-# Rust Runtime Architecture Implementation Plan
+-
+-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+-
+-**Goal:** Replace the monolithic Rust runtime façade with explicit engine transaction, qscu, qscb, qsfi, Qwen model, and loader boundaries.
+-
+-**Architecture:** `EngineCore` publishes one coherent active-batch view to an attention session, while a concrete `Engine` exposes the lifecycle without a one-implementation trait. Model execution borrows distinct qscu, qscb, and qsfi operator handles; model and loader source are split by ownership rather than by generic helpers.
+-
+-**Tech Stack:** Rust 2024, CUDA runtime, qscu CUDA kernels, qscb/cuBLAS, qsfi/FlashInfer, safetensors files, `just`/Ninja remote CUDA test harness.
+-
+-## Global Constraints
+-
+-- No CMake.
+-- Do not preserve old Rust APIs or legacy call sites.
+-- Keep the runtime Qwen3.6-specific and reject unsupported shapes loudly.
+-- Validate descriptors before device addressing.
+-- Do not add release-mode stream synchronization for transactionality.
+-- Run final verification with `./run_cuda_test.sh`.
+-
+----
+-
+-### Task 1: Concrete engine lifecycle and coherent batch view
+-
+-**Files:**
+-- Modify: `src/engine.rs`
+-- Modify: `src/runtime.rs`
+-- Modify: `src/lib.rs`
+-- Modify: `src/model.rs`
+-- Modify: `tests/engine.rs`
+-
+-**Interfaces:**
+-- Produces: inherent `Engine::{new,reset,release_requests,state,begin_append,append_layer,begin_decode,decode_layer,commit_batch,abort_batch}`.
+-- Produces: `EngineCore::active_batch(&self) -> Result<ActiveBatch<'_>, Status>`.
+-- Removes: `EngineTrait` and individual `batch_*` getters.
+-
+-- [ ] **Step 1: Write compile-time and state-view tests**
+-
+-Add an integration test that imports no trait and calls `Engine::new`, and add a
+-core unit test with the following assertions after `begin_append`:
+-
+-```rust
+-let batch = core.active_batch().unwrap();
+-assert_eq!(batch.kind, BatchKind::Append);
+-assert_eq!(batch.request_ids, &[7]);
+-assert_eq!(batch.tokens, &[10, 11]);
+-assert_eq!(batch.qo_indptr, &[0, 2]);
+-assert_eq!(batch.kv_indptr.len(), 2);
+-assert_eq!(batch.last_page_len, &[2]);
+-assert_eq!(batch.append_batch_indices, &[0, 0]);
+-assert_eq!(batch.append_positions, &[0, 1]);
+-```
+-
+-- [ ] **Step 2: Verify the tests fail**
+-
+-Run: `LIBRARY_PATH=/usr/local/cuda/lib64:/usr/local/cuda/lib/stubs cargo test --lib engine::tests::active_batch_is_one_coherent_transaction_view`
+-
+-Expected: compilation fails because `active_batch` and `ActiveBatch` do not exist.
+-
+-- [ ] **Step 3: Add `ActiveBatch` and the concrete engine methods**
+-
+-Define the borrowed view in `src/engine.rs`:
+-
+-```rust
+-#[derive(Clone, Copy, Debug)]
+-pub(crate) struct ActiveBatch<'a> {
+-    pub kind: BatchKind,
+-    pub size: u32,
+-    pub token_count: u32,
+-    pub request_ids: &'a [RequestId],
+-    pub tokens: &'a [i32],
+-    pub qo_indptr: &'a [i32],
+-    pub kv_indptr: &'a [i32],
+-    pub kv_indices: &'a [i32],
+-    pub last_page_len: &'a [i32],
+-    pub rope_pos_offset: &'a [i32],
+-    pub append_batch_indices: &'a [i32],
+-    pub append_positions: &'a [i32],
+-}
+-```
+-
+-Implement `active_batch` by borrowing the installed candidate and return
+-`InvalidArgument` when no transaction is active. Replace runtime getter chains
+-with one local `ActiveBatch`. Move every `EngineTrait` method body into `impl
+-Engine`, remove the trait and its re-export, and update callers/imports.
+-
+-- [ ] **Step 4: Run engine tests**
+-
+-Run: `LIBRARY_PATH=/usr/local/cuda/lib64:/usr/local/cuda/lib/stubs cargo test --lib engine::tests`
+-
+-Expected: all engine unit tests pass.
+-
+-- [ ] **Step 5: Commit the engine contract**
+-
+-```bash
+-git add src/engine.rs src/runtime.rs src/lib.rs src/model.rs tests/engine.rs
+-git commit -m "refactor: make engine transaction contract concrete"
+-```
+-
+-### Task 2: Explicit native backend operator handles
+-
+-**Files:**
+-- Create: `src/backend/mod.rs`
+-- Create: `src/backend/tensor.rs`
+-- Create: `src/backend/cuda.rs`
+-- Create: `src/backend/cublas.rs`
+-- Create: `src/backend/flashinfer.rs`
+-- Modify: `src/lib.rs`
+-- Modify: `src/runtime.rs`
+-- Remove: `src/runtime/kernels.rs`
+-- Remove: `src/runtime/device_tensor.rs`
+-- Remove: `src/runtime/dtype.rs`
+-
+-**Interfaces:**
+-- Produces: `Operators<'a>` with short-lived `cuda()`, `cublas()`, and `flashinfer()` borrows.
+-- Produces: backend-specific validated descriptor types colocated with their executor.
+-- Removes: `KernelOps` and `runtime::kernels`.
+-
+-- [ ] **Step 1: Add backend classification tests**
+-
+-Add module tests that construct `Operators` from a stream and mutable qscb/qsfi
+-contexts, then type-check representative descriptors against only their owning
+-handle:
+-
+-```rust
+-fn cuda_owns_embedding(_: &cuda::Cuda<'_>, _: cuda::EmbeddingGatherBf16) {}
+-fn cublas_owns_gemm(_: &mut cublas::Cublas<'_>, _: cublas::Bf16Gemm) {}
+-fn flashinfer_owns_norm(_: &mut flashinfer::FlashInfer<'_>, _: flashinfer::RmsNormBf16) {}
+-```
+-
+-Keep existing descriptor validation assertions when relocating tests.
+-
+-- [ ] **Step 2: Verify the new module is absent**
+-
+-Run: `cargo check --lib`
+-
+-Expected: compilation fails after adding `mod backend` references because the
+-backend modules do not yet exist.
+-
+-- [ ] **Step 3: Move typed tensors and descriptor builders by owner**
+-
+-Move `DType`, `DVec`, `DMat`, `DTensor3`, `Bf16Heads`, and shared workspace/view
+-types to `backend/tensor.rs`. Move qscu descriptors and execution methods to
+-`backend/cuda.rs`, `Bf16Gemm` to `backend/cublas.rs`, and norm/RoPE/MoE
+-descriptors to `backend/flashinfer.rs`. Preserve constructor validation exactly.
+-Define the operator group without forwarding methods:
+-
+-```rust
+-pub(crate) struct Operators<'a> {
+-    stream: &'a ffi::CudaStream,
+-    flashinfer: &'a mut qsfi::Context,
+-    cublas: &'a mut qscb::Context,
+-}
+-```
+-
+-`EngineInner::operators` constructs this group by borrowing its stream, qscb
+-context, and qsfi context. Update every call site to select the real backend,
+-for example `ops.cublas().gemm_bf16(&desc)` and
+-`ops.flashinfer().rmsnorm_bf16(&desc)`.
+-
+-- [ ] **Step 4: Remove the unified façade and run descriptor tests**
+-
+-Delete `runtime::kernels`, its old files, and all imports. Run:
+-
+-`LIBRARY_PATH=/usr/local/cuda/lib64:/usr/local/cuda/lib/stubs cargo test --lib backend`
+-
+-Expected: backend unit tests pass and no `KernelOps` symbol remains (`rg KernelOps src` exits 1).
+-
+-- [ ] **Step 5: Commit backend ownership**
+-
+-```bash
+-git add src/backend src/lib.rs src/runtime.rs src/model.rs
+-git add -u src/runtime
+-git commit -m "refactor: expose explicit native backend operators"
+-```
+-
+-### Task 3: Split Qwen model ownership
+-
+-**Files:**
+-- Create: `src/model/mod.rs`
+-- Create: `src/model/config.rs`
+-- Create: `src/model/weights.rs`
+-- Create: `src/model/state.rs`
+-- Create: `src/model/scratch.rs`
+-- Create: `src/model/runner.rs`
+-- Create: `src/model/runner/attention.rs`
+-- Create: `src/model/runner/gdn.rs`
+-- Create: `src/model/runner/mlp.rs`
+-- Create: `src/model/tests.rs`
+-- Remove: `src/model.rs`
+-
+-**Interfaces:**
+-- `config` produces validated `QwenConfig`, schedule indices, and `EngineConfig`.
+-- `weights` produces owning `QwenWeights` and immutable per-layer pointer views.
+-- `state` produces staged GDN slots with explicit `commit` and `reset`.
+-- `scratch` produces named typed views over grow-only buffers.
+-- `runner` is the only module that coordinates engine and GDN transactions.
+-
+-- [ ] **Step 1: Pin module-level contracts with unit tests**
+-
+-Relocate existing config, weight, slot-map, vector, and runner tests into their
+-owning modules. Add a state test that proves staging is not committed implicitly:
+-
+-```rust
+-let mut slots = GdnSlotMap::new(3).unwrap();
+-let before = slots.layer_slots(0).unwrap();
+-slots.stage_for_batch(&[0], &[1]).unwrap();
+-assert_eq!(slots.layer_slots(0).unwrap(), before);
+-slots.commit();
+-assert_ne!(slots.layer_slots(0).unwrap(), before);
+-```
+-
+-- [ ] **Step 2: Move configuration and weights first**
+-
+-Create `config.rs` with Qwen shape/schedule policy and `weights.rs` with device
+-ownership and pointer views. Export only:
+-
+-```rust
+-pub use config::{QwenConfig, QwenMoeConfig};
+-pub use runner::{ModelRunner, QwenRequest, QwenResult};
+-pub use weights::QwenWeights;
+-```
+-
+-Use `pub(super)` only for contracts required by sibling model modules; keep fields
+-private when a typed accessor can express the invariant.
+-
+-- [ ] **Step 3: Move state and scratch ownership**
+-
+-Move `GdnSlotMap`/`GdnState` to `state.rs` and `DeviceBuffer`/`RunnerScratch` to
+-`scratch.rs`. Give scratch named view methods so runner modules do not calculate
+-byte offsets. Retain device/stream binding validation and grow-only allocation.
+-
+-- [ ] **Step 4: Split runner execution by Qwen block**
+-
+-Move prefix synchronization and transaction coordination to `runner.rs`.
+-`attention.rs`, `gdn.rs`, and `mlp.rs` receive `&mut Operators`, typed weight
+-views, and typed scratch/state views; they do not own requests or commit batches.
+-Delete the old monolithic file rather than including it textually.
+-
+-- [ ] **Step 5: Run all model tests**
+-
+-Run: `LIBRARY_PATH=/usr/local/cuda/lib64:/usr/local/cuda/lib/stubs cargo test --lib model`
+-
+-Expected: model unit tests pass, including vector tests on a CUDA host.
+-
+-- [ ] **Step 6: Commit model ownership**
+-
+-```bash
+-git add src/model src/lib.rs src/weight_loader
+-git add -u src/model.rs
+-git commit -m "refactor: split qwen model by ownership"
+-```
+-
+-### Task 4: Separate loader format validation from transfer
+-
+-**Files:**
+-- Create: `src/loader/mod.rs`
+-- Create: `src/loader/error.rs`
+-- Create: `src/loader/format.rs`
+-- Create: `src/loader/transfer.rs`
+-- Create: `src/loader/plan.rs`
+-- Create: `src/loader/tests.rs`
+-- Modify: `src/lib.rs`
+-- Modify: `src/model/config.rs`
+-- Remove: `src/weight_loader.rs`
+-- Remove: `src/weight_loader/materialize.rs`
+-
+-**Interfaces:**
+-- `format::validate_qwen36_bf16(model_dir) -> LoadResult<ValidatedQwen36>` performs no CUDA allocation.
+-- `plan::QwenBf16LoadPlan<B: WeightLoadBackend>` owns the backend until materialization handoff.
+-- `transfer::WeightLoadBackend` owns allocation, I/O, seal, and cleanup only.
+-
+-- [ ] **Step 1: Add an allocation-free validation test**
+-
+-Use a fake transfer backend with an allocation counter. Validate malformed and
+-valid temporary safetensors metadata through `format` and assert the counter stays
+-zero. Retain tests for duplicate, missing, unexpected, dtype, shape, overlap, and
+-out-of-range failures.
+-
+-- [ ] **Step 2: Verify format tests fail before the split**
+-
+-Run: `cargo test --lib loader::tests::format_validation_never_allocates`
+-
+-Expected: compilation fails because `loader::format` does not exist.
+-
+-- [ ] **Step 3: Move parsing and validation into `format`**
+-
+-Move JSON helpers, config parsing, safetensors index/header parsing, span checks,
+-and Qwen tensor-table validation without importing `ffi::cuda`. The output owns
+-all validated paths, offsets, dtypes, shapes, and tensor targets needed by a plan.
+-
+-- [ ] **Step 4: Move transfer backends and materialization**
+-
+-Move the trait, managed UMA backend, pinned ring backend, and their stats into
+-`transfer.rs`. Move plan construction and `into_qwen_model` into `plan.rs`.
+-Ensure backend `Drop` still frees all allocations before handoff and the final
+-allocation list is drained exactly once into `QwenWeights`.
+-
+-- [ ] **Step 5: Run loader tests**
+-
+-Run: `LIBRARY_PATH=/usr/local/cuda/lib64:/usr/local/cuda/lib/stubs cargo test --lib loader`
+-
+-Expected: all non-ignored loader tests pass.
+-
+-- [ ] **Step 6: Commit loader ownership**
+-
+-```bash
+-git add src/loader src/lib.rs src/model
+-git add -u src/weight_loader.rs src/weight_loader/materialize.rs
+-git commit -m "refactor: separate weight format and transfer layers"
+-```
+-
+-### Task 5: Architectural cleanup and end-to-end verification
+-
+-**Files:**
+-- Modify: `src/bin/qs3_model_bench.rs`
+-- Modify: `tests/engine.rs`
+-- Modify: `tests/model.rs`
+-- Modify: `AGENTS.md` only if a new durable fact is discovered during verification.
+-
+-**Interfaces:**
+-- Removes all legacy symbol paths and compatibility shims.
+-- Keeps public entrypoints limited to the concrete engine and Qwen model API.
+-
+-- [ ] **Step 1: Remove stale architecture and compatibility symbols**
+-
+-Run:
+-
+-```bash
+-rg 'EngineTrait|KernelOps|runtime::kernels|weight_loader' src tests
+-```
+-
+-Expected: no matches. Update tests and the benchmark to the replacement API;
+-delete stale imports rather than re-exporting aliases.
+-
+-- [ ] **Step 2: Format and run static checks**
+-
+-Run: `cargo fmt --all -- --check`
+-
+-Expected: pass.
+-
+-Run: `git diff --check`
+-
+-Expected: pass.
+-
+-- [ ] **Step 3: Run the repository test script**
+-
+-Run: `./run_cuda_test.sh`
+-
+-Expected: remote Ninja build, Rust library build, vector generation, all Rust
+-tests, checked native tests, and release native tests pass.
+-
+-- [ ] **Step 4: Review architecture against the design**
+-
+-Check that qscu/qscb/qsfi operations have exactly one owning Rust module, engine
+-transactions remain candidate-first, loader validation precedes allocation, and
+-no release synchronization was introduced. Fix every finding and rerun Steps 1-3.
+-
+-- [ ] **Step 5: Commit final cleanup**
+-
+-```bash
+-git add src tests docs/superpowers
+-git commit -m "refactor: clarify qwen runtime architecture"
+-```
+diff --git a/docs/superpowers/specs/2026-07-10-native-operation-boundaries-design.md b/docs/superpowers/specs/2026-07-10-native-operation-boundaries-design.md
+deleted file mode 100644
+index 70ffb80..0000000
+--- a/docs/superpowers/specs/2026-07-10-native-operation-boundaries-design.md
++++ /dev/null
+@@ -1,161 +0,0 @@
+-# Native Operation Boundaries Design
+-
+-## Goal
+-
+-Make the boundary between the Qwen3.6 model recipe and its native backends
+-visible in the Rust types. Model code should pass typed device tensors directly;
+-qscu, qscb, and qsfi should construct their raw FFI descriptors at the launch
+-site. Fixed Qwen3.6 choices should not travel through generic-looking argument
+-objects.
+-
+-This replaces the current one-call Rust descriptor wrappers. No compatibility
+-aliases or deprecated entrypoints are retained.
+-
+-## Boundary rule
+-
+-The model layer composes operations. It owns the sequence of projections,
+-normalization, recurrence, attention, and residual work. Cohesive functions such
+-as `execute_gdn_layer` remain cohesive even when they are long.
+-
+-The backend layer accepts native Rust device views such as `DVec`, `DMat`,
+-`Bf16Heads`, recurrent state views, and the few enums that represent genuine
+-runtime choices. A backend method validates those views, lowers them into the
+-corresponding raw FFI descriptor, and launches it immediately. Raw descriptors
+-do not escape the backend module.
+-
+-This removes chains such as:
+-
+-```text
+-GdnRmsNormGatedBf16Args
+-  -> GdnRmsNormGatedBf16
+-  -> qscu_gdn_rmsnorm_gated_bf16_desc
+-  -> native launch
+-```
+-
+-and replaces them with:
+-
+-```text
+-typed DVec/DMat/head views
+-  -> Cuda::qwen36_gdn_gated_rmsnorm
+-  -> raw qscu descriptor + native launch
+-```
+-
+-The unsafe boundary stays on execution methods because device allocation,
+-asynchronous lifetime, and aliasing remain caller obligations. Shape, stride,
+-mode, and finite-value validation remains safe Rust logic and is tested without
+-launching CUDA.
+-
+-## qscb is a linear backend
+-
+-The operation currently called `gemm_bf16` is not a general GEMM interface. Its
+-model contract is the linear-layer calculation:
+-
+-```text
+-input [tokens, in_features]
+-  x weight^T [out_features, in_features]
+-  -> output [tokens, out_features]
+-```
+-
+-qscb therefore exposes this as a linear operation. Rust has two explicit
+-specializations:
+-
+-- `linear_bf16`: BF16 input and weight, BF16 output.
+-- `linear_f32`: BF16 input and weight, F32 output.
+-
+-Both take `DMat` operands and a `Workspace` directly. The output type is encoded
+-by the method signature, so `GemmOut`, `Bf16OrF32Mat` at model call sites, and a
+-public `Bf16Gemm` wrapper disappear. Alpha and beta are not model-level options;
+-the Qwen path uses the native defaults currently encoded by the wrapper.
+-
+-The qscb C entrypoint and descriptor are renamed from generic GEMM terminology
+-to linear terminology. The old names are removed.
+-
+-## Qwen-specific qscu operations
+-
+-qscu remains a thin collection of CUDA implementations, but its Rust entrypoints
+-state which choices belong to Qwen3.6:
+-
+-- GDN causal convolution fixes SiLU activation and the Qwen packed width.
+-- GDN post-convolution preparation fixes the currently used log-decay output and
+-  leaves only actual optional outputs or modes visible.
+-- GDN recurrence fixes the Qwen scale, Q/K normalization, and state-update mode.
+-- GDN gated RMSNorm fixes SiLU gating and the Qwen value dimension.
+-- Full-attention output gating and shared-expert combination keep their
+-  Qwen-specific names and accept matrices directly.
+-
+-The fixed dimensions are checked inside these methods using the canonical Qwen
+-constants. Call sites still construct tensor views with their true shapes, but
+-they do not pass the same constants again as apparent operation configuration.
+-Where a useful Qwen view constructor eliminates repeated shape arithmetic, it
+-lives next to the view type and returns that native view rather than another
+-descriptor wrapper.
+-
+-Generic small CUDA operations such as embedding gather, SiLU-and-multiply,
+-logit soft cap, greedy argmax, and router top-k also take their typed operands
+-directly. They retain only genuine runtime parameters.
+-
+-## Imports and module readability
+-
+-Backend and runner modules use explicit imports. Wildcard parent imports are
+-removed so each source file shows its dependencies and the constants it owns.
+-This is a readability constraint, not a reason to create forwarding helpers.
+-
+-## Scoped visibility must describe a real boundary
+-
+-Private is the default for runner state and helpers. A restricted visibility
+-such as `pub(super)` is appropriate only when a child module deliberately
+-supplies an operation to its parent—for example, `runner::attention` supplying
+-the attention-layer recipe used by `runner` orchestration. Internal helper
+-methods within that child remain private.
+-
+-`pub(in crate::model)` is not used merely so sibling tests can inspect runner
+-state or invoke intermediate stages. White-box runner tests live below the
+-`runner` module that owns those details. This lets `ModelRunner` fields and
+-parent-defined helpers remain private while preserving direct tests for tensor
+-recipes. A future `pub(in ...)` declaration must identify a consumer that
+-cannot be represented by ordinary private descendant access or a genuine
+-parent interface.
+-
+-## Backend modules are the FFI boundaries
+-
+-The separate `ffi::{qscu,qscb,qsfi}` facade does not own a useful independent
+-responsibility after typed operation lowering moved into `backend`. The backend
+-modules therefore take the names of the native libraries and become the sole
+-Rust/native boundaries:
+-
+-```text
+-model and runtime
+-  -> backend::{qscu,qscb,qsfi} typed interfaces
+-  -> raw ffi::sys declarations
+-  -> native ABI
+-```
+-
+-`backend::qscu` owns typed CUDA-kernel operations, descriptor construction, and
+-their raw launches. `backend::qscb` owns typed linear operations and the qscb
+-context lifetime. `backend::qsfi` owns FlashInfer operations, plans, context
+-lifetime, and raw launches. Generated bindings, raw ABI aliases and constants,
+-and direct CUDA Runtime declarations remain in a raw-only `ffi` namespace. It
+-owns no contexts, plans, status conversion, descriptor construction, or
+-forwarding qsc calls. No `ffi::{qscu,qscb,qsfi}` facade or compatibility
+-re-export is retained.
+-
+-The Rust handle names follow the native components: `Qscu`, `Qscb`, and `Qsfi`.
+-This naming describes concrete native ownership rather than implying pluggable
+-CUDA, cuBLAS, or FlashInfer implementations.
+-
+-## Context ownership
+-
+-`Operators` remains the shared borrowing context for the CUDA stream, qscb
+-context, and qsfi context. This pass changes the concrete handle and module
+-names without changing the runtime's ownership graph. qscu continues borrowing
+-the qsfi context for FlashInfer-owned GDN launches; moving ownership into a
+-single long-lived context can be evaluated separately.
+-
+-## Testing
+-
+-Backend unit tests exercise private lowering functions with fake non-null device
+-pointers. They verify operation semantics, output specialization, Qwen-fixed
+-shape constraints, strides, and modes without launching CUDA. Existing vector
+-and end-to-end tests exercise the real launch methods.
+-
+-Final verification uses `./run_cuda_test.sh`.
+diff --git a/docs/superpowers/specs/2026-07-10-rust-runtime-architecture-design.md b/docs/superpowers/specs/2026-07-10-rust-runtime-architecture-design.md
+deleted file mode 100644
+index fbdd9af..0000000
+--- a/docs/superpowers/specs/2026-07-10-rust-runtime-architecture-design.md
++++ /dev/null
+@@ -1,151 +0,0 @@
+-# Rust Runtime Architecture Design
+-
+-## Goal
+-
+-Reshape the completed Qwen3.6 end-to-end Rust path around ownership and backend
+-contracts. The result should make it obvious that FlashInfer owns paged attention,
+-MoE, norm, and RoPE integration; qscu owns small CUDA kernels; qscb owns cuBLAS
+-GEMM; the engine owns transactional request/KV-cache state; and the model runner
+-owns Qwen3.6 execution.
+-
+-This is an API replacement. There is no compatibility layer for the current
+-`EngineTrait`, monolithic `KernelOps`, or their call sites.
+-
+-## Chosen architecture
+-
+-The crate has four internal layers, ordered from policy to mechanism:
+-
+-1. `model` contains Qwen3.6 configuration, weights, persistent recurrent state,
+-   scratch storage, and the execution runner. It is the only layer that knows the
+-   decoder schedule or composes complete Qwen blocks.
+-2. `engine` contains a pure transactional `EngineCore` and an attention session.
+-   `EngineCore` owns request IDs, tokens, pages, staged batches, commit, abort,
+-   reset, and release. The attention session owns device batch metadata,
+-   FlashInfer plans, and per-layer paged K/V buffers.
+-3. `backend` contains typed device views and three explicit operator handles:
+-   `Cuda<'a>` for qscu, `Cublas<'a>` for qscb, and `FlashInfer<'a>` for qsfi.
+-   Descriptor builders live with the backend that consumes them. `Operators<'a>`
+-   owns the shared borrows and creates one short-lived backend handle at a time,
+-   so qscu operations that use the qsfi error/context object cannot alias a
+-   simultaneous FlashInfer borrow. It does not forward backend methods.
+-4. `ffi` is the thin unsafe binding layer. It performs native descriptor checks
+-   that protect device addressing and translates native status values, but it
+-   contains no model scheduling policy.
+-
+-The weight loader is a peer construction path rather than an execution layer. It
+-has separate `format` validation and `transfer` backends, then consumes a fully
+-validated plan into `QwenWeights`.
+-
+-## Engine contract
+-
+-`Engine` becomes a concrete type with inherent methods. Removing `EngineTrait`
+-eliminates an abstraction with one implementation and makes the lifecycle
+-protocol discoverable on the owning type.
+-
+-The public lifecycle remains explicit:
+-
+-- `begin_append` / `begin_decode` construct candidate host state, upload device
+-  metadata, and create or reuse a FlashInfer plan.
+-- `attention` accepts a typed Qwen attention layer operation for the active
+-  batch. It validates all shapes before K/V addressing, appends K/V, executes
+-  attention, and advances layer progress.
+-- `commit_batch` installs the candidate only after all required attention layers
+-  completed. `abort_batch` discards the candidate. Release-mode commits do not
+-  add a stream synchronization.
+-
+-`EngineCore` stays independent of CUDA and FlashInfer. Its batch-facing data is
+-published as a single borrowed `ActiveBatch` view instead of a collection of
+-loosely related getters. The attention session consumes that view and owns all
+-device mirrors.
+-
+-## Backend contracts
+-
+-The current `KernelOps` obscures which implementation runs an operation. It is
+-replaced by:
+-
+-- `Cuda<'a>`: qscu embedding, activation, routing, sampling, output gating, and
+-  Qwen3.6 GDN preparation/recurrence launches. It borrows the stream and, for
+-  the current qscu GDN ABI, the qsfi context used for stream/error state.
+-- `Cublas<'a>`: qscb BF16 GEMM. It owns a mutable qscb context borrow.
+-- `FlashInfer<'a>`: qsfi RMSNorm, fused add/RMSNorm, RoPE, MoE planning/execution,
+-  and any FlashInfer-owned GDN operation. It owns a mutable qsfi context borrow.
+-
+-Each operation is represented by a validated backend-specific descriptor type.
+-Construction is safe and rejects bad shapes, strides, pointers, dtypes, or modes.
+-Execution is unsafe because device pointer validity and asynchronous lifetime
+-remain caller contracts. There is no generic kernel trait and no forwarding
+-method whose only job is to make a call site read fluently.
+-
+-FlashInfer attention planning remains inside the engine attention session because
+-its cache and plan lifetime are part of the engine transaction. The general
+-FlashInfer operator handle is for model-level primitives and MoE.
+-
+-## Model boundaries
+-
+-`model` is decomposed into modules with concrete ownership roles:
+-
+-- `config`: public `QwenConfig`/`QwenMoeConfig` plus the fixed Qwen3.6 schedule
+-  and shape validation.
+-- `weights`: `QwenWeights`, layer weight ownership, and immutable bound pointer
+-  views. Random fixtures live under test support rather than the production
+-  weight representation.
+-- `state`: GDN slot mapping and persistent recurrent buffers. State exposes
+-  staging and commit/abort semantics matching the attention engine.
+-- `scratch`: grow-only device buffers and the named scratch layout.
+-- `runner`: public request/result types, exact-prefix synchronization, batch
+-  execution, and layer orchestration.
+-- `runner/attention`, `runner/gdn`, and `runner/mlp`: Qwen block operations. These
+-  modules consume typed weights, scratch views, and explicit backend handles.
+-
+-The runner is the transaction coordinator. A batch is committed only when both
+-attention-engine state and GDN staged state can advance. On a deterministic
+-validation failure it aborts both. Once a native mutation launch succeeds,
+-existing non-rollbackable device semantics remain explicit; the runner must
+-rebuild or overwrite the affected prefix before reuse.
+-
+-## Loader boundaries
+-
+-Loader work is split into:
+-
+-- `loader/format`: JSON helpers, Qwen3.6 text config, safetensors index/header
+-  parsing, tensor-table construction, and complete pre-allocation validation.
+-- `loader/transfer`: `WeightLoadBackend`, managed-UMA and pinned-upload
+-  implementations, allocation ownership, I/O, sealing, and cleanup.
+-- `loader/plan`: validated Qwen BF16 plan and materialization into weights.
+-
+-`format` cannot allocate CUDA memory. `plan` can only be built from a completely
+-validated format description. Materialization owns its transfer backend until
+-the final allocation list is drained into device buffers, preserving cleanup on
+-all pre-handoff failures.
+-
+-## Error and validation policy
+-
+-Public errors continue to use the compact `Status` enum. Internal construction
+-uses `Result` and checked arithmetic. Contract violations are rejected before
+-native device addressing. Debug-only allocator invariants and debug stream
+-completion checks remain debug-only. Unsupported non-Qwen3.6 shapes fail loudly;
+-there is no generic model/runtime compatibility layer.
+-
+-## Testing
+-
+-Existing public CUDA integration and vector tests remain the behavioral baseline.
+-New or relocated unit tests cover:
+-
+-- the concrete engine lifecycle after `EngineTrait` removal;
+-- `ActiveBatch` as a coherent transactional view;
+-- correct classification of every descriptor and operation under qscu, qscb, or
+-  qsfi;
+-- Qwen layer schedule, weight binding, GDN staging/commit, and scratch growth in
+-  their owning modules;
+-- loader format validation without CUDA allocation and backend handoff cleanup.
+-
+-Verification uses `./run_cuda_test.sh`, the repository's gitignored remote test
+-script. Formatting and a local `cargo check` may be used as fast feedback, but do
+-not replace that script.
+-
+-## Scope limits
+-
+-This refactor does not add NVFP4, generic model support, new native kernels,
+-release-mode stream synchronization, CMake, ABI/versioning machinery, or legacy
+-entrypoints. Native CUDA source organization changes only where necessary to
+-keep Rust backend ownership truthful.
+diff --git a/models/config.nix b/models/config.nix
+index 8e29684..cbbe000 100644
+--- a/models/config.nix
++++ b/models/config.nix
+@@ -14,7 +14,7 @@ let
+ in
+ let
+   engine = {
+-    model = "qwen3.6-35b-a3b";
++    model = "qwen3.8-27b";
+     mtp = false;
+   };
+ 
+diff --git a/src/loader/benchmark.rs b/src/loader/benchmark.rs
+index f9195c1..fc4f937 100644
+--- a/src/loader/benchmark.rs
++++ b/src/loader/benchmark.rs
+@@ -1,4 +1,9 @@
+-use crate::constants::precision::GDN_RECURRENT_STATE;
++use crate::constants::{
++    attention::{GROUP_SIZE, HEAD_DIM},
++    engine::MODEL,
++    mlp::HAS_EXPERTS,
++    precision::GDN_RECURRENT_STATE,
++};
+ use std::{collections::HashMap, time::Duration};
+ 
+ use tinyjson::JsonValue;
+@@ -304,8 +309,9 @@ pub fn run_core_benchmark() -> JsonValue {
+         nearest_rank_seconds(&decode_times, 95, 100).expect("decode p95 samples are non-empty");
+ 
+     // Emit numeric samples and summaries together, without a second text format.
+-    object([
++    let mut result = object([
+         ("model", model_dir.to_string_lossy().into_owned().into()),
++        ("model_name", MODEL.to_owned().into()),
+         (
+             "execution",
+             object([
+@@ -319,7 +325,10 @@ pub fn run_core_benchmark() -> JsonValue {
+                     "gdn_qkv_decode",
+                     runner.gdn_qkv_provider().to_owned().into(),
+                 ),
+-                ("attention", "flashinfer_paged_hd256_gqa8".to_owned().into()),
++                (
++                    "attention",
++                    format!("flashinfer_paged_hd{HEAD_DIM}_gqa{GROUP_SIZE}").into(),
++                ),
+                 ("norm", "flashinfer_gemma_aot".to_owned().into()),
+                 ("gdn", "qscu_warp4_row128_bf16".to_owned().into()),
+                 ("gdn_prefill_conv", "qscu_parallel_tokens".to_owned().into()),
+@@ -453,7 +462,28 @@ pub fn run_core_benchmark() -> JsonValue {
+                 ("p95_ms", (decode_p95 * 1_000.0).into()),
+             ]),
+         ),
+-    ])
++    ]);
++    if !HAS_EXPERTS {
++        let execution = result
++            .get_mut::<HashMap<String, JsonValue>>()
++            .unwrap()
++            .get_mut("execution")
++            .unwrap()
++            .get_mut::<HashMap<String, JsonValue>>()
++            .unwrap();
++        for key in [
++            "router",
++            "router_logits_dtype",
++            "moe_threadblocks",
++            "moe_kernel",
++            "moe_cta_tile",
++            "moe",
++        ] {
++            execution.remove(key);
++        }
++        execution.insert("mlp".into(), "cublaslt_dense_bf16".to_owned().into());
++    }
++    result
+ }
+ 
+ #[cfg(test)]
+diff --git a/src/loader/tests/scores.rs b/src/loader/tests/scores.rs
+index 202fccf..e2fb84a 100644
+--- a/src/loader/tests/scores.rs
++++ b/src/loader/tests/scores.rs
+@@ -1,6 +1,6 @@
+ // Included as a child of loader::tests; diagnostic output is explicitly requested.
+ use super::*;
+-use crate::constants::{mlp::BF16_KERNEL, precision::GDN_RECURRENT_STATE};
++use crate::constants::{engine::MODEL, mlp::HAS_EXPERTS, precision::GDN_RECURRENT_STATE};
+ use tinyjson::JsonValue;
+ 
+ fn object(fields: impl IntoIterator<Item = (&'static str, JsonValue)>) -> JsonValue {
+@@ -32,6 +32,8 @@ fn real_qwen36_same_prefix_scores() {
+         std::env::var("QS3_SCORE_OUTPUT").expect("QS3_SCORE_OUTPUT directory"),
+     );
+     let spec: JsonValue = std::fs::read_to_string(input).unwrap().parse().unwrap();
++    assert_eq!(spec["model_name"].get::<String>().unwrap(), MODEL);
++    assert!(!HAS_EXPERTS, "this comparison targets the dense 27B model");
+     let model_dir = require_real_qwen36_model_dir();
+     let tokenizer = crate::tokenizer::QwenTokenizer::from_model_dir(&model_dir).unwrap();
+     let token_count = tokenizer.token_count();
+@@ -88,6 +90,12 @@ fn real_qwen36_same_prefix_scores() {
+                 .map(|&x| (f64::from(x) - max).exp())
+                 .sum::<f64>()
+                 .ln();
++        let addressable_lse = max
++            + raw[..token_count]
++                .iter()
++                .map(|&x| (f64::from(x) - max).exp())
++                .sum::<f64>()
++                .ln();
+         let mut row = object([
+             ("step", (step as f64).into()),
+             ("argmax", (order[0] as f64).into()),
+@@ -108,6 +116,7 @@ fn real_qwen36_same_prefix_scores() {
+                     .into(),
+             ),
+             ("logsumexp", lse.into()),
++            ("addressable_logsumexp", addressable_lse.into()),
+             ("logits_dtype", "float32".to_owned().into()),
+         ]);
+         let fields = row
+@@ -118,6 +127,10 @@ fn real_qwen36_same_prefix_scores() {
+             fields.insert("forced_id".into(), (token as f64).into());
+             fields.insert("forced_logit".into(), f64::from(raw[token]).into());
+             fields.insert("forced_nll".into(), (lse - f64::from(raw[token])).into());
++            fields.insert(
++                "addressable_forced_nll".into(),
++                (addressable_lse - f64::from(raw[token])).into(),
++            );
+         }
+         if captures.contains(&(step as i32)) {
+             let filename = format!("logits-{step:04}.f32");
+@@ -141,7 +154,9 @@ fn real_qwen36_same_prefix_scores() {
+             "gdn_qkv_provider",
+             runner.gdn_qkv_provider().to_owned().into(),
+         ),
+-        ("router_logits_dtype", "bf16".to_owned().into()),
++        ("model_name", MODEL.to_owned().into()),
++        ("addressable_token_count", (token_count as f64).into()),
++        ("mlp_provider", "cublaslt_dense_bf16".to_owned().into()),
+         ("records", records.into()),
+         (
+             "protocol",
+@@ -153,7 +168,6 @@ fn real_qwen36_same_prefix_scores() {
+             "gdn_recurrent_state_dtype",
+             GDN_RECURRENT_STATE.to_owned().into(),
+         ),
+-        ("moe_kernel", BF16_KERNEL.to_owned().into()),
+     ]);
+     std::fs::write(output.join("scores.json"), result.stringify().unwrap()).unwrap();
+ }

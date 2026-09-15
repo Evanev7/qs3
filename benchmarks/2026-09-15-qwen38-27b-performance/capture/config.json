@@ -1,0 +1,372 @@
+{
+  "dimensions": {
+    "attention": {
+      "groupSize": 6,
+      "headDim": 256,
+      "kvWidth": 1024,
+      "packedQGateWidth": 12288,
+      "qWidth": 6144,
+      "rotaryDim": 64
+    },
+    "gdn": {
+      "convHistoryLen": 3,
+      "convWidth": 4,
+      "outputWidth": 6144,
+      "packedQkvChannels": 10240
+    }
+  },
+  "engine": {
+    "model": "qwen3.8-27b",
+    "mtp": false
+  },
+  "kernels": {
+    "attention": {
+      "ctaTileQ": [
+        16,
+        32,
+        64,
+        128
+      ],
+      "groupSize": 6,
+      "headDim": 256,
+      "pdl": true,
+      "posEncoding": "none",
+      "provider": "flashinfer"
+    },
+    "gdn": {
+      "prepThreads": 128,
+      "provider": "qscu",
+      "softplusBeta": 1.0,
+      "softplusThreshold": 20.0
+    },
+    "gdn_qkv": {
+      "provider": "triton",
+      "source": "triton_kernels/gemv.py",
+      "spec": {
+        "constants": {
+          "ACC": {
+            "dtype": "f32"
+          },
+          "BLOCK_K": 8192,
+          "K": 5120
+        },
+        "grid": [
+          10240,
+          1,
+          1
+        ],
+        "options": {
+          "enable_fp_fusion": false,
+          "num_stages": 1,
+          "num_warps": 8
+        },
+        "precision": {
+          "accumulation": "f32",
+          "activation": "bf16",
+          "output": "bf16",
+          "weight": "bf16"
+        }
+      }
+    },
+    "lm_head": {
+      "provider": "triton",
+      "source": "triton_kernels/gemv.py",
+      "spec": {
+        "constants": {
+          "ACC": {
+            "dtype": "f32"
+          },
+          "BLOCK_K": 8192,
+          "K": 5120
+        },
+        "grid": [
+          248320,
+          1,
+          1
+        ],
+        "options": {
+          "enable_fp_fusion": false,
+          "num_stages": 1,
+          "num_warps": 8
+        },
+        "precision": {
+          "accumulation": "f32",
+          "activation": "bf16",
+          "output": "f32",
+          "weight": "bf16"
+        }
+      }
+    },
+    "mlp": {
+      "bf16Kernel": "decode_gemv64",
+      "provider": "cublaslt"
+    },
+    "projections": {
+      "provider": "cublaslt"
+    },
+    "sampling_filter": {
+      "provider": "triton",
+      "source": "triton_kernels/sampling_filter.py",
+      "spec": {
+        "constants": {
+          "BATCH_SIZE": 1,
+          "BLOCK_SIZE": 8192,
+          "BLOCK_SIZE_TRUNC": 4096,
+          "VOCAB_SIZE": 248320
+        },
+        "grid": [
+          1,
+          1,
+          1
+        ],
+        "options": {
+          "num_warps": 4
+        },
+        "precision": {
+          "BUFFER": "f32",
+          "LOGITS": "f32",
+          "NORMAL_CDF_TO_SIGMA_TABLE": "f32",
+          "PERCENTILE_TO_STD_TABLE": "f32"
+        }
+      }
+    },
+    "sampling_gumbel": {
+      "provider": "triton",
+      "source": "triton_kernels/sampling_gumbel.py",
+      "spec": {
+        "constants": {
+          "BLOCK": 1024
+        },
+        "grid": [
+          243,
+          1,
+          1
+        ],
+        "options": {
+          "num_warps": 4
+        },
+        "precision": {
+          "local_ids": "i32",
+          "local_max": "f32",
+          "logits": "f32",
+          "original": "f32",
+          "position": "i32"
+        }
+      }
+    },
+    "sampling_prepare": {
+      "provider": "triton",
+      "source": "triton_kernels/sampling_prepare.py",
+      "spec": {
+        "constants": {
+          "BLOCK": 1024,
+          "VOCAB": 248320
+        },
+        "grid": [
+          243,
+          1,
+          1
+        ],
+        "options": {
+          "num_warps": 4
+        },
+        "precision": {
+          "logits": "f32",
+          "output": "f32"
+        }
+      }
+    },
+    "sampling_reduce": {
+      "provider": "triton",
+      "source": "triton_kernels/sampling_reduce.py",
+      "spec": {
+        "constants": {
+          "BLOCK": 256,
+          "BLOCKS": 243
+        },
+        "grid": [
+          1,
+          1,
+          1
+        ],
+        "options": {
+          "num_warps": 4
+        },
+        "precision": {
+          "local_ids": "i32",
+          "local_max": "f32",
+          "output": "i32"
+        }
+      }
+    }
+  },
+  "model": {
+    "config": {
+      "attention_bias": false,
+      "attention_dropout": 0.0,
+      "attn_output_gate": true,
+      "bos_token_id": 248044,
+      "dtype": "bfloat16",
+      "eos_token_id": 248044,
+      "full_attention_interval": 4,
+      "head_dim": 256,
+      "hidden_act": "silu",
+      "hidden_size": 5120,
+      "initializer_range": 0.02,
+      "intermediate_size": 17408,
+      "layer_types": [
+        "linear_attention",
+        "linear_attention",
+        "linear_attention",
+        "full_attention",
+        "linear_attention",
+        "linear_attention",
+        "linear_attention",
+        "full_attention",
+        "linear_attention",
+        "linear_attention",
+        "linear_attention",
+        "full_attention",
+        "linear_attention",
+        "linear_attention",
+        "linear_attention",
+        "full_attention",
+        "linear_attention",
+        "linear_attention",
+        "linear_attention",
+        "full_attention",
+        "linear_attention",
+        "linear_attention",
+        "linear_attention",
+        "full_attention",
+        "linear_attention",
+        "linear_attention",
+        "linear_attention",
+        "full_attention",
+        "linear_attention",
+        "linear_attention",
+        "linear_attention",
+        "full_attention",
+        "linear_attention",
+        "linear_attention",
+        "linear_attention",
+        "full_attention",
+        "linear_attention",
+        "linear_attention",
+        "linear_attention",
+        "full_attention",
+        "linear_attention",
+        "linear_attention",
+        "linear_attention",
+        "full_attention",
+        "linear_attention",
+        "linear_attention",
+        "linear_attention",
+        "full_attention",
+        "linear_attention",
+        "linear_attention",
+        "linear_attention",
+        "full_attention",
+        "linear_attention",
+        "linear_attention",
+        "linear_attention",
+        "full_attention",
+        "linear_attention",
+        "linear_attention",
+        "linear_attention",
+        "full_attention",
+        "linear_attention",
+        "linear_attention",
+        "linear_attention",
+        "full_attention"
+      ],
+      "linear_conv_kernel_dim": 4,
+      "linear_key_head_dim": 128,
+      "linear_num_key_heads": 16,
+      "linear_num_value_heads": 48,
+      "linear_value_head_dim": 128,
+      "mamba_ssm_dtype": "float32",
+      "max_position_embeddings": 262144,
+      "model_type": "qwen3_5_text",
+      "mtp_num_hidden_layers": 1,
+      "mtp_use_dedicated_embeddings": false,
+      "num_attention_heads": 24,
+      "num_hidden_layers": 64,
+      "num_key_value_heads": 4,
+      "output_gate_type": "swish",
+      "pad_token_id": null,
+      "partial_rotary_factor": 0.25,
+      "rms_norm_eps": 1e-06,
+      "rope_parameters": {
+        "mrope_interleaved": true,
+        "mrope_section": [
+          11,
+          11,
+          10
+        ],
+        "partial_rotary_factor": 0.25,
+        "rope_theta": 10000000,
+        "rope_type": "default"
+      },
+      "tie_word_embeddings": false,
+      "use_cache": true,
+      "vocab_size": 248320
+    },
+    "source": {
+      "repo": "Qwen/Qwen3.8-27B",
+      "rev": "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0"
+    }
+  },
+  "mtp": {
+    "dedicatedEmbeddings": false,
+    "layers": 0
+  },
+  "precision": {
+    "embedding": {
+      "output": "bf16",
+      "weight": "bf16"
+    },
+    "gdn": {
+      "convState": "bf16",
+      "output": "bf16",
+      "recurrenceAccumulation": "f32",
+      "recurrentState": "f32"
+    },
+    "kvCache": "bf16",
+    "lm_head": {
+      "accumulation": "f32",
+      "activation": "bf16",
+      "output": "f32",
+      "weight": "bf16"
+    },
+    "mlp": {
+      "dense": {
+        "accumulation": "f32",
+        "activation": "bf16",
+        "output": "bf16",
+        "weight": "bf16"
+      }
+    },
+    "norm": {
+      "accumulation": "f32",
+      "activation": "bf16",
+      "output": "bf16",
+      "weight": "bf16"
+    },
+    "projections": {
+      "accumulation": "f32",
+      "activation": "bf16",
+      "output": "bf16",
+      "weight": "bf16"
+    },
+    "residual": "bf16"
+  },
+  "target": {
+    "backend": "cuda",
+    "computeCapability": {
+      "major": 12,
+      "minor": 1
+    },
+    "warpSize": 32
+  }
+}

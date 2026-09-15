@@ -2,7 +2,9 @@
 
 ## Scope
 
-- Support Qwen3.6-35B-A3B and Qwen3.6-27B, initially text-only.
+- Prioritize Qwen3.8-27B, initially text-only: this is the model that matters
+  for the next runtime work. Decide whether to pivot the entire test suite to
+  it; continued 3.6-35B-A3B / 3.6-27B coverage is not yet a settled requirement.
 - Competitive single-user decode latency and tokens/sec against vLLM on Spark
   is a completion criterion. Compare matched precision, context lengths, and
   generation settings; record the exact models, kernels, and software revisions.
@@ -21,12 +23,19 @@
 - Keep the existing no-CMake build direction. Static linking is secondary to
   execution performance and a clear Rust implementation.
 
-## Current BF16 priorities
+## Current priorities: 3.8-27B baseline, then NVFP4
 
-- Prioritize prepared CUDA graph replay, GPU non-greedy sampling, sustained
-  correctness comparisons, and repeatable provider experiments. These complete
-  useful BF16 functionality and carry into NVFP4 without requiring a generic DAG
-  runner or an exhaustive BF16 kernel-tuning campaign.
+- Record Qwen3.8-27B BF16 correctness and performance baselines and settle the
+  test pivot in section 3. Models are downloaded on the other device; use the cached
+  assets and verify their paths/revisions when running there. Downloads are not
+  the outstanding implementation task.
+- Prioritize 3.8-27B NVFP4 integration over a deep BF16 optimization campaign.
+  Use the BF16 baseline and its known numerical differences to assess subsequent
+  work; only expand BF16 tuning if measurements justify it. Prepared graph replay
+  and repeatable provider experiments carry into NVFP4. GPU non-greedy sampling
+  is already implemented; valid-vocabulary normalization remains open below.
+- The 35B results and unfinished comparisons below record prior work. They do
+  not establish 27B correctness or require more 35B work before the target pivot.
 - [x] Beat the recorded vLLM 35B BF16 **102/32** result: **30.573 tok/s**,
   **32.640 ms/token p50**. The separate **500/200** baseline is **30.396 tok/s**,
   **32.892 ms/token p50**. Throughput uses mean latency, not p50. Reference
@@ -126,7 +135,24 @@
   mostly overlaps GPU work. See FINDINGS.md. Device dispatch versus profiling
   effects and the benefit of graph replay remain unmeasured.
 
-## 3. Add the exact 27B path
+## 3. Establish Qwen3.8-27B and decide the test pivot
+
+- [ ] Decide whether to hard-pivot all tests and routine benchmarks to 3.8-27B.
+  It is the priority model; whether any 35B/MoE or 3.6-27B coverage remains is
+  still open. Audit model fixtures, native targets, loader/reference assertions,
+  tokenizer tests, vector generation, and benchmark defaults as part of this
+  decision. The build now selects 3.8-27B for the comparison run; the real-model
+  asset helper and older regression constants still target 3.6-35B-A3B. The
+  comparison recipe supplies the explicit 3.8 snapshot and saved replay inputs.
+- [x] Pin 3.8-27B assets: BF16
+  `1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0` and NVIDIA NVFP4
+  `dbb8f445b3145f8a4c18ddc769f032d57d32867c`. Model configs and source pins are
+  in `models/`; downloads are complete on the other device.
+- [x] Capture and verify external BF16 references for 3.8-27B: 1,051 full-logit
+  rows across 102/32, 500/200, and 4000/800 workloads. The small prompt
+  `[1,2,3,4]` generates `[5,0,31,46474]` in vLLM. See
+  `benchmarks/2026-09-14-vllm-references/README.md`; full rows remain on sp10.
+  These are reference artifacts, not a qs3 27B correctness pass.
 
 - [ ] Normalize sampling over valid tokenizer IDs: exclude padded logit slots
   before greedy selection or stochastic probability normalization, instead of
@@ -142,19 +168,45 @@
 - [x] Probe native full attention with 24 Q heads, 4 KV heads, head dimension
   256, and GQA ratio 6. The isolated AOT probe passes CPU-reference prefill/decode
   and append cases on sp10; see FINDINGS.md. Production native dispatch now
-  supports the tested 6/8 cases; dedicated checked/release 27B tests pass. Rust
-  model shape validation still needs to adopt the 27B geometry.
-- [ ] Validate GDN with 16 key heads and 48 value heads, head dimensions 128,
-  and convolution width 4. Audit fixed 35B constants in native kernels, Rust
-  views, scratch allocation, and recurrent state. Native 32/48-head dispatch and
-  AOT prep specializations now pass dedicated tests, including BF16/FP32 state.
-  Rust views and allocation changes remain open.
-- [ ] Add the 64-layer, hidden-size-5120 dense model path with MLP intermediate
-  size 17408. Preserve the three-GDN/one-full-attention schedule and explicit
-  support for the 35B shape; reject unsupported model configurations.
-- [ ] Implement dense weight materialization and validate public-runner prefill,
-  decode, prefix extension, and rebuilds against external reference results.
-  Check recurrent-state precision and sustained decode, not just a short prompt.
+  supports the tested 6/8 cases; dedicated checked/release 27B tests pass.
+- [x] Add native GDN dispatch for 16 key heads and 48 value heads, head dimensions
+  128, and convolution width 4. Native 32/48-head dispatch and AOT prep
+  specializations pass dedicated tests, including BF16/FP32 state.
+- [x] Wire Rust model geometry, layer schedule, GDN views, scratch allocation,
+  and recurrent state to build-selected constants. The 27B config describes
+  64 layers, hidden size 5120, dense MLP intermediate size 17408, and the
+  three-GDN/one-full-attention schedule. This records implementation, not a
+  full-model validation pass.
+- [x] Implement dense BF16 weight materialization and gate/up/down execution.
+  The loader validates against the compiled model; dense weights and scratch
+  have their own paths.
+- [x] Run full 3.8-27B BF16 forced-prefix comparisons on sp10 against the saved
+  vLLM 0.29 references. All 1,051 reference rows passed fresh hash checks and all
+  four release replay tests completed: argmax matches 4/4, 36/37, 204/205 and
+  794/805 for 4/4, 102/32, 500/200 and 4000/800. Six of thirteen differing
+  choices are tied maxima in vLLM. See
+  `benchmarks/2026-09-15-qwen38-27b-correctness/README.md` for raw-row locations,
+  score margins, distribution errors, precision differences and exact sources.
+- [ ] Isolate the long-prompt numerical differences before claiming correctness:
+  500/200 prefill has KL 0.5045 despite the same winner; 4000/800 first decode
+  has KL 19.6994 and chooses 248046 versus vLLM's 492 on the same prefix.
+  Final-logit BF16 rounding cannot explain the latter. Investigate prefill and
+  its first decode; later forced-prefix agreement does not clear this gate.
+- [ ] Complete the remaining full-checkpoint public-runner validation for
+  3.8-27B: prefix extension, failed rebuild continuation, and reset/replay,
+  alongside resolving the numerical differences above. The initial prefill and
+  forced-decode captures used FP32 recurrent state. Audit remaining fixed 35B
+  assumptions and fix failures exposed by these lifecycle checks.
+- [x] Establish the 3.8-27B BF16 performance baseline on the routine 102/32 and
+  1024/256 workloads. qs3 eager measures 4.509 / 4.491 tok/s versus vLLM graphs
+  at 4.508 / 4.487 tok/s. Prefill p50 is 295.5 / 1026.3 ms for qs3 versus
+  267.0 / 796.1 ms for vLLM. Decode differences are below 0.1%; no performance
+  advantage is established. Independent greedy continuations diverge at indices
+  18 and 3. See `benchmarks/2026-09-15-qwen38-27b-performance/README.md` for exact
+  settings, raw samples and timing boundaries. No BF16 tuning was performed.
+- [ ] Capture 3.8-27B GPU timelines when needed to guide the next implementation
+  experiment. The baseline above is unprofiled; prioritize NVFP4 integration
+  over expanding BF16 tuning.
 
 ## 4. Capture steady decode
 
@@ -165,7 +217,7 @@
   across graph replays; test page boundaries and prefix resets/rebuilds.
 - [ ] Separate enqueueing from output delivery. Keep the sampled token available
   on-device for the next step and make host completion points explicit.
-- [ ] Compare prepared eager execution with graph replay for both models,
+- [ ] Compare prepared eager execution with graph replay for 3.8-27B,
   including output correctness across page boundaries and prefix reset/reuse.
   Measure the core workloads and record the selected execution mode.
 
@@ -206,6 +258,10 @@
   against vLLM using the same pinned NVFP4 checkpoint and generation settings.
   Separate quantization differences from implementation errors using identical
   prefixes; retain BF16 as a correctness baseline.
+  Prioritize 3.8-27B's mixed W4A4 NVFP4 / FP8 recipe. Native kernel probes and
+  an integration proposal are recorded in
+  `benchmarks/2026-09-14-nvfp4-survey/INTEGRATION.md`; runtime integration remains
+  open. Its recipe differs from 3.6-27B's W4A16 recipe.
 - [ ] Make a forced provider selection easy to compare through the same
   correctness checks and both core workloads. Prefer bounded upstream-kernel
   adoption experiments; extend build/launch support only as an actual provider

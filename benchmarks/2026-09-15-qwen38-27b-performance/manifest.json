@@ -1,0 +1,106 @@
+{
+  "102-32/comparison.json": {
+    "bytes": 537,
+    "sha256": "692c9846c4a5c75252d745bc78fa3024c6ab459df28e71e00678a41ee02253e2"
+  },
+  "102-32/qs3.json": {
+    "bytes": 2582,
+    "sha256": "dfe9fc6dfed05ad0b06ab5760c902a991290d79154d28d24624c48e4c5f3699b"
+  },
+  "102-32/qs3.log": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "102-32/vllm-command.json": {
+    "bytes": 830,
+    "sha256": "10196b5af36e33cec30d8e00c5d32bcc6b58dbd028feaaf1b19a5ae2e27b9172"
+  },
+  "102-32/vllm.json": {
+    "bytes": 6805,
+    "sha256": "468f6be64498e09ceb1251f1a0ef1794ef7003cc8828e67fe02beae1c64df868"
+  },
+  "102-32/vllm.log": {
+    "bytes": 22854,
+    "sha256": "21a49c3044db490a153bf003dc6cec98f4abd5cc7f846c7ecb1a6f226a13a978"
+  },
+  "1024-256/comparison.json": {
+    "bytes": 539,
+    "sha256": "4f9378b12b269daa5daad0dbf97a27f4456889de04a0a8d81815632ee2a9aab8"
+  },
+  "1024-256/qs3.json": {
+    "bytes": 6561,
+    "sha256": "5cbed2f0310d9c4a40ed394e6c11ef8b3257561085334e246077b7b4d6a6a587"
+  },
+  "1024-256/qs3.log": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "1024-256/vllm-command.json": {
+    "bytes": 834,
+    "sha256": "3630a02408193f874e3c8676a365c7f2344c08cb381ea23924ebd7527356b55c"
+  },
+  "1024-256/vllm.json": {
+    "bytes": 14741,
+    "sha256": "fe36eb3cdb87aeeb11db68a83e234370b09d5e284b7b80f39f9df47fea3b5605"
+  },
+  "1024-256/vllm.log": {
+    "bytes": 28561,
+    "sha256": "59d53fa93922c21a16c1689b923699e850a98d6c7a274d6f5287b5d122afcb40"
+  },
+  "SUCCESS.json": {
+    "bytes": 54,
+    "sha256": "7bd4fac09484b514ceffac8763351abf000c6cd61654bafa6c1f065a1abd99f9"
+  },
+  "benchmark.rs": {
+    "bytes": 20082,
+    "sha256": "7cc86c72427cd3c36e731d9979532e4e5fac6758e5739765b878c9a1ac58805b"
+  },
+  "completed.json": {
+    "bytes": 29,
+    "sha256": "da1bb88c0d2737c9cf471b5647e59b76d0c8bb32da61458ff4e4a4f015aaedf7"
+  },
+  "config.json": {
+    "bytes": 8362,
+    "sha256": "8aaaeabffd2da4be71f35b6275be1e1439c4ca75501af91255b3b0e246b095f9"
+  },
+  "configure.log": {
+    "bytes": 200,
+    "sha256": "a9cb469cbd555876d1179cb1074ae021b86a7b6d511ead78da191a2bab0776d8"
+  },
+  "contract-tests.log": {
+    "bytes": 646,
+    "sha256": "7d321f804662290748fd3ad06d2a9f2ad843d35cffd9bf20542dd406fd73c9a3"
+  },
+  "gpu.csv": {
+    "bytes": 42,
+    "sha256": "6c9ddd16e8a61229224aa0674e91be8fa0d694e56bfc5ba9f34d018ab0423e78"
+  },
+  "image.json": {
+    "bytes": 8273,
+    "sha256": "fe7b5f0d24c2d580fa17696e1549c64303c5521990217c059192560b8dc9bf34"
+  },
+  "metadata.json": {
+    "bytes": 644,
+    "sha256": "b63632b9aa6a9c072b7141d5d82d6d39c0400c80913e0cabaafb4a22957068a5"
+  },
+  "native-build.log": {
+    "bytes": 73,
+    "sha256": "ef70c6bde98f04d67768608814b3bbac44a57e9378f130e3741345c94ba17106"
+  },
+  "run.py": {
+    "bytes": 6747,
+    "sha256": "2f19df320a2d267037e66f42a49057fe52f266942dfdf90ca12001a9e737b9c0"
+  },
+  "rust-build.log": {
+    "bytes": 103,
+    "sha256": "4624579a80525337ebdeae8267f3048ddacfe3d9b52e63b5da868ce4eb513b10"
+  },
+  "source.diff": {
+    "bytes": 62840,
+    "sha256": "c1b2d65f755c8ddb3344a482ddf9f484b5d40f5f818b701a2131489d8bbe325a"
+  },
+  "vllm_core_benchmark.py": {
+    "bytes": 5713,
+    "sha256": "21e6b5d78272c816adee128520394250e57030ad8de7c142cf09b83885d28a24"
+  }
+}

@@ -1,0 +1,212 @@
+diff --git a/3pty/vllm b/3pty/vllm
+index 98dff2a..51a9956 160000
+--- a/3pty/vllm
++++ b/3pty/vllm
+@@ -1 +1 @@
+-Subproject commit 98dff2a81d747d1dba01a47f939f48c3526d4206
++Subproject commit 51a99565c398c8320de8131e07731c75c52eb87c
+diff --git a/TODO.md b/TODO.md
+index 3dc72c7..25b1a09 100644
+--- a/TODO.md
++++ b/TODO.md
+@@ -2,7 +2,9 @@
+ 
+ ## Scope
+ 
+-- Support Qwen3.6-35B-A3B and Qwen3.6-27B, initially text-only.
++- Prioritize Qwen3.8-27B, initially text-only: this is the model that matters
++  for the next runtime work. Decide whether to pivot the entire test suite to
++  it; continued 3.6-35B-A3B / 3.6-27B coverage is not yet a settled requirement.
+ - Competitive single-user decode latency and tokens/sec against vLLM on Spark
+   is a completion criterion. Compare matched precision, context lengths, and
+   generation settings; record the exact models, kernels, and software revisions.
+@@ -23,10 +25,15 @@
+ 
+ ## Current BF16 priorities
+ 
+-- Prioritize prepared CUDA graph replay, GPU non-greedy sampling, sustained
+-  correctness comparisons, and repeatable provider experiments. These complete
+-  useful BF16 functionality and carry into NVFP4 without requiring a generic DAG
+-  runner or an exhaustive BF16 kernel-tuning campaign.
++- First establish Qwen3.8-27B BF16 end-to-end correctness and settle the test
++  pivot in section 3. Models are downloaded on the other device; use the cached
++  assets and verify their paths/revisions when running there. Downloads are not
++  the outstanding implementation task.
++- Then prioritize prepared CUDA graph replay, sustained correctness comparisons,
++  and repeatable provider experiments on 3.8-27B. GPU non-greedy sampling is
++  already implemented; valid-vocabulary normalization remains open below.
++- The 35B results and unfinished comparisons below record prior work. They do
++  not establish 27B correctness or require more 35B work before the target pivot.
+ - [x] Beat the recorded vLLM 35B BF16 **102/32** result: **30.573 tok/s**,
+   **32.640 ms/token p50**. The separate **500/200** baseline is **30.396 tok/s**,
+   **32.892 ms/token p50**. Throughput uses mean latency, not p50. Reference
+@@ -126,7 +133,23 @@
+   mostly overlaps GPU work. See FINDINGS.md. Device dispatch versus profiling
+   effects and the benefit of graph replay remain unmeasured.
+ 
+-## 3. Add the exact 27B path
++## 3. Establish Qwen3.8-27B and decide the test pivot
++
++- [ ] Decide whether to hard-pivot all tests and routine benchmarks to 3.8-27B.
++  It is the priority model; whether any 35B/MoE or 3.6-27B coverage remains is
++  still open. Audit model fixtures, native targets, loader/reference assertions,
++  tokenizer tests, vector generation, and benchmark defaults as part of this
++  decision. The current build default and real-model asset helper still select
++  3.6-35B-A3B; selecting 27B alone does not retarget its expected logits/tokens.
++- [x] Pin 3.8-27B assets: BF16
++  `1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0` and NVIDIA NVFP4
++  `dbb8f445b3145f8a4c18ddc769f032d57d32867c`. Model configs and source pins are
++  in `models/`; downloads are complete on the other device.
++- [x] Capture and verify external BF16 references for 3.8-27B: 1,051 full-logit
++  rows across 102/32, 500/200, and 4000/800 workloads. The small prompt
++  `[1,2,3,4]` generates `[5,0,31,46474]` in vLLM. See
++  `benchmarks/2026-09-14-vllm-references/README.md`; full rows remain on sp10.
++  These are reference artifacts, not a qs3 27B correctness pass.
+ 
+ - [ ] Normalize sampling over valid tokenizer IDs: exclude padded logit slots
+   before greedy selection or stochastic probability normalization, instead of
+@@ -142,19 +165,26 @@
+ - [x] Probe native full attention with 24 Q heads, 4 KV heads, head dimension
+   256, and GQA ratio 6. The isolated AOT probe passes CPU-reference prefill/decode
+   and append cases on sp10; see FINDINGS.md. Production native dispatch now
+-  supports the tested 6/8 cases; dedicated checked/release 27B tests pass. Rust
+-  model shape validation still needs to adopt the 27B geometry.
+-- [ ] Validate GDN with 16 key heads and 48 value heads, head dimensions 128,
+-  and convolution width 4. Audit fixed 35B constants in native kernels, Rust
+-  views, scratch allocation, and recurrent state. Native 32/48-head dispatch and
+-  AOT prep specializations now pass dedicated tests, including BF16/FP32 state.
+-  Rust views and allocation changes remain open.
+-- [ ] Add the 64-layer, hidden-size-5120 dense model path with MLP intermediate
+-  size 17408. Preserve the three-GDN/one-full-attention schedule and explicit
+-  support for the 35B shape; reject unsupported model configurations.
+-- [ ] Implement dense weight materialization and validate public-runner prefill,
+-  decode, prefix extension, and rebuilds against external reference results.
+-  Check recurrent-state precision and sustained decode, not just a short prompt.
++  supports the tested 6/8 cases; dedicated checked/release 27B tests pass.
++- [x] Add native GDN dispatch for 16 key heads and 48 value heads, head dimensions
++  128, and convolution width 4. Native 32/48-head dispatch and AOT prep
++  specializations pass dedicated tests, including BF16/FP32 state.
++- [x] Wire Rust model geometry, layer schedule, GDN views, scratch allocation,
++  and recurrent state to build-selected constants. The 27B config describes
++  64 layers, hidden size 5120, dense MLP intermediate size 17408, and the
++  three-GDN/one-full-attention schedule. This records implementation, not a
++  full-model validation pass.
++- [x] Implement dense BF16 weight materialization and gate/up/down execution.
++  The loader validates against the compiled model; dense weights and scratch
++  have their own paths. Full 3.8-27B execution still needs validation below.
++- [ ] Build for 3.8-27B and validate the full BF16 checkpoint through the public
++  runner: prefill, decode, prefix extension, failed rebuild continuation, and
++  reset/replay. Check recurrent-state precision and sustained identical-prefix
++  scores against the saved 3.8 references, not just a short greedy prompt.
++  Audit remaining fixed 35B assumptions and fix failures exposed by this run.
++- [ ] Establish 3.8-27B core latency/TPS and GPU timelines with the selected
++  test/benchmark defaults and matched vLLM settings. No qs3 end-to-end 27B
++  correctness or throughput result is currently recorded.
+ 
+ ## 4. Capture steady decode
+ 
+@@ -165,7 +195,7 @@
+   across graph replays; test page boundaries and prefix resets/rebuilds.
+ - [ ] Separate enqueueing from output delivery. Keep the sampled token available
+   on-device for the next step and make host completion points explicit.
+-- [ ] Compare prepared eager execution with graph replay for both models,
++- [ ] Compare prepared eager execution with graph replay for 3.8-27B,
+   including output correctness across page boundaries and prefix reset/reuse.
+   Measure the core workloads and record the selected execution mode.
+ 
+@@ -206,6 +236,10 @@
+   against vLLM using the same pinned NVFP4 checkpoint and generation settings.
+   Separate quantization differences from implementation errors using identical
+   prefixes; retain BF16 as a correctness baseline.
++  Prioritize 3.8-27B's mixed W4A4 NVFP4 / FP8 recipe. Native kernel probes and
++  an integration proposal are recorded in
++  `benchmarks/2026-09-14-nvfp4-survey/INTEGRATION.md`; runtime integration remains
++  open. Its recipe differs from 3.6-27B's W4A16 recipe.
+ - [ ] Make a forced provider selection easy to compare through the same
+   correctness checks and both core workloads. Prefer bounded upstream-kernel
+   adoption experiments; extend build/launch support only as an actual provider
+diff --git a/models/config.nix b/models/config.nix
+index 8e29684..cbbe000 100644
+--- a/models/config.nix
++++ b/models/config.nix
+@@ -14,7 +14,7 @@ let
+ in
+ let
+   engine = {
+-    model = "qwen3.6-35b-a3b";
++    model = "qwen3.8-27b";
+     mtp = false;
+   };
+ 
+diff --git a/src/loader/tests/scores.rs b/src/loader/tests/scores.rs
+index 202fccf..e2fb84a 100644
+--- a/src/loader/tests/scores.rs
++++ b/src/loader/tests/scores.rs
+@@ -1,6 +1,6 @@
+ // Included as a child of loader::tests; diagnostic output is explicitly requested.
+ use super::*;
+-use crate::constants::{mlp::BF16_KERNEL, precision::GDN_RECURRENT_STATE};
++use crate::constants::{engine::MODEL, mlp::HAS_EXPERTS, precision::GDN_RECURRENT_STATE};
+ use tinyjson::JsonValue;
+ 
+ fn object(fields: impl IntoIterator<Item = (&'static str, JsonValue)>) -> JsonValue {
+@@ -32,6 +32,8 @@ fn real_qwen36_same_prefix_scores() {
+         std::env::var("QS3_SCORE_OUTPUT").expect("QS3_SCORE_OUTPUT directory"),
+     );
+     let spec: JsonValue = std::fs::read_to_string(input).unwrap().parse().unwrap();
++    assert_eq!(spec["model_name"].get::<String>().unwrap(), MODEL);
++    assert!(!HAS_EXPERTS, "this comparison targets the dense 27B model");
+     let model_dir = require_real_qwen36_model_dir();
+     let tokenizer = crate::tokenizer::QwenTokenizer::from_model_dir(&model_dir).unwrap();
+     let token_count = tokenizer.token_count();
+@@ -88,6 +90,12 @@ fn real_qwen36_same_prefix_scores() {
+                 .map(|&x| (f64::from(x) - max).exp())
+                 .sum::<f64>()
+                 .ln();
++        let addressable_lse = max
++            + raw[..token_count]
++                .iter()
++                .map(|&x| (f64::from(x) - max).exp())
++                .sum::<f64>()
++                .ln();
+         let mut row = object([
+             ("step", (step as f64).into()),
+             ("argmax", (order[0] as f64).into()),
+@@ -108,6 +116,7 @@ fn real_qwen36_same_prefix_scores() {
+                     .into(),
+             ),
+             ("logsumexp", lse.into()),
++            ("addressable_logsumexp", addressable_lse.into()),
+             ("logits_dtype", "float32".to_owned().into()),
+         ]);
+         let fields = row
+@@ -118,6 +127,10 @@ fn real_qwen36_same_prefix_scores() {
+             fields.insert("forced_id".into(), (token as f64).into());
+             fields.insert("forced_logit".into(), f64::from(raw[token]).into());
+             fields.insert("forced_nll".into(), (lse - f64::from(raw[token])).into());
++            fields.insert(
++                "addressable_forced_nll".into(),
++                (addressable_lse - f64::from(raw[token])).into(),
++            );
+         }
+         if captures.contains(&(step as i32)) {
+             let filename = format!("logits-{step:04}.f32");
+@@ -141,7 +154,9 @@ fn real_qwen36_same_prefix_scores() {
+             "gdn_qkv_provider",
+             runner.gdn_qkv_provider().to_owned().into(),
+         ),
+-        ("router_logits_dtype", "bf16".to_owned().into()),
++        ("model_name", MODEL.to_owned().into()),
++        ("addressable_token_count", (token_count as f64).into()),
++        ("mlp_provider", "cublaslt_dense_bf16".to_owned().into()),
+         ("records", records.into()),
+         (
+             "protocol",
+@@ -153,7 +168,6 @@ fn real_qwen36_same_prefix_scores() {
+             "gdn_recurrent_state_dtype",
+             GDN_RECURRENT_STATE.to_owned().into(),
+         ),
+-        ("moe_kernel", BF16_KERNEL.to_owned().into()),
+     ]);
+     std::fs::write(output.join("scores.json"), result.stringify().unwrap()).unwrap();
+ }

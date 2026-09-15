@@ -1,0 +1,12 @@
+   Compiling qs3 v0.1.0 (/home/sp10/qs3)
+    Finished `release` profile [optimized] target(s) in 2.70s
+     Running unittests src/lib.rs (target/release/deps/qs3-b01ca87435d43bb7)
+
+running 4 tests
+test loader::benchmark::tests::fixed_workload_contract_does_not_drift ... ok
+test loader::benchmark::tests::token_fingerprint_is_stable_over_little_endian_i32_bytes ... ok
+test loader::benchmark::tests::latency_summaries_handle_odd_even_and_nearest_rank_samples ... ok
+test loader::benchmark::tests::throughput_rejects_empty_work_and_zero_time ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 141 filtered out; finished in 0.00s
+

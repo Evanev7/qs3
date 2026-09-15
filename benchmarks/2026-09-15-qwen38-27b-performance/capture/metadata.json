@@ -1,0 +1,20 @@
+{
+  "model": "qwen3.8-27b",
+  "revision": "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0",
+  "image_pin": "vllm/vllm-openai@sha256:c2914767605584b6d8f45686b82de173ecc99e781897aa3d0a66dacd72c51ae1",
+  "image_id": "sha256:c2914767605584b6d8f45686b82de173ecc99e781897aa3d0a66dacd72c51ae1",
+  "workloads": [
+    [
+      102,
+      32
+    ],
+    [
+      1024,
+      256
+    ]
+  ],
+  "commit": "78cfbe52f2bc0b7f4aa9ecac099bae9de457f9cf",
+  "protocol": "unprofiled wall-clock baseline; independent greedy continuations; two prefill warmups, five samples; four decode warmups",
+  "qs3_mode": "eager",
+  "vllm_mode": "default CUDA graphs; model runner v1"
+}
