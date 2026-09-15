@@ -1,0 +1,27 @@
+qs3 is free software: you can redistribute it and/or modify it under the
+terms of the GNU General Public License as published by the Free Software
+Foundation, either version 3 of the License, or (at your option) any later
+version, with the additional permission below.
+
+qs3 is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+FOR A PARTICULAR PURPOSE. See the GNU General Public License for more
+details. The full license text is provided in LICENSE.
+
+Additional permission under GNU GPL version 3 section 7
+
+If you modify this Program, or any covered work, by linking or combining
+it with the NVIDIA CUDA driver library (libcuda), CUDA Runtime (libcudart),
+or cuBLASLt (libcublasLt) (or modified versions of those libraries),
+containing parts covered by the terms of the applicable NVIDIA software
+license agreements, the licensors of this Program grant you additional
+permission to convey the resulting work.
+
+This permission does not change NVIDIA's licensing or redistribution
+requirements for those libraries.
+
+Third-party code retains its own copyright notices and license terms.
+This project's license notice does not replace the licenses accompanying
+vendored dependencies, adapted kernels, model weights, or other third-party
+materials. Preserve the applicable license and NOTICE files when distributing
+those materials.
