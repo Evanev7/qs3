@@ -5417,6 +5417,7 @@
       "profile": "release",
       "finished_at": "2026-09-10T16:17:43.661414892+00:00",
       "started_at": "2026-09-10T16:16:37.437273249+00:00",
+      "model_name": "qwen3.6-35b-a3b",
       "model": "/home/sp10/.cache/huggingface/hub/models--Qwen--Qwen3.6-35B-A3B/snapshots/995ad96eacd98c81ed38be0c5b274b04031597b0",
       "decode": {
         "p95_ms": 36.239418,
@@ -6260,6 +6261,7 @@
   },
   "measurement": {
     "started_at": "2026-09-10T16:15:32.604352213+00:00",
+    "model_name": "qwen3.6-35b-a3b",
     "model": "/home/sp10/.cache/huggingface/hub/models--Qwen--Qwen3.6-35B-A3B/snapshots/995ad96eacd98c81ed38be0c5b274b04031597b0",
     "prompt": {
       "base_bytes": 556,

@@ -120,6 +120,7 @@
       "cold_ms": 0.15073899999999998,
       "p50_ms": 0.040256999999999994
     },
+    "model_name": "qwen3.6-35b-a3b",
     "model": "/home/sp10/.cache/huggingface/hub/models--Qwen--Qwen3.6-35B-A3B/snapshots/995ad96eacd98c81ed38be0c5b274b04031597b0",
     "profile": "release",
     "prompt": {
@@ -306,6 +307,7 @@
         "construction": "repeat_base_token_ids",
         "token_id_fnv1a": "6ca602a4cc15238d"
       },
+      "model_name": "qwen3.6-35b-a3b",
       "model": "/home/sp10/.cache/huggingface/hub/models--Qwen--Qwen3.6-35B-A3B/snapshots/995ad96eacd98c81ed38be0c5b274b04031597b0",
       "prefill": {
         "sample_ms": [

@@ -46,6 +46,7 @@
       "logits_rows": "final_token",
       "router": "qscu_warp32_top8_e256"
     },
+    "model_name": "qwen3.6-35b-a3b",
     "model": "/home/sp10/.cache/huggingface/hub/models--Qwen--Qwen3.6-35B-A3B/snapshots/995ad96eacd98c81ed38be0c5b274b04031597b0",
     "finished_at": "2026-09-10T03:20:48.753402150+00:00",
     "prefill": {

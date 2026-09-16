@@ -140,6 +140,7 @@
       "weight_load": 45278.60363500001,
       "tokenizer_load": 349.516828
     },
+    "model_name": "qwen3.6-35b-a3b",
     "model": "/home/sp10/.cache/huggingface/hub/models--Qwen--Qwen3.6-35B-A3B/snapshots/995ad96eacd98c81ed38be0c5b274b04031597b0",
     "profile": "release",
     "prefill": {

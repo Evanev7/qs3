@@ -61,6 +61,7 @@
       "gdn_prefill_conv": "qscu_parallel_tokens"
     },
     "started_at": "2026-09-13T16:07:59.262053707+00:00",
+    "model_name": "qwen3.6-35b-a3b",
     "model": "/home/sp10/.cache/huggingface/hub/models--Qwen--Qwen3.6-35B-A3B/snapshots/995ad96eacd98c81ed38be0c5b274b04031597b0",
     "finished_at": "2026-09-13T16:09:04.430251973+00:00",
     "tokenize": {
@@ -5791,6 +5792,7 @@
         "samples": 32,
         "context_end": 138
       },
+      "model_name": "qwen3.6-35b-a3b",
       "model": "/home/sp10/.cache/huggingface/hub/models--Qwen--Qwen3.6-35B-A3B/snapshots/995ad96eacd98c81ed38be0c5b274b04031597b0",
       "setup_ms": {
         "weight_plan": 24.218354,

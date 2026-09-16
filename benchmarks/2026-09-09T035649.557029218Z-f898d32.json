@@ -578,6 +578,7 @@
       "runner_init": 20.204385
     },
     "finished_at": "2026-09-09T03:57:54.947229333+00:00",
+    "model_name": "qwen3.6-35b-a3b",
     "model": "/home/sp10/.cache/huggingface/hub/models--Qwen--Qwen3.6-35B-A3B/snapshots/995ad96eacd98c81ed38be0c5b274b04031597b0",
     "started_at": "2026-09-09T03:56:49.557029218+00:00",
     "tokenize": {

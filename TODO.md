@@ -262,6 +262,20 @@
   an integration proposal are recorded in
   `benchmarks/2026-09-14-nvfp4-survey/INTEGRATION.md`; runtime integration remains
   open. Its recipe differs from 3.6-27B's W4A16 recipe.
+- [ ] Experiment with typed NVFP4 weight blocks and GPU descriptors. Try
+  `Nvfp4Block<const N: usize, const K: usize>` with logical weight extents,
+  typed packed E2M1 and E4M3 block-scale storage, per-projection F32 globals
+  (`weight_scale_2` and optional `input_scale`), and explicit A4/A16 execution
+  selection. Use `W<T> = Box<dyn Deref<Target = DeviceSpan<T>>>` for host-owned
+  storage; keep interior structures generic where practical and let top-level
+  `QwenWeights` select concrete Dense/Moe × BF16/NVFP4 variants. Preserve the
+  mixed recipe with separate MLP and attention representations (NVFP4 / FP8)
+  and concrete BF16 fields. Prototype plain GPU descriptors containing pointers,
+  scales, and required layout metadata while Rust retains allocation ownership.
+  These types organize logical data, not physical allocations: permit shared
+  allocations, packed global-scale arrays, and kernel-specific padding,
+  swizzling, or repacking during preparation. Measure usefulness and overhead
+  before adopting; this is an experiment, not a required GPU memory layout.
 - [ ] Make a forced provider selection easy to compare through the same
   correctness checks and both core workloads. Prefer bounded upstream-kernel
   adoption experiments; extend build/launch support only as an actual provider

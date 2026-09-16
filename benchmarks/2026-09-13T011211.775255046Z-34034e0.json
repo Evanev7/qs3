@@ -40,6 +40,7 @@
         "cold_ms": 0.142448
       },
       "finished_at": "2026-09-13T01:14:33.194053069+00:00",
+      "model_name": "qwen3.6-35b-a3b",
       "model": "/home/sp10/.cache/huggingface/hub/models--Qwen--Qwen3.6-35B-A3B/snapshots/995ad96eacd98c81ed38be0c5b274b04031597b0",
       "decode": {
         "samples": 32,
@@ -6818,6 +6819,7 @@
       ],
       "p50_ms": 35.162473
     },
+    "model_name": "qwen3.6-35b-a3b",
     "model": "/home/sp10/.cache/huggingface/hub/models--Qwen--Qwen3.6-35B-A3B/snapshots/995ad96eacd98c81ed38be0c5b274b04031597b0",
     "prompt": {
       "tokens": 102,

@@ -609,6 +609,7 @@
       "context_start": 1028,
       "warmups": 4
     },
+    "model_name": "qwen3.6-35b-a3b",
     "model": "/home/sp10/.cache/huggingface/hub/models--Qwen--Qwen3.6-35B-A3B/snapshots/995ad96eacd98c81ed38be0c5b274b04031597b0"
   },
   "metadata": {
@@ -634,6 +635,7 @@
         "token_id_fnv1a": "c8cd97958d34675c",
         "base_bytes": 556
       },
+      "model_name": "qwen3.6-35b-a3b",
       "model": "/home/sp10/.cache/huggingface/hub/models--Qwen--Qwen3.6-35B-A3B/snapshots/995ad96eacd98c81ed38be0c5b274b04031597b0",
       "started_at": "2026-09-13T16:11:38.237523233+00:00",
       "execution": {

@@ -9,6 +9,7 @@ ROOT = Path(__file__).resolve().parent
 
 def collect_runs() -> list[dict[str, object]]:
     runs: list[dict[str, object]] = []
+    models = {p.parent.name for p in (ROOT.parent / "models").glob("*/model.json")}
     for path in sorted(ROOT.glob("*.json")):
         source = json.loads(path.read_text())
         measurement = source.get("measurement", {})
@@ -16,7 +17,12 @@ def collect_runs() -> list[dict[str, object]]:
             continue
         metadata = source["metadata"]
         execution = measurement["execution"]
+        model_name = measurement["model_name"]
+        if model_name not in models:
+            raise ValueError(f"{path.name}: unknown model_name {model_name!r}")
         runs.append({
+            "model_name": model_name,
+            "model": measurement["model"],
             "commit": metadata["commit_hash"],
             "file": path.name,
             "date": measurement["started_at"],
@@ -59,10 +65,11 @@ HTML = r'''<!doctype html>
 <body><main>
 <div class="top"><div class="intro"><div class="eyebrow">QUASAR3 / SPARK GB10</div><h1>Performance across commits</h1><p>Recorded core benchmark runs, labeled with their measured commit subjects. Select a run to inspect its configuration.</p></div><div class="stamp" id="stamp"></div></div>
 <div class="cards"><div class="card"><span>Runs in this view</span><strong id="run-count"></strong></div><div class="card"><span>First recorded run</span><strong id="first"></strong><span id="first-id"></span></div><div class="card"><span>Latest recorded run</span><strong id="latest"></strong><span id="latest-id"></span></div></div>
-<div class="controls"><label>Workload<select id="workload"></select></label><label>Metric<select id="metric"><option value="tps">Decode throughput · tok/s</option><option value="decode">Decode latency · p50 ms</option><option value="p95">Decode latency · p95 ms</option><option value="prefill">Prefill latency · p50 ms</option></select></label><label>Filter commits<input id="search" type="search" placeholder="Commit subject or hash" autocomplete="off"></label><span class="count" id="count"></span></div>
+<div class="controls"><label>Model<select id="model"><option value="all">All models</option></select></label><label>Workload<select id="workload"></select></label><label>Metric<select id="metric"><option value="tps">Decode throughput · tok/s</option><option value="decode">Decode latency · p50 ms</option><option value="p95">Decode latency · p95 ms</option><option value="prefill">Prefill latency · p50 ms</option></select></label><label>Filter commits<input id="search" type="search" placeholder="Commit subject or hash" autocomplete="off"></label><span class="count" id="count"></span></div>
+<p id="mixed" class="foot" hidden>Mixed models: differences include model architecture and quantization, not just changes across commits.</p>
 <section class="chart-panel" aria-label="Benchmark comparison"><div class="chart-heading"><strong id="chart-title"></strong><span><span class="legend"><i class="dot"></i> Latest run</span> · Oldest → newest</span></div><div class="axis-row"><span class="axis-label">Commit / configuration</span><div class="axis" id="axis"></div></div><div id="chart"></div></section>
 <section class="detail" id="detail" aria-live="polite"></section>
-<p class="foot">Each bar is one recorded run; repeated commits retain their separate measurements. Workloads are separated by prompt length and measured decode steps. Precision, kernel settings and loading strategy changed over this history, so adjacent bars are not necessarily controlled A/B comparisons. Missing historical metadata is shown as “not recorded”. The chart contains the core JSON files in this directory; source links open the original measurements.</p>
+<p class="foot">Each bar is one recorded run; repeated commits retain their separate measurements. The default view selects the latest recorded model. Model IDs match the models directory, including separate -nvfp4 variants. Workloads are separated by prompt length and measured decode steps. Precision, kernel settings and loading strategy changed over this history, so adjacent bars are not necessarily controlled A/B comparisons. Missing historical metadata is shown as “not recorded”. The chart contains the core JSON files in this directory; source links open the original measurements.</p>
 <noscript><p>This interactive chart needs JavaScript enabled. All data is embedded in this file; no network access is required.</p></noscript>
 </main>
 <script id="benchmark-data" type="application/json">__DATA__</script>
@@ -74,32 +81,37 @@ const metrics = {tps:{label:'Decode throughput',unit:'tok/s',direction:'Higher i
 const escape = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const format = n => Number(n).toLocaleString('en-US',{minimumFractionDigits:3,maximumFractionDigits:3});
 const stamp = s => s.replace('T',' ').slice(0,19)+' UTC';
+const models = [...new Set(runs.map(r=>r.model_name))].sort();
+for(const model of models){const opt=document.createElement('option');opt.value=model;opt.textContent=model;$('model').append(opt);}
+$('model').value=runs.at(-1)?.model_name||'all';
 const workloads = [...new Set(runs.map(r=>`${r.prompt}/${r.samples}`))].sort((a,b)=>Number(a.split('/')[0])-Number(b.split('/')[0]));
 for(const key of workloads){const [p,n]=key.split('/');const opt=document.createElement('option');opt.value=key;opt.textContent=`${Number(p).toLocaleString()} prompt / ${n} decode`; $('workload').append(opt);}
 const params = new URLSearchParams(location.search);
+if(params.get('model')==='all'||models.includes(params.get('model'))) $('model').value=params.get('model');
 if(workloads.includes(params.get('workload'))) $('workload').value=params.get('workload');
 if(metrics[params.get('metric')]) $('metric').value=params.get('metric');
 $('search').value=params.get('q')||'';
-$('stamp').textContent=`${runs.length} runs · through ${runs.at(-1).date.slice(0,10)}`;
+$('stamp').textContent=`${runs.length} runs · through ${runs.at(-1)?.date.slice(0,10)||'—'}`;
 let selected = null;
-function setting(r){const e=r.execution;const bits=[];if(e.gdn_recurrent_state_dtype)bits.push(`GDN ${e.gdn_recurrent_state_dtype.toUpperCase()}`);if(e.moe_kernel)bits.push(e.moe_kernel);else if(e.moe_threadblocks)bits.push(`MoE ${e.moe_threadblocks} blocks`);if(e.weight_backend==='pinned_upload')bits.push('device weights');if(e.lm_head==='triton')bits.push('Triton LM');return bits.join(' · ');}
+function setting(r){const e=r.execution;const bits=[r.model_name, e.precision?e.precision.toUpperCase():'precision not recorded'];if(e.gdn_recurrent_state_dtype)bits.push(`GDN ${e.gdn_recurrent_state_dtype.toUpperCase()}`);if(e.moe_kernel)bits.push(e.moe_kernel);else if(e.moe_threadblocks)bits.push(`MoE ${e.moe_threadblocks} blocks`);if(e.weight_backend==='pinned_upload')bits.push('device weights');if(e.lm_head==='triton')bits.push('Triton LM');return bits.join(' · ');}
 function datum(label,value){return `<div class="datum"><span>${escape(label)}</span><strong>${escape(value??'not recorded')}</strong></div>`;}
 function inspect(r){
  selected=r.file;
  document.querySelectorAll('.run').forEach(el=>el.setAttribute('aria-pressed',String(el.dataset.file===selected)));
  const e=r.execution,m=r.metadata;
- const fields=[['Commit',r.commit],['Recorded',stamp(r.date)],['Decode throughput',format(r.tps)+' tok/s'],['Decode p50 / p95',format(r.decode)+' / '+format(r.p95)+' ms'],['Prefill p50',format(r.prefill)+' ms'],['Workload',`${r.prompt} prompt · ${r.warmups} warmups · ${r.samples} measured decode`],['Decode context',`${r.context_start} → ${r.context_end}`],['Weight backend',e.weight_backend],['GDN recurrent state',e.gdn_recurrent_state_dtype],['Router logits',e.router_logits_dtype],['MoE kernel',e.moe_kernel??e.moe],['MoE threadblocks',e.moe_threadblocks],['LM head',e.lm_head],['CUDA / driver',`${m.cuda_runtime} / ${m.driver}`],['Execution',e.mode],['Rust toolchain',m.rust]];
+ const fields=[['Model',r.model_name],['Precision',e.precision],['Model path',r.model],['Commit',r.commit],['Recorded',stamp(r.date)],['Decode throughput',format(r.tps)+' tok/s'],['Decode p50 / p95',format(r.decode)+' / '+format(r.p95)+' ms'],['Prefill p50',format(r.prefill)+' ms'],['Workload',`${r.prompt} prompt · ${r.warmups} warmups · ${r.samples} measured decode`],['Decode context',`${r.context_start} → ${r.context_end}`],['Weight backend',e.weight_backend],['GDN recurrent state',e.gdn_recurrent_state_dtype],...(e.mlp?[['MLP kernel',e.mlp]]:[['Router logits',e.router_logits_dtype],['MoE kernel',e.moe_kernel??e.moe],['MoE threadblocks',e.moe_threadblocks]]),['LM head',e.lm_head],['CUDA / driver',`${m.cuda_runtime} / ${m.driver}`],['Execution',e.mode],['Rust toolchain',m.rust]];
  $('detail').innerHTML=`<h2>${escape(r.subject)}</h2><div class="detail-grid">${fields.map(x=>datum(...x)).join('')}</div><div class="source"><a href="${encodeURI(r.file)}">Open original benchmark JSON ↗</a></div>`;
 }
 function render(){
  const metric=$('metric').value,meta=metrics[metric],query=$('search').value.toLowerCase().trim();
- const rows=runs.filter(r=>`${r.prompt}/${r.samples}`===$('workload').value && `${r.subject} ${r.commit}`.toLowerCase().includes(query));
+ const rows=runs.filter(r=>($('model').value==='all'||r.model_name===$('model').value) && `${r.prompt}/${r.samples}`===$('workload').value && `${r.subject} ${r.commit}`.toLowerCase().includes(query));
+ $('mixed').hidden=new Set(rows.map(r=>r.model_name)).size<2;
  $('run-count').textContent=rows.length;
  $('count').textContent=`${rows.length} of ${runs.length} recorded runs`;
- $('chart-title').textContent=`${meta.label} (${meta.unit}) · ${meta.direction}`;
+ $('chart-title').textContent=`${$('model').value==='all'?'All models':$('model').value} · ${meta.label} (${meta.unit}) · ${meta.direction}`;
  for(const [id,r] of [['first',rows[0]],['latest',rows.at(-1)]]){
   $(id).innerHTML=r?`${format(r[metric])}<small>${meta.unit}</small>`:'—';
-  $(id+'-id').textContent=r?`${r.commit.slice(0,7)} · ${r.date.slice(0,10)}`:'No matching runs';
+  $(id+'-id').textContent=r?`${r.model_name} · ${r.commit.slice(0,7)} · ${r.date.slice(0,10)}`:'No matching runs';
  }
  if(!rows.length){$('chart').innerHTML='<div class="empty">No runs match this filter.</div>';$('axis').replaceChildren();$('detail').hidden=true;return;}
  $('detail').hidden=false;
@@ -111,13 +123,13 @@ function render(){
  $('chart').replaceChildren();
  rows.forEach((r,i)=>{
   const button=document.createElement('button');button.className='run'+(i===rows.length-1?' latest':'');button.type='button';button.dataset.file=r.file;
-  button.setAttribute('aria-label',`${r.subject}, ${r.commit.slice(0,7)}, ${meta.label}: ${format(r[metric])} ${meta.unit}. Inspect run.`);
+  button.setAttribute('aria-label',`${r.model_name}, ${r.subject}, ${r.commit.slice(0,7)}, ${meta.label}: ${format(r[metric])} ${meta.unit}. Inspect run.`);
   button.innerHTML=`<span><span class="subject">${escape(r.subject)}</span><span class="revision"><b>${r.commit.slice(0,7)}</b> · ${escape(setting(r)||r.date.slice(0,10))}</span></span><span class="plot"><span class="bar" style="width:${r[metric]/limit*100}%"><span class="value">${format(r[metric])}</span></span></span>`;
   button.addEventListener('click',()=>{inspect(r);$('detail').scrollIntoView({behavior:'smooth',block:'nearest'});});$('chart').append(button);
  });
  inspect(rows.find(r=>r.file===selected)||rows.at(-1));
 }
-for(const id of ['workload','metric','search']) $(id).addEventListener('input',render);
+for(const id of ['model','workload','metric','search']) $(id).addEventListener('input',render);
 render();
 </script></body></html>
 '''
