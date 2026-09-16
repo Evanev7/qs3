@@ -7,35 +7,29 @@ from itertools import pairwise
 from pathlib import Path
 from typing import TypedDict, cast
 
+from .config import VectorConfig
 from .io import bf16_bits_to_float32, float32_to_bf16_bits, write_artifact
 from .paths import DEFAULT_VECTOR_ROOT
 from .schema import TensorSpec, VectorManifest
 
 SEQ_LENS = (1, 3, 4, 5, 65)
-KEY_HEADS = 16
-VALUE_HEADS = 32
-KEY_DIM = 128
-VALUE_DIM = 128
-CONV_WIDTH = 4
+
+
 L2_EPS = 1.0e-6
-RMS_EPS = 1.0e-6
+
 SOFTPLUS_THRESHOLD = 20.0
-RECURRENT_SCALE = 1.0 / math.sqrt(KEY_DIM)
+
 DEFAULT_OUTPUT = DEFAULT_VECTOR_ROOT / "gdn_post_conv_prep"
 
-Q_DIM = KEY_HEADS * KEY_DIM
-K_DIM = KEY_HEADS * KEY_DIM
-V_DIM = VALUE_HEADS * VALUE_DIM
-Z_DIM = VALUE_HEADS * VALUE_DIM
-QKV_DIM = Q_DIM + K_DIM + V_DIM
-QKVZ_DIM = QKV_DIM + Z_DIM
-BA_DIM = 2 * VALUE_HEADS
+
 TOTAL_TOKENS = sum(SEQ_LENS)
 DECODE_STEPS = 2
 DECODE_CASES = len(SEQ_LENS)
 
 
-def build_gdn_artifact() -> tuple[VectorManifest, dict[str, list[float] | list[int]]]:
+def build_gdn_artifact(
+    config: VectorConfig,
+) -> tuple[VectorManifest, dict[str, list[float] | list[int]]]:
     case_lengths = list(SEQ_LENS)
     case_offsets = _case_offsets(SEQ_LENS)
     token_case_ids, token_positions = _token_index_tensors(SEQ_LENS)
@@ -49,27 +43,33 @@ def build_gdn_artifact() -> tuple[VectorManifest, dict[str, list[float] | list[i
         a,
         mixed_qkvz_interleaved_debug,
         mixed_ba_interleaved_debug,
-    ) = _build_projected_inputs()
+    ) = _build_projected_inputs(config)
 
-    conv_weight_words, conv_weight = _build_conv_weight()
+    conv_weight_words, conv_weight = _build_conv_weight(config)
     conv_output_f32, conv_output_bf16 = _causal_conv1d_silu(
+        config,
         mixed_qkv,
         conv_weight,
         case_offsets,
     )
-    conv_final_state = _conv_final_state(mixed_qkv, case_offsets)
+    conv_final_state = _conv_final_state(config, mixed_qkv, case_offsets)
 
-    q_raw, k_raw, v_raw = _split_qkv(conv_output_bf16)
-    q_l2norm_f32, q_l2norm_bf16 = _l2_normalize_heads(q_raw, KEY_HEADS, KEY_DIM)
-    k_l2norm_f32, k_l2norm_bf16 = _l2_normalize_heads(k_raw, KEY_HEADS, KEY_DIM)
+    q_raw, k_raw, v_raw = _split_qkv(config, conv_output_bf16)
+    q_l2norm_f32, q_l2norm_bf16 = _l2_normalize_heads(
+        q_raw, config.key_heads, config.key_dim
+    )
+    k_l2norm_f32, k_l2norm_bf16 = _l2_normalize_heads(
+        k_raw, config.key_heads, config.key_dim
+    )
 
-    a_log_words = [_bf16(value) for value in _build_a_log()]
-    dt_bias_words = [_bf16(value) for value in _build_dt_bias()]
+    a_log_words = [_bf16(value) for value in _build_a_log(config)]
+    dt_bias_words = [_bf16(value) for value in _build_dt_bias(config)]
     a_log = [bf16_bits_to_float32(word) for word in a_log_words]
     dt_bias = [bf16_bits_to_float32(word) for word in dt_bias_words]
-    g, decay_exp, beta = _gating(a, b, a_log, dt_bias)
+    g, decay_exp, beta = _gating(config, a, b, a_log, dt_bias)
 
     recurrent_q, recurrent_k = _recurrent_qk_values(
+        config,
         q_raw,
         k_raw,
         normalize_inside=True,
@@ -80,6 +80,7 @@ def build_gdn_artifact() -> tuple[VectorManifest, dict[str, list[float] | list[i
         recurrent_final_state_f32,
         recurrent_final_state_bf16,
     ) = _gdn_prefill_recurrence(
+        config,
         recurrent_q,
         recurrent_k,
         v_raw,
@@ -88,6 +89,7 @@ def build_gdn_artifact() -> tuple[VectorManifest, dict[str, list[float] | list[i
         case_offsets,
     )
     recurrence_debug = _vllm_prefill_recurrence_debug(
+        config,
         q_l2norm_bf16,
         k_l2norm_bf16,
         v_raw,
@@ -98,6 +100,7 @@ def build_gdn_artifact() -> tuple[VectorManifest, dict[str, list[float] | list[i
         recurrent_final_state_f32,
     )
     decode = _gdn_decode_continuation(
+        config,
         mixed_qkv,
         conv_weight,
         a_log,
@@ -106,8 +109,11 @@ def build_gdn_artifact() -> tuple[VectorManifest, dict[str, list[float] | list[i
         case_offsets,
     )
 
-    gated_rmsnorm_weight_words, gated_rmsnorm_weight = _build_gated_rmsnorm_weight()
+    gated_rmsnorm_weight_words, gated_rmsnorm_weight = _build_gated_rmsnorm_weight(
+        config
+    )
     gated_rmsnorm_output_f32, gated_rmsnorm_output_bf16 = _gated_rmsnorm_silu(
+        config,
         v_raw,
         z,
         gated_rmsnorm_weight,
@@ -158,15 +164,17 @@ def build_gdn_artifact() -> tuple[VectorManifest, dict[str, list[float] | list[i
     tensors["decode_case_ids"] = list(range(DECODE_CASES))
     tensors["decode_step1_positions"] = [length for length in SEQ_LENS]
     tensors["decode_step2_positions"] = [length + 1 for length in SEQ_LENS]
-    return _build_manifest(recurrence_debug), tensors
+    return _build_manifest(config, recurrence_debug), tensors
 
 
-def write_gdn_artifact(root: str | Path = DEFAULT_OUTPUT) -> Path:
-    manifest, tensors = build_gdn_artifact()
+def write_gdn_artifact(config: VectorConfig, root: str | Path = DEFAULT_OUTPUT) -> Path:
+    manifest, tensors = build_gdn_artifact(config)
     return write_artifact(root, manifest, tensors)
 
 
-def _build_manifest(recurrence_debug: dict[str, object]) -> VectorManifest:
+def _build_manifest(
+    config: VectorConfig, recurrence_debug: dict[str, object]
+) -> VectorManifest:
     return VectorManifest(
         name="qwen36_gdn_post_conv_prep",
         groups=("qwen36_semantics", "gdn", "post_conv_prep"),
@@ -190,22 +198,22 @@ def _build_manifest(recurrence_debug: dict[str, object]) -> VectorManifest:
                 "qs3_consumed_buffers": ["mixed_qkv", "z", "b", "a"],
             },
             "dimensions": {
-                "linear_num_key_heads": KEY_HEADS,
-                "linear_num_value_heads": VALUE_HEADS,
-                "linear_key_head_dim": KEY_DIM,
-                "linear_value_head_dim": VALUE_DIM,
-                "q_dim": Q_DIM,
-                "k_dim": K_DIM,
-                "v_dim": V_DIM,
-                "z_dim": Z_DIM,
-                "packed_qkv_dim": QKV_DIM,
-                "packed_qkvz_dim": QKVZ_DIM,
-                "ba_dim": BA_DIM,
-                "conv_width": CONV_WIDTH,
+                "linear_num_key_heads": config.key_heads,
+                "linear_num_value_heads": config.value_heads,
+                "linear_key_head_dim": config.key_dim,
+                "linear_value_head_dim": config.value_dim,
+                "q_dim": config.q_dim,
+                "k_dim": config.k_dim,
+                "v_dim": config.v_dim,
+                "z_dim": config.z_dim,
+                "packed_qkv_dim": config.qkv_dim,
+                "packed_qkvz_dim": config.qkvz_dim,
+                "ba_dim": config.ba_dim,
+                "conv_width": config.conv_width,
             },
             "normalization_eps": {
                 "qk_l2norm": L2_EPS,
-                "gated_rmsnorm": RMS_EPS,
+                "gated_rmsnorm": config.rms_eps,
             },
             "source_semantics": [
                 (
@@ -221,27 +229,27 @@ def _build_manifest(recurrence_debug: dict[str, object]) -> VectorManifest:
             ],
             "layout": {
                 "mixed_qkvz": (
-                    "[token, q_all[2048], k_all[2048], v_all[4096], z_all[4096]]"
+                    f"[token, q_all[{config.q_dim}], k_all[{config.k_dim}], v_all[{config.v_dim}], z_all[{config.z_dim}]]"
                 ),
-                "mixed_ba": "[token, b_all[32], a_all[32]]",
-                "mixed_qkv": "[token, q_all[2048], k_all[2048], v_all[4096]]",
+                "mixed_ba": f"[token, b_all[{config.value_heads}], a_all[{config.value_heads}]]",
+                "mixed_qkv": f"[token, q_all[{config.q_dim}], k_all[{config.k_dim}], v_all[{config.v_dim}]]",
                 "z": "[token, value_head, value_dim]",
                 "b": "[token, value_head]",
                 "a": "[token, value_head]",
                 "post_conv_split": (
-                    "conv_output_bf16 is split as q_raw[16,128], "
-                    "k_raw[16,128], v_raw[32,128]"
+                    f"conv_output_bf16 is split as q_raw[{config.key_heads},{config.key_dim}], "
+                    f"k_raw[{config.key_heads},{config.key_dim}], v_raw[{config.value_heads},{config.value_dim}]"
                 ),
             },
             "debug_layouts": {
                 "mixed_qkvz_interleaved_debug": (
                     "Optional Qwen3-Next-only comparison layout: "
-                    "[token, key_head_group, q[128], k[128], "
-                    "v_group[2,128], z_group[2,128]]. Not production Qwen3.6."
+                    f"[token, key_head_group, q[{config.key_dim}], k[{config.key_dim}], "
+                    f"v_group[{config.value_heads // config.key_heads},{config.value_dim}], z_group[{config.value_heads // config.key_heads},{config.value_dim}]]. Not production Qwen3.6."
                 ),
                 "mixed_ba_interleaved_debug": (
                     "Optional Qwen3-Next-only comparison layout: "
-                    "[token, key_head_group, b_group[2], a_group[2]]. "
+                    f"[token, key_head_group, b_group[{config.value_heads // config.key_heads}], a_group[{config.value_heads // config.key_heads}]]. "
                     "Not production Qwen3.6."
                 ),
             },
@@ -261,13 +269,13 @@ def _build_manifest(recurrence_debug: dict[str, object]) -> VectorManifest:
                 ),
                 "gated_rmsnorm": (
                     "RMSNormGated norm_before_gate=True, activation=silu: "
-                    f"rms_norm(v_raw, eps={RMS_EPS:g}) * weight * silu(z)."
+                    f"rms_norm(v_raw, eps={config.rms_eps:g}) * weight * silu(z)."
                 ),
                 "gdn_prefill_recurrence": (
                     "zero initial recurrent state per case; q/k are raw post-conv "
                     f"BF16 inputs normalized inside recurrence with eps={L2_EPS:g}; "
                     "q/k heads are repeated by two to value heads; q is scaled by "
-                    f"{RECURRENT_SCALE:.10g}; state layout is "
+                    f"{config.recurrent_scale:.10g}; state layout is "
                     "[value_head, value_dim, key_dim]. Per token: "
                     "state *= exp(g); kv_mem = state @ k; "
                     "delta = (v - kv_mem) * beta; state += outer(delta, k); "
@@ -360,7 +368,7 @@ def _build_manifest(recurrence_debug: dict[str, object]) -> VectorManifest:
             TensorSpec(
                 "mixed_qkvz",
                 "bf16",
-                (TOTAL_TOKENS, QKVZ_DIM),
+                (TOTAL_TOKENS, config.qkvz_dim),
                 role="input",
                 description=(
                     "Production non-interleaved Qwen3.6/Qwen3.5 [q,k,v,z] "
@@ -374,7 +382,7 @@ def _build_manifest(recurrence_debug: dict[str, object]) -> VectorManifest:
             TensorSpec(
                 "mixed_ba",
                 "bf16",
-                (TOTAL_TOKENS, BA_DIM),
+                (TOTAL_TOKENS, config.ba_dim),
                 role="input",
                 description=(
                     "Production non-interleaved Qwen3.6/Qwen3.5 [b,a] "
@@ -388,7 +396,7 @@ def _build_manifest(recurrence_debug: dict[str, object]) -> VectorManifest:
             TensorSpec(
                 "mixed_qkv",
                 "bf16",
-                (TOTAL_TOKENS, QKV_DIM),
+                (TOTAL_TOKENS, config.qkv_dim),
                 role="input",
                 description=(
                     "Contiguous [q,k,v] conv input, split from mixed_qkvz and "
@@ -398,7 +406,7 @@ def _build_manifest(recurrence_debug: dict[str, object]) -> VectorManifest:
             TensorSpec(
                 "z",
                 "bf16",
-                (TOTAL_TOKENS, VALUE_HEADS, VALUE_DIM),
+                (TOTAL_TOKENS, config.value_heads, config.value_dim),
                 role="input",
                 description=(
                     "Output gate z split from non-interleaved mixed_qkvz and "
@@ -408,21 +416,21 @@ def _build_manifest(recurrence_debug: dict[str, object]) -> VectorManifest:
             TensorSpec(
                 "b",
                 "bf16",
-                (TOTAL_TOKENS, VALUE_HEADS),
+                (TOTAL_TOKENS, config.value_heads),
                 role="input",
                 description="Beta gate logits split from non-interleaved mixed_ba.",
             ),
             TensorSpec(
                 "a",
                 "bf16",
-                (TOTAL_TOKENS, VALUE_HEADS),
+                (TOTAL_TOKENS, config.value_heads),
                 role="input",
                 description="Decay gate logits split from non-interleaved mixed_ba.",
             ),
             TensorSpec(
                 "mixed_qkvz_interleaved_debug",
                 "bf16",
-                (TOTAL_TOKENS, QKVZ_DIM),
+                (TOTAL_TOKENS, config.qkvz_dim),
                 file="mixed_qkvz_interleaved.bf16",
                 role="debug",
                 description=(
@@ -439,7 +447,7 @@ def _build_manifest(recurrence_debug: dict[str, object]) -> VectorManifest:
             TensorSpec(
                 "mixed_ba_interleaved_debug",
                 "bf16",
-                (TOTAL_TOKENS, BA_DIM),
+                (TOTAL_TOKENS, config.ba_dim),
                 file="mixed_ba_interleaved.bf16",
                 role="debug",
                 description=(
@@ -456,126 +464,126 @@ def _build_manifest(recurrence_debug: dict[str, object]) -> VectorManifest:
             TensorSpec(
                 "conv_weight",
                 "bf16",
-                (QKV_DIM, CONV_WIDTH),
+                (config.qkv_dim, config.conv_width),
                 role="input",
                 description="Depthwise causal conv weights with width 4.",
             ),
             TensorSpec(
                 "conv_output_f32",
                 "f32",
-                (TOTAL_TOKENS, QKV_DIM),
+                (TOTAL_TOKENS, config.qkv_dim),
                 role="reference",
                 description="Host-float causal conv + SiLU reference before BF16 store rounding.",
             ),
             TensorSpec(
                 "conv_output_bf16",
                 "bf16",
-                (TOTAL_TOKENS, QKV_DIM),
+                (TOTAL_TOKENS, config.qkv_dim),
                 role="expected",
                 description="BF16-stored causal conv + SiLU output.",
             ),
             TensorSpec(
                 "conv_final_state",
                 "bf16",
-                (len(SEQ_LENS), QKV_DIM, CONV_WIDTH - 1),
+                (len(SEQ_LENS), config.qkv_dim, config.conv_width - 1),
                 role="expected",
                 description="Per-case causal conv final state: last width-1 mixed_qkv rows.",
             ),
             TensorSpec(
                 "q_raw",
                 "bf16",
-                (TOTAL_TOKENS, KEY_HEADS, KEY_DIM),
+                (TOTAL_TOKENS, config.key_heads, config.key_dim),
                 role="expected",
                 description="q split from conv_output_bf16 before L2 normalization.",
             ),
             TensorSpec(
                 "k_raw",
                 "bf16",
-                (TOTAL_TOKENS, KEY_HEADS, KEY_DIM),
+                (TOTAL_TOKENS, config.key_heads, config.key_dim),
                 role="expected",
                 description="k split from conv_output_bf16 before L2 normalization.",
             ),
             TensorSpec(
                 "v_raw",
                 "bf16",
-                (TOTAL_TOKENS, VALUE_HEADS, VALUE_DIM),
+                (TOTAL_TOKENS, config.value_heads, config.value_dim),
                 role="expected",
                 description="v split from conv_output_bf16.",
             ),
             TensorSpec(
                 "q_l2norm_f32",
                 "f32",
-                (TOTAL_TOKENS, KEY_HEADS, KEY_DIM),
+                (TOTAL_TOKENS, config.key_heads, config.key_dim),
                 role="reference",
                 description="q L2 normalization reference before BF16 store rounding.",
             ),
             TensorSpec(
                 "q_l2norm_bf16",
                 "bf16",
-                (TOTAL_TOKENS, KEY_HEADS, KEY_DIM),
+                (TOTAL_TOKENS, config.key_heads, config.key_dim),
                 role="expected",
                 description="BF16-stored q after post-conv L2 normalization.",
             ),
             TensorSpec(
                 "k_l2norm_f32",
                 "f32",
-                (TOTAL_TOKENS, KEY_HEADS, KEY_DIM),
+                (TOTAL_TOKENS, config.key_heads, config.key_dim),
                 role="reference",
                 description="k L2 normalization reference before BF16 store rounding.",
             ),
             TensorSpec(
                 "k_l2norm_bf16",
                 "bf16",
-                (TOTAL_TOKENS, KEY_HEADS, KEY_DIM),
+                (TOTAL_TOKENS, config.key_heads, config.key_dim),
                 role="expected",
                 description="BF16-stored k after post-conv L2 normalization.",
             ),
             TensorSpec(
                 "A_log",
                 "bf16",
-                (VALUE_HEADS,),
+                (config.value_heads,),
                 role="input",
                 description="BF16 per-value-head A_log used for GDN decay materialization.",
             ),
             TensorSpec(
                 "dt_bias",
                 "bf16",
-                (VALUE_HEADS,),
+                (config.value_heads,),
                 role="input",
                 description="BF16 per-value-head dt_bias added to a before softplus.",
             ),
             TensorSpec(
                 "g",
                 "f32",
-                (TOTAL_TOKENS, VALUE_HEADS),
+                (TOTAL_TOKENS, config.value_heads),
                 role="expected",
                 description="-exp(A_log) * softplus(a + dt_bias).",
             ),
             TensorSpec(
                 "decay_exp",
                 "f32",
-                (TOTAL_TOKENS, VALUE_HEADS),
+                (TOTAL_TOKENS, config.value_heads),
                 role="expected",
                 description="exp(g), the multiplicative recurrent decay factor.",
             ),
             TensorSpec(
                 "beta",
                 "f32",
-                (TOTAL_TOKENS, VALUE_HEADS),
+                (TOTAL_TOKENS, config.value_heads),
                 role="expected",
                 description="sigmoid(b) beta gate.",
             ),
             TensorSpec(
                 "gated_rmsnorm_weight",
                 "bf16",
-                (VALUE_DIM,),
+                (config.value_dim,),
                 role="input",
                 description="Nonuniform RMSNormGated weight for each value-head lane.",
             ),
             TensorSpec(
                 "gated_rmsnorm_output_f32",
                 "f32",
-                (TOTAL_TOKENS, VALUE_HEADS, VALUE_DIM),
+                (TOTAL_TOKENS, config.value_heads, config.value_dim),
                 role="reference",
                 description=(
                     "norm_before_gate RMSNormGated(v_raw, z) reference before "
@@ -585,14 +593,14 @@ def _build_manifest(recurrence_debug: dict[str, object]) -> VectorManifest:
             TensorSpec(
                 "gated_rmsnorm_output_bf16",
                 "bf16",
-                (TOTAL_TOKENS, VALUE_HEADS, VALUE_DIM),
+                (TOTAL_TOKENS, config.value_heads, config.value_dim),
                 role="expected",
                 description="BF16-stored RMSNormGated(v_raw, z) output.",
             ),
             TensorSpec(
                 "recurrent_output_f32",
                 "f32",
-                (TOTAL_TOKENS, VALUE_HEADS, VALUE_DIM),
+                (TOTAL_TOKENS, config.value_heads, config.value_dim),
                 role="reference",
                 description=(
                     "Host-float GDN prefill recurrent output before BF16 store rounding."
@@ -601,14 +609,14 @@ def _build_manifest(recurrence_debug: dict[str, object]) -> VectorManifest:
             TensorSpec(
                 "recurrent_output_bf16",
                 "bf16",
-                (TOTAL_TOKENS, VALUE_HEADS, VALUE_DIM),
+                (TOTAL_TOKENS, config.value_heads, config.value_dim),
                 role="expected",
                 description="BF16-stored GDN prefill recurrent output.",
             ),
             TensorSpec(
                 "recurrent_final_state_f32",
                 "f32",
-                (len(SEQ_LENS), VALUE_HEADS, VALUE_DIM, KEY_DIM),
+                (len(SEQ_LENS), config.value_heads, config.value_dim, config.key_dim),
                 role="reference",
                 description=(
                     "Host-float GDN prefill final recurrent state in "
@@ -618,7 +626,7 @@ def _build_manifest(recurrence_debug: dict[str, object]) -> VectorManifest:
             TensorSpec(
                 "recurrent_final_state_bf16",
                 "bf16",
-                (len(SEQ_LENS), VALUE_HEADS, VALUE_DIM, KEY_DIM),
+                (len(SEQ_LENS), config.value_heads, config.value_dim, config.key_dim),
                 role="expected",
                 description=(
                     "BF16-stored GDN prefill final recurrent state in "
@@ -649,26 +657,28 @@ def _build_manifest(recurrence_debug: dict[str, object]) -> VectorManifest:
             *(
                 spec
                 for step in range(1, DECODE_STEPS + 1)
-                for spec in _decode_step_tensor_specs(step)
+                for spec in _decode_step_tensor_specs(config, step)
             ),
         ),
     )
 
 
-def _decode_step_tensor_specs(step: int) -> tuple[TensorSpec, ...]:
+def _decode_step_tensor_specs(
+    config: VectorConfig, step: int
+) -> tuple[TensorSpec, ...]:
     prefix = f"decode_step{step}"
     return (
         TensorSpec(
             f"{prefix}_mixed_qkv",
             "bf16",
-            (DECODE_CASES, QKV_DIM),
+            (DECODE_CASES, config.qkv_dim),
             role="input",
             description=f"Decode step {step} projected [q,k,v] row before continued conv.",
         ),
         TensorSpec(
             f"{prefix}_conv_output_f32",
             "f32",
-            (DECODE_CASES, QKV_DIM),
+            (DECODE_CASES, config.qkv_dim),
             role="reference",
             description=(
                 f"Host-float decode step {step} continued causal conv + SiLU "
@@ -678,14 +688,14 @@ def _decode_step_tensor_specs(step: int) -> tuple[TensorSpec, ...]:
         TensorSpec(
             f"{prefix}_conv_output_bf16",
             "bf16",
-            (DECODE_CASES, QKV_DIM),
+            (DECODE_CASES, config.qkv_dim),
             role="expected",
             description=f"BF16-stored decode step {step} continued causal conv + SiLU output.",
         ),
         TensorSpec(
             f"{prefix}_conv_final_state",
             "bf16",
-            (DECODE_CASES, QKV_DIM, CONV_WIDTH - 1),
+            (DECODE_CASES, config.qkv_dim, config.conv_width - 1),
             role="expected",
             description=(
                 f"Decode step {step} per-case causal conv final state after "
@@ -695,63 +705,63 @@ def _decode_step_tensor_specs(step: int) -> tuple[TensorSpec, ...]:
         TensorSpec(
             f"{prefix}_q_raw",
             "bf16",
-            (DECODE_CASES, KEY_HEADS, KEY_DIM),
+            (DECODE_CASES, config.key_heads, config.key_dim),
             role="input",
             description=f"Decode step {step} q rows after continued causal conv.",
         ),
         TensorSpec(
             f"{prefix}_k_raw",
             "bf16",
-            (DECODE_CASES, KEY_HEADS, KEY_DIM),
+            (DECODE_CASES, config.key_heads, config.key_dim),
             role="input",
             description=f"Decode step {step} k rows after continued causal conv.",
         ),
         TensorSpec(
             f"{prefix}_v_raw",
             "bf16",
-            (DECODE_CASES, VALUE_HEADS, VALUE_DIM),
+            (DECODE_CASES, config.value_heads, config.value_dim),
             role="input",
             description=f"Decode step {step} v rows after continued causal conv.",
         ),
         TensorSpec(
             f"{prefix}_a",
             "bf16",
-            (DECODE_CASES, VALUE_HEADS),
+            (DECODE_CASES, config.value_heads),
             role="input",
             description=f"Decode step {step} decay gate logits.",
         ),
         TensorSpec(
             f"{prefix}_b",
             "bf16",
-            (DECODE_CASES, VALUE_HEADS),
+            (DECODE_CASES, config.value_heads),
             role="input",
             description=f"Decode step {step} beta gate logits.",
         ),
         TensorSpec(
             f"{prefix}_g",
             "f32",
-            (DECODE_CASES, VALUE_HEADS),
+            (DECODE_CASES, config.value_heads),
             role="expected",
             description=f"Decode step {step} g = -exp(A_log) * softplus(a + dt_bias).",
         ),
         TensorSpec(
             f"{prefix}_decay_exp",
             "f32",
-            (DECODE_CASES, VALUE_HEADS),
+            (DECODE_CASES, config.value_heads),
             role="expected",
             description=f"Decode step {step} exp(g) recurrent decay factor.",
         ),
         TensorSpec(
             f"{prefix}_beta",
             "f32",
-            (DECODE_CASES, VALUE_HEADS),
+            (DECODE_CASES, config.value_heads),
             role="expected",
             description=f"Decode step {step} sigmoid(b) beta gate.",
         ),
         TensorSpec(
             f"{prefix}_output_f32",
             "f32",
-            (DECODE_CASES, VALUE_HEADS, VALUE_DIM),
+            (DECODE_CASES, config.value_heads, config.value_dim),
             role="reference",
             description=(
                 f"Host-float GDN decode step {step} output before BF16 rounding."
@@ -760,14 +770,14 @@ def _decode_step_tensor_specs(step: int) -> tuple[TensorSpec, ...]:
         TensorSpec(
             f"{prefix}_output_bf16",
             "bf16",
-            (DECODE_CASES, VALUE_HEADS, VALUE_DIM),
+            (DECODE_CASES, config.value_heads, config.value_dim),
             role="expected",
             description=f"BF16-stored GDN decode step {step} output.",
         ),
         TensorSpec(
             f"{prefix}_final_state_f32",
             "f32",
-            (DECODE_CASES, VALUE_HEADS, VALUE_DIM, KEY_DIM),
+            (DECODE_CASES, config.value_heads, config.value_dim, config.key_dim),
             role="reference",
             description=(
                 f"Host-float GDN decode step {step} final state in compact "
@@ -777,7 +787,7 @@ def _decode_step_tensor_specs(step: int) -> tuple[TensorSpec, ...]:
         TensorSpec(
             f"{prefix}_final_state_bf16",
             "bf16",
-            (DECODE_CASES, VALUE_HEADS, VALUE_DIM, KEY_DIM),
+            (DECODE_CASES, config.value_heads, config.value_dim, config.key_dim),
             role="expected",
             description=(
                 f"BF16-stored GDN decode step {step} final state in compact "
@@ -806,7 +816,9 @@ def _token_index_tensors(lengths: tuple[int, ...]) -> tuple[list[int], list[int]
     return case_ids, positions
 
 
-def _build_projected_inputs() -> tuple[
+def _build_projected_inputs(
+    config: VectorConfig,
+) -> tuple[
     list[int],
     list[int],
     list[int],
@@ -829,26 +841,40 @@ def _build_projected_inputs() -> tuple[
     for case_id, length in enumerate(SEQ_LENS):
         for pos in range(length):
             q_heads = [
-                [_bf16(_q_value(case_id, pos, head, lane)) for lane in range(KEY_DIM)]
-                for head in range(KEY_HEADS)
+                [
+                    _bf16(_q_value(case_id, pos, head, lane))
+                    for lane in range(config.key_dim)
+                ]
+                for head in range(config.key_heads)
             ]
             k_heads = [
-                [_bf16(_k_value(case_id, pos, head, lane)) for lane in range(KEY_DIM)]
-                for head in range(KEY_HEADS)
+                [
+                    _bf16(_k_value(case_id, pos, head, lane))
+                    for lane in range(config.key_dim)
+                ]
+                for head in range(config.key_heads)
             ]
             v_heads = [
-                [_bf16(_v_value(case_id, pos, head, lane)) for lane in range(VALUE_DIM)]
-                for head in range(VALUE_HEADS)
+                [
+                    _bf16(_v_value(case_id, pos, head, lane))
+                    for lane in range(config.value_dim)
+                ]
+                for head in range(config.value_heads)
             ]
             z_heads = [
-                [_bf16(_z_value(case_id, pos, head, lane)) for lane in range(VALUE_DIM)]
-                for head in range(VALUE_HEADS)
+                [
+                    _bf16(_z_value(case_id, pos, head, lane))
+                    for lane in range(config.value_dim)
+                ]
+                for head in range(config.value_heads)
             ]
             b_heads = [
-                _bf16(_b_value(case_id, pos, head)) for head in range(VALUE_HEADS)
+                _bf16(_b_value(case_id, pos, head))
+                for head in range(config.value_heads)
             ]
             a_heads = [
-                _bf16(_a_value(case_id, pos, head)) for head in range(VALUE_HEADS)
+                _bf16(_a_value(case_id, pos, head))
+                for head in range(config.value_heads)
             ]
 
             token_qkv: list[int] = []
@@ -865,19 +891,31 @@ def _build_projected_inputs() -> tuple[
             b_out.extend(b_heads)
             a_out.extend(a_heads)
 
-            for key_head in range(KEY_HEADS):
+            for key_head in range(config.key_heads):
                 qkvz_interleaved_debug.extend(q_heads[key_head])
                 qkvz_interleaved_debug.extend(k_heads[key_head])
-                first_value_head = key_head * (VALUE_HEADS // KEY_HEADS)
-                for value_head in range(first_value_head, first_value_head + 2):
+                first_value_head = key_head * (config.value_heads // config.key_heads)
+                for value_head in range(
+                    first_value_head,
+                    first_value_head + config.value_heads // config.key_heads,
+                ):
                     qkvz_interleaved_debug.extend(v_heads[value_head])
-                for value_head in range(first_value_head, first_value_head + 2):
+                for value_head in range(
+                    first_value_head,
+                    first_value_head + config.value_heads // config.key_heads,
+                ):
                     qkvz_interleaved_debug.extend(z_heads[value_head])
                 ba_interleaved_debug.extend(
-                    b_heads[first_value_head : first_value_head + 2]
+                    b_heads[
+                        first_value_head : first_value_head
+                        + config.value_heads // config.key_heads
+                    ]
                 )
                 ba_interleaved_debug.extend(
-                    a_heads[first_value_head : first_value_head + 2]
+                    a_heads[
+                        first_value_head : first_value_head
+                        + config.value_heads // config.key_heads
+                    ]
                 )
             token_index += 1
 
@@ -895,12 +933,12 @@ def _build_projected_inputs() -> tuple[
     )
 
 
-def _build_conv_weight() -> tuple[list[int], list[float]]:
+def _build_conv_weight(config: VectorConfig) -> tuple[list[int], list[float]]:
     words: list[int] = []
     values: list[float] = []
-    for channel in range(QKV_DIM):
-        for tap in range(CONV_WIDTH):
-            value = _conv_weight_value(channel, tap)
+    for channel in range(config.qkv_dim):
+        for tap in range(config.conv_width):
+            value = _conv_weight_value(config, channel, tap)
             word = _bf16(value)
             words.append(word)
             values.append(bf16_bits_to_float32(word))
@@ -908,6 +946,7 @@ def _build_conv_weight() -> tuple[list[int], list[float]]:
 
 
 def _causal_conv1d_silu(
+    config: VectorConfig,
     mixed_qkv_words: Sequence[int],
     conv_weight: list[float],
     case_offsets: list[int],
@@ -919,16 +958,16 @@ def _causal_conv1d_silu(
     for begin, end in pairwise(case_offsets):
         for token in range(begin, end):
             local_pos = token - begin
-            for channel in range(QKV_DIM):
+            for channel in range(config.qkv_dim):
                 acc = 0.0
-                weight_base = channel * CONV_WIDTH
-                for tap in range(CONV_WIDTH):
-                    src_local = local_pos - (CONV_WIDTH - 1) + tap
+                weight_base = channel * config.conv_width
+                for tap in range(config.conv_width):
+                    src_local = local_pos - (config.conv_width - 1) + tap
                     if src_local < 0:
                         continue
                     src_token = begin + src_local
                     acc += (
-                        x[src_token * QKV_DIM + channel]
+                        x[src_token * config.qkv_dim + channel]
                         * conv_weight[weight_base + tap]
                     )
                 value = _f32(_silu(acc))
@@ -937,24 +976,27 @@ def _causal_conv1d_silu(
     return out_f32, out_bf16
 
 
-def _conv_final_state(mixed_qkv_words: list[int], case_offsets: list[int]) -> list[int]:
-    zeros = [_bf16(0.0)] * QKV_DIM
+def _conv_final_state(
+    config: VectorConfig, mixed_qkv_words: list[int], case_offsets: list[int]
+) -> list[int]:
+    zeros = [_bf16(0.0)] * config.qkv_dim
     state: list[int] = []
     for begin, end in pairwise(case_offsets):
         rows: list[list[int]] = []
-        for src_token in range(max(begin, end - (CONV_WIDTH - 1)), end):
-            row_begin = src_token * QKV_DIM
-            rows.append(mixed_qkv_words[row_begin : row_begin + QKV_DIM])
-        while len(rows) < CONV_WIDTH - 1:
+        for src_token in range(max(begin, end - (config.conv_width - 1)), end):
+            row_begin = src_token * config.qkv_dim
+            rows.append(mixed_qkv_words[row_begin : row_begin + config.qkv_dim])
+        while len(rows) < config.conv_width - 1:
             rows.insert(0, zeros)
 
-        for channel in range(QKV_DIM):
-            for history in range(CONV_WIDTH - 1):
+        for channel in range(config.qkv_dim):
+            for history in range(config.conv_width - 1):
                 state.append(rows[history][channel])
     return state
 
 
 def _split_qkv(
+    config: VectorConfig,
     conv_output_bf16: list[int],
     token_count: int = TOTAL_TOKENS,
 ) -> tuple[list[int], list[int], list[int]]:
@@ -962,10 +1004,14 @@ def _split_qkv(
     k: list[int] = []
     v: list[int] = []
     for token in range(token_count):
-        base = token * QKV_DIM
-        q.extend(conv_output_bf16[base : base + Q_DIM])
-        k.extend(conv_output_bf16[base + Q_DIM : base + Q_DIM + K_DIM])
-        v.extend(conv_output_bf16[base + Q_DIM + K_DIM : base + QKV_DIM])
+        base = token * config.qkv_dim
+        q.extend(conv_output_bf16[base : base + config.q_dim])
+        k.extend(
+            conv_output_bf16[base + config.q_dim : base + config.q_dim + config.k_dim]
+        )
+        v.extend(
+            conv_output_bf16[base + config.q_dim + config.k_dim : base + config.qkv_dim]
+        )
     return q, k, v
 
 
@@ -989,35 +1035,36 @@ def _l2_normalize_heads(
     return out_f32, out_bf16
 
 
-def _build_a_log() -> list[float]:
+def _build_a_log(config: VectorConfig) -> list[float]:
     return [
         _f32(-2.25 + 0.0625 * ((head * 7) % 17) - 0.015625 * (head % 3))
-        for head in range(VALUE_HEADS)
+        for head in range(config.value_heads)
     ]
 
 
-def _build_dt_bias() -> list[float]:
+def _build_dt_bias(config: VectorConfig) -> list[float]:
     return [
         _f32(-0.375 + 0.03125 * ((head * 5) % 19) + 0.0078125 * ((head % 4) - 1.5))
-        for head in range(VALUE_HEADS)
+        for head in range(config.value_heads)
     ]
 
 
 def _gating(
+    config: VectorConfig,
     a_words: Sequence[int],
     b_words: Sequence[int],
     a_log: list[float],
     dt_bias: list[float],
 ) -> tuple[list[float], list[float], list[float]]:
-    tokens = len(a_words) // VALUE_HEADS
-    if len(a_words) != tokens * VALUE_HEADS or len(b_words) != len(a_words):
+    tokens = len(a_words) // config.value_heads
+    if len(a_words) != tokens * config.value_heads or len(b_words) != len(a_words):
         raise AssertionError("GDN gate tensors must be [tokens, value_heads]")
     g: list[float] = []
     decay_exp: list[float] = []
     beta: list[float] = []
     for token in range(tokens):
-        for head in range(VALUE_HEADS):
-            idx = token * VALUE_HEADS + head
+        for head in range(config.value_heads):
+            idx = token * config.value_heads + head
             a = bf16_bits_to_float32(a_words[idx])
             b = bf16_bits_to_float32(b_words[idx])
             x = _f32(a + dt_bias[head])
@@ -1028,10 +1075,10 @@ def _gating(
     return g, decay_exp, beta
 
 
-def _build_gated_rmsnorm_weight() -> tuple[list[int], list[float]]:
+def _build_gated_rmsnorm_weight(config: VectorConfig) -> tuple[list[int], list[float]]:
     words: list[int] = []
     values: list[float] = []
-    for lane in range(VALUE_DIM):
+    for lane in range(config.value_dim):
         value = 1.0 + 0.00390625 * ((lane * 5) % 23 - 11)
         value += 0.001953125 if lane % 2 == 0 else -0.00146484375
         word = _bf16(value)
@@ -1041,19 +1088,26 @@ def _build_gated_rmsnorm_weight() -> tuple[list[int], list[float]]:
 
 
 def _gated_rmsnorm_silu(
+    config: VectorConfig,
     x_words: list[int],
     z_words: list[int],
     weight: list[float],
 ) -> tuple[list[float], list[int]]:
     out_f32: list[float] = []
     out_bf16: list[int] = []
-    rows = TOTAL_TOKENS * VALUE_HEADS
+    rows = TOTAL_TOKENS * config.value_heads
     for row in range(rows):
-        base = row * VALUE_DIM
-        x = [bf16_bits_to_float32(word) for word in x_words[base : base + VALUE_DIM]]
-        z = [bf16_bits_to_float32(word) for word in z_words[base : base + VALUE_DIM]]
-        variance = sum(value * value for value in x) / VALUE_DIM
-        inv_rms = 1.0 / math.sqrt(variance + RMS_EPS)
+        base = row * config.value_dim
+        x = [
+            bf16_bits_to_float32(word)
+            for word in x_words[base : base + config.value_dim]
+        ]
+        z = [
+            bf16_bits_to_float32(word)
+            for word in z_words[base : base + config.value_dim]
+        ]
+        variance = sum(value * value for value in x) / config.value_dim
+        inv_rms = 1.0 / math.sqrt(variance + config.rms_eps)
         for lane, value in enumerate(x):
             y = _f32(value * inv_rms * weight[lane] * _silu(z[lane]))
             out_f32.append(y)
@@ -1062,6 +1116,7 @@ def _gated_rmsnorm_silu(
 
 
 def _recurrent_qk_values(
+    config: VectorConfig,
     q_words: list[int],
     k_words: list[int],
     *,
@@ -1070,18 +1125,22 @@ def _recurrent_qk_values(
 ) -> tuple[list[float], list[float]]:
     q_values: list[float] = []
     k_values: list[float] = []
-    rows = token_count * KEY_HEADS
+    rows = token_count * config.key_heads
     for row in range(rows):
-        base = row * KEY_DIM
-        q_row = [bf16_bits_to_float32(word) for word in q_words[base : base + KEY_DIM]]
-        k_row = [bf16_bits_to_float32(word) for word in k_words[base : base + KEY_DIM]]
+        base = row * config.key_dim
+        q_row = [
+            bf16_bits_to_float32(word) for word in q_words[base : base + config.key_dim]
+        ]
+        k_row = [
+            bf16_bits_to_float32(word) for word in k_words[base : base + config.key_dim]
+        ]
         if normalize_inside:
             q_norm = math.sqrt(sum(value * value for value in q_row))
             k_norm = math.sqrt(sum(value * value for value in k_row))
-            q_factor = RECURRENT_SCALE / max(q_norm, L2_EPS)
+            q_factor = config.recurrent_scale / max(q_norm, L2_EPS)
             k_factor = 1.0 / max(k_norm, L2_EPS)
         else:
-            q_factor = RECURRENT_SCALE
+            q_factor = config.recurrent_scale
             k_factor = 1.0
         for value in q_row:
             q_values.append(_f32(value * q_factor))
@@ -1091,6 +1150,7 @@ def _recurrent_qk_values(
 
 
 def _gdn_prefill_recurrence(
+    config: VectorConfig,
     q_values: list[float],
     k_values: list[float],
     v_words: list[int],
@@ -1105,6 +1165,7 @@ def _gdn_prefill_recurrence(
 
     for begin, end in pairwise(case_offsets):
         state, case_output = _run_gdn_recurrence_case(
+            config,
             q_values,
             k_values,
             v_words,
@@ -1141,6 +1202,7 @@ class DecodeStepPayload(TypedDict):
 
 
 def _gdn_decode_continuation(
+    config: VectorConfig,
     mixed_qkv_words: list[int],
     conv_weight: list[float],
     a_log: list[float],
@@ -1152,17 +1214,17 @@ def _gdn_decode_continuation(
         f"step{step}": _empty_decode_step_payload()
         for step in range(1, DECODE_STEPS + 1)
     }
-    state_size = VALUE_HEADS * VALUE_DIM * KEY_DIM
+    state_size = config.value_heads * config.value_dim * config.key_dim
 
     for case_id, (begin, end) in enumerate(pairwise(case_offsets)):
         prompt_rows = [
-            mixed_qkv_words[token * QKV_DIM : (token + 1) * QKV_DIM]
+            mixed_qkv_words[token * config.qkv_dim : (token + 1) * config.qkv_dim]
             for token in range(begin, end)
         ]
         decode_rows: list[tuple[list[int], list[int], list[int]]] = []
         for step_idx in range(DECODE_STEPS):
             position = SEQ_LENS[case_id] + step_idx
-            decode_rows.append(_decode_projected_row(case_id, position))
+            decode_rows.append(_decode_projected_row(config, case_id, position))
 
         state_base = case_id * state_size
         state = [
@@ -1175,20 +1237,23 @@ def _gdn_decode_continuation(
             history.append(mixed_qkv)
             local_pos = len(prompt_rows) + step_idx - 1
             conv_row_f32, conv_row_bf16 = _continued_conv_row(
+                config,
                 history,
                 conv_weight,
                 local_pos,
             )
-            conv_state = _continued_conv_final_state(history)
-            q_words, k_words, v_words = _split_qkv(conv_row_bf16, token_count=1)
-            g, decay_exp, beta = _gating(a_words, b_words, a_log, dt_bias)
+            conv_state = _continued_conv_final_state(config, history)
+            q_words, k_words, v_words = _split_qkv(config, conv_row_bf16, token_count=1)
+            g, decay_exp, beta = _gating(config, a_words, b_words, a_log, dt_bias)
             q_values, k_values = _recurrent_qk_values(
+                config,
                 q_words,
                 k_words,
                 normalize_inside=True,
                 token_count=1,
             )
             state_f32, output_f32 = _run_gdn_recurrence_case(
+                config,
                 q_values,
                 k_values,
                 v_words,
@@ -1246,36 +1311,41 @@ def _empty_decode_step_payload() -> DecodeStepPayload:
 
 
 def _decode_projected_row(
-    case_id: int, pos: int
+    config: VectorConfig, case_id: int, pos: int
 ) -> tuple[list[int], list[int], list[int]]:
     mixed_qkv: list[int] = []
-    for head in range(KEY_HEADS):
-        for lane in range(KEY_DIM):
+    for head in range(config.key_heads):
+        for lane in range(config.key_dim):
             mixed_qkv.append(_bf16(_q_value(case_id, pos, head, lane)))
-    for head in range(KEY_HEADS):
-        for lane in range(KEY_DIM):
+    for head in range(config.key_heads):
+        for lane in range(config.key_dim):
             mixed_qkv.append(_bf16(_k_value(case_id, pos, head, lane)))
-    for head in range(VALUE_HEADS):
-        for lane in range(VALUE_DIM):
+    for head in range(config.value_heads):
+        for lane in range(config.value_dim):
             mixed_qkv.append(_bf16(_v_value(case_id, pos, head, lane)))
 
-    b_words = [_bf16(_b_value(case_id, pos, head)) for head in range(VALUE_HEADS)]
-    a_words = [_bf16(_a_value(case_id, pos, head)) for head in range(VALUE_HEADS)]
+    b_words = [
+        _bf16(_b_value(case_id, pos, head)) for head in range(config.value_heads)
+    ]
+    a_words = [
+        _bf16(_a_value(case_id, pos, head)) for head in range(config.value_heads)
+    ]
     return mixed_qkv, b_words, a_words
 
 
 def _continued_conv_row(
+    config: VectorConfig,
     history_rows: list[list[int]],
     conv_weight: list[float],
     local_pos: int,
 ) -> tuple[list[float], list[int]]:
     out_f32: list[float] = []
     out_bf16: list[int] = []
-    for channel in range(QKV_DIM):
+    for channel in range(config.qkv_dim):
         acc = 0.0
-        weight_base = channel * CONV_WIDTH
-        for tap in range(CONV_WIDTH):
-            src_local = local_pos - (CONV_WIDTH - 1) + tap
+        weight_base = channel * config.conv_width
+        for tap in range(config.conv_width):
+            src_local = local_pos - (config.conv_width - 1) + tap
             if src_local < 0:
                 continue
             acc += (
@@ -1288,20 +1358,23 @@ def _continued_conv_row(
     return out_f32, out_bf16
 
 
-def _continued_conv_final_state(history_rows: list[list[int]]) -> list[int]:
-    zeros = [_bf16(0.0)] * QKV_DIM
-    rows = history_rows[-(CONV_WIDTH - 1) :]
-    while len(rows) < CONV_WIDTH - 1:
+def _continued_conv_final_state(
+    config: VectorConfig, history_rows: list[list[int]]
+) -> list[int]:
+    zeros = [_bf16(0.0)] * config.qkv_dim
+    rows = history_rows[-(config.conv_width - 1) :]
+    while len(rows) < config.conv_width - 1:
         rows.insert(0, zeros)
 
     state: list[int] = []
-    for channel in range(QKV_DIM):
-        for history in range(CONV_WIDTH - 1):
+    for channel in range(config.qkv_dim):
+        for history in range(config.conv_width - 1):
             state.append(rows[history][channel])
     return state
 
 
 def _run_gdn_recurrence_case(
+    config: VectorConfig,
     q_values: list[float],
     k_values: list[float],
     v_words: list[int],
@@ -1311,30 +1384,30 @@ def _run_gdn_recurrence_case(
     end: int,
     initial_state: list[float] | None = None,
 ) -> tuple[list[float], list[float]]:
-    state_size = VALUE_HEADS * VALUE_DIM * KEY_DIM
-    value_head_stride = VALUE_DIM * KEY_DIM
-    qk_token_stride = KEY_HEADS * KEY_DIM
+    state_size = config.value_heads * config.value_dim * config.key_dim
+    value_head_stride = config.value_dim * config.key_dim
+    qk_token_stride = config.key_heads * config.key_dim
     output: list[float] = []
     state = [0.0] * state_size if initial_state is None else list(initial_state)
     if len(state) != state_size:
         raise AssertionError("initial GDN state has the wrong element count")
-    head_repeat = VALUE_HEADS // KEY_HEADS
-    key_lanes = range(KEY_DIM)
+    head_repeat = config.value_heads // config.key_heads
+    key_lanes = range(config.key_dim)
 
     for token in range(begin, end):
         qk_token_base = token * qk_token_stride
-        gate_base = token * VALUE_HEADS
-        v_token_base = token * VALUE_HEADS * VALUE_DIM
-        for v_head in range(VALUE_HEADS):
+        gate_base = token * config.value_heads
+        v_token_base = token * config.value_heads * config.value_dim
+        for v_head in range(config.value_heads):
             qk_head = v_head // head_repeat
-            q_base = qk_token_base + qk_head * KEY_DIM
+            q_base = qk_token_base + qk_head * config.key_dim
             k_base = q_base
             decay = decay_exp[gate_base + v_head]
             beta_gate = beta[gate_base + v_head]
             state_head_base = v_head * value_head_stride
-            v_head_base = v_token_base + v_head * VALUE_DIM
-            for value_lane in range(VALUE_DIM):
-                row_base = state_head_base + value_lane * KEY_DIM
+            v_head_base = v_token_base + v_head * config.value_dim
+            for value_lane in range(config.value_dim):
+                row_base = state_head_base + value_lane * config.key_dim
                 kv_mem = 0.0
                 for key_lane in key_lanes:
                     state_idx = row_base + key_lane
@@ -1356,6 +1429,7 @@ def _run_gdn_recurrence_case(
 
 
 def _vllm_prefill_recurrence_debug(
+    config: VectorConfig,
     q_l2norm_bf16: list[int],
     k_l2norm_bf16: list[int],
     v_words: list[int],
@@ -1366,6 +1440,7 @@ def _vllm_prefill_recurrence_debug(
     recurrent_final_state_f32: list[float],
 ) -> dict[str, object]:
     q_values, k_values = _recurrent_qk_values(
+        config,
         q_l2norm_bf16,
         k_l2norm_bf16,
         normalize_inside=False,
@@ -1374,6 +1449,7 @@ def _vllm_prefill_recurrence_debug(
     begin = case_offsets[long_case_id]
     end = case_offsets[long_case_id + 1]
     state, output = _run_gdn_recurrence_case(
+        config,
         q_values,
         k_values,
         v_words,
@@ -1383,9 +1459,9 @@ def _vllm_prefill_recurrence_debug(
         end,
     )
 
-    output_base = begin * VALUE_HEADS * VALUE_DIM
+    output_base = begin * config.value_heads * config.value_dim
     expected_output = recurrent_output_f32[output_base : output_base + len(output)]
-    state_size = VALUE_HEADS * VALUE_DIM * KEY_DIM
+    state_size = config.value_heads * config.value_dim * config.key_dim
     state_base = long_case_id * state_size
     expected_state = recurrent_final_state_f32[state_base : state_base + state_size]
 
@@ -1473,9 +1549,9 @@ def _a_value(case_id: int, pos: int, head: int) -> float:
     return centered * 0.0625 - (head % 7 - 3) * 0.0234375
 
 
-def _conv_weight_value(channel: int, tap: int) -> float:
+def _conv_weight_value(config: VectorConfig, channel: int, tap: int) -> float:
     centered = ((channel * 3 + tap * 11) % 37) - 18
-    current_tap_boost = 0.01953125 if tap == CONV_WIDTH - 1 else 0.0
+    current_tap_boost = 0.01953125 if tap == config.conv_width - 1 else 0.0
     return centered * 0.0029296875 + current_tap_boost
 
 

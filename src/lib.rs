@@ -14,6 +14,7 @@ pub(crate) const QWEN36_MOE_ROUTER_SCALING_FACTOR: f32 = 1.0;
 pub(crate) const QWEN36_GDN_STATE_SLOTS_PER_LAYER: u32 = 2;
 
 mod backend;
+pub mod dtype;
 pub mod engine;
 pub(crate) mod ext;
 pub mod ffi;
@@ -24,9 +25,10 @@ pub mod tokenizer;
 
 mod test_assets;
 
+pub use dtype::DynDType;
 pub use engine::{
-    AppendBatch, AttentionLayer, BatchKind, Commit, CoreState, DecodeBatch, DynDType, Engine,
-    EngineConfig, KvLayout, RequestId, Status,
+    AppendBatch, AttentionLayer, BatchKind, Commit, CoreState, DecodeBatch, Engine, EngineConfig,
+    KvLayout, RequestId, Status,
 };
 pub use loader::benchmark::run_core_benchmark;
 pub use model::{ModelRunner, QwenConfig, QwenRequest, QwenResult, QwenWeights};
@@ -34,12 +36,15 @@ pub use tokenizer::{QwenTokenizer, TokenizerError};
 
 #[cfg(test)]
 mod backend_contract_tests {
-    use crate::Status;
     use crate::backend::{
-        BF16, DMat, DVec, F32, I32, Workspace,
+        DMat, DVec, Workspace,
         qscb::Qscb,
         qscu::Qscu,
         qsfi::{Qsfi, RmsNormBf16},
+    };
+    use crate::{
+        Status,
+        dtype::{BF16, F32, I32},
     };
 
     unsafe fn qscu_owns_embedding(

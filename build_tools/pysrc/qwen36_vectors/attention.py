@@ -14,22 +14,15 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
+from .config import VectorConfig
 from .io import write_artifact
 from .paths import DEFAULT_VECTOR_ROOT
 from .schema import MANIFEST_FILE, TensorSpec, VectorManifest
 
-HIDDEN_SIZE = 2048
-Q_HEADS = 16
-KV_HEADS = 2
-HEAD_DIM = 256
-ROTARY_DIM = 64
-Q_HIDDEN = Q_HEADS * HEAD_DIM
-KV_HIDDEN = KV_HEADS * HEAD_DIM
-Q_PROJ_OUT = 2 * Q_HIDDEN
 POSITIONS = (0, 1, 7, 64, 65, 511)
 NUM_TOKENS = len(POSITIONS)
-RMS_EPS = 1.0e-6
-ROPE_THETA = 10_000.0
+
+
 ROPE_SCALE = 1.0
 DEFAULT_OUTPUT = DEFAULT_VECTOR_ROOT / "full_attention_primitives"
 
@@ -147,19 +140,21 @@ def _sigmoid(value: float) -> float:
     return z / (1.0 + z)
 
 
-def _build_q_gate() -> tuple[tuple[int, ...], tuple[int, ...], tuple[int, ...]]:
+def _build_q_gate(
+    config: VectorConfig,
+) -> tuple[tuple[int, ...], tuple[int, ...], tuple[int, ...]]:
     packed: list[int] = []
     q: list[int] = []
     gate: list[int] = []
     for token in range(NUM_TOKENS):
-        for head in range(Q_HEADS):
+        for head in range(config.q_heads):
             q_head = [
                 f32_to_bf16_bits(_q_lane_value(token, head, lane))
-                for lane in range(HEAD_DIM)
+                for lane in range(config.head_dim)
             ]
             gate_head = [
                 f32_to_bf16_bits(_gate_lane_value(token, head, lane))
-                for lane in range(HEAD_DIM)
+                for lane in range(config.head_dim)
             ]
             packed.extend(q_head)
             packed.extend(gate_head)
@@ -168,16 +163,17 @@ def _build_q_gate() -> tuple[tuple[int, ...], tuple[int, ...], tuple[int, ...]]:
     return tuple(packed), tuple(q), tuple(gate)
 
 
-def _build_k() -> tuple[int, ...]:
+def _build_k(config: VectorConfig) -> tuple[int, ...]:
     return tuple(
         f32_to_bf16_bits(_k_lane_value(token, head, lane))
         for token in range(NUM_TOKENS)
-        for head in range(KV_HEADS)
-        for lane in range(HEAD_DIM)
+        for head in range(config.kv_heads)
+        for lane in range(config.head_dim)
     )
 
 
 def _gemma_rmsnorm(
+    config: VectorConfig,
     x_bf16: tuple[int, ...],
     raw_weight_bf16: tuple[int, ...],
     rows: int,
@@ -186,10 +182,10 @@ def _gemma_rmsnorm(
     out_f32: list[float] = []
     out_bf16: list[int] = []
     for row in range(rows):
-        base = row * HEAD_DIM
-        x = [bf16_bits_to_f32(bits) for bits in x_bf16[base : base + HEAD_DIM]]
-        variance = sum(value * value for value in x) / HEAD_DIM
-        inv_rms = 1.0 / math.sqrt(variance + RMS_EPS)
+        base = row * config.head_dim
+        x = [bf16_bits_to_f32(bits) for bits in x_bf16[base : base + config.head_dim]]
+        variance = sum(value * value for value in x) / config.head_dim
+        inv_rms = 1.0 / math.sqrt(variance + config.rms_eps)
         for lane, value in enumerate(x):
             y = value * inv_rms * weights[lane]
             out_f32.append(y)
@@ -197,12 +193,15 @@ def _gemma_rmsnorm(
     return tuple(out_f32), tuple(out_bf16)
 
 
-def _cos_sin_cache() -> tuple[tuple[float, ...], tuple[int, ...]]:
+def _cos_sin_cache(config: VectorConfig) -> tuple[tuple[float, ...], tuple[int, ...]]:
     max_pos = max(POSITIONS) + 1
-    half = ROTARY_DIM // 2
+    half = config.rotary_dim // 2
     cache_f32: list[float] = []
     cache_bf16: list[int] = []
-    inv_freq = [1.0 / (ROPE_THETA ** (float(i * 2) / ROTARY_DIM)) for i in range(half)]
+    inv_freq = [
+        1.0 / (config.rope_theta ** (float(i * 2) / config.rotary_dim))
+        for i in range(half)
+    ]
     for pos in range(max_pos):
         cos_values = [math.cos((pos / ROPE_SCALE) * freq) for freq in inv_freq]
         sin_values = [math.sin((pos / ROPE_SCALE) * freq) for freq in inv_freq]
@@ -213,15 +212,16 @@ def _cos_sin_cache() -> tuple[tuple[float, ...], tuple[int, ...]]:
 
 
 def _apply_partial_rope(
+    config: VectorConfig,
     x_norm_bf16: tuple[int, ...],
     heads: int,
     cos_sin_cache_bf16: tuple[int, ...],
 ) -> tuple[tuple[float, ...], tuple[int, ...]]:
-    half = ROTARY_DIM // 2
+    half = config.rotary_dim // 2
     out_f32: list[float] = []
     out_bf16: list[int] = []
     for token, pos in enumerate(POSITIONS):
-        cache_base = pos * ROTARY_DIM
+        cache_base = pos * config.rotary_dim
         cos_values = [
             bf16_bits_to_f32(cos_sin_cache_bf16[cache_base + lane])
             for lane in range(half)
@@ -231,8 +231,11 @@ def _apply_partial_rope(
             for lane in range(half)
         ]
         for head in range(heads):
-            base = (token * heads + head) * HEAD_DIM
-            x = [bf16_bits_to_f32(bits) for bits in x_norm_bf16[base : base + HEAD_DIM]]
+            base = (token * heads + head) * config.head_dim
+            x = [
+                bf16_bits_to_f32(bits)
+                for bits in x_norm_bf16[base : base + config.head_dim]
+            ]
             y = list(x)
             for lane in range(half):
                 x1 = x[lane]
@@ -247,15 +250,16 @@ def _apply_partial_rope(
 
 
 def _apply_output_gate(
+    config: VectorConfig,
     gate_bf16: tuple[int, ...],
 ) -> tuple[tuple[int, ...], tuple[float, ...], tuple[int, ...]]:
     out_initial: list[int] = []
     out_f32: list[float] = []
     out_bf16: list[int] = []
     for token in range(NUM_TOKENS):
-        for head in range(Q_HEADS):
-            for lane in range(HEAD_DIM):
-                idx = (token * Q_HEADS + head) * HEAD_DIM + lane
+        for head in range(config.q_heads):
+            for lane in range(config.head_dim):
+                idx = (token * config.q_heads + head) * config.head_dim + lane
                 current_bits = f32_to_bf16_bits(_attention_out_value(token, head, lane))
                 current = bf16_bits_to_f32(current_bits)
                 gate = bf16_bits_to_f32(gate_bf16[idx])
@@ -266,28 +270,38 @@ def _apply_output_gate(
     return tuple(out_initial), tuple(out_f32), tuple(out_bf16)
 
 
-def generate_tensors() -> tuple[TensorData, ...]:
-    packed_q_gate, q_extracted, gate_extracted = _build_q_gate()
-    k_input = _build_k()
-    q_raw_weight = to_bf16_values(_q_raw_weight_value(lane) for lane in range(HEAD_DIM))
-    k_raw_weight = to_bf16_values(_k_raw_weight_value(lane) for lane in range(HEAD_DIM))
+def generate_tensors(config: VectorConfig) -> tuple[TensorData, ...]:
+    packed_q_gate, q_extracted, gate_extracted = _build_q_gate(config)
+    k_input = _build_k(config)
+    q_raw_weight = to_bf16_values(
+        _q_raw_weight_value(lane) for lane in range(config.head_dim)
+    )
+    k_raw_weight = to_bf16_values(
+        _k_raw_weight_value(lane) for lane in range(config.head_dim)
+    )
 
     q_norm_f32, q_norm_bf16 = _gemma_rmsnorm(
-        q_extracted, q_raw_weight, NUM_TOKENS * Q_HEADS
+        config, q_extracted, q_raw_weight, NUM_TOKENS * config.q_heads
     )
     k_norm_f32, k_norm_bf16 = _gemma_rmsnorm(
-        k_input, k_raw_weight, NUM_TOKENS * KV_HEADS
+        config, k_input, k_raw_weight, NUM_TOKENS * config.kv_heads
     )
-    cos_sin_f32, cos_sin_bf16 = _cos_sin_cache()
-    q_rope_f32, q_rope_bf16 = _apply_partial_rope(q_norm_bf16, Q_HEADS, cos_sin_bf16)
-    k_rope_f32, k_rope_bf16 = _apply_partial_rope(k_norm_bf16, KV_HEADS, cos_sin_bf16)
-    gate_out_initial, gated_out_f32, gated_out_bf16 = _apply_output_gate(gate_extracted)
+    cos_sin_f32, cos_sin_bf16 = _cos_sin_cache(config)
+    q_rope_f32, q_rope_bf16 = _apply_partial_rope(
+        config, q_norm_bf16, config.q_heads, cos_sin_bf16
+    )
+    k_rope_f32, k_rope_bf16 = _apply_partial_rope(
+        config, k_norm_bf16, config.kv_heads, cos_sin_bf16
+    )
+    gate_out_initial, gated_out_f32, gated_out_bf16 = _apply_output_gate(
+        config, gate_extracted
+    )
 
     return (
         TensorData(
             "packed_q_gate",
             "bf16",
-            (NUM_TOKENS, Q_HEADS, 2, HEAD_DIM),
+            (NUM_TOKENS, config.q_heads, 2, config.head_dim),
             packed_q_gate,
             "input",
             "packed_q_gate_extract",
@@ -296,7 +310,7 @@ def generate_tensors() -> tuple[TensorData, ...]:
         TensorData(
             "q_extracted",
             "bf16",
-            (NUM_TOKENS, Q_HEADS, HEAD_DIM),
+            (NUM_TOKENS, config.q_heads, config.head_dim),
             q_extracted,
             "expected",
             "packed_q_gate_extract",
@@ -305,7 +319,7 @@ def generate_tensors() -> tuple[TensorData, ...]:
         TensorData(
             "gate_extracted",
             "bf16",
-            (NUM_TOKENS, Q_HEADS, HEAD_DIM),
+            (NUM_TOKENS, config.q_heads, config.head_dim),
             gate_extracted,
             "expected",
             "packed_q_gate_extract",
@@ -314,7 +328,7 @@ def generate_tensors() -> tuple[TensorData, ...]:
         TensorData(
             "k_input",
             "bf16",
-            (NUM_TOKENS, KV_HEADS, HEAD_DIM),
+            (NUM_TOKENS, config.kv_heads, config.head_dim),
             k_input,
             "input",
             "qk_gemma_rmsnorm",
@@ -323,7 +337,7 @@ def generate_tensors() -> tuple[TensorData, ...]:
         TensorData(
             "q_norm_raw_weight",
             "bf16",
-            (HEAD_DIM,),
+            (config.head_dim,),
             q_raw_weight,
             "input",
             "qk_gemma_rmsnorm",
@@ -332,7 +346,7 @@ def generate_tensors() -> tuple[TensorData, ...]:
         TensorData(
             "k_norm_raw_weight",
             "bf16",
-            (HEAD_DIM,),
+            (config.head_dim,),
             k_raw_weight,
             "input",
             "qk_gemma_rmsnorm",
@@ -341,7 +355,7 @@ def generate_tensors() -> tuple[TensorData, ...]:
         TensorData(
             "q_norm_f32",
             "f32",
-            (NUM_TOKENS, Q_HEADS, HEAD_DIM),
+            (NUM_TOKENS, config.q_heads, config.head_dim),
             q_norm_f32,
             "reference",
             "qk_gemma_rmsnorm",
@@ -350,7 +364,7 @@ def generate_tensors() -> tuple[TensorData, ...]:
         TensorData(
             "q_norm_bf16",
             "bf16",
-            (NUM_TOKENS, Q_HEADS, HEAD_DIM),
+            (NUM_TOKENS, config.q_heads, config.head_dim),
             q_norm_bf16,
             "expected",
             "qk_gemma_rmsnorm",
@@ -359,7 +373,7 @@ def generate_tensors() -> tuple[TensorData, ...]:
         TensorData(
             "k_norm_f32",
             "f32",
-            (NUM_TOKENS, KV_HEADS, HEAD_DIM),
+            (NUM_TOKENS, config.kv_heads, config.head_dim),
             k_norm_f32,
             "reference",
             "qk_gemma_rmsnorm",
@@ -368,7 +382,7 @@ def generate_tensors() -> tuple[TensorData, ...]:
         TensorData(
             "k_norm_bf16",
             "bf16",
-            (NUM_TOKENS, KV_HEADS, HEAD_DIM),
+            (NUM_TOKENS, config.kv_heads, config.head_dim),
             k_norm_bf16,
             "expected",
             "qk_gemma_rmsnorm",
@@ -386,7 +400,7 @@ def generate_tensors() -> tuple[TensorData, ...]:
         TensorData(
             "cos_sin_cache_f32",
             "f32",
-            (max(POSITIONS) + 1, ROTARY_DIM),
+            (max(POSITIONS) + 1, config.rotary_dim),
             cos_sin_f32,
             "reference",
             "partial_rope",
@@ -395,7 +409,7 @@ def generate_tensors() -> tuple[TensorData, ...]:
         TensorData(
             "cos_sin_cache_bf16",
             "bf16",
-            (max(POSITIONS) + 1, ROTARY_DIM),
+            (max(POSITIONS) + 1, config.rotary_dim),
             cos_sin_bf16,
             "input",
             "partial_rope",
@@ -404,7 +418,7 @@ def generate_tensors() -> tuple[TensorData, ...]:
         TensorData(
             "q_rope_f32",
             "f32",
-            (NUM_TOKENS, Q_HEADS, HEAD_DIM),
+            (NUM_TOKENS, config.q_heads, config.head_dim),
             q_rope_f32,
             "reference",
             "partial_rope",
@@ -413,7 +427,7 @@ def generate_tensors() -> tuple[TensorData, ...]:
         TensorData(
             "q_rope_bf16",
             "bf16",
-            (NUM_TOKENS, Q_HEADS, HEAD_DIM),
+            (NUM_TOKENS, config.q_heads, config.head_dim),
             q_rope_bf16,
             "expected",
             "partial_rope",
@@ -422,7 +436,7 @@ def generate_tensors() -> tuple[TensorData, ...]:
         TensorData(
             "k_rope_f32",
             "f32",
-            (NUM_TOKENS, KV_HEADS, HEAD_DIM),
+            (NUM_TOKENS, config.kv_heads, config.head_dim),
             k_rope_f32,
             "reference",
             "partial_rope",
@@ -431,7 +445,7 @@ def generate_tensors() -> tuple[TensorData, ...]:
         TensorData(
             "k_rope_bf16",
             "bf16",
-            (NUM_TOKENS, KV_HEADS, HEAD_DIM),
+            (NUM_TOKENS, config.kv_heads, config.head_dim),
             k_rope_bf16,
             "expected",
             "partial_rope",
@@ -440,7 +454,7 @@ def generate_tensors() -> tuple[TensorData, ...]:
         TensorData(
             "gate_out_initial",
             "bf16",
-            (NUM_TOKENS, Q_HEADS, HEAD_DIM),
+            (NUM_TOKENS, config.q_heads, config.head_dim),
             gate_out_initial,
             "input",
             "output_gate",
@@ -449,7 +463,7 @@ def generate_tensors() -> tuple[TensorData, ...]:
         TensorData(
             "gated_output_f32",
             "f32",
-            (NUM_TOKENS, Q_HEADS, HEAD_DIM),
+            (NUM_TOKENS, config.q_heads, config.head_dim),
             gated_out_f32,
             "reference",
             "output_gate",
@@ -458,7 +472,7 @@ def generate_tensors() -> tuple[TensorData, ...]:
         TensorData(
             "gated_output_bf16",
             "bf16",
-            (NUM_TOKENS, Q_HEADS, HEAD_DIM),
+            (NUM_TOKENS, config.q_heads, config.head_dim),
             gated_out_bf16,
             "expected",
             "output_gate",
@@ -489,7 +503,9 @@ def _tail_checks() -> list[dict[str, object]]:
     ]
 
 
-def build_manifest(tensors: tuple[TensorData, ...]) -> VectorManifest:
+def build_manifest(
+    config: VectorConfig, tensors: tuple[TensorData, ...]
+) -> VectorManifest:
     tensor_specs = []
     for tensor in tensors:
         blob = tensor_bytes(tensor)
@@ -522,20 +538,20 @@ def build_manifest(tensors: tuple[TensorData, ...]) -> VectorManifest:
         metadata={
             "case": "full_attention_primitives_v1",
             "dimensions": {
-                "hidden_size": HIDDEN_SIZE,
+                "hidden_size": config.hidden_size,
                 "num_tokens": NUM_TOKENS,
                 "positions": list(POSITIONS),
-                "q_heads": Q_HEADS,
-                "kv_heads": KV_HEADS,
-                "head_dim": HEAD_DIM,
-                "rotary_dim": ROTARY_DIM,
-                "q_hidden": Q_HIDDEN,
-                "kv_hidden": KV_HIDDEN,
-                "q_proj_out": Q_PROJ_OUT,
+                "q_heads": config.q_heads,
+                "kv_heads": config.kv_heads,
+                "head_dim": config.head_dim,
+                "rotary_dim": config.rotary_dim,
+                "q_hidden": config.q_hidden,
+                "kv_hidden": config.kv_hidden,
+                "q_proj_out": config.q_proj_out,
             },
             "params": {
-                "rms_eps": RMS_EPS,
-                "rope_theta": ROPE_THETA,
+                "rms_eps": config.rms_eps,
+                "rope_theta": config.rope_theta,
                 "rope_scale": ROPE_SCALE,
                 "rope_interleave": False,
                 "rope_style": "neox_non_interleaved",
@@ -555,7 +571,7 @@ def build_manifest(tensors: tuple[TensorData, ...]) -> VectorManifest:
                 (
                     "RoPE reads the BF16-stored norm output and the BF16 vLLM "
                     "cos/sin cache as f32, rotates lanes [0, 64), copies lanes "
-                    "[64, 256), then rounds the stored output to BF16."
+                    f"[{config.rotary_dim}, {config.head_dim}), then rounds the stored output to BF16."
                 ),
                 (
                     "Output gating reads BF16 gate/out values as f32, computes "
@@ -579,19 +595,21 @@ def build_manifest(tensors: tuple[TensorData, ...]) -> VectorManifest:
     )
 
 
-def build_attention_artifact() -> tuple[
+def build_attention_artifact(
+    config: VectorConfig,
+) -> tuple[
     VectorManifest,
     dict[str, tuple[int, ...] | tuple[float, ...]],
 ]:
-    tensors = generate_tensors()
-    manifest = build_manifest(tensors)
+    tensors = generate_tensors(config)
+    manifest = build_manifest(config, tensors)
     return manifest, {tensor.name: tensor.data for tensor in tensors}
 
 
 def write_bundle(
-    output_dir: Path = DEFAULT_OUTPUT, *, force: bool = False
+    config: VectorConfig, output_dir: Path = DEFAULT_OUTPUT, *, force: bool = False
 ) -> VectorManifest:
-    manifest, tensors = build_attention_artifact()
+    manifest, tensors = build_attention_artifact(config)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     output_files = [output_dir / MANIFEST_FILE]

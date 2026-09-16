@@ -18,6 +18,7 @@ def main() -> None:
     target = parse(json.dumps(config["target"]), CudaTarget)
     output = config_path.parent
     source = Path(__file__).resolve().parent
+    root = source.parents[2]
     for name in ("full", "tail"):
         selected = copy.deepcopy(config["kernels"])
         if name == "tail":
@@ -28,11 +29,13 @@ def main() -> None:
         for specialization, entry in selected.items():
             if entry["provider"] == "triton":
                 compile_source(
-                    source.parents[2] / entry["source"],
+                    root / entry["source"],
                     parse(json.dumps(entry["spec"]), TritonSpec),
                     target,
                     str(output / name / specialization),
                 )
+    # Link the same dtype markers and DevicePtr implementation used by runtime callers.
+    subprocess.run(["just", "--justfile", str(root / "justfile"), "build"], check=True)
     env = dict(
         os.environ,
         QS3_TRITON_OUTPUT=str(output),
@@ -45,6 +48,12 @@ def main() -> None:
             "-O",
             "--test",
             str(source / "test.rs"),
+            "--extern",
+            f"qs3={root / 'target/debug/libqs3.rlib'}",
+            "-L",
+            f"dependency={root / 'target/debug/deps'}",
+            "-L",
+            f"native={root / 'build'}",
             "-o",
             str(output / "test"),
         ],

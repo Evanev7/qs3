@@ -1,33 +1,37 @@
 use super::{QwenConfig, checked_usize_product, weights::MoeShape};
+use crate::dtype::{BF16, DType, F32, I32, U8};
 use crate::{
+    QWEN36_GDN_STATE_SLOTS_PER_LAYER,
+    backend::DVec,
     constants::{
         attention::PACKED_Q_GATE_WIDTH,
         gdn::{KEY_HEAD_DIM, NUM_KEY_HEADS, NUM_VALUE_HEADS, OUTPUT_WIDTH, PACKED_QKV_CHANNELS},
     },
     engine::Status,
-    memory::{CudaCtx, DeviceBuffer},
+    ffi::DevicePtr,
+    memory::{CudaCtx, DeviceBuffer, HostBuffer},
 };
 use std::rc::Rc;
 
 pub(super) struct RunnerScratch {
     config: QwenConfig,
     row_capacity: u32,
-    pub(super) token_ids: DeviceBuffer<i32>,
-    pub(super) positions: DeviceBuffer<i32>,
-    pub(super) residual: DeviceBuffer<u16>,
-    pub(super) norm: DeviceBuffer<u16>,
-    pub(super) q_proj_out: DeviceBuffer<u16>,
-    pub(super) q: DeviceBuffer<u16>,
-    pub(super) k: DeviceBuffer<u16>,
-    pub(super) v: DeviceBuffer<u16>,
-    pub(super) attn_out: DeviceBuffer<u16>,
-    pub(super) attn_proj: DeviceBuffer<u16>,
-    pub(super) attn_gate: DeviceBuffer<u16>,
-    pub(super) mlp_out: DeviceBuffer<u16>,
+    pub(super) token_ids: DeviceBuffer<I32>,
+    pub(super) positions: DeviceBuffer<I32>,
+    pub(super) residual: DeviceBuffer<BF16>,
+    pub(super) norm: DeviceBuffer<BF16>,
+    pub(super) q_proj_out: DeviceBuffer<BF16>,
+    pub(super) q: DeviceBuffer<BF16>,
+    pub(super) k: DeviceBuffer<BF16>,
+    pub(super) v: DeviceBuffer<BF16>,
+    pub(super) attn_out: DeviceBuffer<BF16>,
+    pub(super) attn_proj: DeviceBuffer<BF16>,
+    pub(super) attn_gate: DeviceBuffer<BF16>,
+    pub(super) mlp_out: DeviceBuffer<BF16>,
     pub(super) mlp: MlpScratch,
     pub(super) gdn: Option<GdnScratch>,
-    pub(super) logits: DeviceBuffer<f32>,
-    pub(super) next_token_ids: DeviceBuffer<i32>,
+    pub(super) logits: DeviceBuffer<F32>,
+    pub(super) next_token_ids: DeviceBuffer<I32>,
 }
 
 pub(super) enum MlpScratch {
@@ -36,41 +40,41 @@ pub(super) enum MlpScratch {
 }
 
 pub(super) struct DenseScratch {
-    pub(super) gate: DeviceBuffer<u16>,
-    pub(super) up: DeviceBuffer<u16>,
-    pub(super) activated: DeviceBuffer<u16>,
+    pub(super) gate: DeviceBuffer<BF16>,
+    pub(super) up: DeviceBuffer<BF16>,
+    pub(super) activated: DeviceBuffer<BF16>,
 }
 
 pub(super) struct MoeScratch {
-    pub(super) router_logits: DeviceBuffer<u16>,
-    pub(super) topk_ids: DeviceBuffer<i32>,
-    pub(super) topk_weights: DeviceBuffer<f32>,
-    pub(super) workspace: DeviceBuffer<u8>,
+    pub(super) router_logits: DeviceBuffer<BF16>,
+    pub(super) topk_ids: DeviceBuffer<I32>,
+    pub(super) topk_weights: DeviceBuffer<F32>,
+    pub(super) workspace: DeviceBuffer<U8>,
     pub(super) shared: Option<SharedExpertScratch>,
 }
 
 pub(super) struct SharedExpertScratch {
-    pub(super) gate: DeviceBuffer<u16>,
-    pub(super) up: DeviceBuffer<u16>,
-    pub(super) activated: DeviceBuffer<u16>,
-    pub(super) out: DeviceBuffer<u16>,
-    pub(super) gate_logits: DeviceBuffer<f32>,
+    pub(super) gate: DeviceBuffer<BF16>,
+    pub(super) up: DeviceBuffer<BF16>,
+    pub(super) activated: DeviceBuffer<BF16>,
+    pub(super) out: DeviceBuffer<BF16>,
+    pub(super) gate_logits: DeviceBuffer<F32>,
 }
 
 pub(super) struct GdnScratch {
-    pub(super) packed: DeviceBuffer<u16>,
-    pub(super) conv_out: DeviceBuffer<u16>,
-    pub(super) a: DeviceBuffer<u16>,
-    pub(super) b: DeviceBuffer<u16>,
-    pub(super) q: DeviceBuffer<u16>,
-    pub(super) k: DeviceBuffer<u16>,
-    pub(super) v: DeviceBuffer<u16>,
-    pub(super) recurrent_out: DeviceBuffer<u16>,
-    pub(super) gate: DeviceBuffer<u16>,
-    pub(super) norm_out: DeviceBuffer<u16>,
-    pub(super) seq_indptr: DeviceBuffer<i32>,
-    pub(super) state_indices: DeviceBuffer<i32>,
-    pub(super) state_out_indices: DeviceBuffer<i32>,
+    pub(super) packed: DeviceBuffer<BF16>,
+    pub(super) conv_out: DeviceBuffer<BF16>,
+    pub(super) a: DeviceBuffer<BF16>,
+    pub(super) b: DeviceBuffer<BF16>,
+    pub(super) q: DeviceBuffer<BF16>,
+    pub(super) k: DeviceBuffer<BF16>,
+    pub(super) v: DeviceBuffer<BF16>,
+    pub(super) recurrent_out: DeviceBuffer<BF16>,
+    pub(super) gate: DeviceBuffer<BF16>,
+    pub(super) norm_out: DeviceBuffer<BF16>,
+    pub(super) seq_indptr: DeviceBuffer<I32>,
+    // Immutable identity table: select an entry instead of uploading a slot ID.
+    slot_indices: DeviceBuffer<I32>,
 }
 
 impl RunnerScratch {
@@ -105,7 +109,7 @@ impl RunnerScratch {
         };
         let gdn = config
             .has_gdn_layers()
-            .then(|| GdnScratch::new(&ctx, 1))
+            .then(|| GdnScratch::new(&ctx, config.gdn_layer_count(), 1))
             .transpose()?;
         Ok(Self {
             config: *config,
@@ -254,8 +258,16 @@ impl SharedExpertScratch {
 }
 
 impl GdnScratch {
-    fn new(ctx: &Rc<CudaCtx>, rows: u32) -> Result<Self, Status> {
-        let row_count = rows as usize;
+    fn new(ctx: &Rc<CudaCtx>, layer_count: u32, rows: u32) -> Result<Self, Status> {
+        let slot_count = layer_count
+            .checked_mul(QWEN36_GDN_STATE_SLOTS_PER_LAYER)
+            .ok_or(Status::InvalidArgument)?;
+        let slot_count = i32::try_from(slot_count).map_err(|_| Status::InvalidArgument)?;
+        let mut indices = HostBuffer::<I32>::new(slot_count as usize)?;
+        for (bytes, slot) in indices.as_mut().chunks_exact_mut(4).zip(0..slot_count) {
+            bytes.copy_from_slice(&slot.to_ne_bytes());
+        }
+        let slot_indices = indices.upload(ctx.clone())?;
         let packed = checked_usize_product(&[rows, PACKED_QKV_CHANNELS])?;
         let heads = checked_usize_product(&[rows, NUM_VALUE_HEADS])?;
         let qk = checked_usize_product(&[rows, NUM_KEY_HEADS, KEY_HEAD_DIM])?;
@@ -272,13 +284,21 @@ impl GdnScratch {
             gate: DeviceBuffer::with_capacity(ctx.clone(), output)?,
             norm_out: DeviceBuffer::with_capacity(ctx.clone(), output)?,
             seq_indptr: DeviceBuffer::with_capacity(ctx.clone(), 2)?,
-            state_indices: DeviceBuffer::with_capacity(ctx.clone(), row_count)?,
-            state_out_indices: DeviceBuffer::with_capacity(ctx.clone(), row_count)?,
+            slot_indices,
         })
     }
 
+    pub(super) fn state_index(&self, slot: u32) -> Result<DVec<I32>, Status> {
+        if slot as usize >= self.slot_indices.len() {
+            return Err(Status::InvalidArgument);
+        }
+        let offset = I32::size_of(slot as usize)?;
+        // SAFETY: the checked slot lies within the immutable owned index table.
+        let ptr = unsafe { self.slot_indices.as_raw().add(offset) };
+        DVec::contiguous(DevicePtr::new(ptr).ok_or(Status::InvalidArgument)?, 1)
+    }
+
     fn realloc(&mut self, rows: u32) -> Result<(), Status> {
-        let row_count = rows as usize;
         let packed = checked_usize_product(&[rows, PACKED_QKV_CHANNELS])?;
         let heads = checked_usize_product(&[rows, NUM_VALUE_HEADS])?;
         let qk = checked_usize_product(&[rows, NUM_KEY_HEADS, KEY_HEAD_DIM])?;
@@ -293,8 +313,6 @@ impl GdnScratch {
         self.recurrent_out.realloc(output)?;
         self.gate.realloc(output)?;
         self.norm_out.realloc(output)?;
-        self.state_indices.realloc(row_count)?;
-        self.state_out_indices.realloc(row_count)?;
         Ok(())
     }
 }
@@ -302,7 +320,84 @@ impl GdnScratch {
 #[cfg(test)]
 mod view_tests {
     use super::*;
-    use crate::backend::{BF16, DMat, F32};
+    use crate::{
+        backend::DMat,
+        dtype::{BF16, F32},
+        model::state::GdnSlotMap,
+    };
+
+    #[test]
+    fn gdn_index_table_survives_growth_commit_and_reset() {
+        let ctx = Rc::new(CudaCtx::default().unwrap());
+        let mut scratch = GdnScratch::new(&ctx, 3, 1).unwrap();
+        let mut slots = GdnSlotMap::new(3).unwrap();
+        let indices_ptr = scratch.slot_indices.erase();
+        let sequence_ptr = scratch.seq_indptr.erase();
+        let initial: Vec<_> = (0..3)
+            .map(|layer| {
+                let pair = slots.layer_slots(layer).unwrap();
+                (
+                    scratch.state_index(pair.live_slot).unwrap(),
+                    scratch.state_index(pair.staged_slot).unwrap(),
+                )
+            })
+            .collect();
+        // Every layer and both sides of its transaction need distinct entries.
+        for (layer, &(read, write)) in initial.iter().enumerate() {
+            assert_ne!(read, write);
+            for &(other_read, other_write) in &initial[..layer] {
+                assert_ne!(read, other_read);
+                assert_ne!(read, other_write);
+                assert_ne!(write, other_read);
+                assert_ne!(write, other_write);
+            }
+        }
+        scratch.realloc(4).unwrap();
+        assert_eq!(scratch.slot_indices.erase(), indices_ptr);
+        assert_eq!(scratch.seq_indptr.erase(), sequence_ptr);
+        assert_eq!(scratch.state_index(6), Err(Status::InvalidArgument));
+        assert_eq!(scratch.state_index(u32::MAX), Err(Status::InvalidArgument));
+
+        for (committed, swapped) in [(true, true), (false, true), (true, false)] {
+            if committed {
+                slots.commit();
+            }
+            for (layer, &(read, write)) in initial.iter().enumerate() {
+                let pair = slots.layer_slots(layer as u32).unwrap();
+                let actual = (
+                    scratch.state_index(pair.live_slot).unwrap(),
+                    scratch.state_index(pair.staged_slot).unwrap(),
+                );
+                let expected = if swapped {
+                    (write, read)
+                } else {
+                    (read, write)
+                };
+                assert_eq!(actual, expected);
+            }
+        }
+        slots.reset(3).unwrap();
+        for (layer, &expected) in initial.iter().enumerate() {
+            let pair = slots.layer_slots(layer as u32).unwrap();
+            assert_eq!(
+                (
+                    scratch.state_index(pair.live_slot).unwrap(),
+                    scratch.state_index(pair.staged_slot).unwrap(),
+                ),
+                expected,
+            );
+        }
+
+        let mut values = HostBuffer::<I32>::new(6).unwrap();
+        unsafe { scratch.slot_indices.download(&mut values).unwrap() };
+        ctx.synchronize().unwrap();
+        let values: Vec<_> = values
+            .as_ref()
+            .chunks_exact(4)
+            .map(|bytes| i32::from_ne_bytes(bytes.try_into().unwrap()))
+            .collect();
+        assert_eq!(values, [0, 1, 2, 3, 4, 5]);
+    }
 
     #[test]
     fn dense_scratch_retains_capacity_and_fixed_storage() {
@@ -314,7 +409,7 @@ mod view_tests {
         let MlpScratch::Dense(dense) = &scratch.mlp else {
             panic!("dense fixture allocated MoE scratch");
         };
-        assert_eq!(dense.activated.cap, 4 * config.intermediate_size() as usize);
+        assert_eq!(dense.activated.len, 4 * config.intermediate_size() as usize);
         let residual = scratch.residual.erase();
         let logits = scratch.logits.erase();
         let next_token = scratch.next_token_ids.erase();
@@ -324,13 +419,13 @@ mod view_tests {
         assert_eq!(scratch.row_capacity, 4);
         scratch.reserve(8).unwrap();
         assert_eq!(scratch.row_capacity, 8);
-        assert_eq!(scratch.residual.cap, 8 * config.hidden_size() as usize);
+        assert_eq!(scratch.residual.len, 8 * config.hidden_size() as usize);
         assert_eq!(scratch.logits.erase(), logits);
         assert_eq!(scratch.next_token_ids.erase(), next_token);
         let MlpScratch::Dense(dense) = &scratch.mlp else {
             unreachable!();
         };
-        assert_eq!(dense.activated.cap, 8 * config.intermediate_size() as usize);
+        assert_eq!(dense.activated.len, 8 * config.intermediate_size() as usize);
         assert_eq!(scratch.reserve(0), Err(Status::InvalidArgument));
         ctx.synchronize().unwrap();
     }
@@ -343,6 +438,7 @@ mod view_tests {
             QwenConfig::randomized_shared_moe_tiny_fixture(),
             QwenConfig::randomized_qwen36_moe_gdn_one_block_fixture(),
         ] {
+            config.validate().unwrap();
             // Only allocation ownership is exercised here; no MoE kernel uses
             // this deliberately small workspace.
             let mut scratch = RunnerScratch::new(ctx.clone(), &config, 64).unwrap();
@@ -361,18 +457,18 @@ mod view_tests {
             let MlpScratch::Moe(moe) = &scratch.mlp else {
                 unreachable!();
             };
-            assert_eq!(moe.topk_ids.cap, 4 * shape.num_experts_per_tok as usize);
+            assert_eq!(moe.topk_ids.len, 4 * shape.num_experts_per_tok as usize);
             assert_eq!(moe.workspace.erase(), workspace);
-            assert_eq!(moe.workspace.cap, 64);
+            assert_eq!(moe.workspace.len, 64);
             if let Some(shared) = &moe.shared {
                 assert_eq!(
-                    shared.activated.cap,
+                    shared.activated.len,
                     4 * shape.shared_expert_intermediate_size as usize
                 );
             }
             if let Some(gdn) = &scratch.gdn {
-                assert_eq!(gdn.packed.cap, 4 * PACKED_QKV_CHANNELS as usize);
-                assert_eq!(gdn.seq_indptr.cap, 2);
+                assert_eq!(gdn.packed.len, 4 * PACKED_QKV_CHANNELS as usize);
+                assert_eq!(gdn.seq_indptr.len, 2);
             }
         }
         ctx.synchronize().unwrap();
@@ -381,16 +477,17 @@ mod view_tests {
     #[test]
     fn typed_views_check_capacity_offsets_and_shape_overflow() {
         let ctx = Rc::new(CudaCtx::default().unwrap());
-        let buffer = DeviceBuffer::<u16>::with_capacity(ctx.clone(), 8).unwrap();
+        let buffer = DeviceBuffer::<BF16>::with_capacity(ctx.clone(), 8).unwrap();
         let matrix: DMat<BF16> = buffer.matrix(2, 4).unwrap();
         // SAFETY: buffer owns the entire matrix and remains live for both calls.
         unsafe {
-            assert_eq!(matrix.row(1).unwrap(), buffer.matrix_at(4, 1, 4).unwrap());
+            assert_eq!(
+                matrix.row(1).unwrap(),
+                DMat::contiguous(DevicePtr::new(buffer.as_raw().add(8)).unwrap(), 1, 4).unwrap()
+            );
             assert!(matrix.row(2).is_err());
         }
         assert!(buffer.matrix(3, 3).is_err());
-        assert!(buffer.matrix_at(5, 1, 4).is_err());
-        assert!(buffer.matrix_at(usize::MAX, 1, 1).is_err());
         assert!(buffer.matrix(u32::MAX, u32::MAX).is_err());
         assert!(buffer.matrix(0, 4).is_err());
         assert!(buffer.vector(8).is_ok());
@@ -400,19 +497,24 @@ mod view_tests {
         assert!(buffer.heads(1, 2, 4).is_ok());
         assert!(buffer.heads(2, 2, 4).is_err());
 
-        let buffer = DeviceBuffer::<f32>::with_capacity(ctx, 8).unwrap();
+        let buffer = DeviceBuffer::<F32>::with_capacity(ctx, 8).unwrap();
         let matrix: DMat<F32> = buffer.matrix(2, 4).unwrap();
         // SAFETY: buffer owns the entire matrix and remains live here.
         assert_eq!(
             unsafe { matrix.row(1) }.unwrap(),
-            buffer.matrix_at(4, 1, 4).unwrap()
+            DMat::contiguous(
+                DevicePtr::new(buffer.as_raw().wrapping_add(16)).unwrap(),
+                1,
+                4
+            )
+            .unwrap()
         );
     }
 
     #[test]
     fn workspace_view_checks_requested_bytes() {
         let ctx = Rc::new(CudaCtx::default().unwrap());
-        let buffer = DeviceBuffer::<u8>::with_capacity(ctx, 32).unwrap();
+        let buffer = DeviceBuffer::<U8>::with_capacity(ctx, 32).unwrap();
         assert!(buffer.workspace(0).is_ok());
         assert!(buffer.workspace(16).is_ok());
         assert!(buffer.workspace(32).is_ok());

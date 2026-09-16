@@ -11,6 +11,9 @@ Triton types. Constexprs select `spec.constants`, with `{ dtype = "f32"; }` for
 dtype constants. `spec.grid` and `spec.options` set launch dimensions and compiler
 options. Outputs are `.cubin`, `.ptx`, `.json`, `.rs`, and a `.d` depfile.
 
-The Rust launcher embeds the cubin. Load it before capture or timing; retain its
+The Rust launcher embeds the cubin and takes `DevicePtr<DType>` tensor arguments
+using qs3's dtype markers. Scalars retain their primitive Rust types. Device
+pointers are erased only inside the launcher for CUDA argument packing.
+Load it before capture or timing; retain its
 CUDA context and module until queued work and graphs finish. Callers validate
 pointer shapes and aliasing. The current launcher supports one CTA without scratch.

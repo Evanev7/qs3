@@ -1,8 +1,9 @@
 use super::{
-    BF16, Bf16Heads, DMat, DVec, F32, FloatStorage, GdnConvState, GdnRecurrentState,
-    GdnStateIndexPolicy, I32, RouterScore, Workspace, qscb, qscu,
+    Bf16Heads, DMat, DVec, FloatStorage, GdnConvState, GdnRecurrentState, GdnStateIndexPolicy,
+    RouterScore, Workspace, qscb, qscu,
     qsfi::{FusedAddRmsNormBf16, RmsNormBf16, RopeApplyBf16},
 };
+use crate::dtype::{BF16, DType, F32, I32};
 use crate::{
     QWEN36_MOE_MAX_TOP_K, Status,
     constants::{
@@ -12,7 +13,7 @@ use crate::{
             VALUE_HEAD_DIM,
         },
     },
-    ffi::{self, sys},
+    ffi::{self, DevicePtr, sys},
 };
 
 use std::ffi::c_void;
@@ -22,28 +23,32 @@ fn device_ptr(offset: usize) -> ffi::ErasedDevicePtr {
     (0x1000usize + offset) as *mut c_void
 }
 
+fn typed_ptr<D: DType>(offset: usize) -> DevicePtr<D> {
+    DevicePtr::new(device_ptr(offset).cast()).unwrap()
+}
+
 fn bf16_mat(offset: usize, rows: u32, cols: u32) -> DMat<BF16> {
-    DMat::contiguous(device_ptr(offset), rows, cols).unwrap()
+    DMat::contiguous(typed_ptr(offset), rows, cols).unwrap()
 }
 
 fn f32_mat(offset: usize, rows: u32, cols: u32) -> DMat<F32> {
-    DMat::contiguous(device_ptr(offset), rows, cols).unwrap()
+    DMat::contiguous(typed_ptr(offset), rows, cols).unwrap()
 }
 
 fn bf16_vec(offset: usize, len: u32) -> DVec<BF16> {
-    DVec::contiguous(device_ptr(offset), len).unwrap()
+    DVec::contiguous(typed_ptr(offset), len).unwrap()
 }
 
 fn f32_vec(offset: usize, len: u32) -> DVec<F32> {
-    DVec::contiguous(device_ptr(offset), len).unwrap()
+    DVec::contiguous(typed_ptr(offset), len).unwrap()
 }
 
 fn i32_vec(offset: usize, len: u32) -> DVec<I32> {
-    DVec::contiguous(device_ptr(offset), len).unwrap()
+    DVec::contiguous(typed_ptr(offset), len).unwrap()
 }
 
 fn heads(offset: usize, tokens: u32, heads: u32, head_dim: u32) -> Bf16Heads {
-    Bf16Heads::contiguous(device_ptr(offset), tokens, heads, head_dim).unwrap()
+    Bf16Heads::contiguous(typed_ptr(offset), tokens, heads, head_dim).unwrap()
 }
 
 fn q_heads(offset: usize, tokens: u32) -> Bf16Heads {
@@ -76,7 +81,7 @@ fn generic_vec_and_mat_aliases_preserve_tensor_metadata() {
     assert_eq!(i32_vec.dtype, ffi::DTYPE_I32);
 
     let bf16_mat = bf16_mat(4, 2, 3);
-    let f32_mat = DMat::<F32>::new(device_ptr(5), 2, 3, 8).unwrap();
+    let f32_mat = DMat::<F32>::new(typed_ptr(5), 2, 3, 8).unwrap();
     assert!(bf16_mat.same_shape(f32_mat));
 
     let f32_tensor = f32_mat.tensor();
@@ -84,7 +89,7 @@ fn generic_vec_and_mat_aliases_preserve_tensor_metadata() {
     assert_eq!(f32_tensor.shape, [2, 3]);
     assert_eq!(f32_tensor.stride, [8, 1]);
 
-    let i32_tensor = DMat::<I32>::contiguous(device_ptr(6), 3, 2)
+    let i32_tensor = DMat::<I32>::contiguous(typed_ptr(6), 3, 2)
         .unwrap()
         .tensor();
     assert_eq!(i32_tensor.dtype, ffi::DTYPE_I32);
@@ -92,20 +97,17 @@ fn generic_vec_and_mat_aliases_preserve_tensor_metadata() {
 
 #[test]
 fn handles_reject_null_zero_and_bad_strides() {
+    assert!(DevicePtr::<BF16>::new(ptr::null_mut()).is_none());
     assert!(matches!(
-        DMat::<BF16>::contiguous(ptr::null_mut(), 1, 1),
+        DMat::<BF16>::contiguous(typed_ptr(1), 0, 1),
         Err(Status::InvalidArgument)
     ));
     assert!(matches!(
-        DMat::<BF16>::contiguous(device_ptr(1), 0, 1),
+        DMat::<BF16>::new(typed_ptr(2), 2, 4, 3),
         Err(Status::InvalidArgument)
     ));
     assert!(matches!(
-        DMat::<BF16>::new(device_ptr(2), 2, 4, 3),
-        Err(Status::InvalidArgument)
-    ));
-    assert!(matches!(
-        Bf16Heads::new(device_ptr(3), 2, 4, 64, 255, 64),
+        Bf16Heads::new(typed_ptr(3), 2, 4, 64, 255, 64),
         Err(Status::InvalidArgument)
     ));
     assert!(matches!(
@@ -120,7 +122,7 @@ fn qscu_descriptor_builders_validate_shapes_and_modes() {
     let up = bf16_mat(11, 2, 8);
     let out = bf16_mat(12, 2, 8);
     assert!(qscu::silu_and_mul_desc(gate, up, out).is_ok());
-    let padded_gate = DMat::new(device_ptr(13), 2, 8, 16).unwrap();
+    let padded_gate = DMat::new(typed_ptr(13), 2, 8, 16).unwrap();
     assert!(matches!(
         qscu::silu_and_mul_desc(padded_gate, up, out),
         Err(Status::InvalidArgument)
@@ -159,7 +161,7 @@ fn qscu_descriptor_builders_validate_shapes_and_modes() {
     ));
     assert!(matches!(
         qscu::qwen36_full_attention_output_gate_desc(
-            DMat::<BF16>::new(device_ptr(123), 2, Q_WIDTH, Q_WIDTH + 8,).unwrap(),
+            DMat::<BF16>::new(typed_ptr(123), 2, Q_WIDTH, Q_WIDTH + 8,).unwrap(),
             bf16_mat(124, 2, Q_WIDTH),
         ),
         Err(Status::InvalidArgument)
@@ -183,7 +185,7 @@ fn qscu_descriptor_builders_validate_shapes_and_modes() {
     assert!(matches!(
         qscu::router_topk_desc(
             bf16_mat(30, 2, 257),
-            DMat::<I32>::contiguous(device_ptr(31), 2, 8).unwrap(),
+            DMat::<I32>::contiguous(typed_ptr(31), 2, 8).unwrap(),
             f32_mat(32, 2, 8),
             RouterScore::Softmax,
             true,
@@ -204,7 +206,7 @@ fn qscu_descriptor_builders_validate_shapes_and_modes() {
         qscu::greedy_argmax_desc(logits, i32_vec(18, 1)),
         Err(Status::InvalidArgument)
     ));
-    let huge_vocab = DMat::contiguous(device_ptr(19), 1, i32::MAX as u32 + 1).unwrap();
+    let huge_vocab = DMat::contiguous(typed_ptr(19), 1, i32::MAX as u32 + 1).unwrap();
     assert!(matches!(
         qscu::greedy_argmax_desc(huge_vocab, i32_vec(20, 1)),
         Err(Status::Unsupported)
@@ -213,7 +215,7 @@ fn qscu_descriptor_builders_validate_shapes_and_modes() {
     assert!(
         qscu::router_topk_desc(
             bf16_mat(17, 2, 128),
-            DMat::<I32>::contiguous(device_ptr(21), 2, 4).unwrap(),
+            DMat::<I32>::contiguous(typed_ptr(21), 2, 4).unwrap(),
             f32_mat(22, 2, 4),
             RouterScore::Softmax,
             true,
@@ -224,7 +226,7 @@ fn qscu_descriptor_builders_validate_shapes_and_modes() {
     assert!(matches!(
         qscu::router_topk_desc(
             bf16_mat(17, 2, 128),
-            DMat::<I32>::contiguous(device_ptr(26), 2, QWEN36_MOE_MAX_TOP_K + 1,).unwrap(),
+            DMat::<I32>::contiguous(typed_ptr(26), 2, QWEN36_MOE_MAX_TOP_K + 1,).unwrap(),
             f32_mat(27, 2, QWEN36_MOE_MAX_TOP_K + 1),
             RouterScore::Softmax,
             true,
@@ -235,7 +237,7 @@ fn qscu_descriptor_builders_validate_shapes_and_modes() {
     assert!(matches!(
         qscu::router_topk_desc(
             bf16_mat(17, 2, 128),
-            DMat::<I32>::contiguous(device_ptr(28), 2, 4).unwrap(),
+            DMat::<I32>::contiguous(typed_ptr(28), 2, 4).unwrap(),
             f32_mat(29, 2, 4),
             RouterScore::Softmax,
             true,
@@ -247,10 +249,10 @@ fn qscu_descriptor_builders_validate_shapes_and_modes() {
 
 #[test]
 fn qscb_linear_specializations_encode_the_output_type() {
-    let x = DMat::<BF16>::new(device_ptr(30), 4, 128, 160).unwrap();
-    let weight = DMat::new(device_ptr(31), 256, 128, 128).unwrap();
-    let bf16_out = DMat::<BF16>::new(device_ptr(32), 4, 256, 320).unwrap();
-    let f32_out = DMat::<F32>::new(device_ptr(33), 4, 256, 320).unwrap();
+    let x = DMat::<BF16>::new(typed_ptr(30), 4, 128, 160).unwrap();
+    let weight = DMat::new(typed_ptr(31), 256, 128, 128).unwrap();
+    let bf16_out = DMat::<BF16>::new(typed_ptr(32), 4, 256, 320).unwrap();
+    let f32_out = DMat::<F32>::new(typed_ptr(33), 4, 256, 320).unwrap();
 
     let bf16 = qscb::linear_desc(x, weight, bf16_out, Workspace::none()).unwrap();
     assert_eq!(bf16.out.dtype, ffi::DTYPE_BF16);
@@ -264,7 +266,7 @@ fn qscb_linear_specializations_encode_the_output_type() {
         qscb::linear_desc(
             x,
             weight,
-            DMat::<F32>::new(device_ptr(34), 4, 128, 128).unwrap(),
+            DMat::<F32>::new(typed_ptr(34), 4, 128, 128).unwrap(),
             Workspace::none(),
         ),
         Err(Status::InvalidArgument)
@@ -273,8 +275,8 @@ fn qscb_linear_specializations_encode_the_output_type() {
 
 #[test]
 fn qsfi_descriptor_builders_accept_padded_rows() {
-    let x = DMat::new(device_ptr(30), 4, 128, 160).unwrap();
-    let norm_out = DMat::new(device_ptr(34), 4, 128, 160).unwrap();
+    let x = DMat::new(typed_ptr(30), 4, 128, 160).unwrap();
+    let norm_out = DMat::new(typed_ptr(34), 4, 128, 160).unwrap();
     assert!(RmsNormBf16::new(x, bf16_vec(35, 128), norm_out, 1.0e-6).is_ok());
     assert!(matches!(
         RmsNormBf16::new(x, bf16_vec(36, 64), norm_out, 1.0e-6),
@@ -285,16 +287,16 @@ fn qsfi_descriptor_builders_accept_padded_rows() {
         Err(Status::InvalidArgument)
     ));
 
-    let residual = DMat::new(device_ptr(38), 4, 128, 192).unwrap();
+    let residual = DMat::new(typed_ptr(38), 4, 128, 192).unwrap();
     assert!(FusedAddRmsNormBf16::new(x, residual, bf16_vec(39, 128), 1.0e-6).is_ok());
     assert!(
         FusedAddRmsNormBf16::qwen_decoder_norm(x, residual, bf16_vec(140, 128), 1.0e-6,).is_ok()
     );
 
-    let q = Bf16Heads::new(device_ptr(40), 2, 4, 128, 1024, 128).unwrap();
-    let k = Bf16Heads::new(device_ptr(41), 2, 2, 128, 512, 128).unwrap();
-    let q_out = Bf16Heads::new(device_ptr(42), 2, 4, 128, 1024, 128).unwrap();
-    let k_out = Bf16Heads::new(device_ptr(43), 2, 2, 128, 512, 128).unwrap();
+    let q = Bf16Heads::new(typed_ptr(40), 2, 4, 128, 1024, 128).unwrap();
+    let k = Bf16Heads::new(typed_ptr(41), 2, 2, 128, 512, 128).unwrap();
+    let q_out = Bf16Heads::new(typed_ptr(42), 2, 4, 128, 1024, 128).unwrap();
+    let k_out = Bf16Heads::new(typed_ptr(43), 2, 2, 128, 512, 128).unwrap();
     assert!(RopeApplyBf16::new(q, k, q_out, k_out, i32_vec(44, 2), 128).is_ok());
     assert!(matches!(
         RopeApplyBf16::new(
@@ -320,27 +322,13 @@ fn qsfi_descriptor_builders_accept_padded_rows() {
         Err(Status::InvalidArgument)
     ));
     let qwen36_q =
-        Bf16Heads::new(device_ptr(53), 2, NUM_Q_HEADS, HEAD_DIM, Q_WIDTH, HEAD_DIM).unwrap();
-    let qwen36_k = Bf16Heads::new(
-        device_ptr(54),
-        2,
-        NUM_KV_HEADS,
-        HEAD_DIM,
-        KV_WIDTH,
-        HEAD_DIM,
-    )
-    .unwrap();
+        Bf16Heads::new(typed_ptr(53), 2, NUM_Q_HEADS, HEAD_DIM, Q_WIDTH, HEAD_DIM).unwrap();
+    let qwen36_k =
+        Bf16Heads::new(typed_ptr(54), 2, NUM_KV_HEADS, HEAD_DIM, KV_WIDTH, HEAD_DIM).unwrap();
     let qwen36_q_out =
-        Bf16Heads::new(device_ptr(55), 2, NUM_Q_HEADS, HEAD_DIM, Q_WIDTH, HEAD_DIM).unwrap();
-    let qwen36_k_out = Bf16Heads::new(
-        device_ptr(56),
-        2,
-        NUM_KV_HEADS,
-        HEAD_DIM,
-        KV_WIDTH,
-        HEAD_DIM,
-    )
-    .unwrap();
+        Bf16Heads::new(typed_ptr(55), 2, NUM_Q_HEADS, HEAD_DIM, Q_WIDTH, HEAD_DIM).unwrap();
+    let qwen36_k_out =
+        Bf16Heads::new(typed_ptr(56), 2, NUM_KV_HEADS, HEAD_DIM, KV_WIDTH, HEAD_DIM).unwrap();
     assert!(
         RopeApplyBf16::new(
             qwen36_q,
@@ -363,7 +351,7 @@ fn qsfi_descriptor_builders_accept_padded_rows() {
         ),
         Err(Status::Unsupported)
     ));
-    let alias_bad_stride = Bf16Heads::contiguous(device_ptr(40), 2, 4, 128).unwrap();
+    let alias_bad_stride = Bf16Heads::contiguous(typed_ptr(40), 2, 4, 128).unwrap();
     assert!(matches!(
         RopeApplyBf16::new(q, k, alias_bad_stride, k_out, i32_vec(59, 2), 128),
         Err(Status::InvalidArgument)

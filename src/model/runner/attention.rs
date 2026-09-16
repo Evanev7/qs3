@@ -1,10 +1,11 @@
 use super::BatchExecution;
 use crate::{
     backend::{
-        BF16, DMat,
+        DMat,
         qsfi::{RmsNormBf16, RopeApplyBf16},
     },
     constants::attention::{PACKED_Q_GATE_WIDTH, ROTARY_DIM},
+    dtype::BF16,
     engine::{AttentionLayer, Status},
     model::{ActiveRunKind, weights::QwenAttentionMlpWeights},
 };

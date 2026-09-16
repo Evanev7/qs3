@@ -1174,9 +1174,15 @@ mod tests {
         assert_eq!(DynDType::U8.bits(), 8);
         assert_eq!(DynDType::F16.storage_bytes_for(3), Ok(6));
         assert_eq!(DynDType::FP8E4M3.storage_bytes_for(3), Ok(3));
-        assert_eq!(DynDType::NVFP4E2M1.storage_bytes_for(1), Ok(1));
+        assert_eq!(
+            DynDType::NVFP4E2M1.storage_bytes_for(1),
+            Err(Status::InvalidArgument)
+        );
         assert_eq!(DynDType::NVFP4E2M1.storage_bytes_for(2), Ok(1));
-        assert_eq!(DynDType::NVFP4E2M1.storage_bytes_for(3), Ok(2));
+        assert_eq!(
+            DynDType::NVFP4E2M1.storage_bytes_for(3),
+            Err(Status::InvalidArgument)
+        );
     }
 
     #[test]

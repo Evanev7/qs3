@@ -1,46 +1,38 @@
-use std::marker::PhantomData;
-
-use crate::{Status, ffi};
-
-use super::dtype::DType;
+use crate::{
+    Status,
+    dtype::DType,
+    ffi::{self, DevicePtr},
+};
 
 /*
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct DTensor<const Dim: usize, DT: dtype::DType> {
-    pub(super) data: ffi::ErasedDevicePtr,
+    pub(super) data: DevicePtr<DT>,
     pub(super) shape: [i32; Dim],
     stride: [i32; Dim],
-    _p: PhantomData<DT>,
 }
 */
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct DVec<DT: DType> {
-    pub(super) data: ffi::ErasedDevicePtr,
+    pub(super) data: DevicePtr<DT>,
     pub(super) len: u32,
     stride: u32,
-    _p: PhantomData<DT>,
 }
 
 impl<DT: DType> DVec<DT> {
-    pub(crate) fn contiguous(data: ffi::ErasedDevicePtr, len: u32) -> Result<Self, Status> {
+    pub(crate) fn contiguous(data: DevicePtr<DT>, len: u32) -> Result<Self, Status> {
         Self::new(data, len, 1)
     }
 
-    pub(crate) fn new(data: ffi::ErasedDevicePtr, len: u32, stride: u32) -> Result<Self, Status> {
-        validate_ptr(data)?;
+    pub(crate) fn new(data: DevicePtr<DT>, len: u32, stride: u32) -> Result<Self, Status> {
         validate_nonzero(&[len, stride])?;
-        Ok(Self {
-            data,
-            len,
-            stride,
-            _p: PhantomData,
-        })
+        Ok(Self { data, len, stride })
     }
 
     pub(crate) fn tensor(self) -> ffi::Tensor1 {
         ffi::Tensor1 {
-            data: self.data,
+            data: self.data.erase(),
             dtype: DT::RAW,
             shape: [self.len.into()],
             stride: [self.stride.into()],
@@ -62,29 +54,23 @@ impl<DT: DType> DVec<DT> {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct DMat<DT: DType> {
-    data: ffi::ErasedDevicePtr,
+    pub(super) data: DevicePtr<DT>,
     pub(super) rows: u32,
     pub(super) cols: u32,
     row_stride: u32,
-    _p: PhantomData<DT>,
 }
 
 impl<DT: DType> DMat<DT> {
-    pub(crate) fn contiguous(
-        data: ffi::ErasedDevicePtr,
-        rows: u32,
-        cols: u32,
-    ) -> Result<Self, Status> {
+    pub(crate) fn contiguous(data: DevicePtr<DT>, rows: u32, cols: u32) -> Result<Self, Status> {
         Self::new(data, rows, cols, cols)
     }
 
     pub(crate) fn new(
-        data: ffi::ErasedDevicePtr,
+        data: DevicePtr<DT>,
         rows: u32,
         cols: u32,
         row_stride: u32,
     ) -> Result<Self, Status> {
-        validate_ptr(data)?;
         validate_nonzero(&[rows, cols, row_stride])?;
         if row_stride < cols {
             return Err(Status::InvalidArgument);
@@ -94,7 +80,6 @@ impl<DT: DType> DMat<DT> {
             rows,
             cols,
             row_stride,
-            _p: PhantomData,
         })
     }
 
@@ -109,15 +94,10 @@ impl<DT: DType> DMat<DT> {
         let elements = (index as usize)
             .checked_mul(self.row_stride as usize)
             .ok_or(Status::InvalidArgument)?;
-        let bytes = elements
-            .checked_mul(match DT::RAW {
-                ffi::DTYPE_BF16 => 2,
-                ffi::DTYPE_F32 | ffi::DTYPE_I32 => 4,
-                _ => return Err(Status::Unsupported),
-            })
-            .ok_or(Status::InvalidArgument)?;
+        let bytes = DT::size_of(elements)?;
         Self::new(
-            unsafe { self.data.cast::<u8>().add(bytes).cast() },
+            DevicePtr::new(unsafe { self.data.as_raw().add(bytes) })
+                .ok_or(Status::InvalidArgument)?,
             1,
             self.cols,
             self.row_stride,
@@ -126,7 +106,7 @@ impl<DT: DType> DMat<DT> {
 
     pub(super) fn tensor(self) -> ffi::Tensor2 {
         ffi::Tensor2 {
-            data: self.data,
+            data: self.data.erase(),
             dtype: DT::RAW,
             shape: [self.rows.into(), self.cols.into()],
             stride: [self.row_stride.into(), 1],
@@ -152,19 +132,18 @@ impl<DT: DType> DMat<DT> {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct DTensor3<DT: DType> {
-    data: ffi::ErasedDevicePtr,
+    pub(super) data: DevicePtr<DT>,
     dim0: u32,
     dim1: u32,
     dim2: u32,
     stride0: u32,
     stride1: u32,
     stride2: u32,
-    _p: PhantomData<DT>,
 }
 
 impl<DT: DType> DTensor3<DT> {
     pub(crate) fn contiguous(
-        data: ffi::ErasedDevicePtr,
+        data: DevicePtr<DT>,
         dim0: u32,
         dim1: u32,
         dim2: u32,
@@ -175,7 +154,7 @@ impl<DT: DType> DTensor3<DT> {
     }
 
     pub(crate) fn new(
-        data: ffi::ErasedDevicePtr,
+        data: DevicePtr<DT>,
         dim0: u32,
         dim1: u32,
         dim2: u32,
@@ -183,7 +162,6 @@ impl<DT: DType> DTensor3<DT> {
         stride1: u32,
         stride2: u32,
     ) -> Result<Self, Status> {
-        validate_ptr(data)?;
         validate_nonzero(&[dim0, dim1, dim2, stride0, stride1, stride2])?;
         if stride2 != 1
             || stride1 < dim2
@@ -199,13 +177,12 @@ impl<DT: DType> DTensor3<DT> {
             stride0,
             stride1,
             stride2,
-            _p: PhantomData,
         })
     }
 
     pub(super) fn tensor(self) -> ffi::Tensor3 {
         ffi::Tensor3 {
-            data: self.data,
+            data: self.data.erase(),
             dtype: DT::RAW,
             shape: [self.dim0.into(), self.dim1.into(), self.dim2.into()],
             stride: [
@@ -229,13 +206,6 @@ impl<DT: DType> DTensor3<DT> {
             Ok(())
         }
     }
-}
-
-fn validate_ptr(data: ffi::ErasedDevicePtr) -> Result<(), Status> {
-    if data.is_null() {
-        return Err(Status::InvalidArgument);
-    }
-    Ok(())
 }
 
 fn validate_nonzero(values: &[u32]) -> Result<(), Status> {

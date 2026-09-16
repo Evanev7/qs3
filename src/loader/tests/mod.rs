@@ -1,34 +1,26 @@
 use super::{
-    DEFAULT_MAX_HEADER_BYTES, DEFAULT_MAX_JSON_BYTES, PINNED_UPLOAD_BUFFER_BYTES,
-    PINNED_UPLOAD_BUFFER_COUNT,
+    PINNED_UPLOAD_BUFFER_BYTES, PINNED_UPLOAD_BUFFER_COUNT,
     format::{
         Qwen36TextConfig, SafetensorsHeader, TensorFileMeta, TensorMeta, WeightLoadError,
-        WeightTensorDType, WeightTensorSource, WeightTensorSpec, WeightTensorTarget,
-        expected_qwen36_bf16_specs, parse_json_object, validate_qwen36_bf16_dir,
-        validate_qwen36_bf16_tensor_table,
+        WeightTensorSource, WeightTensorSpec, WeightTensorTarget, expected_qwen36_bf16_specs,
+        parse_json_object, validate_qwen36_bf16_tensor_table,
     },
-    plan::{
-        LoadedWeightPlan, LoadedWeightTensor, QwenBf16LoadPlan, QwenLoadPlanEntry, QwenLoadSource,
-        execute_qwen36_bf16_load_plan,
-    },
+    plan::{QwenBf16LoadPlan, QwenLoadPlanEntry, QwenLoadSource, execute_qwen36_bf16_load_plan},
     transfer::{
-        ManagedUmaBackend, PinnedUploadBackend, WeightFileRange, WeightLoadBackend,
+        ManagedUmaBackend, PinnedUploadBackend, WeightBuffer, WeightFileRange, WeightLoadBackend,
         WeightLoadMemory, WeightLoadSpan, WeightTensorDesc, result_from_cuda,
     },
 };
-use crate::test_assets::{real_qwen36_model_dir, require_real_qwen36_model_dir};
-use crate::{
-    constants::{attention::HEAD_DIM, gdn::PACKED_QKV_CHANNELS, model::HIDDEN_SIZE},
-    engine::{DynDType, Status},
-    ffi,
-    memory::DeviceSpan,
-};
+use crate::dtype::{BF16, DType, F32, Fp8E4M3, U8};
+use crate::test_assets::{real_selected_model_dir, require_real_qwen36_model_dir};
+use crate::{dtype::DynDType, engine::Status, ffi, memory::DeviceSpan};
 use std::collections::BTreeMap;
 use std::ffi::c_void;
 use std::{env, ptr, time::Instant};
 
 mod checkpoint;
 mod scores;
+mod tensor;
 
 const REAL_PROMPT: [i32; 4] = [1, 2, 3, 4];
 const REAL_GENERATED: [i32; 4] = [5, 6, 24_218, 10];
@@ -187,54 +179,19 @@ fn synthetic_safetensors(header: &str, data_len: usize) -> Vec<u8> {
     out
 }
 
-fn layer_types_json(layers: usize) -> String {
-    (0..layers)
-        .map(|idx| {
-            if idx % 4 == 3 {
-                "\"full_attention\""
-            } else {
-                "\"linear_attention\""
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(",")
-}
-
 fn nested_text_config_json(layers: usize, vocab: u32) -> String {
-    format!(
-        r#"{{
-            "model_type": "qwen3_5_moe",
-            "tie_word_embeddings": false,
-            "text_config": {{
-                "model_type": "qwen3_5_moe_text",
-                "dtype": "bfloat16",
-                "num_hidden_layers": {layers},
-                "hidden_size": 2048,
-                "vocab_size": {vocab},
-                "num_attention_heads": 16,
-                "num_key_value_heads": 2,
-                "head_dim": 256,
-                "num_experts": 256,
-                "num_experts_per_tok": 8,
-                "moe_intermediate_size": 512,
-                "shared_expert_intermediate_size": 512,
-                "linear_num_key_heads": 16,
-                "linear_num_value_heads": 32,
-                "linear_key_head_dim": 128,
-                "linear_value_head_dim": 128,
-                "linear_conv_kernel_dim": 4,
-                "full_attention_interval": 4,
-                "attn_output_gate": true,
-                "rms_norm_eps": 1e-6,
-                "rope_parameters": {{
-                    "partial_rotary_factor": 0.25,
-                    "rope_theta": 10000000
-                }},
-                "layer_types": [{}]
-            }}
-        }}"#,
-        layer_types_json(layers)
-    )
+    let mut root = checkpoint::selected_config();
+    let text = checkpoint::text(&mut root);
+    text.insert("num_hidden_layers".into(), (layers as f64).into());
+    text.insert("vocab_size".into(), (vocab as f64).into());
+    let schedule = text
+        .get_mut("layer_types")
+        .unwrap()
+        .get_mut::<Vec<tinyjson::JsonValue>>()
+        .unwrap();
+    assert!(layers <= schedule.len());
+    schedule.truncate(layers);
+    tinyjson::JsonValue::Object(root).stringify().unwrap()
 }
 
 fn qwen_text_config(layers: usize, vocab: u32) -> Qwen36TextConfig {
@@ -294,7 +251,7 @@ fn incompatible_checkpoint_is_rejected_before_reading_weight_index() {
 
 #[derive(Default)]
 struct TinyBackendState {
-    take_calls: std::cell::Cell<usize>,
+    transferred: std::cell::Cell<usize>,
     drop_calls: std::cell::Cell<usize>,
     remaining_at_drop: std::cell::Cell<usize>,
     allocation_drops: std::cell::Cell<usize>,
@@ -302,17 +259,17 @@ struct TinyBackendState {
 
 // A test backend's allocation policy is retained through QwenWeights' boxes.
 // Synthetic backends expose metadata only; TinyCudaBackend owns real CUDA storage.
-struct TestWeightAllocation {
-    span: DeviceSpan<u16>,
+struct TestWeightBuffer<D: DType> {
+    span: DeviceSpan<D>,
     state: Option<std::rc::Rc<TinyBackendState>>,
 }
-impl std::ops::Deref for TestWeightAllocation {
-    type Target = DeviceSpan<u16>;
+impl<D: DType> std::ops::Deref for TestWeightBuffer<D> {
+    type Target = DeviceSpan<D>;
     fn deref(&self) -> &Self::Target {
         &self.span
     }
 }
-impl Drop for TestWeightAllocation {
+impl<D: DType> Drop for TestWeightBuffer<D> {
     fn drop(&mut self) {
         if let Some(state) = &self.state {
             state.allocation_drops.set(state.allocation_drops.get() + 1);
@@ -325,6 +282,7 @@ impl Drop for TestWeightAllocation {
 
 struct TinyCudaBackend {
     device_ordinal: i32,
+    fail_after: Option<usize>,
     allocations: Vec<WeightLoadSpan>,
     state: std::rc::Rc<TinyBackendState>,
 }
@@ -333,6 +291,7 @@ impl TinyCudaBackend {
     fn new(device_ordinal: i32, state: std::rc::Rc<TinyBackendState>) -> Self {
         Self {
             device_ordinal,
+            fail_after: None,
             allocations: Vec::new(),
             state,
         }
@@ -340,27 +299,12 @@ impl TinyCudaBackend {
 }
 
 impl WeightLoadBackend for TinyCudaBackend {
-    type Allocation = TestWeightAllocation;
-    fn device_ordinal(&self) -> i32 {
-        self.device_ordinal
-    }
-
-    fn allocations(&self) -> &[WeightLoadSpan] {
-        &self.allocations
-    }
-
-    fn take_allocations(&mut self) -> Vec<Self::Allocation> {
-        self.state.take_calls.set(self.state.take_calls.get() + 1);
-        self.allocations
-            .drain(..)
-            .map(|span| TestWeightAllocation {
-                span: DeviceSpan::new(span.ptr.cast(), span.bytes / 2).unwrap(),
-                state: Some(self.state.clone()),
-            })
-            .collect()
-    }
+    type Buffer<D: DType> = TestWeightBuffer<D>;
+    type Stats = ();
 
     fn alloc_tensor(&mut self, desc: WeightTensorDesc<'_>) -> Result<WeightLoadSpan, Status> {
+        assert_eq!(desc.dtype, DynDType::BF16);
+        result_from_cuda(unsafe { ffi::cuda::cudaSetDevice(self.device_ordinal) })?;
         let mut ptr = ptr::null_mut();
         // This drop-only fixture never dereferences model weights, so it
         // allocates one BF16 element while retaining the logical span size.
@@ -387,8 +331,22 @@ impl WeightLoadBackend for TinyCudaBackend {
         Ok(())
     }
 
-    fn seal(&mut self, _stream: *mut c_void) -> Result<(), Status> {
-        Ok(())
+    fn finish(mut self, _stream: *mut c_void) -> Result<(Vec<WeightBuffer<Self>>, ()), Status> {
+        let mut buffers = Vec::new();
+        while let Some(&allocation) = self.allocations.last() {
+            if self.fail_after == Some(buffers.len()) {
+                return Err(Status::BackendError);
+            }
+            let span = DeviceSpan::new(allocation.ptr.cast(), BF16::len_of(allocation.bytes)?)?;
+            self.allocations.pop();
+            buffers.push(WeightBuffer::Bf16(TestWeightBuffer {
+                span,
+                state: Some(self.state.clone()),
+            }));
+            self.state.transferred.set(self.state.transferred.get() + 1);
+        }
+        buffers.reverse();
+        Ok((buffers, ()))
     }
 }
 
@@ -401,112 +359,6 @@ impl Drop for TinyCudaBackend {
                 ffi::cuda::cudaFree(allocation.ptr);
             }
         }
-    }
-}
-
-#[derive(Default)]
-struct AdversarialBackendState {
-    take_calls: std::cell::Cell<usize>,
-    drop_calls: std::cell::Cell<usize>,
-    remaining_at_drop: std::cell::Cell<usize>,
-}
-
-#[derive(Clone, Copy)]
-enum AdversarialTake {
-    KeepAllocations,
-    ClearAllocations,
-    RetainAllocation(WeightLoadSpan),
-}
-
-struct AdversarialBackend {
-    allocations: Vec<WeightLoadSpan>,
-    take: AdversarialTake,
-    state: std::rc::Rc<AdversarialBackendState>,
-}
-
-impl WeightLoadBackend for AdversarialBackend {
-    type Allocation = TestWeightAllocation;
-    fn device_ordinal(&self) -> i32 {
-        0
-    }
-
-    fn allocations(&self) -> &[WeightLoadSpan] {
-        &self.allocations
-    }
-
-    fn take_allocations(&mut self) -> Vec<Self::Allocation> {
-        self.state.take_calls.set(self.state.take_calls.get() + 1);
-        match self.take {
-            AdversarialTake::KeepAllocations => Vec::new(),
-            AdversarialTake::ClearAllocations => {
-                self.allocations.clear();
-                Vec::new()
-            }
-            AdversarialTake::RetainAllocation(allocation) => {
-                self.allocations.push(allocation);
-                Vec::new()
-            }
-        }
-    }
-
-    fn alloc_tensor(&mut self, _desc: WeightTensorDesc<'_>) -> Result<WeightLoadSpan, Status> {
-        Err(Status::InternalError)
-    }
-
-    fn read_exact(
-        &mut self,
-        _src: WeightFileRange<'_>,
-        _dst: &WeightLoadSpan,
-        _stream: *mut c_void,
-    ) -> Result<(), Status> {
-        Err(Status::InternalError)
-    }
-
-    fn zero_fill(&mut self, _dst: &WeightLoadSpan, _stream: *mut c_void) -> Result<(), Status> {
-        Err(Status::InternalError)
-    }
-
-    fn seal(&mut self, _stream: *mut c_void) -> Result<(), Status> {
-        Err(Status::InternalError)
-    }
-}
-
-impl Drop for AdversarialBackend {
-    fn drop(&mut self) {
-        self.state.drop_calls.set(self.state.drop_calls.get() + 1);
-        self.state.remaining_at_drop.set(self.allocations.len());
-    }
-}
-
-fn fake_span(address: usize, bytes: usize) -> WeightLoadSpan {
-    WeightLoadSpan {
-        ptr: address as ffi::ErasedDevicePtr,
-        bytes,
-        memory: WeightLoadMemory::Device,
-    }
-}
-
-fn adversarial_loaded_plan(
-    config: Qwen36TextConfig,
-    specs: Vec<WeightTensorSpec>,
-    spans: Vec<WeightLoadSpan>,
-    take: AdversarialTake,
-    state: std::rc::Rc<AdversarialBackendState>,
-) -> LoadedWeightPlan<AdversarialBackend> {
-    assert_eq!(specs.len(), spans.len());
-    let tensors = specs
-        .into_iter()
-        .zip(spans.iter().copied())
-        .map(|(spec, span)| LoadedWeightTensor { spec, span })
-        .collect();
-    LoadedWeightPlan {
-        config,
-        tensors,
-        backend: AdversarialBackend {
-            allocations: spans,
-            take,
-            state,
-        },
     }
 }
 
@@ -552,29 +404,69 @@ fn tensor_table_from_specs(specs: &[WeightTensorSpec]) -> BTreeMap<String, Tenso
 }
 
 #[test]
-fn parses_nested_qwen36_text_config_and_manifest() {
-    let config = qwen_text_config(40, 248_320);
-    assert_eq!(config.hidden_size, HIDDEN_SIZE);
-    assert_eq!(config.rope_theta, 10_000_000.0);
-
+fn manifest_preserves_checkpoint_names_shapes_and_synthetic_bias() {
+    let root = checkpoint::selected_config();
+    let config = Qwen36TextConfig::from_config_object(&root).unwrap();
     let specs = expected_qwen36_bf16_specs(&config).unwrap();
-    assert_eq!(specs.len(), 723);
-    assert!(specs.iter().any(|spec| {
-        spec.name == "model.language_model.layers.3.self_attn.q_norm.weight"
-            && spec.shape == vec![HEAD_DIM]
-    }));
-    assert!(specs.iter().any(|spec| {
-        spec.name == "model.language_model.layers.0.mlp.experts.gate_up_proj"
-            && spec.shape == vec![256, 1024, 2048]
-    }));
-    assert!(specs.iter().any(|spec| {
-        spec.name == "model.language_model.layers.0.linear_attn.conv1d.bias"
-            && spec.source == WeightTensorSource::ZeroFill
-    }));
-    assert!(
-        !specs
-            .iter()
-            .any(|spec| spec.name.ends_with("experts.gate_up_proj.weight"))
+    let by_name: BTreeMap<_, _> = specs
+        .iter()
+        .map(|spec| (spec.name.as_str(), spec))
+        .collect();
+    assert_eq!(by_name.len(), specs.len(), "duplicate checkpoint names");
+    let prefix = "model.language_model.layers.0";
+    let (name, shape) = if config.num_experts != 0 {
+        (
+            format!("{prefix}.mlp.experts.gate_up_proj"),
+            vec![
+                config.num_experts,
+                2 * config.moe_intermediate_size,
+                config.hidden_size,
+            ],
+        )
+    } else {
+        (
+            format!("{prefix}.mlp.gate_proj.weight"),
+            vec![config.intermediate_size, config.hidden_size],
+        )
+    };
+    assert_eq!(by_name[name.as_str()].shape, shape);
+    assert_eq!(
+        by_name["model.language_model.layers.3.self_attn.q_norm.weight"].shape,
+        vec![config.head_dim]
+    );
+    let bias = by_name[format!("{prefix}.linear_attn.conv1d.bias").as_str()];
+    assert_eq!(bias.source, WeightTensorSource::ZeroFill);
+    assert_eq!(bias.target.slot, "gdn.conv_bias.zero");
+    assert!(!by_name.contains_key(format!("{prefix}.mlp.experts.gate_up_proj.weight").as_str()));
+}
+
+#[test]
+fn loaded_factories_request_every_manifest_target_once() {
+    use crate::model::{QwenConfig, QwenWeights};
+    use std::{collections::BTreeSet, rc::Rc};
+
+    let text = Qwen36TextConfig::from_config_object(&checkpoint::selected_config()).unwrap();
+    let specs = expected_qwen36_bf16_specs(&text).unwrap();
+    let expected: BTreeSet<_> = specs
+        .iter()
+        .map(|spec| (spec.target.layer, spec.target.slot))
+        .collect();
+    assert_eq!(expected.len(), specs.len(), "duplicate manifest targets");
+    let mut seen = BTreeSet::new();
+    let _weights =
+        QwenWeights::from_bf16_allocations(QwenConfig::new(8).unwrap(), |layer, slot| {
+            assert!(
+                seen.insert((layer, slot)),
+                "duplicate requested target {layer:?}/{slot}"
+            );
+            Ok(Rc::new(
+                DeviceSpan::new(std::ptr::NonNull::<u16>::dangling().as_ptr().cast(), 0).unwrap(),
+            ))
+        })
+        .unwrap();
+    assert_eq!(
+        seen, expected,
+        "model factory and checkpoint manifest disagree"
     );
 }
 
@@ -629,7 +521,7 @@ fn validates_complete_tensor_table_and_rejects_unexpected_text_tensor() {
             shard: "model-00001-of-00001.safetensors".to_owned(),
             absolute_offset: 0,
             meta: TensorMeta {
-                dtype: WeightTensorDType::F32,
+                dtype: DynDType::F32,
                 shape: vec![1],
                 data_offsets: (0, 4),
             },
@@ -653,19 +545,34 @@ fn rejects_missing_and_wrong_shape_required_tensor() {
         .get_mut("model.language_model.layers.0.linear_attn.A_log")
         .unwrap()
         .meta
-        .shape = vec![31];
+        .shape[0] += 1;
     let err = validate_qwen36_bf16_tensor_table(&table, &config).unwrap_err();
     assert!(err.to_string().contains("shape"));
 }
 
 #[derive(Default)]
-struct RecordingBackend {
-    next_addr: usize,
-    allocations: Vec<WeightLoadSpan>,
+struct RecordingStats {
     allocs: Vec<(String, DynDType, Vec<u32>, usize)>,
     reads: Vec<(u64, usize)>,
     zeros: Vec<usize>,
-    sealed: bool,
+}
+
+#[derive(Clone, Copy, Default)]
+enum FinishFault {
+    #[default]
+    None,
+    Reorder,
+    Missing,
+    WrongDtype,
+    WrongSize,
+}
+
+#[derive(Default)]
+struct RecordingBackend {
+    next_addr: usize,
+    allocations: Vec<(DynDType, WeightLoadSpan)>,
+    stats: RecordingStats,
+    fault: FinishFault,
     dropped: Option<std::rc::Rc<std::cell::Cell<bool>>>,
 }
 
@@ -678,28 +585,12 @@ impl Drop for RecordingBackend {
 }
 
 impl WeightLoadBackend for RecordingBackend {
-    type Allocation = TestWeightAllocation;
-    fn device_ordinal(&self) -> i32 {
-        0
-    }
-
-    fn allocations(&self) -> &[WeightLoadSpan] {
-        &self.allocations
-    }
-
-    fn take_allocations(&mut self) -> Vec<Self::Allocation> {
-        self.allocations
-            .drain(..)
-            .map(|span| TestWeightAllocation {
-                span: DeviceSpan::new(span.ptr.cast(), span.bytes / 2).unwrap(),
-                state: None,
-            })
-            .collect()
-    }
+    type Buffer<D: DType> = TestWeightBuffer<D>;
+    type Stats = RecordingStats;
 
     fn alloc_tensor(&mut self, desc: WeightTensorDesc<'_>) -> Result<WeightLoadSpan, Status> {
         self.next_addr += 0x1000;
-        self.allocs.push((
+        self.stats.allocs.push((
             desc.name.to_owned(),
             desc.dtype,
             desc.shape.to_vec(),
@@ -710,7 +601,7 @@ impl WeightLoadBackend for RecordingBackend {
             bytes: desc.bytes,
             memory: WeightLoadMemory::ManagedUma,
         };
-        self.allocations.push(span);
+        self.allocations.push((desc.dtype, span));
         Ok(span)
     }
 
@@ -720,18 +611,49 @@ impl WeightLoadBackend for RecordingBackend {
         _dst: &WeightLoadSpan,
         _stream: *mut c_void,
     ) -> Result<(), Status> {
-        self.reads.push((src.offset, src.bytes));
+        self.stats.reads.push((src.offset, src.bytes));
         Ok(())
     }
 
     fn zero_fill(&mut self, dst: &WeightLoadSpan, _stream: *mut c_void) -> Result<(), Status> {
-        self.zeros.push(dst.bytes);
+        self.stats.zeros.push(dst.bytes);
         Ok(())
     }
 
-    fn seal(&mut self, _stream: *mut c_void) -> Result<(), Status> {
-        self.sealed = true;
-        Ok(())
+    fn finish(
+        mut self,
+        _stream: *mut c_void,
+    ) -> Result<(Vec<WeightBuffer<Self>>, Self::Stats), Status> {
+        fn buffer<D: DType>(span: WeightLoadSpan) -> Result<TestWeightBuffer<D>, Status> {
+            Ok(TestWeightBuffer {
+                span: DeviceSpan::new(span.ptr.cast(), D::len_of(span.bytes)?)?,
+                state: None,
+            })
+        }
+        let mut buffers = Vec::new();
+        for (mut dtype, mut span) in self.allocations.drain(..) {
+            if matches!(self.fault, FinishFault::WrongDtype) {
+                dtype = DynDType::U8;
+            }
+            if matches!(self.fault, FinishFault::WrongSize) {
+                span.bytes += 4;
+            }
+            buffers.push(match dtype {
+                DynDType::BF16 => WeightBuffer::Bf16(buffer::<BF16>(span)?),
+                DynDType::F32 => WeightBuffer::F32(buffer::<F32>(span)?),
+                DynDType::FP8E4M3 => WeightBuffer::Fp8E4m3(buffer::<Fp8E4M3>(span)?),
+                DynDType::U8 => WeightBuffer::U8(buffer::<U8>(span)?),
+                _ => return Err(Status::InvalidArgument),
+            });
+        }
+        match self.fault {
+            FinishFault::Reorder => buffers.reverse(),
+            FinishFault::Missing => {
+                buffers.pop();
+            }
+            _ => (),
+        }
+        Ok((buffers, std::mem::take(&mut self.stats)))
     }
 }
 
@@ -744,12 +666,12 @@ fn executes_validated_plan_against_backend() {
     std::fs::write(&shard, [0u8; 8]).unwrap();
 
     let plan = QwenBf16LoadPlan {
-        config: qwen_text_config(4, 16),
+        config: tensor::selected_text_config(),
         entries: vec![
             QwenLoadPlanEntry {
                 spec: WeightTensorSpec {
                     name: "a".to_owned(),
-                    dtype: WeightTensorDType::Bf16,
+                    dtype: DynDType::BF16,
                     shape: vec![2],
                     source: WeightTensorSource::Safetensors,
                     target: WeightTensorTarget {
@@ -758,7 +680,7 @@ fn executes_validated_plan_against_backend() {
                     },
                 },
                 source: QwenLoadSource::FileRange {
-                    shard_path: shard,
+                    shard_path: shard.clone(),
                     absolute_offset: 8,
                     bytes: 4,
                 },
@@ -766,7 +688,7 @@ fn executes_validated_plan_against_backend() {
             QwenLoadPlanEntry {
                 spec: WeightTensorSpec {
                     name: "b".to_owned(),
-                    dtype: WeightTensorDType::Bf16,
+                    dtype: DynDType::BF16,
                     shape: vec![4],
                     source: WeightTensorSource::ZeroFill,
                     target: WeightTensorTarget {
@@ -776,6 +698,23 @@ fn executes_validated_plan_against_backend() {
                 },
                 source: QwenLoadSource::ZeroFill { bytes: 8 },
             },
+            QwenLoadPlanEntry {
+                spec: WeightTensorSpec {
+                    name: "c".to_owned(),
+                    dtype: DynDType::F32,
+                    shape: vec![1],
+                    source: WeightTensorSource::Safetensors,
+                    target: WeightTensorTarget {
+                        layer: None,
+                        slot: "c",
+                    },
+                },
+                source: QwenLoadSource::FileRange {
+                    shard_path: shard,
+                    absolute_offset: 0,
+                    bytes: 4,
+                },
+            },
         ],
     };
     let dropped = std::rc::Rc::new(std::cell::Cell::new(false));
@@ -783,12 +722,31 @@ fn executes_validated_plan_against_backend() {
     backend.dropped = Some(dropped.clone());
     let loaded = execute_qwen36_bf16_load_plan(&plan, backend, ptr::null_mut()).unwrap();
 
-    assert_eq!(loaded.tensors.len(), 2);
-    assert_eq!(loaded.backend.allocs.len(), 2);
-    assert_eq!(loaded.backend.reads, vec![(8, 4)]);
-    assert_eq!(loaded.backend.zeros, vec![8]);
-    assert!(loaded.backend.sealed);
-    assert!(!dropped.get());
+    assert_eq!(loaded.tensors.len(), 3);
+    assert_eq!(loaded.stats.allocs.len(), 3);
+    assert_eq!(loaded.stats.reads, vec![(0, 4), (8, 4)]);
+    assert_eq!(loaded.stats.zeros, vec![8]);
+    assert!(dropped.get());
+    assert_eq!(
+        loaded
+            .tensors
+            .iter()
+            .map(|tensor| tensor.spec.name.as_str())
+            .collect::<Vec<_>>(),
+        ["a", "b", "c"]
+    );
+    let WeightBuffer::Bf16(a) = &loaded.tensors[0].buffer else {
+        panic!("expected BF16")
+    };
+    let WeightBuffer::Bf16(b) = &loaded.tensors[1].buffer else {
+        panic!("expected BF16")
+    };
+    let WeightBuffer::F32(c) = &loaded.tensors[2].buffer else {
+        panic!("expected F32")
+    };
+    assert_eq!(a.erase() as usize, 0x1000);
+    assert_eq!(b.erase() as usize, 0x2000);
+    assert_eq!(c.erase() as usize, 0x3000);
     drop(loaded);
     assert!(dropped.get());
 
@@ -823,8 +781,7 @@ fn loaded_plan_transfers_allocations_into_qwen_weights_once() {
     let loaded = execute_qwen36_bf16_load_plan(&plan, backend, ptr::null_mut()).unwrap();
     let (_, weights) = loaded.into_fixture_model(8).unwrap();
 
-    assert_eq!(count, 75);
-    assert_eq!(state.take_calls.get(), 1);
+    assert_eq!(state.transferred.get(), count);
     assert_eq!(state.drop_calls.get(), 1);
     assert_eq!(state.remaining_at_drop.get(), 0);
     assert_eq!(state.allocation_drops.get(), 0);
@@ -832,150 +789,87 @@ fn loaded_plan_transfers_allocations_into_qwen_weights_once() {
     assert_eq!(state.allocation_drops.get(), count);
 }
 
+fn small_zero_plan() -> QwenBf16LoadPlan {
+    QwenBf16LoadPlan {
+        config: tensor::selected_text_config(),
+        entries: ["a", "b"]
+            .into_iter()
+            .map(|slot| QwenLoadPlanEntry {
+                spec: WeightTensorSpec {
+                    name: slot.to_owned(),
+                    dtype: DynDType::BF16,
+                    shape: vec![2],
+                    source: WeightTensorSource::ZeroFill,
+                    target: WeightTensorTarget { layer: None, slot },
+                },
+                source: QwenLoadSource::ZeroFill { bytes: 4 },
+            })
+            .collect(),
+    }
+}
+
 #[test]
-fn materialization_rejects_duplicate_targets_before_transfer() {
-    let text = qwen_text_config(4, 32);
-    let mut specs = expected_qwen36_bf16_specs(&text)
-        .unwrap()
-        .into_iter()
-        .take(2)
-        .collect::<Vec<_>>();
-    specs[1].target = specs[0].target.clone();
-    let spans = specs
-        .iter()
-        .enumerate()
-        .map(|(idx, spec)| fake_span(0x1000 + idx * 0x1000, spec.byte_len().unwrap()))
-        .collect();
-    let state = std::rc::Rc::new(AdversarialBackendState::default());
-    let loaded = adversarial_loaded_plan(
-        text,
-        specs,
-        spans,
-        AdversarialTake::KeepAllocations,
-        state.clone(),
-    );
-
-    let err = loaded
-        .into_fixture_model(8)
+fn load_rejects_duplicate_targets_before_allocation() {
+    let mut plan = small_zero_plan();
+    plan.entries[1].spec.target = plan.entries[0].spec.target.clone();
+    // An invalid device makes accidental allocation fail with a different error.
+    let backend = TinyCudaBackend::new(-1, Default::default());
+    let err = execute_qwen36_bf16_load_plan(&plan, backend, ptr::null_mut())
         .err()
-        .expect("duplicate target must fail materialization");
-
+        .unwrap();
     assert!(err.to_string().contains("duplicate loaded target"));
-    assert_eq!(state.take_calls.get(), 0);
-    assert_eq!(state.drop_calls.get(), 1);
-    assert_eq!(state.remaining_at_drop.get(), 2);
 }
 
 #[test]
-fn materialization_rejects_duplicate_pointers_before_transfer() {
-    let text = qwen_text_config(4, 32);
-    let specs = expected_qwen36_bf16_specs(&text)
-        .unwrap()
-        .into_iter()
-        .take(2)
-        .collect::<Vec<_>>();
-    let spans = specs
-        .iter()
-        .map(|spec| fake_span(0x1000, spec.byte_len().unwrap()))
-        .collect();
-    let state = std::rc::Rc::new(AdversarialBackendState::default());
-    let loaded = adversarial_loaded_plan(
-        text,
-        specs,
-        spans,
-        AdversarialTake::KeepAllocations,
-        state.clone(),
-    );
-
-    let err = loaded
-        .into_fixture_model(8)
-        .err()
-        .expect("duplicate pointer must fail materialization");
-
-    assert!(
-        err.to_string()
-            .contains("duplicate loaded allocation pointer")
-    );
-    assert_eq!(state.take_calls.get(), 0);
-    assert_eq!(state.drop_calls.get(), 1);
-    assert_eq!(state.remaining_at_drop.get(), 2);
+fn load_rejects_mismatched_finished_buffers() {
+    for fault in [
+        FinishFault::Reorder,
+        FinishFault::Missing,
+        FinishFault::WrongDtype,
+        FinishFault::WrongSize,
+    ] {
+        let dropped = std::rc::Rc::new(std::cell::Cell::new(false));
+        let mut backend = RecordingBackend::default();
+        backend.fault = fault;
+        backend.dropped = Some(dropped.clone());
+        let err = execute_qwen36_bf16_load_plan(&small_zero_plan(), backend, ptr::null_mut())
+            .err()
+            .unwrap();
+        assert!(matches!(err, WeightLoadError::TensorTable(_)));
+        assert!(dropped.get());
+    }
 }
 
 #[test]
-fn materialization_rejects_changed_taken_allocations_before_adoption() {
-    let text = qwen_text_config(4, 32);
-    let specs = expected_qwen36_bf16_specs(&text)
-        .unwrap()
-        .into_iter()
-        .take(1)
-        .collect::<Vec<_>>();
-    let spans = vec![fake_span(0x1000, specs[0].byte_len().unwrap())];
-    let state = std::rc::Rc::new(AdversarialBackendState::default());
-    let loaded = adversarial_loaded_plan(
-        text,
-        specs,
-        spans,
-        AdversarialTake::ClearAllocations,
-        state.clone(),
-    );
-
-    let err = loaded
-        .into_fixture_model(8)
-        .err()
-        .expect("changed allocation list must fail materialization");
-
-    assert!(
-        err.to_string()
-            .contains("returned allocation list does not match validated allocations")
-    );
-    assert_eq!(state.take_calls.get(), 1);
-    assert_eq!(state.drop_calls.get(), 1);
-    assert_eq!(state.remaining_at_drop.get(), 0);
-}
-
-#[test]
-fn materialization_rejects_backend_that_retains_allocations_after_take() {
-    let text = qwen_text_config(4, 32);
-    let state = std::rc::Rc::new(AdversarialBackendState::default());
-    let loaded = adversarial_loaded_plan(
-        text,
-        Vec::new(),
-        Vec::new(),
-        AdversarialTake::RetainAllocation(fake_span(0x1000, 2)),
-        state.clone(),
-    );
-
-    let err = loaded
-        .into_fixture_model(8)
-        .err()
-        .expect("retained allocation list must fail materialization");
-
-    assert!(
-        err.to_string()
-            .contains("backend retained allocations after transfer")
-    );
-    assert_eq!(state.take_calls.get(), 1);
+fn failed_finish_drops_transferred_and_remaining_allocations() {
+    if !cuda_device_available_for_loader_test() {
+        return;
+    }
+    let state = std::rc::Rc::new(TinyBackendState::default());
+    let mut backend = TinyCudaBackend::new(cuda_device_from_env(), state.clone());
+    backend.fail_after = Some(1);
+    assert!(execute_qwen36_bf16_load_plan(&small_zero_plan(), backend, ptr::null_mut()).is_err());
+    assert_eq!(state.transferred.get(), 1);
+    assert_eq!(state.allocation_drops.get(), 1);
     assert_eq!(state.drop_calls.get(), 1);
     assert_eq!(state.remaining_at_drop.get(), 1);
 }
 
 #[test]
-fn validates_real_qwen36_bf16_manifest_when_available() {
-    let model_dir = real_qwen36_model_dir();
+fn validates_selected_checkpoint_manifest_when_available() {
+    let model_dir = real_selected_model_dir();
     if !model_dir.is_dir() {
         eprintln!(
-            "skipping real Qwen3.6 BF16 manifest smoke; {} does not exist",
+            "skipping selected BF16 manifest smoke; {} does not exist",
             model_dir.display()
         );
         return;
     }
 
     let started = Instant::now();
-    let validated =
-        validate_qwen36_bf16_dir(&model_dir, DEFAULT_MAX_JSON_BYTES, DEFAULT_MAX_HEADER_BYTES)
-            .unwrap();
+    // This validates the actual checkpoint's config, complete index, tensor
+    // shapes/dtypes and shard ranges against the selected build.
     let plan = QwenBf16LoadPlan::read(&model_dir).unwrap();
-    assert_eq!(validated.tensor_count(), plan.tensor_count());
     let file_bytes = plan.file_bytes().unwrap();
     let zero_fill_bytes = plan.zero_fill_bytes().unwrap();
     println!(
@@ -986,11 +880,6 @@ fn validates_real_qwen36_bf16_manifest_when_available() {
         file_bytes as f64 / (1u64 << 30) as f64,
         zero_fill_bytes as f64 / (1u64 << 20) as f64
     );
-
-    assert_eq!(plan.config.num_hidden_layers, 40);
-    assert_eq!(plan.tensor_count(), 723);
-    assert_eq!(zero_fill_bytes, 30 * PACKED_QKV_CHANNELS as usize * 2);
-    assert!(file_bytes > 60usize << 30);
 }
 
 #[test]
@@ -1101,7 +990,7 @@ fn bench_real_qwen36_bf16_managed_uma_load() {
         (backend_setup + elapsed).as_secs_f64()
     );
     let loaded_tensors = loaded.tensors.len();
-    let stats = loaded.backend.stats();
+    let stats = loaded.stats;
     let read_gib = stats.read_bytes as f64 / (1u64 << 30) as f64;
     println!(
         "loaded {} tensors: {:.3} GiB read, {:.3} MiB zero-fill, {:.3}s, {:.3} GiB/s",
@@ -1154,7 +1043,7 @@ fn bench_real_qwen36_bf16_pinned_upload_load() {
         (backend_setup + elapsed).as_secs_f64()
     );
     let loaded_tensors = loaded.tensors.len();
-    let stats = loaded.backend.stats();
+    let stats = loaded.stats;
     let read_gib = stats.read_bytes as f64 / (1u64 << 30) as f64;
     println!(
         "loaded {} tensors: {:.3} GiB read, {:.3} MiB zero-fill, {:.3}s, {:.3} GiB/s",

@@ -1,6 +1,7 @@
 use crate::{
     constants::{attention, model},
-    engine::{DynDType, EngineConfig, KvLayout, Status},
+    dtype::DynDType,
+    engine::{EngineConfig, KvLayout, Status},
 };
 
 use super::weights::MoeShape;

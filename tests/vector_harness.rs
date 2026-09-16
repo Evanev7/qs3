@@ -1814,6 +1814,9 @@ fn qwen36_cuda_gdn_causal_conv_width4_matches_vector() {
         return;
     };
 
+    let (_, key_heads, key_width) = shape3(artifact.tensor("q_raw").unwrap(), "q_raw");
+    let (_, value_heads, value_width) = shape3(artifact.tensor("v_raw").unwrap(), "v_raw");
+
     let x_raw = artifact.tensor("mixed_qkv").unwrap();
     let weight_raw = artifact.tensor("conv_weight").unwrap();
     let case_lengths_raw = artifact.tensor("case_lengths").unwrap();
@@ -1829,7 +1832,10 @@ fn qwen36_cuda_gdn_causal_conv_width4_matches_vector() {
     let expected_state = expected_state_raw.as_bf16_words().unwrap();
 
     let (tokens, packed_dim) = shape2(x_raw, "mixed_qkv");
-    assert_eq!(packed_dim, 8192);
+    assert_eq!(
+        packed_dim,
+        2 * key_heads * key_width + value_heads * value_width
+    );
     assert_eq!(weight_raw.spec.shape, [packed_dim, 4]);
     assert_eq!(expected_out_raw.spec.shape, x_raw.spec.shape);
     let (state_pool, state_packed_dim, state_width) =
@@ -1895,6 +1901,9 @@ fn qwen36_cuda_gdn_post_conv_raw_split_and_gates_match_vector() {
         return;
     };
 
+    let (_, key_heads, key_width) = shape3(artifact.tensor("q_raw").unwrap(), "q_raw");
+    let (_, value_heads, value_width) = shape3(artifact.tensor("v_raw").unwrap(), "v_raw");
+
     let conv_out_raw = artifact.tensor("conv_output_bf16").unwrap();
     let a_raw = artifact.tensor("a").unwrap();
     let b_raw = artifact.tensor("b").unwrap();
@@ -1911,14 +1920,17 @@ fn qwen36_cuda_gdn_post_conv_raw_split_and_gates_match_vector() {
     let expected_beta = artifact.tensor("beta").unwrap().as_f32_vec().unwrap();
 
     let (tokens, packed_dim) = shape2(conv_out_raw, "conv_output_bf16");
-    assert_eq!(packed_dim, 8192);
-    assert_eq!(a_raw.spec.shape, [tokens, 32]);
-    assert_eq!(b_raw.spec.shape, [tokens, 32]);
-    assert_eq!(a_log_raw.spec.shape, [32]);
-    assert_eq!(dt_bias_raw.spec.shape, [32]);
-    assert_eq!(shape3(q_raw, "q_raw"), (tokens, 16, 128));
-    assert_eq!(shape3(k_raw, "k_raw"), (tokens, 16, 128));
-    assert_eq!(shape3(v_raw, "v_raw"), (tokens, 32, 128));
+    assert_eq!(
+        packed_dim,
+        2 * key_heads * key_width + value_heads * value_width
+    );
+    assert_eq!(a_raw.spec.shape, [tokens, value_heads]);
+    assert_eq!(b_raw.spec.shape, [tokens, value_heads]);
+    assert_eq!(a_log_raw.spec.shape, [value_heads]);
+    assert_eq!(dt_bias_raw.spec.shape, [value_heads]);
+    assert_eq!(shape3(q_raw, "q_raw"), (tokens, key_heads, key_width));
+    assert_eq!(shape3(k_raw, "k_raw"), (tokens, key_heads, key_width));
+    assert_eq!(shape3(v_raw, "v_raw"), (tokens, value_heads, value_width));
 
     set_cuda_test_device();
     let conv_out = DeviceTensor::from_bf16(conv_out_raw).unwrap();
@@ -1929,8 +1941,8 @@ fn qwen36_cuda_gdn_post_conv_raw_split_and_gates_match_vector() {
     let q = DeviceTensor::zeroed_bf16(q_raw.spec.shape.clone()).unwrap();
     let k = DeviceTensor::zeroed_bf16(k_raw.spec.shape.clone()).unwrap();
     let v = DeviceTensor::zeroed_bf16(v_raw.spec.shape.clone()).unwrap();
-    let g = DeviceTensor::zeroed_f32(vec![tokens, 32]).unwrap();
-    let beta = DeviceTensor::zeroed_f32(vec![tokens, 32]).unwrap();
+    let g = DeviceTensor::zeroed_f32(vec![tokens, value_heads]).unwrap();
+    let beta = DeviceTensor::zeroed_f32(vec![tokens, value_heads]).unwrap();
 
     let mut desc = QscuQwen36GdnPostConvPrepareDesc {
         conv_out: conv_out.tensor2().unwrap(),
@@ -1998,6 +2010,9 @@ fn qwen36_cuda_gdn_post_conv_l2norm_matches_vector() {
         return;
     };
 
+    let (_, key_heads, key_width) = shape3(artifact.tensor("q_raw").unwrap(), "q_raw");
+    let (_, value_heads, value_width) = shape3(artifact.tensor("v_raw").unwrap(), "v_raw");
+
     let conv_out_raw = artifact.tensor("conv_output_bf16").unwrap();
     let a_raw = artifact.tensor("a").unwrap();
     let b_raw = artifact.tensor("b").unwrap();
@@ -2021,10 +2036,13 @@ fn qwen36_cuda_gdn_post_conv_l2norm_matches_vector() {
     let expected_v = v_raw.as_bf16_words().unwrap();
 
     let (tokens, packed_dim) = shape2(conv_out_raw, "conv_output_bf16");
-    assert_eq!(packed_dim, 8192);
-    assert_eq!(q_l2norm_raw.spec.shape, [tokens, 16, 128]);
-    assert_eq!(k_l2norm_raw.spec.shape, [tokens, 16, 128]);
-    assert_eq!(v_raw.spec.shape, [tokens, 32, 128]);
+    assert_eq!(
+        packed_dim,
+        2 * key_heads * key_width + value_heads * value_width
+    );
+    assert_eq!(q_l2norm_raw.spec.shape, [tokens, key_heads, key_width]);
+    assert_eq!(k_l2norm_raw.spec.shape, [tokens, key_heads, key_width]);
+    assert_eq!(v_raw.spec.shape, [tokens, value_heads, value_width]);
 
     set_cuda_test_device();
     let conv_out = DeviceTensor::from_bf16(conv_out_raw).unwrap();
@@ -2099,8 +2117,7 @@ fn qwen36_cuda_gdn_gated_rmsnorm_silu_matches_vector() {
         .as_f32_vec()
         .unwrap();
 
-    let (tokens, num_v_heads, value_dim) = shape3(x_raw, "v_raw");
-    assert_eq!((num_v_heads, value_dim), (32, 128));
+    let (tokens, _num_v_heads, value_dim) = shape3(x_raw, "v_raw");
     assert_eq!(gate_raw.spec.shape, x_raw.spec.shape);
     assert_eq!(weight_raw.spec.shape, [value_dim]);
     assert_eq!(expected_out_raw.spec.shape, x_raw.spec.shape);
@@ -2146,6 +2163,9 @@ fn qscu_gdn_prefill_recurrence_matches_vector() {
         return;
     };
 
+    let (_, key_heads, key_width) = shape3(artifact.tensor("q_raw").unwrap(), "q_raw");
+    let (_, value_heads, value_width) = shape3(artifact.tensor("v_raw").unwrap(), "v_raw");
+
     let q_raw = artifact.tensor("q_raw").unwrap();
     let k_raw = artifact.tensor("k_raw").unwrap();
     let v_raw = artifact.tensor("v_raw").unwrap();
@@ -2170,19 +2190,21 @@ fn qscu_gdn_prefill_recurrence_matches_vector() {
         .unwrap();
 
     let (tokens, q_heads, key_dim) = shape3(q_raw, "q_raw");
-    assert_eq!((q_heads, key_dim), (16, 128));
-    assert_eq!(shape3(k_raw, "k_raw"), (tokens, 16, key_dim));
-    assert_eq!(shape3(v_raw, "v_raw"), (tokens, 32, 128));
-    assert_eq!(a_raw.spec.shape, [tokens, 32]);
-    assert_eq!(b_raw.spec.shape, [tokens, 32]);
-    assert_eq!(a_log_raw.spec.shape, [32]);
-    assert_eq!(dt_bias_raw.spec.shape, [32]);
-    assert_eq!(expected_out_raw.spec.shape, [tokens, 32, 128]);
+    assert_eq!(shape3(k_raw, "k_raw"), (tokens, key_heads, key_dim));
+    assert_eq!(shape3(v_raw, "v_raw"), (tokens, value_heads, value_width));
+    assert_eq!(a_raw.spec.shape, [tokens, value_heads]);
+    assert_eq!(b_raw.spec.shape, [tokens, value_heads]);
+    assert_eq!(a_log_raw.spec.shape, [value_heads]);
+    assert_eq!(dt_bias_raw.spec.shape, [value_heads]);
+    assert_eq!(
+        expected_out_raw.spec.shape,
+        [tokens, value_heads, value_width]
+    );
     let (case_count, state_heads, state_value_dim, state_key_dim) =
         shape4(expected_state_raw, "recurrent_final_state_bf16");
     assert_eq!(
         (state_heads, state_value_dim, state_key_dim),
-        (32, 128, 128)
+        (value_heads, value_width, key_width)
     );
     assert_eq!(case_offsets_raw.spec.shape, [case_count + 1]);
 
@@ -2220,10 +2242,10 @@ fn qscu_gdn_prefill_recurrence_matches_vector() {
         batch_size: u32::try_from(case_count).unwrap(),
         total_tokens: u32::try_from(tokens).unwrap(),
         num_q_heads: u32::try_from(q_heads).unwrap(),
-        num_k_heads: 16,
-        num_v_heads: 32,
+        num_k_heads: key_heads as u32,
+        num_v_heads: value_heads as u32,
         key_dim: u32::try_from(key_dim).unwrap(),
-        value_dim: 128,
+        value_dim: value_width as u32,
         state_layout: QSCU_GDN_STATE_LAYOUT_VK,
         scale: 1.0 / (key_dim as f32).sqrt(),
         use_qk_l2norm: 1,
@@ -2262,6 +2284,9 @@ fn qscu_gdn_decode_continuation_matches_vector() {
     let Some((_manifest, artifact)) = load_gdn_post_conv_prep_vector() else {
         return;
     };
+
+    let (_, key_heads, key_width) = shape3(artifact.tensor("q_raw").unwrap(), "q_raw");
+    let (_, value_heads, value_width) = shape3(artifact.tensor("v_raw").unwrap(), "v_raw");
 
     let seed_state_raw = artifact.tensor("recurrent_final_state_bf16").unwrap();
     let seed_state_bf16 = seed_state_raw.as_bf16_words().unwrap();
@@ -2307,34 +2332,55 @@ fn qscu_gdn_decode_continuation_matches_vector() {
         .unwrap();
 
     let (case_count, q_heads, key_dim) = shape3(q1_raw, "decode_step1_q_raw");
-    assert_eq!((q_heads, key_dim), (16, 128));
-    assert_eq!(shape3(k1_raw, "decode_step1_k_raw"), (case_count, 16, 128));
-    assert_eq!(shape3(v1_raw, "decode_step1_v_raw"), (case_count, 32, 128));
-    assert_eq!(a1_raw.spec.shape, [case_count, 32]);
-    assert_eq!(b1_raw.spec.shape, [case_count, 32]);
-    assert_eq!(shape3(q2_raw, "decode_step2_q_raw"), (case_count, 16, 128));
-    assert_eq!(shape3(k2_raw, "decode_step2_k_raw"), (case_count, 16, 128));
-    assert_eq!(shape3(v2_raw, "decode_step2_v_raw"), (case_count, 32, 128));
-    assert_eq!(a2_raw.spec.shape, [case_count, 32]);
-    assert_eq!(b2_raw.spec.shape, [case_count, 32]);
-    assert_eq!(a_log_raw.spec.shape, [32]);
-    assert_eq!(dt_bias_raw.spec.shape, [32]);
-    assert_eq!(expected_step1_out_raw.spec.shape, [case_count, 32, 128]);
-    assert_eq!(expected_step2_out_raw.spec.shape, [case_count, 32, 128]);
+    assert_eq!((q_heads, key_dim), (key_heads, key_width));
+    assert_eq!(
+        shape3(k1_raw, "decode_step1_k_raw"),
+        (case_count, key_heads, key_width)
+    );
+    assert_eq!(
+        shape3(v1_raw, "decode_step1_v_raw"),
+        (case_count, value_heads, value_width)
+    );
+    assert_eq!(a1_raw.spec.shape, [case_count, value_heads]);
+    assert_eq!(b1_raw.spec.shape, [case_count, value_heads]);
+    assert_eq!(
+        shape3(q2_raw, "decode_step2_q_raw"),
+        (case_count, key_heads, key_width)
+    );
+    assert_eq!(
+        shape3(k2_raw, "decode_step2_k_raw"),
+        (case_count, key_heads, key_width)
+    );
+    assert_eq!(
+        shape3(v2_raw, "decode_step2_v_raw"),
+        (case_count, value_heads, value_width)
+    );
+    assert_eq!(a2_raw.spec.shape, [case_count, value_heads]);
+    assert_eq!(b2_raw.spec.shape, [case_count, value_heads]);
+    assert_eq!(a_log_raw.spec.shape, [value_heads]);
+    assert_eq!(dt_bias_raw.spec.shape, [value_heads]);
+    assert_eq!(
+        expected_step1_out_raw.spec.shape,
+        [case_count, value_heads, value_width]
+    );
+    assert_eq!(
+        expected_step2_out_raw.spec.shape,
+        [case_count, value_heads, value_width]
+    );
     let (seed_cases, state_heads, state_value_dim, state_key_dim) =
         shape4(seed_state_raw, "recurrent_final_state_bf16");
     assert_eq!(seed_cases, case_count);
     assert_eq!(
         (state_heads, state_value_dim, state_key_dim),
-        (32, 128, 128)
+        (value_heads, value_width, key_width)
     );
     assert_eq!(
         shape4(expected_step1_state_raw, "decode_step1_final_state_bf16"),
-        (case_count, 32, 128, 128)
+        (case_count, value_heads, value_width, key_width)
     );
     assert_eq!(
         shape4(expected_step2_state_raw, "decode_step2_final_state_bf16"),
-        (case_count, 32, 128, 128)
+        (case_count, value_heads, value_width, key_width)
     );
 
     let state_size = state_heads * state_value_dim * state_key_dim;
@@ -2401,10 +2447,10 @@ fn qscu_gdn_decode_continuation_matches_vector() {
         out: out1.tensor3().unwrap(),
         num_tokens: u32::try_from(case_count).unwrap(),
         num_q_heads: u32::try_from(q_heads).unwrap(),
-        num_k_heads: 16,
-        num_v_heads: 32,
+        num_k_heads: key_heads as u32,
+        num_v_heads: value_heads as u32,
         key_dim: u32::try_from(key_dim).unwrap(),
-        value_dim: 128,
+        value_dim: value_width as u32,
         state_layout: QSCU_GDN_STATE_LAYOUT_VK,
         scale: 1.0 / (key_dim as f32).sqrt(),
         use_qk_l2norm: 1,
@@ -2453,10 +2499,10 @@ fn qscu_gdn_decode_continuation_matches_vector() {
         out: out2.tensor3().unwrap(),
         num_tokens: u32::try_from(case_count).unwrap(),
         num_q_heads: u32::try_from(q_heads).unwrap(),
-        num_k_heads: 16,
-        num_v_heads: 32,
+        num_k_heads: key_heads as u32,
+        num_v_heads: value_heads as u32,
         key_dim: u32::try_from(key_dim).unwrap(),
-        value_dim: 128,
+        value_dim: value_width as u32,
         state_layout: QSCU_GDN_STATE_LAYOUT_VK,
         scale: 1.0 / (key_dim as f32).sqrt(),
         use_qk_l2norm: 1,
@@ -2497,6 +2543,9 @@ fn qwen36_cuda_gdn_integrated_prefill_decode_state_evolution_matches_vector() {
     let Some((_manifest, artifact)) = load_gdn_post_conv_prep_vector() else {
         return;
     };
+
+    let (_, key_heads, key_width) = shape3(artifact.tensor("q_raw").unwrap(), "q_raw");
+    let (_, value_heads, value_width) = shape3(artifact.tensor("v_raw").unwrap(), "v_raw");
 
     let mixed_qkv_raw = artifact.tensor("mixed_qkv").unwrap();
     let conv_weight_raw = artifact.tensor("conv_weight").unwrap();
@@ -2593,70 +2642,76 @@ fn qwen36_cuda_gdn_integrated_prefill_decode_state_evolution_matches_vector() {
         .unwrap();
 
     let (tokens, packed_dim) = shape2(mixed_qkv_raw, "mixed_qkv");
-    assert_eq!(packed_dim, 8192);
+    assert_eq!(
+        packed_dim,
+        2 * key_heads * key_width + value_heads * value_width
+    );
     let (case_count, conv_state_packed_dim, conv_state_width) =
         shape3(expected_prefill_conv_state_raw, "conv_final_state");
     assert_eq!((conv_state_packed_dim, conv_state_width), (packed_dim, 3));
     assert_eq!(conv_weight_raw.spec.shape, [packed_dim, 4]);
     assert_eq!(case_offsets_raw.spec.shape, [case_count + 1]);
-    assert_eq!(a_raw.spec.shape, [tokens, 32]);
-    assert_eq!(b_raw.spec.shape, [tokens, 32]);
-    assert_eq!(a_log_raw.spec.shape, [32]);
-    assert_eq!(dt_bias_raw.spec.shape, [32]);
-    assert_eq!(shape3(q_raw, "q_raw"), (tokens, 16, 128));
-    assert_eq!(shape3(k_raw, "k_raw"), (tokens, 16, 128));
-    assert_eq!(shape3(v_raw, "v_raw"), (tokens, 32, 128));
+    assert_eq!(a_raw.spec.shape, [tokens, value_heads]);
+    assert_eq!(b_raw.spec.shape, [tokens, value_heads]);
+    assert_eq!(a_log_raw.spec.shape, [value_heads]);
+    assert_eq!(dt_bias_raw.spec.shape, [value_heads]);
+    assert_eq!(shape3(q_raw, "q_raw"), (tokens, key_heads, key_width));
+    assert_eq!(shape3(k_raw, "k_raw"), (tokens, key_heads, key_width));
+    assert_eq!(shape3(v_raw, "v_raw"), (tokens, value_heads, value_width));
     assert_eq!(
         expected_prefill_conv_out_raw.spec.shape,
         mixed_qkv_raw.spec.shape
     );
-    assert_eq!(expected_prefill_out_raw.spec.shape, [tokens, 32, 128]);
+    assert_eq!(
+        expected_prefill_out_raw.spec.shape,
+        [tokens, value_heads, value_width]
+    );
 
     let (state_cases, state_heads, state_value_dim, state_key_dim) =
         shape4(expected_prefill_state_raw, "recurrent_final_state_bf16");
     assert_eq!(state_cases, case_count);
     assert_eq!(
         (state_heads, state_value_dim, state_key_dim),
-        (32, 128, 128)
+        (value_heads, value_width, key_width)
     );
     assert_eq!(
         shape4(expected_decode1_state_raw, "decode_step1_final_state_bf16"),
-        (case_count, 32, 128, 128)
+        (case_count, value_heads, value_width, key_width)
     );
     assert_eq!(
         shape4(expected_decode2_state_raw, "decode_step2_final_state_bf16"),
-        (case_count, 32, 128, 128)
+        (case_count, value_heads, value_width, key_width)
     );
 
     assert_eq!(decode1_mixed_raw.spec.shape, [case_count, packed_dim]);
     assert_eq!(decode2_mixed_raw.spec.shape, [case_count, packed_dim]);
-    assert_eq!(decode1_a_raw.spec.shape, [case_count, 32]);
-    assert_eq!(decode1_b_raw.spec.shape, [case_count, 32]);
-    assert_eq!(decode2_a_raw.spec.shape, [case_count, 32]);
-    assert_eq!(decode2_b_raw.spec.shape, [case_count, 32]);
+    assert_eq!(decode1_a_raw.spec.shape, [case_count, value_heads]);
+    assert_eq!(decode1_b_raw.spec.shape, [case_count, value_heads]);
+    assert_eq!(decode2_a_raw.spec.shape, [case_count, value_heads]);
+    assert_eq!(decode2_b_raw.spec.shape, [case_count, value_heads]);
     assert_eq!(
         shape3(decode1_q_raw, "decode_step1_q_raw"),
-        (case_count, 16, 128)
+        (case_count, key_heads, key_width)
     );
     assert_eq!(
         shape3(decode1_k_raw, "decode_step1_k_raw"),
-        (case_count, 16, 128)
+        (case_count, key_heads, key_width)
     );
     assert_eq!(
         shape3(decode1_v_raw, "decode_step1_v_raw"),
-        (case_count, 32, 128)
+        (case_count, value_heads, value_width)
     );
     assert_eq!(
         shape3(decode2_q_raw, "decode_step2_q_raw"),
-        (case_count, 16, 128)
+        (case_count, key_heads, key_width)
     );
     assert_eq!(
         shape3(decode2_k_raw, "decode_step2_k_raw"),
-        (case_count, 16, 128)
+        (case_count, key_heads, key_width)
     );
     assert_eq!(
         shape3(decode2_v_raw, "decode_step2_v_raw"),
-        (case_count, 32, 128)
+        (case_count, value_heads, value_width)
     );
     assert_eq!(
         expected_decode1_conv_out_raw.spec.shape,
@@ -2680,8 +2735,14 @@ fn qwen36_cuda_gdn_integrated_prefill_decode_state_evolution_matches_vector() {
         ),
         (case_count, packed_dim, conv_state_width)
     );
-    assert_eq!(expected_decode1_out_raw.spec.shape, [case_count, 32, 128]);
-    assert_eq!(expected_decode2_out_raw.spec.shape, [case_count, 32, 128]);
+    assert_eq!(
+        expected_decode1_out_raw.spec.shape,
+        [case_count, value_heads, value_width]
+    );
+    assert_eq!(
+        expected_decode2_out_raw.spec.shape,
+        [case_count, value_heads, value_width]
+    );
 
     let state_pool_slots = case_count * 2;
     let slot0 = case_ping_pong_slots(case_count, 0);
@@ -2800,13 +2861,13 @@ fn qwen36_cuda_gdn_integrated_prefill_decode_state_evolution_matches_vector() {
         out: prefill_out.tensor3().unwrap(),
         batch_size: u32::try_from(case_count).unwrap(),
         total_tokens: u32::try_from(tokens).unwrap(),
-        num_q_heads: 16,
-        num_k_heads: 16,
-        num_v_heads: 32,
-        key_dim: 128,
-        value_dim: 128,
+        num_q_heads: key_heads as u32,
+        num_k_heads: key_heads as u32,
+        num_v_heads: value_heads as u32,
+        key_dim: key_width as u32,
+        value_dim: value_width as u32,
         state_layout: QSCU_GDN_STATE_LAYOUT_VK,
-        scale: 1.0 / 128.0_f32.sqrt(),
+        scale: 1.0 / (key_width as f32).sqrt(),
         use_qk_l2norm: 1,
         disable_state_update: 0,
     };
@@ -2927,13 +2988,13 @@ fn qwen36_cuda_gdn_integrated_prefill_decode_state_evolution_matches_vector() {
         state_out_indices: slot1_indices.tensor1().unwrap(),
         out: decode1_out.tensor3().unwrap(),
         num_tokens: u32::try_from(case_count).unwrap(),
-        num_q_heads: 16,
-        num_k_heads: 16,
-        num_v_heads: 32,
-        key_dim: 128,
-        value_dim: 128,
+        num_q_heads: key_heads as u32,
+        num_k_heads: key_heads as u32,
+        num_v_heads: value_heads as u32,
+        key_dim: key_width as u32,
+        value_dim: value_width as u32,
         state_layout: QSCU_GDN_STATE_LAYOUT_VK,
-        scale: 1.0 / 128.0_f32.sqrt(),
+        scale: 1.0 / (key_width as f32).sqrt(),
         use_qk_l2norm: 1,
         disable_state_update: 0,
     };
@@ -3053,13 +3114,13 @@ fn qwen36_cuda_gdn_integrated_prefill_decode_state_evolution_matches_vector() {
         state_out_indices: slot0_indices.tensor1().unwrap(),
         out: decode2_out.tensor3().unwrap(),
         num_tokens: u32::try_from(case_count).unwrap(),
-        num_q_heads: 16,
-        num_k_heads: 16,
-        num_v_heads: 32,
-        key_dim: 128,
-        value_dim: 128,
+        num_q_heads: key_heads as u32,
+        num_k_heads: key_heads as u32,
+        num_v_heads: value_heads as u32,
+        key_dim: key_width as u32,
+        value_dim: value_width as u32,
         state_layout: QSCU_GDN_STATE_LAYOUT_VK,
-        scale: 1.0 / 128.0_f32.sqrt(),
+        scale: 1.0 / (key_width as f32).sqrt(),
         use_qk_l2norm: 1,
         disable_state_update: 0,
     };

@@ -80,8 +80,14 @@ def test_sampler_integer_pointer_and_scalar_abi() -> None:
     assert types["position"] == "*i32"
     assert types["seed"] == "u64"
     assert {a.name: a.rust for a in args}["seed"] == "u64"
-    assert rust_type("*i32") == "*mut i32"
-    assert rust_type("*ku32") == "*const u32"
+    assert {a.name: a.rust for a in args}["position"] == "DevicePtr<I32>"
+    assert rust_type("*i32") == "DevicePtr<I32>"
+    assert rust_type("*ku32") == "DevicePtr<U32>"
+    assert rust_type("*bf16") == "DevicePtr<BF16>"
+    assert rust_type("*fp16") == "DevicePtr<F16>"
+    assert rust_type("*fp32") == "DevicePtr<F32>"
+    with pytest.raises(ValueError, match="unsupported GPU pointer dtype"):
+        rust_type("*fp64")
 
 
 @pytest.mark.parametrize("text", ["", "kernel = 1", "def kernel(): pass"])

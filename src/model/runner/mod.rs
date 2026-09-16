@@ -1,3 +1,6 @@
+#[cfg(test)]
+use crate::dtype::F32;
+use crate::dtype::{BF16, I32, U8};
 mod attention;
 mod gdn;
 mod mlp;
@@ -12,7 +15,7 @@ use crate::{
     constants::gdn::PACKED_QKV_CHANNELS,
     engine::{AppendBatch, Commit, DecodeBatch, Engine, RequestId, Status},
     ext::{SafeVec, try_clone_slice},
-    memory::{CudaCtx, DeviceBuffer},
+    memory::{CudaCtx, DeviceBuffer, HostBuffer},
     model::{
         ActiveRunKind, BatchRun, QwenConfig, QwenWeights,
         sampling::{Sampler, SamplingParams},
@@ -52,7 +55,7 @@ pub struct ModelRunner {
     moe_plan: Option<MoePlan>,
     gdn_state: Option<GdnState>,
     scratch: RunnerScratch,
-    qscb_workspace: DeviceBuffer<u8>,
+    qscb_workspace: DeviceBuffer<U8>,
     lm_head: Option<LmHead>,
     gdn_qkv: Option<GdnQkv>,
     sampler: Option<Sampler>,
@@ -226,13 +229,22 @@ impl ModelRunner {
         let offset = (self.last_logits_rows as usize - 1)
             .checked_mul(vocab)
             .ok_or(Status::InvalidArgument)?;
-        let mut logits = Vec::safe_new(vocab)?;
-        logits.resize(vocab, 0.0);
-        unsafe {
-            self.scratch.logits.download_range(offset, &mut logits)?;
+        let mut logits = HostBuffer::<F32>::new(vocab)?;
+        let result = unsafe { self.scratch.logits.download_range(offset, &mut logits) };
+        if let Err(status) = self.ctx.synchronize() {
+            eprintln!(
+                "CUDA logits download completion uncertain ({status:?}); leaking {} host bytes",
+                logits.as_ref().len()
+            );
+            mem::forget(logits);
+            return Err(status);
         }
-        self.ctx.synchronize()?;
-        Ok(logits)
+        result?;
+        Ok(logits
+            .as_ref()
+            .chunks_exact(4)
+            .map(|bytes| f32::from_ne_bytes(bytes.try_into().unwrap()))
+            .collect())
     }
 
     pub fn run(&mut self, request: QwenRequest<'_>) -> Result<QwenResult, Status> {
@@ -432,7 +444,7 @@ impl ModelRunner {
         }
         validate_token_ids(run.tokens, self.config.vocab_size())?;
         self.scratch.reserve(rows)?;
-        self.upload_batch_inputs(run.tokens, run.start_pos)?;
+        self.upload_batch_inputs(run)?;
 
         let ctx = self.ctx.clone();
 
@@ -463,24 +475,60 @@ impl ModelRunner {
         ))
     }
 
-    fn upload_batch_inputs(&mut self, tokens: &[i32], start_pos: u32) -> Result<(), Status> {
-        unsafe {
-            self.scratch.token_ids.upload(tokens)?;
+    fn upload_batch_inputs(&mut self, run: BatchRun<'_>) -> Result<(), Status> {
+        let mut tokens = HostBuffer::<I32>::new(run.tokens.len())?;
+        for (bytes, token) in tokens.as_mut().chunks_exact_mut(4).zip(run.tokens) {
+            bytes.copy_from_slice(&token.to_ne_bytes());
         }
-        let mut positions = Vec::safe_new(tokens.len())?;
-        for idx in 0..tokens.len() {
-            let pos = start_pos
+        let mut positions = HostBuffer::<I32>::new(tokens.len())?;
+        for (idx, bytes) in positions.as_mut().chunks_exact_mut(4).enumerate() {
+            let pos = run
+                .start_pos
                 .checked_add(u32::try_from(idx).map_err(|_| Status::InvalidArgument)?)
                 .ok_or(Status::InvalidArgument)?;
-            positions.push(i32::try_from(pos).map_err(|_| Status::InvalidArgument)?);
+            bytes.copy_from_slice(
+                &i32::try_from(pos)
+                    .map_err(|_| Status::InvalidArgument)?
+                    .to_ne_bytes(),
+            );
         }
-        unsafe {
+        let sequence = if self.scratch.gdn.is_some() && matches!(run.kind, ActiveRunKind::Append) {
+            let mut sequence = HostBuffer::<I32>::new(2)?;
+            sequence.as_mut()[4..].copy_from_slice(
+                &i32::try_from(tokens.len())
+                    .map_err(|_| Status::InvalidArgument)?
+                    .to_ne_bytes(),
+            );
+            Some(sequence)
+        } else {
+            None
+        };
+        let result = (|| unsafe {
+            self.scratch.token_ids.upload(&tokens)?;
             self.scratch.positions.upload(&positions)?;
+            if let Some(sequence) = &sequence {
+                self.scratch
+                    .gdn
+                    .as_mut()
+                    .ok_or(Status::InternalError)?
+                    .seq_indptr
+                    .upload(sequence)?;
+            }
+            Ok(())
+        })();
+        // TODO(async-upload-lifetimes): retain staging until batch completion,
+        // then remove this existing preparation wait.
+        if let Err(status) = self.ctx.synchronize() {
+            eprintln!(
+                "CUDA input upload completion uncertain ({status:?}); leaking {} host bytes",
+                tokens.as_ref().len()
+                    + positions.as_ref().len()
+                    + sequence.as_ref().map_or(0, |buf| buf.as_ref().len())
+            );
+            mem::forget((tokens, positions, sequence));
+            return Err(status);
         }
-        // TODO(async-upload-lifetimes): retain batch input staging until batch
-        // completion, then remove this temporary wait for local positions.
-        self.ctx.synchronize()?;
-        Ok(())
+        result
     }
 
     fn commit_gdn_state(&mut self) {
@@ -522,13 +570,22 @@ impl ModelRunner {
         }
 
         let row_count = rows as usize;
-        let mut sampled = Vec::safe_new(row_count)?;
-        sampled.resize(row_count, 0_i32);
-        unsafe {
-            self.scratch.next_token_ids.download(&mut sampled)?;
+        let mut sampled = HostBuffer::<I32>::new(row_count)?;
+        let result = unsafe { self.scratch.next_token_ids.download(&mut sampled) };
+        if let Err(status) = self.ctx.synchronize() {
+            eprintln!(
+                "CUDA token download completion uncertain ({status:?}); leaking {} host bytes",
+                sampled.as_ref().len()
+            );
+            mem::forget(sampled);
+            return Err(status);
         }
-        // NOTE: THE SYNCHRONIZE CALL
-        self.ctx.synchronize()?;
+        result?;
+        let sampled: Vec<i32> = sampled
+            .as_ref()
+            .chunks_exact(4)
+            .map(|bytes| i32::from_ne_bytes(bytes.try_into().unwrap()))
+            .collect();
         for token in &sampled {
             validate_token_ids(&[*token], self.tokenizer_token_count)
                 .map_err(|_| Status::InternalError)?;
@@ -611,7 +668,7 @@ impl BatchExecution<'_> {
             let next_norm = weights
                 .layers
                 .get(index + 1)
-                .map_or::<&crate::memory::DeviceSpan<u16>, _>(&weights.final_norm, |next| {
+                .map_or::<&crate::memory::DeviceSpan<BF16>, _>(&weights.final_norm, |next| {
                     next.input_norm()
                 });
             let (norm, mlp) = layer.post_attention_mlp();

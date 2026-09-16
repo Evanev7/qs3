@@ -4,6 +4,7 @@ import argparse
 from collections.abc import Sequence
 from pathlib import Path
 
+from .config import VectorConfig
 from .full_attention_block import (
     DEFAULT_OUTPUT,
     POSITIONS,
@@ -17,6 +18,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Generate deterministic Qwen3.6 full-attention block vectors."
     )
+    parser.add_argument("--config", required=True, type=Path)
     parser.add_argument(
         "--output",
         type=Path,
@@ -33,10 +35,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
-    manifest, _ = build_full_attention_block_artifact()
+    config = VectorConfig.read(args.config)
+    manifest, _ = build_full_attention_block_artifact(config)
     output = args.output
     if not args.check:
-        write_full_attention_block_artifact(output)
+        write_full_attention_block_artifact(config, output)
 
     print(
         "generated "

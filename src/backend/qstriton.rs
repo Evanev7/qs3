@@ -1,5 +1,9 @@
-use super::{BF16, DMat, F32};
-use crate::{Status, ffi};
+use crate::{
+    Status,
+    backend::DMat,
+    dtype::{BF16, F32},
+    ffi,
+};
 
 pub(crate) mod sampling {
     pub(crate) mod prepare {
@@ -76,15 +80,8 @@ macro_rules! qstriton_gemv {
                 input.require_contiguous()?;
                 weight.require_contiguous()?;
                 output.require_contiguous()?;
-                unsafe {
-                    self.0.launch(
-                        stream,
-                        input.tensor().data.cast(),
-                        weight.tensor().data.cast(),
-                        output.tensor().data.cast(),
-                    )
-                }
-                .map_err(|_| Status::CudaError)
+                unsafe { self.0.launch(stream, input.data, weight.data, output.data) }
+                    .map_err(|_| Status::CudaError)
             }
         }
     };

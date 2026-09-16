@@ -6,6 +6,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 
+from .config import VectorConfig
 from .paths import DEFAULT_ORACLE_ROOT, DEFAULT_VECTOR_ROOT, VECTOR_GROUPS
 
 SCHEMA_VERSION = 1
@@ -16,6 +17,7 @@ class OracleError(RuntimeError):
 
 
 def generate_all(
+    config: VectorConfig,
     output_root: str | Path = DEFAULT_VECTOR_ROOT,
     *,
     clean: bool = False,
@@ -35,13 +37,14 @@ def generate_all(
     from .model_logits import write_model_logits_artifact
     from .moe import write_moe_artifact
 
-    write_full_attention_block_artifact(root / "full_attention_block")
-    write_bundle(root / "full_attention_primitives", force=True)
-    write_gdn_decoder_layer_artifact(root / "gdn_decoder_layer")
-    write_gdn_artifact(root / "gdn_post_conv_prep")
-    write_model_logits_artifact(root / "model_logits")
+    write_full_attention_block_artifact(config, root / "full_attention_block")
+    write_bundle(config, root / "full_attention_primitives", force=True)
+    write_gdn_decoder_layer_artifact(config, root / "gdn_decoder_layer")
+    write_gdn_artifact(config, root / "gdn_post_conv_prep")
+    write_model_logits_artifact(config, root / "model_logits")
     write_moe_artifact(root / "moe_shared_expert")
     generate_norms(root / "norms")
+    (root / "config.json").write_text(config.json())
 
 
 def write_oracles(
@@ -50,8 +53,10 @@ def write_oracles(
     *,
     groups: tuple[str, ...] = VECTOR_GROUPS,
 ) -> None:
-    oracle_dir = Path(oracle_root)
+    config = VectorConfig.read(Path(input_root) / "config.json")
+    oracle_dir = Path(oracle_root) / config.key
     oracle_dir.mkdir(parents=True, exist_ok=True)
+    (oracle_dir / "config.json").write_text(config.json())
     for group in groups:
         payload = _oracle_payload(group, Path(input_root) / group)
         path = oracle_dir / f"{group}.oracle.json"
@@ -67,9 +72,17 @@ def check_oracles(
     *,
     groups: tuple[str, ...] = VECTOR_GROUPS,
 ) -> None:
+    config = VectorConfig.read(Path(input_root) / "config.json")
+    oracle_dir = Path(oracle_root) / config.key
+    if not (oracle_dir / "config.json").is_file():
+        raise OracleError(f"no committed vector oracles for config {config.key}")
+    if VectorConfig.read(oracle_dir / "config.json") != config:
+        raise OracleError(
+            f"oracle configuration disagrees with generated vectors: {config.key}"
+        )
     errors: list[str] = []
     for group in groups:
-        oracle_path = Path(oracle_root) / f"{group}.oracle.json"
+        oracle_path = oracle_dir / f"{group}.oracle.json"
         try:
             expected = _read_oracle(oracle_path, group)
             actual = _file_entries(Path(input_root) / group)

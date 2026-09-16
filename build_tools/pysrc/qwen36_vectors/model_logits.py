@@ -14,9 +14,11 @@ import struct
 import sys
 from array import array
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import Any
 
+from .config import VectorConfig
 from .io import bf16_bits_to_float32, float32_to_bf16_bits
 from .paths import DEFAULT_VECTOR_ROOT
 from .schema import MANIFEST_FILE, TensorSpec, VectorManifest
@@ -24,15 +26,8 @@ from .schema import MANIFEST_FILE, TensorSpec, VectorManifest
 PROMPT_TOKENS = (2, 6, 9, 12)
 PROMPT_LEN = len(PROMPT_TOKENS)
 TOTAL_ROWS = PROMPT_LEN + 1
-HIDDEN_SIZE = 2048
-Q_HEADS = 16
-KV_HEADS = 2
-HEAD_DIM = 256
-ROTARY_DIM = 64
-Q_HIDDEN = Q_HEADS * HEAD_DIM
-KV_HIDDEN = KV_HEADS * HEAD_DIM
-Q_PROJ_OUT = 2 * Q_HIDDEN
-GROUP_SIZE = Q_HEADS // KV_HEADS
+
+
 VOCAB_SIZE = 16
 INTERMEDIATE_SIZE = 8
 MOE_NUM_EXPERTS = 256
@@ -44,10 +39,10 @@ MOE_GATE_UP_TERMS = 5
 MOE_SHARED_TERMS = 5
 PAGE_SIZE = 4
 MAX_PAGES = 2
-RMS_EPS = 1.0e-6
-ROPE_THETA = 10_000.0
+
+
 ROPE_SCALE = 1.0
-ATTENTION_SCALE = 1.0 / math.sqrt(HEAD_DIM)
+
 DEFAULT_OUTPUT = DEFAULT_VECTOR_ROOT / "model_logits"
 
 
@@ -106,11 +101,11 @@ def _contiguous_strides(shape: tuple[int, ...]) -> list[int]:
     return list(reversed(out))
 
 
-def _embedding_value(token: int, col: int) -> float:
+def _embedding_value(config: VectorConfig, token: int, col: int) -> float:
     centered = ((token * 97 + col * 13 + (col // 29) * 7) % 127) - 63
     band = (((col // 128) % 9) - 4) * 0.0107421875
     token_bias = (token - 7.5) * 0.0048828125
-    marker = 0.0546875 if col == ((token * 113 + 17) % HIDDEN_SIZE) else 0.0
+    marker = 0.0546875 if col == ((token * 113 + 17) % config.hidden_size) else 0.0
     return centered * 0.0068359375 + band + token_bias + marker
 
 
@@ -139,10 +134,12 @@ def _k_norm_weight_value(lane: int) -> float:
     return base + (-0.01171875 if lane % 3 == 0 else 0.015625)
 
 
-def _projection_profile(kind: str, out_feature: int) -> tuple[int, float, int]:
+def _projection_profile(
+    config: VectorConfig, kind: str, out_feature: int
+) -> tuple[int, float, int]:
     if kind == "q_proj":
-        lane = out_feature % (2 * HEAD_DIM)
-        return 37, 0.19 if lane >= HEAD_DIM else 0.030, 4
+        lane = out_feature % (2 * config.head_dim)
+        return 37, 0.19 if lane >= config.head_dim else 0.030, 4
     if kind == "k_proj":
         return 53, 0.030, 4
     if kind == "v_proj":
@@ -150,16 +147,19 @@ def _projection_profile(kind: str, out_feature: int) -> tuple[int, float, int]:
     if kind == "o_proj":
         return 89, 0.18, 5
     if kind == "lm_head":
-        return 109, 1.60, 9
+        # Separate deterministic seeds keep both fixtures' greedy winners clear
+        # of ties after BF16 rounding through the decoder layer.
+        return (109 if config.has_experts else 127), 1.60, 9
     raise ValueError(f"unknown projection kind {kind!r}")
 
 
 def _projection_terms(
+    config: VectorConfig,
     kind: str,
     out_feature: int,
     in_features: int,
 ) -> tuple[tuple[int, int], ...]:
-    seed, scale, term_count = _projection_profile(kind, out_feature)
+    seed, scale, term_count = _projection_profile(config, kind, out_feature)
     terms: dict[int, float] = {}
     for term in range(term_count):
         col = (
@@ -215,31 +215,35 @@ def _sparse_terms(
     return tuple(out)
 
 
-def _moe_router_terms(expert: int) -> tuple[tuple[int, int], ...]:
+def _moe_router_terms(config: VectorConfig, expert: int) -> tuple[tuple[int, int], ...]:
     return _sparse_terms(
         seed=101,
         owner=expert,
         row=expert % 29,
-        in_features=HIDDEN_SIZE,
+        in_features=config.hidden_size,
         term_count=MOE_ROUTER_TERMS,
         scale=0.075,
     )
 
 
-def _moe_gate_up_terms(expert: int, row: int) -> tuple[tuple[int, int], ...]:
+def _moe_gate_up_terms(
+    config: VectorConfig, expert: int, row: int
+) -> tuple[tuple[int, int], ...]:
     is_up = row >= MOE_INTERMEDIATE
     local_row = row - MOE_INTERMEDIATE if is_up else row
     return _sparse_terms(
         seed=149 if is_up else 137,
         owner=expert,
         row=local_row,
-        in_features=HIDDEN_SIZE,
+        in_features=config.hidden_size,
         term_count=MOE_GATE_UP_TERMS,
         scale=0.0625 if is_up else 0.0546875,
     )
 
 
-def _shared_proj_terms(kind: str, row: int) -> tuple[tuple[int, int], ...]:
+def _shared_proj_terms(
+    config: VectorConfig, kind: str, row: int
+) -> tuple[tuple[int, int], ...]:
     seed = {
         "gate": 173,
         "up": 181,
@@ -249,7 +253,7 @@ def _shared_proj_terms(kind: str, row: int) -> tuple[tuple[int, int], ...]:
         seed=seed,
         owner=seed + row * 3,
         row=row,
-        in_features=HIDDEN_SIZE,
+        in_features=config.hidden_size,
         term_count=MOE_SHARED_TERMS,
         scale=0.05078125 if kind != "shared_gate" else 0.01953125,
     )
@@ -272,6 +276,7 @@ def _shared_down_weight_value(hidden: int, intermediate: int) -> float:
 
 
 def _gemma_rmsnorm_rows(
+    config: VectorConfig,
     x_rows: list[list[float]],
     raw_weight_bf16: tuple[int, ...],
 ) -> tuple[tuple[float, ...], tuple[int, ...], list[list[float]]]:
@@ -281,7 +286,7 @@ def _gemma_rmsnorm_rows(
     out_rows: list[list[float]] = []
     for row in x_rows:
         variance = _f32(sum(_f32(value * value) for value in row) / len(row))
-        inv_rms = _f32(1.0 / math.sqrt(_f32(variance + RMS_EPS)))
+        inv_rms = _f32(1.0 / math.sqrt(_f32(variance + config.rms_eps)))
         out_row: list[float] = []
         for lane, value in enumerate(row):
             y = _f32(_f32(value * inv_rms) * weights[lane])
@@ -294,6 +299,7 @@ def _gemma_rmsnorm_rows(
 
 
 def _project_sparse_bf16(
+    config: VectorConfig,
     x_rows: list[list[float]],
     kind: str,
     out_features: int,
@@ -302,7 +308,7 @@ def _project_sparse_bf16(
     decoded_terms = [
         tuple(
             (col, bf16_bits_to_float32(bits))
-            for col, bits in _projection_terms(kind, out, in_features)
+            for col, bits in _projection_terms(config, kind, out, in_features)
         )
         for out in range(out_features)
     ]
@@ -324,6 +330,7 @@ def _project_sparse_bf16(
 
 
 def _project_sparse_f32(
+    config: VectorConfig,
     x_rows: list[list[float]],
     kind: str,
     out_features: int,
@@ -332,7 +339,7 @@ def _project_sparse_f32(
     decoded_terms = [
         tuple(
             (col, bf16_bits_to_float32(bits))
-            for col, bits in _projection_terms(kind, out, in_features)
+            for col, bits in _projection_terms(config, kind, out, in_features)
         )
         for out in range(out_features)
     ]
@@ -394,6 +401,7 @@ def _project_sparse_terms_bf16(
 
 
 def _extract_q_gate(
+    config: VectorConfig,
     q_proj_rows: list[list[float]],
     q_proj_bf16: tuple[int, ...],
 ) -> tuple[tuple[int, ...], tuple[int, ...], list[list[float]], list[list[float]]]:
@@ -405,16 +413,23 @@ def _extract_q_gate(
     for row in range(rows):
         q_row: list[float] = []
         gate_row: list[float] = []
-        for head in range(Q_HEADS):
-            base = row * Q_PROJ_OUT + head * 2 * HEAD_DIM
-            q.extend(q_proj_bf16[base : base + HEAD_DIM])
-            gate.extend(q_proj_bf16[base + HEAD_DIM : base + 2 * HEAD_DIM])
+        for head in range(config.q_heads):
+            base = row * config.q_proj_out + head * 2 * config.head_dim
+            q.extend(q_proj_bf16[base : base + config.head_dim])
+            gate.extend(
+                q_proj_bf16[base + config.head_dim : base + 2 * config.head_dim]
+            )
             q_row.extend(
-                q_proj_rows[row][head * 2 * HEAD_DIM : head * 2 * HEAD_DIM + HEAD_DIM]
+                q_proj_rows[row][
+                    head * 2 * config.head_dim : head * 2 * config.head_dim
+                    + config.head_dim
+                ]
             )
             gate_row.extend(
                 q_proj_rows[row][
-                    head * 2 * HEAD_DIM + HEAD_DIM : (head + 1) * 2 * HEAD_DIM
+                    head * 2 * config.head_dim + config.head_dim : (head + 1)
+                    * 2
+                    * config.head_dim
                 ]
             )
         q_rows.append(q_row)
@@ -422,19 +437,27 @@ def _extract_q_gate(
     return tuple(q), tuple(gate), q_rows, gate_rows
 
 
-def _reshape_heads(rows: list[list[float]], heads: int) -> list[list[list[float]]]:
+def _reshape_heads(
+    config: VectorConfig, rows: list[list[float]], heads: int
+) -> list[list[list[float]]]:
     return [
-        [row[head * HEAD_DIM : (head + 1) * HEAD_DIM] for head in range(heads)]
+        [
+            row[head * config.head_dim : (head + 1) * config.head_dim]
+            for head in range(heads)
+        ]
         for row in rows
     ]
 
 
 def _gemma_rmsnorm_heads(
+    config: VectorConfig,
     heads: list[list[list[float]]],
     raw_weight_bf16: tuple[int, ...],
 ) -> tuple[tuple[float, ...], tuple[int, ...], list[list[list[float]]]]:
     flat_rows = [head for row in heads for head in row]
-    out_f32, out_bf16, out_rows = _gemma_rmsnorm_rows(flat_rows, raw_weight_bf16)
+    out_f32, out_bf16, out_rows = _gemma_rmsnorm_rows(
+        config, flat_rows, raw_weight_bf16
+    )
     regrouped: list[list[list[float]]] = []
     idx = 0
     for row in heads:
@@ -446,12 +469,14 @@ def _gemma_rmsnorm_heads(
     return out_f32, out_bf16, regrouped
 
 
-def _cos_sin_for_position(pos: int) -> tuple[list[float], list[float]]:
-    half = ROTARY_DIM // 2
+def _cos_sin_for_position(
+    config: VectorConfig, pos: int
+) -> tuple[list[float], list[float]]:
+    half = config.rotary_dim // 2
     cos_values: list[float] = []
     sin_values: list[float] = []
     for lane in range(half):
-        inv_freq = 1.0 / (ROPE_THETA ** (float(lane * 2) / ROTARY_DIM))
+        inv_freq = 1.0 / (config.rope_theta ** (float(lane * 2) / config.rotary_dim))
         angle = (pos / ROPE_SCALE) * inv_freq
         cos_values.append(bf16_bits_to_float32(float32_to_bf16_bits(math.cos(angle))))
         sin_values.append(bf16_bits_to_float32(float32_to_bf16_bits(math.sin(angle))))
@@ -459,15 +484,16 @@ def _cos_sin_for_position(pos: int) -> tuple[list[float], list[float]]:
 
 
 def _apply_partial_rope(
+    config: VectorConfig,
     heads: list[list[list[float]]],
     positions: tuple[int, ...],
 ) -> tuple[tuple[float, ...], tuple[int, ...], list[list[list[float]]]]:
-    half = ROTARY_DIM // 2
+    half = config.rotary_dim // 2
     out_rows: list[list[list[float]]] = []
     out_f32: list[float] = []
     out_bf16: list[int] = []
     for row_idx, row in enumerate(heads):
-        cos_values, sin_values = _cos_sin_for_position(positions[row_idx])
+        cos_values, sin_values = _cos_sin_for_position(config, positions[row_idx])
         out_row: list[list[float]] = []
         for head in row:
             y = list(head)
@@ -487,6 +513,7 @@ def _apply_partial_rope(
 
 
 def _causal_gqa_attention(
+    config: VectorConfig,
     q: list[list[list[float]]],
     k: list[list[list[float]]],
     v: list[list[list[float]]],
@@ -497,22 +524,22 @@ def _causal_gqa_attention(
     out_bf16: list[int] = []
     for row_idx in range(rows):
         out_row: list[list[float]] = []
-        for q_head in range(Q_HEADS):
-            kv_head = q_head // GROUP_SIZE
+        for q_head in range(config.q_heads):
+            kv_head = q_head // config.group_size
             scores: list[float] = []
             for key_row in range(row_idx + 1):
                 dot = 0.0
-                for lane in range(HEAD_DIM):
+                for lane in range(config.head_dim):
                     dot = _f32(
                         dot + _f32(q[row_idx][q_head][lane] * k[key_row][kv_head][lane])
                     )
-                scores.append(_f32(dot * ATTENTION_SCALE))
+                scores.append(_f32(dot * config.attention_scale))
             max_score = max(scores)
             exp_scores = [math.exp(score - max_score) for score in scores]
             denom = sum(exp_scores)
             probs = [_f32(score / denom) for score in exp_scores]
             head_out: list[float] = []
-            for lane in range(HEAD_DIM):
+            for lane in range(config.head_dim):
                 value = 0.0
                 for key_row, prob in enumerate(probs):
                     value = _f32(value + _f32(prob * v[key_row][kv_head][lane]))
@@ -537,6 +564,7 @@ def _silu(value: float) -> float:
 
 
 def _apply_output_gate(
+    config: VectorConfig,
     raw_attention_bf16: tuple[int, ...],
     gate_bf16: tuple[int, ...],
     rows: int,
@@ -546,8 +574,8 @@ def _apply_output_gate(
     out_rows: list[list[float]] = []
     for row_idx in range(rows):
         row: list[float] = []
-        for col in range(Q_HIDDEN):
-            idx = row_idx * Q_HIDDEN + col
+        for col in range(config.q_hidden):
+            idx = row_idx * config.q_hidden + col
             value = _f32(
                 bf16_bits_to_float32(raw_attention_bf16[idx])
                 * _sigmoid(bf16_bits_to_float32(gate_bf16[idx]))
@@ -617,14 +645,18 @@ def _dot_sparse(row: list[float], terms: tuple[tuple[int, int], ...]) -> float:
     return acc
 
 
-def _moe_expert_output(row: list[float], expert: int) -> list[float]:
+def _moe_expert_output(
+    config: VectorConfig, row: list[float], expert: int
+) -> list[float]:
     activated: list[float] = []
     for idx in range(MOE_INTERMEDIATE):
-        gate = _dot_sparse(row, _moe_gate_up_terms(expert, idx))
-        up = _dot_sparse(row, _moe_gate_up_terms(expert, MOE_INTERMEDIATE + idx))
+        gate = _dot_sparse(row, _moe_gate_up_terms(config, expert, idx))
+        up = _dot_sparse(
+            row, _moe_gate_up_terms(config, expert, MOE_INTERMEDIATE + idx)
+        )
         activated.append(_f32(_silu(gate) * up))
     out: list[float] = []
-    for hidden in range(HIDDEN_SIZE):
+    for hidden in range(config.hidden_size):
         acc = 0.0
         for idx, value in enumerate(activated):
             acc = _f32(acc + _f32(value * _moe_down_weight_value(expert, hidden, idx)))
@@ -633,6 +665,7 @@ def _moe_expert_output(row: list[float], expert: int) -> list[float]:
 
 
 def _compute_routed_moe(
+    config: VectorConfig,
     hidden_rows: list[list[float]],
     topk_ids: list[list[int]],
     topk_weights: list[list[float]],
@@ -641,11 +674,11 @@ def _compute_routed_moe(
     out_bf16: list[int] = []
     out_rows: list[list[float]] = []
     for row_idx, row in enumerate(hidden_rows):
-        routed = [0.0 for _ in range(HIDDEN_SIZE)]
+        routed = [0.0 for _ in range(config.hidden_size)]
         for route_idx, expert in enumerate(topk_ids[row_idx]):
-            expert_out = _moe_expert_output(row, expert)
+            expert_out = _moe_expert_output(config, row, expert)
             scale = topk_weights[row_idx][route_idx]
-            for hidden in range(HIDDEN_SIZE):
+            for hidden in range(config.hidden_size):
                 routed[hidden] = _f32(routed[hidden] + _f32(scale * expert_out[hidden]))
         row_out: list[float] = []
         for value in routed:
@@ -658,18 +691,19 @@ def _compute_routed_moe(
     return tuple(out_f32), tuple(out_bf16), out_rows
 
 
-def _compute_shared_expert(
+def _compute_dense_output(
+    config: VectorConfig,
     hidden_rows: list[list[float]],
-) -> tuple[tuple[float, ...], tuple[int, ...], list[list[float]], tuple[float, ...]]:
+) -> tuple[tuple[float, ...], tuple[int, ...], list[list[float]]]:
     _gate_f32, gate_bf16, _gate_rows = _project_sparse_terms_bf16(
         hidden_rows,
         MOE_INTERMEDIATE,
-        lambda out: _shared_proj_terms("gate", out),
+        lambda out: _shared_proj_terms(config, "gate", out),
     )
     _up_f32, up_bf16, _up_rows = _project_sparse_terms_bf16(
         hidden_rows,
         MOE_INTERMEDIATE,
-        lambda out: _shared_proj_terms("up", out),
+        lambda out: _shared_proj_terms(config, "up", out),
     )
 
     activated_rows: list[list[float]] = []
@@ -689,7 +723,7 @@ def _compute_shared_expert(
     out_rows: list[list[float]] = []
     for row in activated_rows:
         out_row: list[float] = []
-        for hidden in range(HIDDEN_SIZE):
+        for hidden in range(config.hidden_size):
             acc = 0.0
             for idx, value in enumerate(row):
                 acc = _f32(acc + _f32(value * _shared_down_weight_value(hidden, idx)))
@@ -699,15 +733,24 @@ def _compute_shared_expert(
             out_row.append(bf16_bits_to_float32(bits))
         out_rows.append(out_row)
 
+    return tuple(out_f32), tuple(out_bf16), out_rows
+
+
+def _compute_shared_expert(
+    config: VectorConfig,
+    hidden_rows: list[list[float]],
+) -> tuple[tuple[float, ...], tuple[int, ...], list[list[float]], tuple[float, ...]]:
+    out_f32, out_bf16, out_rows = _compute_dense_output(config, hidden_rows)
     shared_gate_logits, _ = _project_sparse_terms_f32(
         hidden_rows,
         1,
-        lambda out: _shared_proj_terms("shared_gate", out),
+        lambda out: _shared_proj_terms(config, "shared_gate", out),
     )
     return tuple(out_f32), tuple(out_bf16), out_rows, shared_gate_logits
 
 
 def _combine_moe_and_shared(
+    config: VectorConfig,
     routed_bf16: tuple[int, ...],
     shared_bf16: tuple[int, ...],
     shared_gate_logits: tuple[float, ...],
@@ -719,8 +762,8 @@ def _combine_moe_and_shared(
     for row_idx in range(rows):
         gate = _f32(_sigmoid(shared_gate_logits[row_idx]))
         row: list[float] = []
-        for hidden in range(HIDDEN_SIZE):
-            idx = row_idx * HIDDEN_SIZE + hidden
+        for hidden in range(config.hidden_size):
+            idx = row_idx * config.hidden_size + hidden
             value = _f32(
                 bf16_bits_to_float32(routed_bf16[idx])
                 + _f32(gate * bf16_bits_to_float32(shared_bf16[idx]))
@@ -734,25 +777,29 @@ def _combine_moe_and_shared(
 
 
 def _compute_moe_shared_output(
+    config: VectorConfig,
     hidden_rows: list[list[float]],
 ) -> tuple[tuple[float, ...], tuple[int, ...], list[list[float]]]:
     _router_logits_f32, _router_logits_bf16, router_logits_rows = (
         _project_sparse_terms_bf16(
             hidden_rows,
             MOE_NUM_EXPERTS,
-            _moe_router_terms,
+            partial(_moe_router_terms, config),
         )
     )
     topk_ids, _topk_unrenorm, topk_weights = _route_moe_topk(router_logits_rows)
     _routed_f32, routed_bf16, _routed_rows = _compute_routed_moe(
+        config,
         hidden_rows,
         topk_ids,
         topk_weights,
     )
     _shared_f32, shared_bf16, _shared_rows, shared_gate_logits = _compute_shared_expert(
+        config,
         hidden_rows,
     )
     return _combine_moe_and_shared(
+        config,
         routed_bf16,
         shared_bf16,
         shared_gate_logits,
@@ -773,6 +820,7 @@ def _argmax_rows(
 
 
 def _compute_logits_for_tokens(
+    config: VectorConfig,
     tokens: tuple[int, ...],
     *,
     token_embedding: tuple[int, ...],
@@ -785,116 +833,138 @@ def _compute_logits_for_tokens(
     rows = len(tokens)
     positions = tuple(range(rows))
     residual_bf16 = tuple(
-        token_embedding[token * HIDDEN_SIZE + col]
+        token_embedding[token * config.hidden_size + col]
         for token in tokens
-        for col in range(HIDDEN_SIZE)
+        for col in range(config.hidden_size)
     )
-    residual_rows = _bf16_to_f32_rows(residual_bf16, rows, HIDDEN_SIZE)
+    residual_rows = _bf16_to_f32_rows(residual_bf16, rows, config.hidden_size)
     _attn_norm_f32, _attn_norm_bf16, attn_norm_rows = _gemma_rmsnorm_rows(
+        config,
         residual_rows,
         attn_norm_weight,
     )
 
     _q_proj_f32, q_proj_bf16, q_proj_rows = _project_sparse_bf16(
+        config,
         attn_norm_rows,
         "q_proj",
-        Q_PROJ_OUT,
-        HIDDEN_SIZE,
+        config.q_proj_out,
+        config.hidden_size,
     )
     _k_proj_f32, _k_proj_bf16, k_proj_rows = _project_sparse_bf16(
+        config,
         attn_norm_rows,
         "k_proj",
-        KV_HIDDEN,
-        HIDDEN_SIZE,
+        config.kv_hidden,
+        config.hidden_size,
     )
     _v_proj_f32, _v_proj_bf16, v_proj_rows = _project_sparse_bf16(
+        config,
         attn_norm_rows,
         "v_proj",
-        KV_HIDDEN,
-        HIDDEN_SIZE,
+        config.kv_hidden,
+        config.hidden_size,
     )
-    q_bf16, gate_bf16, q_rows, _gate_rows = _extract_q_gate(q_proj_rows, q_proj_bf16)
-    q_heads = _reshape_heads(q_rows, Q_HEADS)
-    k_heads = _reshape_heads(k_proj_rows, KV_HEADS)
-    v_heads = _reshape_heads(v_proj_rows, KV_HEADS)
+    q_bf16, gate_bf16, q_rows, _gate_rows = _extract_q_gate(
+        config, q_proj_rows, q_proj_bf16
+    )
+    q_heads = _reshape_heads(config, q_rows, config.q_heads)
+    k_heads = _reshape_heads(config, k_proj_rows, config.kv_heads)
+    v_heads = _reshape_heads(config, v_proj_rows, config.kv_heads)
     _q_norm_f32, _q_norm_bf16, q_norm_heads = _gemma_rmsnorm_heads(
-        q_heads, q_norm_weight
+        config, q_heads, q_norm_weight
     )
     _k_norm_f32, _k_norm_bf16, k_norm_heads = _gemma_rmsnorm_heads(
-        k_heads, k_norm_weight
+        config, k_heads, k_norm_weight
     )
     _ = q_bf16
     _q_rope_f32, _q_rope_bf16, q_rope_heads = _apply_partial_rope(
-        q_norm_heads, positions
+        config, q_norm_heads, positions
     )
     _k_rope_f32, _k_rope_bf16, k_rope_heads = _apply_partial_rope(
-        k_norm_heads, positions
+        config, k_norm_heads, positions
     )
     _raw_attn_f32, raw_attn_bf16, _raw_attn_heads = _causal_gqa_attention(
+        config,
         q_rope_heads,
         k_rope_heads,
         v_heads,
     )
     _gated_f32, _gated_bf16, gated_rows = _apply_output_gate(
-        raw_attn_bf16, gate_bf16, rows
+        config, raw_attn_bf16, gate_bf16, rows
     )
     _o_proj_f32, o_proj_bf16, _o_proj_rows = _project_sparse_bf16(
+        config,
         gated_rows,
         "o_proj",
-        HIDDEN_SIZE,
-        Q_HIDDEN,
+        config.hidden_size,
+        config.q_hidden,
     )
     _residual_f32, _residual_bf16, residual_after_attn_rows = _add_rows(
         o_proj_bf16,
         residual_bf16,
         rows,
-        HIDDEN_SIZE,
+        config.hidden_size,
     )
     _post_norm_f32, _post_norm_bf16, post_norm_rows = _gemma_rmsnorm_rows(
+        config,
         residual_after_attn_rows,
         mlp_norm_weight,
     )
-    _moe_f32, moe_bf16, _moe_rows = _compute_moe_shared_output(post_norm_rows)
+    _mlp_f32, mlp_bf16, _mlp_rows = (
+        _compute_moe_shared_output(config, post_norm_rows)
+        if config.has_experts
+        else _compute_dense_output(config, post_norm_rows)
+    )
     _residual_after_mlp_f32, _residual_after_mlp_bf16, residual_after_mlp_rows = (
         _add_rows(
-            moe_bf16,
+            mlp_bf16,
             _residual_bf16,
             rows,
-            HIDDEN_SIZE,
+            config.hidden_size,
         )
     )
     _final_norm_f32, _final_norm_bf16, final_norm_rows = _gemma_rmsnorm_rows(
+        config,
         residual_after_mlp_rows,
         final_norm_weight,
     )
     logits_f32, logits_rows = _project_sparse_f32(
+        config,
         final_norm_rows,
         "lm_head",
         VOCAB_SIZE,
-        HIDDEN_SIZE,
+        config.hidden_size,
     )
     return logits_f32, logits_rows
 
 
-def build_model_logits_tensors() -> tuple[list[TensorWrite], dict[str, Any]]:
+def build_model_logits_tensors(
+    config: VectorConfig,
+) -> tuple[list[TensorWrite], dict[str, Any]]:
     token_embedding = _bf16_words(
-        _embedding_value(token, col)
+        _embedding_value(config, token, col)
         for token in range(VOCAB_SIZE)
-        for col in range(HIDDEN_SIZE)
+        for col in range(config.hidden_size)
     )
     attn_norm_weight = _bf16_words(
-        _attn_norm_weight_value(col) for col in range(HIDDEN_SIZE)
+        _attn_norm_weight_value(col) for col in range(config.hidden_size)
     )
-    q_norm_weight = _bf16_words(_q_norm_weight_value(lane) for lane in range(HEAD_DIM))
-    k_norm_weight = _bf16_words(_k_norm_weight_value(lane) for lane in range(HEAD_DIM))
+    q_norm_weight = _bf16_words(
+        _q_norm_weight_value(lane) for lane in range(config.head_dim)
+    )
+    k_norm_weight = _bf16_words(
+        _k_norm_weight_value(lane) for lane in range(config.head_dim)
+    )
     final_norm_weight = _bf16_words(
-        _final_norm_weight_value(col) for col in range(HIDDEN_SIZE)
+        _final_norm_weight_value(col) for col in range(config.hidden_size)
     )
     mlp_norm_weight = _bf16_words(
-        _mlp_norm_weight_value(col) for col in range(HIDDEN_SIZE)
+        _mlp_norm_weight_value(col) for col in range(config.hidden_size)
     )
 
     prefill_logits, prefill_rows = _compute_logits_for_tokens(
+        config,
         PROMPT_TOKENS,
         token_embedding=token_embedding,
         attn_norm_weight=attn_norm_weight,
@@ -907,6 +977,7 @@ def build_model_logits_tensors() -> tuple[list[TensorWrite], dict[str, Any]]:
     decode_input_token = prefill_top_ids[-1]
     full_tokens = (*PROMPT_TOKENS, decode_input_token)
     full_logits, full_rows = _compute_logits_for_tokens(
+        config,
         full_tokens,
         token_embedding=token_embedding,
         attn_norm_weight=attn_norm_weight,
@@ -924,7 +995,7 @@ def build_model_logits_tensors() -> tuple[list[TensorWrite], dict[str, Any]]:
         TensorWrite(
             "token_embedding_weight",
             "bf16",
-            (VOCAB_SIZE, HIDDEN_SIZE),
+            (VOCAB_SIZE, config.hidden_size),
             token_embedding,
             "input",
             "embedding",
@@ -933,7 +1004,7 @@ def build_model_logits_tensors() -> tuple[list[TensorWrite], dict[str, Any]]:
         TensorWrite(
             "attn_norm_raw_weight",
             "bf16",
-            (HIDDEN_SIZE,),
+            (config.hidden_size,),
             attn_norm_weight,
             "input",
             "gemma_rmsnorm",
@@ -942,7 +1013,7 @@ def build_model_logits_tensors() -> tuple[list[TensorWrite], dict[str, Any]]:
         TensorWrite(
             "q_norm_raw_weight",
             "bf16",
-            (HEAD_DIM,),
+            (config.head_dim,),
             q_norm_weight,
             "input",
             "qk_gemma_rmsnorm",
@@ -951,7 +1022,7 @@ def build_model_logits_tensors() -> tuple[list[TensorWrite], dict[str, Any]]:
         TensorWrite(
             "k_norm_raw_weight",
             "bf16",
-            (HEAD_DIM,),
+            (config.head_dim,),
             k_norm_weight,
             "input",
             "qk_gemma_rmsnorm",
@@ -960,7 +1031,7 @@ def build_model_logits_tensors() -> tuple[list[TensorWrite], dict[str, Any]]:
         TensorWrite(
             "mlp_norm_raw_weight",
             "bf16",
-            (HIDDEN_SIZE,),
+            (config.hidden_size,),
             mlp_norm_weight,
             "input",
             "fused_add_gemma_rmsnorm",
@@ -969,7 +1040,7 @@ def build_model_logits_tensors() -> tuple[list[TensorWrite], dict[str, Any]]:
         TensorWrite(
             "final_norm_raw_weight",
             "bf16",
-            (HIDDEN_SIZE,),
+            (config.hidden_size,),
             final_norm_weight,
             "input",
             "fused_add_gemma_rmsnorm",
@@ -1052,21 +1123,23 @@ def build_model_logits_tensors() -> tuple[list[TensorWrite], dict[str, Any]]:
         "case": "model_logits_prefill4_decode1_v1",
         "dimensions": {
             "num_layers": 1,
-            "hidden_size": HIDDEN_SIZE,
-            "q_heads": Q_HEADS,
-            "kv_heads": KV_HEADS,
-            "group_size": GROUP_SIZE,
-            "head_dim": HEAD_DIM,
-            "rotary_dim": ROTARY_DIM,
-            "q_hidden": Q_HIDDEN,
-            "kv_hidden": KV_HIDDEN,
-            "q_proj_out": Q_PROJ_OUT,
+            "hidden_size": config.hidden_size,
+            "q_heads": config.q_heads,
+            "kv_heads": config.kv_heads,
+            "group_size": config.group_size,
+            "head_dim": config.head_dim,
+            "rotary_dim": config.rotary_dim,
+            "q_hidden": config.q_hidden,
+            "kv_hidden": config.kv_hidden,
+            "q_proj_out": config.q_proj_out,
             "vocab_size": VOCAB_SIZE,
             "intermediate_size": INTERMEDIATE_SIZE,
-            "moe_num_experts": MOE_NUM_EXPERTS,
-            "moe_top_k": MOE_TOP_K,
-            "moe_intermediate_size": MOE_INTERMEDIATE,
-            "shared_expert_intermediate_size": MOE_INTERMEDIATE,
+            "moe_num_experts": MOE_NUM_EXPERTS if config.has_experts else 0,
+            "moe_top_k": MOE_TOP_K if config.has_experts else 0,
+            "moe_intermediate_size": MOE_INTERMEDIATE if config.has_experts else 0,
+            "shared_expert_intermediate_size": MOE_INTERMEDIATE
+            if config.has_experts
+            else 0,
             "prompt_len": PROMPT_LEN,
             "decode_len": 1,
             "page_size": PAGE_SIZE,
@@ -1079,17 +1152,21 @@ def build_model_logits_tensors() -> tuple[list[TensorWrite], dict[str, Any]]:
             "decode_top_ids": list(decode_top_ids),
         },
         "params": {
-            "rms_eps": RMS_EPS,
-            "rope_theta": ROPE_THETA,
+            "rms_eps": config.rms_eps,
+            "rope_theta": config.rope_theta,
             "rope_scale": ROPE_SCALE,
-            "attention_scale": ATTENTION_SCALE,
+            "attention_scale": config.attention_scale,
             "logits_soft_cap": 0.0,
         },
         "rounding": [
             "All model weights are raw little-endian BF16 words.",
             "Decoder, q/k, and final RMSNorm use Gemma raw_weight + 1 semantics.",
             "Projection GEMMs consume BF16 inputs and BF16 weights; intermediate projections store BF16, logits store f32.",
-            "Post-attention MoE uses 256 experts, top-8 softmax routing, fused gate/up expert weights, and a sigmoid-gated shared expert branch.",
+            (
+                "Post-attention MoE uses 256 experts, top-8 softmax routing, fused gate/up expert weights, and a sigmoid-gated shared expert branch."
+                if config.has_experts
+                else "Post-attention dense MLP uses BF16 gate/up projections, SiLU multiplication, and a down projection."
+            ),
             "The MoE/shared branch uses synthetic intermediate width 8 while retaining the real hidden, GQA, and head dimensions.",
             "Decode row reference is computed as row 4 of the same causal sequence after the prefill top token is appended.",
         ],
@@ -1140,6 +1217,7 @@ def _write_tensor(root: Path, tensor: TensorWrite) -> WrittenTensor:
 
 
 def _write_sparse_weight_tensor(
+    config: VectorConfig,
     root: Path,
     *,
     name: str,
@@ -1155,7 +1233,7 @@ def _write_sparse_weight_tensor(
     with path.open("wb") as f:
         for out_feature in range(out_features):
             row = array("H", [0]) * in_features
-            for col, bits in _projection_terms(kind, out_feature, in_features):
+            for col, bits in _projection_terms(config, kind, out_feature, in_features):
                 row[col] = bits
             if sys.byteorder != "little":
                 row.byteswap()
@@ -1236,34 +1314,39 @@ def _write_sparse_bf16_weight_tensor(
     )
 
 
-def _write_moe_gate_up_weight_tensor(root: Path) -> WrittenTensor:
+def _write_moe_gate_up_weight_tensor(config: VectorConfig, root: Path) -> WrittenTensor:
     return _write_sparse_bf16_weight_tensor(
         root,
         name="moe_gate_up_proj_weight",
-        shape=(MOE_NUM_EXPERTS, 2 * MOE_INTERMEDIATE, HIDDEN_SIZE),
-        in_features=HIDDEN_SIZE,
+        shape=(MOE_NUM_EXPERTS, 2 * MOE_INTERMEDIATE, config.hidden_size),
+        in_features=config.hidden_size,
         row_count=MOE_NUM_EXPERTS * 2 * MOE_INTERMEDIATE,
         term_fn=lambda row_idx: _moe_gate_up_terms(
+            config,
             row_idx // (2 * MOE_INTERMEDIATE),
             row_idx % (2 * MOE_INTERMEDIATE),
         ),
         description="Dense row-major BF16 fused MoE gate/up projection weight.",
         metadata={
             "op": "moe_gate_up_projection_weight",
-            "strides": [2 * MOE_INTERMEDIATE * HIDDEN_SIZE, HIDDEN_SIZE, 1],
+            "strides": [
+                2 * MOE_INTERMEDIATE * config.hidden_size,
+                config.hidden_size,
+                1,
+            ],
             "sparse_terms_per_row": MOE_GATE_UP_TERMS,
         },
     )
 
 
-def _write_moe_down_weight_tensor(root: Path) -> WrittenTensor:
+def _write_moe_down_weight_tensor(config: VectorConfig, root: Path) -> WrittenTensor:
     file_name = "model_moe_down_proj_weight.bf16"
     path = root / file_name
     digest = hashlib.sha256()
     byte_count = 0
     with path.open("wb") as f:
         for expert in range(MOE_NUM_EXPERTS):
-            for hidden in range(HIDDEN_SIZE):
+            for hidden in range(config.hidden_size):
                 row = array(
                     "H",
                     [
@@ -1279,19 +1362,19 @@ def _write_moe_down_weight_tensor(root: Path) -> WrittenTensor:
                 f.write(blob)
                 digest.update(blob)
                 byte_count += len(blob)
-    element_count = MOE_NUM_EXPERTS * HIDDEN_SIZE * MOE_INTERMEDIATE
+    element_count = MOE_NUM_EXPERTS * config.hidden_size * MOE_INTERMEDIATE
     sha256 = digest.hexdigest()
     return WrittenTensor(
         spec=TensorSpec(
             name="moe_down_proj_weight",
             dtype="bf16",
-            shape=(MOE_NUM_EXPERTS, HIDDEN_SIZE, MOE_INTERMEDIATE),
+            shape=(MOE_NUM_EXPERTS, config.hidden_size, MOE_INTERMEDIATE),
             file=file_name,
             role="input",
             description="Dense row-major BF16 MoE down projection weight.",
             metadata={
                 "op": "moe_down_projection_weight",
-                "strides": [HIDDEN_SIZE * MOE_INTERMEDIATE, MOE_INTERMEDIATE, 1],
+                "strides": [config.hidden_size * MOE_INTERMEDIATE, MOE_INTERMEDIATE, 1],
                 "elements": element_count,
                 "bytes": byte_count,
                 "sha256": sha256,
@@ -1302,13 +1385,15 @@ def _write_moe_down_weight_tensor(root: Path) -> WrittenTensor:
     )
 
 
-def _write_shared_down_weight_tensor(root: Path) -> WrittenTensor:
-    file_name = "model_moe_shared_down_proj_weight.bf16"
+def _write_shared_down_weight_tensor(
+    config: VectorConfig, root: Path, name: str = "moe_shared_down_proj_weight"
+) -> WrittenTensor:
+    file_name = f"model_{name}.bf16"
     path = root / file_name
     digest = hashlib.sha256()
     byte_count = 0
     with path.open("wb") as f:
-        for hidden in range(HIDDEN_SIZE):
+        for hidden in range(config.hidden_size):
             row = array(
                 "H",
                 [
@@ -1322,13 +1407,13 @@ def _write_shared_down_weight_tensor(root: Path) -> WrittenTensor:
             f.write(blob)
             digest.update(blob)
             byte_count += len(blob)
-    element_count = HIDDEN_SIZE * MOE_INTERMEDIATE
+    element_count = config.hidden_size * MOE_INTERMEDIATE
     sha256 = digest.hexdigest()
     return WrittenTensor(
         spec=TensorSpec(
-            name="moe_shared_down_proj_weight",
+            name=name,
             dtype="bf16",
-            shape=(HIDDEN_SIZE, MOE_INTERMEDIATE),
+            shape=(config.hidden_size, MOE_INTERMEDIATE),
             file=file_name,
             role="input",
             description="Dense row-major BF16 shared expert down projection weight.",
@@ -1391,52 +1476,70 @@ def _write_zero_bf16_tensor(
     )
 
 
-def _weight_specs_without_hashes() -> list[TensorSpec]:
-    return [
+def _weight_specs_without_hashes(config: VectorConfig) -> list[TensorSpec]:
+    attention = [
         TensorSpec(
             name="q_proj_weight",
             dtype="bf16",
-            shape=(Q_PROJ_OUT, HIDDEN_SIZE),
+            shape=(config.q_proj_out, config.hidden_size),
             file="model_q_proj_weight.bf16",
             role="input",
-            description="Dense row-major BF16 q projection weight [8192, 2048].",
+            description=f"Dense row-major BF16 q projection weight [{config.q_proj_out}, {config.hidden_size}].",
         ),
         TensorSpec(
             name="k_proj_weight",
             dtype="bf16",
-            shape=(KV_HIDDEN, HIDDEN_SIZE),
+            shape=(config.kv_hidden, config.hidden_size),
             file="model_k_proj_weight.bf16",
             role="input",
-            description="Dense row-major BF16 k projection weight [512, 2048].",
+            description=f"Dense row-major BF16 k projection weight [{config.kv_hidden}, {config.hidden_size}].",
         ),
         TensorSpec(
             name="v_proj_weight",
             dtype="bf16",
-            shape=(KV_HIDDEN, HIDDEN_SIZE),
+            shape=(config.kv_hidden, config.hidden_size),
             file="model_v_proj_weight.bf16",
             role="input",
-            description="Dense row-major BF16 v projection weight [512, 2048].",
+            description=f"Dense row-major BF16 v projection weight [{config.kv_hidden}, {config.hidden_size}].",
         ),
         TensorSpec(
             name="o_proj_weight",
             dtype="bf16",
-            shape=(HIDDEN_SIZE, Q_HIDDEN),
+            shape=(config.hidden_size, config.q_hidden),
             file="model_o_proj_weight.bf16",
             role="input",
-            description="Dense row-major BF16 output projection weight [2048, 4096].",
+            description=f"Dense row-major BF16 output projection weight [{config.hidden_size}, {config.q_hidden}].",
         ),
         TensorSpec(
             name="lm_head_weight",
             dtype="bf16",
-            shape=(VOCAB_SIZE, HIDDEN_SIZE),
+            shape=(VOCAB_SIZE, config.hidden_size),
             file="model_lm_head_weight.bf16",
             role="input",
-            description="Dense row-major BF16 lm head weight [16, 2048].",
+            description=f"Dense row-major BF16 lm head weight [{VOCAB_SIZE}, {config.hidden_size}].",
         ),
+    ]
+    if not config.has_experts:
+        return attention + [
+            TensorSpec(
+                name=f"dense_{kind}_proj_weight",
+                dtype="bf16",
+                shape=shape,
+                file=f"model_dense_{kind}_proj_weight.bf16",
+                role="input",
+                description=f"Dense MLP {kind} projection weight.",
+            )
+            for kind, shape in (
+                ("gate", (INTERMEDIATE_SIZE, config.hidden_size)),
+                ("up", (INTERMEDIATE_SIZE, config.hidden_size)),
+                ("down", (config.hidden_size, INTERMEDIATE_SIZE)),
+            )
+        ]
+    return attention + [
         TensorSpec(
             name="moe_router_proj_weight",
             dtype="bf16",
-            shape=(MOE_NUM_EXPERTS, HIDDEN_SIZE),
+            shape=(MOE_NUM_EXPERTS, config.hidden_size),
             file="model_moe_router_proj_weight.bf16",
             role="input",
             description="Dense row-major BF16 MoE router projection weight.",
@@ -1444,7 +1547,7 @@ def _weight_specs_without_hashes() -> list[TensorSpec]:
         TensorSpec(
             name="moe_gate_up_proj_weight",
             dtype="bf16",
-            shape=(MOE_NUM_EXPERTS, 2 * MOE_INTERMEDIATE, HIDDEN_SIZE),
+            shape=(MOE_NUM_EXPERTS, 2 * MOE_INTERMEDIATE, config.hidden_size),
             file="model_moe_gate_up_proj_weight.bf16",
             role="input",
             description="Dense row-major BF16 fused MoE gate/up projection weight.",
@@ -1452,7 +1555,7 @@ def _weight_specs_without_hashes() -> list[TensorSpec]:
         TensorSpec(
             name="moe_down_proj_weight",
             dtype="bf16",
-            shape=(MOE_NUM_EXPERTS, HIDDEN_SIZE, MOE_INTERMEDIATE),
+            shape=(MOE_NUM_EXPERTS, config.hidden_size, MOE_INTERMEDIATE),
             file="model_moe_down_proj_weight.bf16",
             role="input",
             description="Dense row-major BF16 MoE down projection weight.",
@@ -1460,7 +1563,7 @@ def _weight_specs_without_hashes() -> list[TensorSpec]:
         TensorSpec(
             name="moe_shared_gate_proj_weight",
             dtype="bf16",
-            shape=(MOE_INTERMEDIATE, HIDDEN_SIZE),
+            shape=(MOE_INTERMEDIATE, config.hidden_size),
             file="model_moe_shared_gate_proj_weight.bf16",
             role="input",
             description="Dense row-major BF16 shared expert gate projection weight.",
@@ -1468,7 +1571,7 @@ def _weight_specs_without_hashes() -> list[TensorSpec]:
         TensorSpec(
             name="moe_shared_up_proj_weight",
             dtype="bf16",
-            shape=(MOE_INTERMEDIATE, HIDDEN_SIZE),
+            shape=(MOE_INTERMEDIATE, config.hidden_size),
             file="model_moe_shared_up_proj_weight.bf16",
             role="input",
             description="Dense row-major BF16 shared expert up projection weight.",
@@ -1476,7 +1579,7 @@ def _weight_specs_without_hashes() -> list[TensorSpec]:
         TensorSpec(
             name="moe_shared_down_proj_weight",
             dtype="bf16",
-            shape=(HIDDEN_SIZE, MOE_INTERMEDIATE),
+            shape=(config.hidden_size, MOE_INTERMEDIATE),
             file="model_moe_shared_down_proj_weight.bf16",
             role="input",
             description="Dense row-major BF16 shared expert down projection weight.",
@@ -1484,7 +1587,7 @@ def _weight_specs_without_hashes() -> list[TensorSpec]:
         TensorSpec(
             name="moe_shared_expert_gate_weight",
             dtype="bf16",
-            shape=(1, HIDDEN_SIZE),
+            shape=(1, config.hidden_size),
             file="model_moe_shared_expert_gate_weight.bf16",
             role="input",
             description="Dense row-major BF16 scalar shared expert gate projection weight.",
@@ -1492,104 +1595,131 @@ def _weight_specs_without_hashes() -> list[TensorSpec]:
     ]
 
 
-def _write_model_weight_tensors(root: Path) -> list[WrittenTensor]:
-    return [
+def _write_model_weight_tensors(
+    config: VectorConfig, root: Path
+) -> list[WrittenTensor]:
+    attention = [
         _write_sparse_weight_tensor(
+            config,
             root,
             name="q_proj_weight",
             kind="q_proj",
-            out_features=Q_PROJ_OUT,
-            in_features=HIDDEN_SIZE,
-            description="Dense row-major BF16 q projection weight [8192, 2048].",
+            out_features=config.q_proj_out,
+            in_features=config.hidden_size,
+            description=f"Dense row-major BF16 q projection weight [{config.q_proj_out}, {config.hidden_size}].",
         ),
         _write_sparse_weight_tensor(
+            config,
             root,
             name="k_proj_weight",
             kind="k_proj",
-            out_features=KV_HIDDEN,
-            in_features=HIDDEN_SIZE,
-            description="Dense row-major BF16 k projection weight [512, 2048].",
+            out_features=config.kv_hidden,
+            in_features=config.hidden_size,
+            description=f"Dense row-major BF16 k projection weight [{config.kv_hidden}, {config.hidden_size}].",
         ),
         _write_sparse_weight_tensor(
+            config,
             root,
             name="v_proj_weight",
             kind="v_proj",
-            out_features=KV_HIDDEN,
-            in_features=HIDDEN_SIZE,
-            description="Dense row-major BF16 v projection weight [512, 2048].",
+            out_features=config.kv_hidden,
+            in_features=config.hidden_size,
+            description=f"Dense row-major BF16 v projection weight [{config.kv_hidden}, {config.hidden_size}].",
         ),
         _write_sparse_weight_tensor(
+            config,
             root,
             name="o_proj_weight",
             kind="o_proj",
-            out_features=HIDDEN_SIZE,
-            in_features=Q_HIDDEN,
-            description="Dense row-major BF16 output projection weight [2048, 4096].",
+            out_features=config.hidden_size,
+            in_features=config.q_hidden,
+            description=f"Dense row-major BF16 output projection weight [{config.hidden_size}, {config.q_hidden}].",
         ),
         _write_sparse_weight_tensor(
+            config,
             root,
             name="lm_head_weight",
             kind="lm_head",
             out_features=VOCAB_SIZE,
-            in_features=HIDDEN_SIZE,
-            description="Dense row-major BF16 lm head weight [16, 2048].",
+            in_features=config.hidden_size,
+            description=f"Dense row-major BF16 lm head weight [{VOCAB_SIZE}, {config.hidden_size}].",
         ),
+    ]
+    if not config.has_experts:
+        dense = [
+            _write_sparse_bf16_weight_tensor(
+                root,
+                name=f"dense_{kind}_proj_weight",
+                shape=(INTERMEDIATE_SIZE, config.hidden_size),
+                in_features=config.hidden_size,
+                row_count=INTERMEDIATE_SIZE,
+                term_fn=lambda row, kind=kind: _shared_proj_terms(config, kind, row),
+                description=f"Dense MLP {kind} projection weight.",
+                metadata={"op": f"dense_{kind}_projection_weight"},
+            )
+            for kind in ("gate", "up")
+        ]
+        dense.append(
+            _write_shared_down_weight_tensor(config, root, "dense_down_proj_weight")
+        )
+        return attention + dense
+    return attention + [
         _write_sparse_bf16_weight_tensor(
             root,
             name="moe_router_proj_weight",
-            shape=(MOE_NUM_EXPERTS, HIDDEN_SIZE),
-            in_features=HIDDEN_SIZE,
+            shape=(MOE_NUM_EXPERTS, config.hidden_size),
+            in_features=config.hidden_size,
             row_count=MOE_NUM_EXPERTS,
-            term_fn=_moe_router_terms,
+            term_fn=partial(_moe_router_terms, config),
             description="Dense row-major BF16 MoE router projection weight.",
             metadata={
                 "op": "moe_router_projection_weight",
-                "strides": [HIDDEN_SIZE, 1],
+                "strides": [config.hidden_size, 1],
                 "sparse_terms_per_row": MOE_ROUTER_TERMS,
             },
         ),
-        _write_moe_gate_up_weight_tensor(root),
-        _write_moe_down_weight_tensor(root),
+        _write_moe_gate_up_weight_tensor(config, root),
+        _write_moe_down_weight_tensor(config, root),
         _write_sparse_bf16_weight_tensor(
             root,
             name="moe_shared_gate_proj_weight",
-            shape=(MOE_INTERMEDIATE, HIDDEN_SIZE),
-            in_features=HIDDEN_SIZE,
+            shape=(MOE_INTERMEDIATE, config.hidden_size),
+            in_features=config.hidden_size,
             row_count=MOE_INTERMEDIATE,
-            term_fn=lambda row_idx: _shared_proj_terms("gate", row_idx),
+            term_fn=lambda row_idx: _shared_proj_terms(config, "gate", row_idx),
             description="Dense row-major BF16 shared expert gate projection weight.",
             metadata={
                 "op": "shared_expert_gate_projection_weight",
-                "strides": [HIDDEN_SIZE, 1],
+                "strides": [config.hidden_size, 1],
                 "sparse_terms_per_row": MOE_SHARED_TERMS,
             },
         ),
         _write_sparse_bf16_weight_tensor(
             root,
             name="moe_shared_up_proj_weight",
-            shape=(MOE_INTERMEDIATE, HIDDEN_SIZE),
-            in_features=HIDDEN_SIZE,
+            shape=(MOE_INTERMEDIATE, config.hidden_size),
+            in_features=config.hidden_size,
             row_count=MOE_INTERMEDIATE,
-            term_fn=lambda row_idx: _shared_proj_terms("up", row_idx),
+            term_fn=lambda row_idx: _shared_proj_terms(config, "up", row_idx),
             description="Dense row-major BF16 shared expert up projection weight.",
             metadata={
                 "op": "shared_expert_up_projection_weight",
-                "strides": [HIDDEN_SIZE, 1],
+                "strides": [config.hidden_size, 1],
                 "sparse_terms_per_row": MOE_SHARED_TERMS,
             },
         ),
-        _write_shared_down_weight_tensor(root),
+        _write_shared_down_weight_tensor(config, root),
         _write_sparse_bf16_weight_tensor(
             root,
             name="moe_shared_expert_gate_weight",
-            shape=(1, HIDDEN_SIZE),
-            in_features=HIDDEN_SIZE,
+            shape=(1, config.hidden_size),
+            in_features=config.hidden_size,
             row_count=1,
-            term_fn=lambda row_idx: _shared_proj_terms("shared_gate", row_idx),
+            term_fn=lambda row_idx: _shared_proj_terms(config, "shared_gate", row_idx),
             description="Dense row-major BF16 scalar shared expert gate projection weight.",
             metadata={
                 "op": "shared_expert_gate_weight",
-                "strides": [HIDDEN_SIZE, 1],
+                "strides": [config.hidden_size, 1],
                 "sparse_terms_per_row": MOE_SHARED_TERMS,
             },
         ),
@@ -1599,15 +1729,17 @@ def _write_model_weight_tensors(root: Path) -> list[WrittenTensor]:
 INLINE_INPUT_TENSORS = 6
 
 
-def write_model_logits_artifact(root: str | Path = DEFAULT_OUTPUT) -> Path:
+def write_model_logits_artifact(
+    config: VectorConfig, root: str | Path = DEFAULT_OUTPUT
+) -> Path:
     root_path = Path(root)
     root_path.mkdir(parents=True, exist_ok=True)
 
-    tensors, metadata = build_model_logits_tensors()
+    tensors, metadata = build_model_logits_tensors(config)
     written: list[WrittenTensor] = []
     for tensor in tensors[:INLINE_INPUT_TENSORS]:
         written.append(_write_tensor(root_path, tensor))
-    written.extend(_write_model_weight_tensors(root_path))
+    written.extend(_write_model_weight_tensors(config, root_path))
     for tensor in tensors[INLINE_INPUT_TENSORS:]:
         written.append(_write_tensor(root_path, tensor))
 
@@ -1628,8 +1760,10 @@ def write_model_logits_artifact(root: str | Path = DEFAULT_OUTPUT) -> Path:
     return manifest_path
 
 
-def build_model_logits_artifact() -> tuple[VectorManifest, dict[str, Any]]:
-    tensors, metadata = build_model_logits_tensors()
+def build_model_logits_artifact(
+    config: VectorConfig,
+) -> tuple[VectorManifest, dict[str, Any]]:
+    tensors, metadata = build_model_logits_tensors(config)
     tensor_specs = [
         TensorSpec(
             name=tensor.name,
@@ -1649,7 +1783,7 @@ def build_model_logits_artifact() -> tuple[VectorManifest, dict[str, Any]]:
         for tensor in tensors
     ]
     tensor_specs[INLINE_INPUT_TENSORS:INLINE_INPUT_TENSORS] = (
-        _weight_specs_without_hashes()
+        _weight_specs_without_hashes(config)
     )
     return (
         VectorManifest(

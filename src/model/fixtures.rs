@@ -99,7 +99,7 @@ impl QwenConfig {
     }
 
     pub(super) fn randomized_qwen36_moe_gdn_one_block_fixture() -> Self {
-        let mut config = Self::randomized_dense_tiny_fixture();
+        let mut config = Self::randomized_shared_moe_tiny_fixture();
         config.max_seq_len = 8;
         config.max_batch_tokens = 8;
         config.max_pages = 2;
@@ -108,8 +108,6 @@ impl QwenConfig {
         fixture.full_attention_only = false;
         fixture.num_layers = 4;
         fixture.vocab_size = 32;
-        fixture.intermediate_size = crate::constants::mlp::INTERMEDIATE_SIZE;
-        fixture.moe = Some(MoeShape::compiled());
         config
     }
 
@@ -121,7 +119,7 @@ impl QwenConfig {
             intermediate_size: crate::constants::mlp::INTERMEDIATE_SIZE,
             rms_norm_eps: model::RMS_NORM_EPS,
             rope_theta: attention::ROPE_THETA,
-            moe: Some(MoeShape::compiled()),
+            moe: crate::constants::mlp::HAS_EXPERTS.then(MoeShape::compiled),
             full_attention_only: false,
             ..FixtureShape::dense()
         });

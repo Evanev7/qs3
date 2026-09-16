@@ -1,3 +1,7 @@
+use qs3::constants::{
+    attention::{HEAD_DIM, NUM_KV_HEADS, NUM_Q_HEADS},
+    model::HIDDEN_SIZE,
+};
 use qs3::memory::CudaCtx;
 use qs3::{
     AppendBatch, AttentionLayer, Commit, DecodeBatch, DynDType, Engine, EngineConfig, KvLayout, ffi,
@@ -240,12 +244,12 @@ fn tiny_config() -> EngineConfig {
         max_seq_len: 8,
         max_pages: 8,
         page_size: 4,
-        hidden_size: 2048,
+        hidden_size: HIDDEN_SIZE,
         intermediate_size: 0,
         vocab_size: 0,
-        num_q_heads: 16,
-        num_kv_heads: 2,
-        head_dim: 256,
+        num_q_heads: NUM_Q_HEADS,
+        num_kv_heads: NUM_KV_HEADS,
+        head_dim: HEAD_DIM,
         activation_dtype: DynDType::F16,
         kv_dtype: DynDType::F16,
         kv_layout: KvLayout::NHD,

@@ -5,6 +5,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from . import generate_attention
+from .config import VectorConfig
 from .full_attention_block import DEFAULT_OUTPUT as DEFAULT_FULL_ATTENTION_BLOCK_OUTPUT
 from .gdn import DEFAULT_OUTPUT as DEFAULT_GDN_OUTPUT
 from .gdn_decoder_layer import DEFAULT_OUTPUT as DEFAULT_GDN_DECODER_LAYER_OUTPUT
@@ -235,6 +236,17 @@ def main(argv: Sequence[str] | None = None) -> None:
         help="build the artifact in memory without writing files",
     )
 
+    for command in (
+        generate_all_parser,
+        generate,
+        generate_gdn_parser,
+        generate_gdn_decoder_layer_parser,
+        generate_attention_parser,
+        generate_full_attention_block_parser,
+        generate_model_logits_parser,
+    ):
+        command.add_argument("--config", required=True, type=Path)
+
     args = parser.parse_args(argv)
     if args.command == "check-oracles" and bool(args.depfile) != bool(
         args.depfile_target
@@ -248,7 +260,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             print("no vector groups registered")
         return
     if args.command == "generate-all":
-        generate_all(args.output_root, clean=args.clean)
+        generate_all(VectorConfig.read(args.config), args.output_root, clean=args.clean)
         print(f"generated all vector groups: output={args.output_root}")
         return
     if args.command == "write-oracles":
@@ -268,29 +280,35 @@ def main(argv: Sequence[str] | None = None) -> None:
             _print_norm_index(index, output)
             return
         if args.group in {"attention", "full_attention_primitives"}:
-            generate_attention.main(["--output", args.output])
+            generate_attention.main(
+                ["--config", str(args.config), "--output", args.output]
+            )
             return
         if args.group == "full_attention_block":
             from .generate_full_attention_block import main as generate_block_main
 
-            generate_block_main(["--output", args.output])
+            generate_block_main(["--config", str(args.config), "--output", args.output])
             return
         if args.group == "model_logits":
             from .generate_model_logits import main as generate_model_logits_main
 
-            generate_model_logits_main(["--output", args.output])
+            generate_model_logits_main(
+                ["--config", str(args.config), "--output", args.output]
+            )
             return
         if args.group in {"gdn", "gdn_post_conv_prep"}:
             from .generate_gdn import main as generate_gdn_main
 
-            generate_gdn_main(["--output", args.output])
+            generate_gdn_main(["--config", str(args.config), "--output", args.output])
             return
         if args.group == "gdn_decoder_layer":
             from .generate_gdn_decoder_layer import (
                 main as generate_gdn_decoder_layer_main,
             )
 
-            generate_gdn_decoder_layer_main(["--output", args.output])
+            generate_gdn_decoder_layer_main(
+                ["--config", str(args.config), "--output", args.output]
+            )
             return
         if args.group not in {"moe", "moe_shared_expert"}:
             parser.error(f"unknown vector group {args.group!r}")
@@ -317,7 +335,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     if args.command == "generate-gdn":
         from .generate_gdn import main as generate_gdn_main
 
-        generate_args = ["--output", args.output]
+        generate_args = ["--config", str(args.config), "--output", args.output]
         if args.check:
             generate_args.append("--check")
         generate_gdn_main(generate_args)
@@ -325,13 +343,13 @@ def main(argv: Sequence[str] | None = None) -> None:
     if args.command == "generate-gdn-decoder-layer":
         from .generate_gdn_decoder_layer import main as generate_gdn_decoder_layer_main
 
-        generate_args = ["--output", args.output]
+        generate_args = ["--config", str(args.config), "--output", args.output]
         if args.check:
             generate_args.append("--check")
         generate_gdn_decoder_layer_main(generate_args)
         return
     if args.command == "generate-attention":
-        generate_args = ["--output", args.output]
+        generate_args = ["--config", str(args.config), "--output", args.output]
         if args.check:
             generate_args.append("--check")
         if args.force:
@@ -341,7 +359,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     if args.command == "generate-full-attention-block":
         from .generate_full_attention_block import main as generate_block_main
 
-        generate_args = ["--output", args.output]
+        generate_args = ["--config", str(args.config), "--output", args.output]
         if args.check:
             generate_args.append("--check")
         generate_block_main(generate_args)
@@ -349,7 +367,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     if args.command == "generate-model-logits":
         from .generate_model_logits import main as generate_model_logits_main
 
-        generate_args = ["--output", args.output]
+        generate_args = ["--config", str(args.config), "--output", args.output]
         if args.check:
             generate_args.append("--check")
         generate_model_logits_main(generate_args)
@@ -360,13 +378,15 @@ def main(argv: Sequence[str] | None = None) -> None:
 def _write_depfile(output: str, target: str, oracle_root: str) -> None:
     source_root = Path(__file__).resolve().parent
     oracle_dir = Path(oracle_root).resolve()
-    # Both trees are flat. Track directory mtimes for additions/removals, but
-    # exclude packaging output and interpreter caches beside the source files.
+    # Track additions/removals, including config-specific oracle sets, without
+    # including interpreter caches beside the source files.
     dependencies = {
         source_root,
         *source_root.glob("*.py"),
+        source_root.parent / "qsutil/config.py",
         oracle_dir,
-        *oracle_dir.glob("*.json"),
+        *oracle_dir.rglob("*.json"),
+        *[p for p in oracle_dir.iterdir() if p.is_dir()],
     }
 
     def escape(path: str) -> str:

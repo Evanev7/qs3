@@ -9,17 +9,16 @@ use crate::{
             VALUE_HEAD_DIM,
         },
     },
-    ffi::{self, sys},
+    dtype::{BF16, I32},
+    ffi::{self, DevicePtr, sys},
 };
 
-mod dtype;
 pub(crate) mod qscb;
 pub(crate) mod qscu;
 pub(crate) mod qsfi;
 pub(crate) mod qstriton;
 mod tensor;
 
-pub(crate) use dtype::{BF16, DeviceElement, F32, I32};
 pub(crate) use qscb::Qscb;
 pub(crate) use qscu::Qscu;
 pub(crate) use qsfi::Qsfi;
@@ -68,7 +67,7 @@ impl Workspace {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct Bf16Heads {
-    data: ffi::ErasedDevicePtr,
+    data: DevicePtr<BF16>,
     tokens: u32,
     heads: u32,
     head_dim: u32,
@@ -78,7 +77,7 @@ pub(crate) struct Bf16Heads {
 
 impl Bf16Heads {
     pub(crate) fn contiguous(
-        data: ffi::ErasedDevicePtr,
+        data: DevicePtr<BF16>,
         tokens: u32,
         heads: u32,
         head_dim: u32,
@@ -94,14 +93,13 @@ impl Bf16Heads {
     }
 
     pub(crate) fn new(
-        data: ffi::ErasedDevicePtr,
+        data: DevicePtr<BF16>,
         tokens: u32,
         heads: u32,
         head_dim: u32,
         token_stride: u32,
         head_stride: u32,
     ) -> Result<Self, Status> {
-        validate_ptr(data)?;
         validate_nonzero(&[tokens, heads, head_dim, token_stride, head_stride])?;
         if head_stride < head_dim || token_stride < heads_mul(heads, head_stride)? {
             return Err(Status::InvalidArgument);
@@ -118,7 +116,7 @@ impl Bf16Heads {
 
     pub(crate) fn tensor(self) -> ffi::Tensor3 {
         ffi::Tensor3 {
-            data: self.data,
+            data: self.data.erase(),
             dtype: ffi::DTYPE_BF16,
             shape: [self.tokens.into(), self.heads.into(), self.head_dim.into()],
             stride: [self.token_stride.into(), self.head_stride.into(), 1],

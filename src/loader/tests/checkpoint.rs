@@ -3,12 +3,7 @@ use crate::constants::mlp::HAS_EXPERTS;
 use std::collections::HashMap;
 use tinyjson::JsonValue;
 
-fn checkpoint_json(has_experts: bool) -> String {
-    let model = if has_experts {
-        "qwen3.6-35b-a3b"
-    } else {
-        "qwen3.6-27b"
-    };
+fn checkpoint_json(model: &str) -> String {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("models")
         .join(model)
@@ -16,11 +11,11 @@ fn checkpoint_json(has_experts: bool) -> String {
     std::fs::read_to_string(path).unwrap()
 }
 
-fn selected_config() -> HashMap<String, JsonValue> {
-    parse_json_object(&checkpoint_json(HAS_EXPERTS)).unwrap()
+pub(super) fn selected_config() -> HashMap<String, JsonValue> {
+    parse_json_object(&checkpoint_json(crate::constants::engine::MODEL)).unwrap()
 }
 
-fn text(root: &mut HashMap<String, JsonValue>) -> &mut HashMap<String, JsonValue> {
+pub(super) fn text(root: &mut HashMap<String, JsonValue>) -> &mut HashMap<String, JsonValue> {
     root.get_mut("text_config").unwrap().get_mut().unwrap()
 }
 
@@ -28,16 +23,6 @@ fn text(root: &mut HashMap<String, JsonValue>) -> &mut HashMap<String, JsonValue
 fn pinned_checkpoint_matches_selected_build() {
     let config = Qwen36TextConfig::from_config_object(&selected_config()).unwrap();
     config.validate_compiled_model().unwrap();
-    if HAS_EXPERTS {
-        assert_eq!(config.num_experts, 256);
-        assert_eq!(config.moe_intermediate_size, 512);
-    } else {
-        assert_eq!(config.num_hidden_layers, 64);
-        assert_eq!(config.hidden_size, 5120);
-        assert_eq!(config.intermediate_size, 17408);
-        assert_eq!(config.num_experts, 0);
-        assert_eq!(config.moe_intermediate_size, 0);
-    }
 }
 
 #[test]
@@ -74,7 +59,8 @@ fn mlp_width_and_expert_fields_cannot_change_the_selected_architecture() {
     } else {
         "intermediate_size"
     };
-    text(&mut root).insert(width.into(), 256.0.into());
+    let current = *text(&mut root)[width].get::<f64>().unwrap();
+    text(&mut root).insert(width.into(), (current + 8.0).into());
     assert!(matches!(
         Qwen36TextConfig::from_config_object(&root),
         Err(WeightLoadError::InvalidConfig(_))
@@ -82,9 +68,14 @@ fn mlp_width_and_expert_fields_cannot_change_the_selected_architecture() {
 
     if HAS_EXPERTS {
         let mut root = selected_config();
-        text(&mut root).insert("intermediate_size".into(), 512.0.into());
+        let width = text(&mut root)["moe_intermediate_size"].clone();
+        text(&mut root).insert("intermediate_size".into(), width);
         Qwen36TextConfig::from_config_object(&root).unwrap();
-        text(&mut root).insert("intermediate_size".into(), 17408.0.into());
+        let wrong = *text(&mut root)["moe_intermediate_size"]
+            .get::<f64>()
+            .unwrap()
+            + 8.0;
+        text(&mut root).insert("intermediate_size".into(), wrong.into());
         assert!(Qwen36TextConfig::from_config_object(&root).is_err());
     } else {
         for field in [
@@ -113,7 +104,15 @@ fn other_checkpoint_is_rejected_before_reading_weight_index() {
     let directory =
         std::env::temp_dir().join(format!("qs3-other-checkpoint-{}", std::process::id()));
     std::fs::create_dir_all(&directory).unwrap();
-    std::fs::write(directory.join("config.json"), checkpoint_json(!HAS_EXPERTS)).unwrap();
+    std::fs::write(
+        directory.join("config.json"),
+        checkpoint_json(if HAS_EXPERTS {
+            "qwen3.6-27b"
+        } else {
+            "qwen3.6-35b-a3b"
+        }),
+    )
+    .unwrap();
     // Config rejection must win over the missing index file.
     let result = QwenBf16LoadPlan::read(&directory);
     std::fs::remove_dir_all(directory).unwrap();

@@ -11,12 +11,14 @@ from .attention import (
     build_attention_artifact,
     write_bundle,
 )
+from .config import VectorConfig
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Generate deterministic Qwen3.6 full-attention primitive vectors."
     )
+    parser.add_argument("--config", required=True, type=Path)
     parser.add_argument(
         "--output",
         type=Path,
@@ -38,12 +40,13 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
-    manifest, _ = build_attention_artifact()
+    config = VectorConfig.read(args.config)
+    manifest, _ = build_attention_artifact(config)
     if args.check:
         output = args.output
     else:
         output = args.output
-        write_bundle(output, force=args.force)
+        write_bundle(config, output, force=args.force)
 
     print(
         "generated "

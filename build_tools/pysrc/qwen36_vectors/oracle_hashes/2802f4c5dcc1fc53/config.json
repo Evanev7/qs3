@@ -1,0 +1,21 @@
+{
+  "conv_width": 4,
+  "gdn_output_dim": 4096,
+  "group_size": 8,
+  "has_experts": true,
+  "head_dim": 256,
+  "hidden_size": 2048,
+  "key_dim": 128,
+  "key_heads": 16,
+  "kv_heads": 2,
+  "kv_hidden": 512,
+  "q_heads": 16,
+  "q_hidden": 4096,
+  "q_proj_out": 8192,
+  "qkv_dim": 8192,
+  "rms_eps": 1e-06,
+  "rope_theta": 10000000,
+  "rotary_dim": 64,
+  "value_dim": 128,
+  "value_heads": 32
+}

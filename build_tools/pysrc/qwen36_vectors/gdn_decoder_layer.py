@@ -15,11 +15,12 @@ import sys
 from array import array
 from collections.abc import Iterable
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import Any
 
+from .config import VectorConfig
 from .full_attention_block import (
-    HIDDEN_SIZE,
     MOE_GATE_UP_TERMS,
     MOE_INTERMEDIATE,
     MOE_NUM_EXPERTS,
@@ -41,13 +42,6 @@ from .full_attention_block import (
     _shared_proj_terms,
 )
 from .gdn import (
-    CONV_WIDTH,
-    KEY_DIM,
-    KEY_HEADS,
-    QKV_DIM,
-    RMS_EPS,
-    VALUE_DIM,
-    VALUE_HEADS,
     _a_value,
     _b_value,
     _bf16,
@@ -73,7 +67,7 @@ from .schema import MANIFEST_FILE, TensorSpec, VectorManifest
 
 DEFAULT_OUTPUT = DEFAULT_VECTOR_ROOT / "gdn_decoder_layer"
 INPUT_COLUMNS = tuple(range(ROWS))
-GDN_OUTPUT_DIM = VALUE_HEADS * VALUE_DIM
+
 INLINE_TENSORS_BEFORE_WEIGHTS = 7
 
 
@@ -106,29 +100,35 @@ class WrittenTensor:
     byte_count: int
 
 
-def build_gdn_decoder_layer_tensors() -> tuple[list[TensorWrite], dict[str, Any]]:
-    layer_input = _build_row_coded_input()
+def build_gdn_decoder_layer_tensors(
+    config: VectorConfig,
+) -> tuple[list[TensorWrite], dict[str, Any]]:
+    layer_input = _build_row_coded_input(config)
     residual = _bf16_words(
-        _residual_value(row, col) for row in range(ROWS) for col in range(HIDDEN_SIZE)
+        _residual_value(row, col)
+        for row in range(ROWS)
+        for col in range(config.hidden_size)
     )
     mlp_norm_weight = _bf16_words(
-        _post_norm_weight_value(col) for col in range(HIDDEN_SIZE)
+        _post_norm_weight_value(col) for col in range(config.hidden_size)
     )
 
-    mixed_qkv, gate, b, a = _build_gdn_projected_rows()
-    _conv_weight_words, conv_weight = _build_conv_weight()
+    mixed_qkv, gate, b, a = _build_gdn_projected_rows(config)
+    _conv_weight_words, conv_weight = _build_conv_weight(config)
     conv_output_f32, conv_output_bf16 = _causal_conv1d_silu(
+        config,
         mixed_qkv,
         conv_weight,
         [0, ROWS],
     )
-    q_raw, k_raw, v_raw = _split_qkv(conv_output_bf16, token_count=ROWS)
-    a_log_words = _bf16_words(_build_a_log())
-    dt_bias_words = _bf16_words(_build_dt_bias())
+    q_raw, k_raw, v_raw = _split_qkv(config, conv_output_bf16, token_count=ROWS)
+    a_log_words = _bf16_words(_build_a_log(config))
+    dt_bias_words = _bf16_words(_build_dt_bias(config))
     a_log = tuple(bf16_bits_to_float32(word) for word in a_log_words)
     dt_bias = tuple(bf16_bits_to_float32(word) for word in dt_bias_words)
-    _g, decay_exp, beta = _gating(a, b, list(a_log), list(dt_bias))
+    _g, decay_exp, beta = _gating(config, a, b, list(a_log), list(dt_bias))
     q_values, k_values = _recurrent_qk_values(
+        config,
         q_raw,
         k_raw,
         normalize_inside=True,
@@ -140,6 +140,7 @@ def build_gdn_decoder_layer_tensors() -> tuple[list[TensorWrite], dict[str, Any]
         recurrent_final_state_f32,
         recurrent_final_state_bf16,
     ) = _gdn_prefill_recurrence(
+        config,
         q_values,
         k_values,
         v_raw,
@@ -147,30 +148,34 @@ def build_gdn_decoder_layer_tensors() -> tuple[list[TensorWrite], dict[str, Any]
         beta,
         [0, ROWS],
     )
-    rms_weight_words, rms_weight = _build_gated_rmsnorm_weight()
+    rms_weight_words, rms_weight = _build_gated_rmsnorm_weight(config)
     gated_norm_f32, gated_norm_bf16, gated_norm_rows = _gated_rmsnorm_silu_rows(
+        config,
         recurrent_output_bf16,
         gate,
         rms_weight,
     )
     out_proj_f32, out_proj_bf16, _out_proj_rows = _project_sparse(
+        config,
         gated_norm_rows,
         "o_proj",
-        HIDDEN_SIZE,
-        GDN_OUTPUT_DIM,
+        config.hidden_size,
+        config.gdn_output_dim,
     )
     residual_after_attention_f32, residual_after_attention_bf16, residual_rows = (
         _add_rows(
             out_proj_bf16,
             residual,
-            HIDDEN_SIZE,
+            config.hidden_size,
         )
     )
     post_norm_f32, post_norm_bf16, post_norm_rows = _gemma_rmsnorm_rows(
+        config,
         residual_rows,
         mlp_norm_weight,
     )
     moe_tensors, moe_metadata = _compute_one_layer_moe_tensors(
+        config,
         post_norm_rows,
         residual_after_attention_bf16,
     )
@@ -181,7 +186,7 @@ def build_gdn_decoder_layer_tensors() -> tuple[list[TensorWrite], dict[str, Any]
         TensorWrite(
             "layer_input",
             "bf16",
-            (ROWS, HIDDEN_SIZE),
+            (ROWS, config.hidden_size),
             layer_input,
             "input",
             "gdn_layer_input",
@@ -190,7 +195,7 @@ def build_gdn_decoder_layer_tensors() -> tuple[list[TensorWrite], dict[str, Any]
         TensorWrite(
             "input_residual",
             "bf16",
-            (ROWS, HIDDEN_SIZE),
+            (ROWS, config.hidden_size),
             residual,
             "input",
             "block_residual",
@@ -199,7 +204,7 @@ def build_gdn_decoder_layer_tensors() -> tuple[list[TensorWrite], dict[str, Any]
         TensorWrite(
             "mlp_norm_raw_weight",
             "bf16",
-            (HIDDEN_SIZE,),
+            (config.hidden_size,),
             mlp_norm_weight,
             "input",
             "fused_add_gemma_rmsnorm",
@@ -209,8 +214,8 @@ def build_gdn_decoder_layer_tensors() -> tuple[list[TensorWrite], dict[str, Any]
         TensorWrite(
             "conv_bias",
             "bf16",
-            (QKV_DIM,),
-            tuple(_bf16(0.0) for _ in range(QKV_DIM)),
+            (config.qkv_dim,),
+            tuple(_bf16(0.0) for _ in range(config.qkv_dim)),
             "input",
             "gdn_causal_conv",
             "Zero BF16 causal-conv bias used by execute_gdn_layer.",
@@ -218,7 +223,7 @@ def build_gdn_decoder_layer_tensors() -> tuple[list[TensorWrite], dict[str, Any]
         TensorWrite(
             "A_log",
             "bf16",
-            (VALUE_HEADS,),
+            (config.value_heads,),
             a_log_words,
             "input",
             "gdn_recurrence",
@@ -227,7 +232,7 @@ def build_gdn_decoder_layer_tensors() -> tuple[list[TensorWrite], dict[str, Any]
         TensorWrite(
             "dt_bias",
             "bf16",
-            (VALUE_HEADS,),
+            (config.value_heads,),
             dt_bias_words,
             "input",
             "gdn_recurrence",
@@ -236,7 +241,7 @@ def build_gdn_decoder_layer_tensors() -> tuple[list[TensorWrite], dict[str, Any]
         TensorWrite(
             "rms_weight",
             "bf16",
-            (VALUE_DIM,),
+            (config.value_dim,),
             tuple(rms_weight_words),
             "input",
             "gdn_gated_rmsnorm",
@@ -245,7 +250,7 @@ def build_gdn_decoder_layer_tensors() -> tuple[list[TensorWrite], dict[str, Any]
         TensorWrite(
             "projected_mixed_qkv",
             "bf16",
-            (ROWS, QKV_DIM),
+            (ROWS, config.qkv_dim),
             mixed_qkv,
             "reference",
             "gdn_in_projection",
@@ -254,7 +259,7 @@ def build_gdn_decoder_layer_tensors() -> tuple[list[TensorWrite], dict[str, Any]
         TensorWrite(
             "projected_gate",
             "bf16",
-            (ROWS, VALUE_HEADS, VALUE_DIM),
+            (ROWS, config.value_heads, config.value_dim),
             gate,
             "reference",
             "gdn_gate_projection",
@@ -263,7 +268,7 @@ def build_gdn_decoder_layer_tensors() -> tuple[list[TensorWrite], dict[str, Any]
         TensorWrite(
             "projected_b",
             "bf16",
-            (ROWS, VALUE_HEADS),
+            (ROWS, config.value_heads),
             b,
             "reference",
             "gdn_b_projection",
@@ -272,7 +277,7 @@ def build_gdn_decoder_layer_tensors() -> tuple[list[TensorWrite], dict[str, Any]
         TensorWrite(
             "projected_a",
             "bf16",
-            (ROWS, VALUE_HEADS),
+            (ROWS, config.value_heads),
             a,
             "reference",
             "gdn_a_projection",
@@ -281,7 +286,7 @@ def build_gdn_decoder_layer_tensors() -> tuple[list[TensorWrite], dict[str, Any]
         TensorWrite(
             "expected_conv_output_f32",
             "f32",
-            (ROWS, QKV_DIM),
+            (ROWS, config.qkv_dim),
             tuple(conv_output_f32),
             "reference",
             "gdn_causal_conv",
@@ -290,7 +295,7 @@ def build_gdn_decoder_layer_tensors() -> tuple[list[TensorWrite], dict[str, Any]
         TensorWrite(
             "expected_conv_output_bf16",
             "bf16",
-            (ROWS, QKV_DIM),
+            (ROWS, config.qkv_dim),
             tuple(conv_output_bf16),
             "expected",
             "gdn_causal_conv",
@@ -299,7 +304,7 @@ def build_gdn_decoder_layer_tensors() -> tuple[list[TensorWrite], dict[str, Any]
         TensorWrite(
             "expected_recurrent_output_f32",
             "f32",
-            (ROWS, VALUE_HEADS, VALUE_DIM),
+            (ROWS, config.value_heads, config.value_dim),
             tuple(recurrent_output_f32),
             "reference",
             "gdn_prefill_recurrence",
@@ -308,7 +313,7 @@ def build_gdn_decoder_layer_tensors() -> tuple[list[TensorWrite], dict[str, Any]
         TensorWrite(
             "expected_recurrent_output_bf16",
             "bf16",
-            (ROWS, VALUE_HEADS, VALUE_DIM),
+            (ROWS, config.value_heads, config.value_dim),
             tuple(recurrent_output_bf16),
             "expected",
             "gdn_prefill_recurrence",
@@ -317,7 +322,7 @@ def build_gdn_decoder_layer_tensors() -> tuple[list[TensorWrite], dict[str, Any]
         TensorWrite(
             "expected_recurrent_final_state_f32",
             "f32",
-            (1, VALUE_HEADS, VALUE_DIM, KEY_DIM),
+            (1, config.value_heads, config.value_dim, config.key_dim),
             tuple(recurrent_final_state_f32),
             "reference",
             "gdn_prefill_recurrence",
@@ -326,7 +331,7 @@ def build_gdn_decoder_layer_tensors() -> tuple[list[TensorWrite], dict[str, Any]
         TensorWrite(
             "expected_recurrent_final_state_bf16",
             "bf16",
-            (1, VALUE_HEADS, VALUE_DIM, KEY_DIM),
+            (1, config.value_heads, config.value_dim, config.key_dim),
             tuple(recurrent_final_state_bf16),
             "expected",
             "gdn_prefill_recurrence",
@@ -335,7 +340,7 @@ def build_gdn_decoder_layer_tensors() -> tuple[list[TensorWrite], dict[str, Any]
         TensorWrite(
             "expected_gated_norm_output_f32",
             "f32",
-            (ROWS, VALUE_HEADS, VALUE_DIM),
+            (ROWS, config.value_heads, config.value_dim),
             gated_norm_f32,
             "reference",
             "gdn_gated_rmsnorm",
@@ -344,7 +349,7 @@ def build_gdn_decoder_layer_tensors() -> tuple[list[TensorWrite], dict[str, Any]
         TensorWrite(
             "expected_gated_norm_output_bf16",
             "bf16",
-            (ROWS, VALUE_HEADS, VALUE_DIM),
+            (ROWS, config.value_heads, config.value_dim),
             gated_norm_bf16,
             "expected",
             "gdn_gated_rmsnorm",
@@ -353,7 +358,7 @@ def build_gdn_decoder_layer_tensors() -> tuple[list[TensorWrite], dict[str, Any]
         TensorWrite(
             "expected_output_proj_f32",
             "f32",
-            (ROWS, HIDDEN_SIZE),
+            (ROWS, config.hidden_size),
             out_proj_f32,
             "reference",
             "gdn_output_projection",
@@ -362,7 +367,7 @@ def build_gdn_decoder_layer_tensors() -> tuple[list[TensorWrite], dict[str, Any]
         TensorWrite(
             "expected_output_proj_bf16",
             "bf16",
-            (ROWS, HIDDEN_SIZE),
+            (ROWS, config.hidden_size),
             out_proj_bf16,
             "expected",
             "gdn_output_projection",
@@ -371,7 +376,7 @@ def build_gdn_decoder_layer_tensors() -> tuple[list[TensorWrite], dict[str, Any]
         TensorWrite(
             "expected_residual_after_attention_f32",
             "f32",
-            (ROWS, HIDDEN_SIZE),
+            (ROWS, config.hidden_size),
             residual_after_attention_f32,
             "reference",
             "post_gdn_residual_add",
@@ -380,7 +385,7 @@ def build_gdn_decoder_layer_tensors() -> tuple[list[TensorWrite], dict[str, Any]
         TensorWrite(
             "expected_residual_after_attention_bf16",
             "bf16",
-            (ROWS, HIDDEN_SIZE),
+            (ROWS, config.hidden_size),
             residual_after_attention_bf16,
             "expected",
             "post_gdn_residual_add",
@@ -389,7 +394,7 @@ def build_gdn_decoder_layer_tensors() -> tuple[list[TensorWrite], dict[str, Any]
         TensorWrite(
             "expected_post_attn_norm_output_f32",
             "f32",
-            (ROWS, HIDDEN_SIZE),
+            (ROWS, config.hidden_size),
             post_norm_f32,
             "reference",
             "post_gdn_gemma_rmsnorm",
@@ -398,7 +403,7 @@ def build_gdn_decoder_layer_tensors() -> tuple[list[TensorWrite], dict[str, Any]
         TensorWrite(
             "expected_post_attn_norm_output_bf16",
             "bf16",
-            (ROWS, HIDDEN_SIZE),
+            (ROWS, config.hidden_size),
             post_norm_bf16,
             "expected",
             "post_gdn_gemma_rmsnorm",
@@ -408,17 +413,17 @@ def build_gdn_decoder_layer_tensors() -> tuple[list[TensorWrite], dict[str, Any]
     ]
     metadata = {
         "rows": ROWS,
-        "hidden_size": HIDDEN_SIZE,
+        "hidden_size": config.hidden_size,
         "input_columns": list(INPUT_COLUMNS),
         "gdn": {
-            "key_heads": KEY_HEADS,
-            "value_heads": VALUE_HEADS,
-            "key_dim": KEY_DIM,
-            "value_dim": VALUE_DIM,
-            "packed_qkv_dim": QKV_DIM,
-            "output_dim": GDN_OUTPUT_DIM,
-            "conv_width": CONV_WIDTH,
-            "rms_eps": RMS_EPS,
+            "key_heads": config.key_heads,
+            "value_heads": config.value_heads,
+            "key_dim": config.key_dim,
+            "value_dim": config.value_dim,
+            "packed_qkv_dim": config.qkv_dim,
+            "output_dim": config.gdn_output_dim,
+            "conv_width": config.conv_width,
+            "rms_eps": config.rms_eps,
         },
         "moe": {
             "num_experts": MOE_NUM_EXPERTS,
@@ -440,13 +445,15 @@ def build_gdn_decoder_layer_tensors() -> tuple[list[TensorWrite], dict[str, Any]
     return tensors, metadata
 
 
-def build_gdn_decoder_layer_artifact() -> tuple[VectorManifest, dict[str, Any]]:
-    tensors, metadata = build_gdn_decoder_layer_tensors()
+def build_gdn_decoder_layer_artifact(
+    config: VectorConfig,
+) -> tuple[VectorManifest, dict[str, Any]]:
+    tensors, metadata = build_gdn_decoder_layer_tensors(config)
     specs = [
         _tensor_spec_without_hash(tensor)
         for tensor in tensors[:INLINE_TENSORS_BEFORE_WEIGHTS]
     ]
-    specs.extend(_weight_specs_without_hash())
+    specs.extend(_weight_specs_without_hash(config))
     specs.extend(
         _tensor_spec_without_hash(tensor)
         for tensor in tensors[INLINE_TENSORS_BEFORE_WEIGHTS:]
@@ -467,14 +474,16 @@ def build_gdn_decoder_layer_artifact() -> tuple[VectorManifest, dict[str, Any]]:
     )
 
 
-def write_gdn_decoder_layer_artifact(root: str | Path = DEFAULT_OUTPUT) -> Path:
+def write_gdn_decoder_layer_artifact(
+    config: VectorConfig, root: str | Path = DEFAULT_OUTPUT
+) -> Path:
     root_path = Path(root)
     root_path.mkdir(parents=True, exist_ok=True)
-    tensors, metadata = build_gdn_decoder_layer_tensors()
+    tensors, metadata = build_gdn_decoder_layer_tensors(config)
     written: list[WrittenTensor] = []
     for tensor in tensors[:INLINE_TENSORS_BEFORE_WEIGHTS]:
         written.append(_write_tensor(root_path, tensor))
-    written.extend(_write_weight_tensors(root_path))
+    written.extend(_write_weight_tensors(config, root_path))
     for tensor in tensors[INLINE_TENSORS_BEFORE_WEIGHTS:]:
         written.append(_write_tensor(root_path, tensor))
 
@@ -495,15 +504,17 @@ def write_gdn_decoder_layer_artifact(root: str | Path = DEFAULT_OUTPUT) -> Path:
     return manifest_path
 
 
-def _build_row_coded_input() -> tuple[int, ...]:
-    values = [float32_to_bf16_bits(0.0)] * (ROWS * HIDDEN_SIZE)
+def _build_row_coded_input(config: VectorConfig) -> tuple[int, ...]:
+    values = [float32_to_bf16_bits(0.0)] * (ROWS * config.hidden_size)
     one = float32_to_bf16_bits(1.0)
     for row, col in enumerate(INPUT_COLUMNS):
-        values[row * HIDDEN_SIZE + col] = one
+        values[row * config.hidden_size + col] = one
     return tuple(values)
 
 
-def _build_gdn_projected_rows() -> tuple[
+def _build_gdn_projected_rows(
+    config: VectorConfig,
+) -> tuple[
     tuple[int, ...],
     tuple[int, ...],
     tuple[int, ...],
@@ -515,26 +526,27 @@ def _build_gdn_projected_rows() -> tuple[
     a: list[int] = []
     case_id = 0
     for pos in range(ROWS):
-        for head in range(KEY_HEADS):
-            for lane in range(KEY_DIM):
+        for head in range(config.key_heads):
+            for lane in range(config.key_dim):
                 mixed_qkv.append(_bf16(_q_value(case_id, pos, head, lane)))
-        for head in range(KEY_HEADS):
-            for lane in range(KEY_DIM):
+        for head in range(config.key_heads):
+            for lane in range(config.key_dim):
                 mixed_qkv.append(_bf16(_k_value(case_id, pos, head, lane)))
-        for head in range(VALUE_HEADS):
-            for lane in range(VALUE_DIM):
+        for head in range(config.value_heads):
+            for lane in range(config.value_dim):
                 mixed_qkv.append(_bf16(_v_value(case_id, pos, head, lane)))
-        for head in range(VALUE_HEADS):
-            for lane in range(VALUE_DIM):
+        for head in range(config.value_heads):
+            for lane in range(config.value_dim):
                 gate.append(_bf16(_z_value(case_id, pos, head, lane)))
-        for head in range(VALUE_HEADS):
+        for head in range(config.value_heads):
             b.append(_bf16(_b_value(case_id, pos, head)))
-        for head in range(VALUE_HEADS):
+        for head in range(config.value_heads):
             a.append(_bf16(_a_value(case_id, pos, head)))
     return tuple(mixed_qkv), tuple(gate), tuple(b), tuple(a)
 
 
 def _gated_rmsnorm_silu_rows(
+    config: VectorConfig,
     x_words: tuple[int, ...] | list[int],
     gate_words: tuple[int, ...] | list[int],
     weight: list[float],
@@ -544,17 +556,18 @@ def _gated_rmsnorm_silu_rows(
     rows: list[list[float]] = []
     for row_idx in range(ROWS):
         row: list[float] = []
-        for head in range(VALUE_HEADS):
-            base = (row_idx * VALUE_HEADS + head) * VALUE_DIM
+        for head in range(config.value_heads):
+            base = (row_idx * config.value_heads + head) * config.value_dim
             x = [
-                bf16_bits_to_float32(word) for word in x_words[base : base + VALUE_DIM]
+                bf16_bits_to_float32(word)
+                for word in x_words[base : base + config.value_dim]
             ]
             gate = [
                 bf16_bits_to_float32(word)
-                for word in gate_words[base : base + VALUE_DIM]
+                for word in gate_words[base : base + config.value_dim]
             ]
-            variance = _f32(sum(_f32(value * value) for value in x) / VALUE_DIM)
-            inv_rms = _f32(1.0 / (variance + RMS_EPS) ** 0.5)
+            variance = _f32(sum(_f32(value * value) for value in x) / config.value_dim)
+            inv_rms = _f32(1.0 / (variance + config.rms_eps) ** 0.5)
             for lane, value in enumerate(x):
                 y = _f32(_f32(value * inv_rms) * weight[lane] * _silu(gate[lane]))
                 out_f32.append(y)
@@ -607,12 +620,12 @@ def _tensor_spec_without_hash(tensor: TensorWrite) -> TensorSpec:
     )
 
 
-def _weight_specs_without_hash() -> list[TensorSpec]:
+def _weight_specs_without_hash(config: VectorConfig) -> list[TensorSpec]:
     return [
         TensorSpec(
             name="in_proj_weight",
             dtype="bf16",
-            shape=(QKV_DIM, HIDDEN_SIZE),
+            shape=(config.qkv_dim, config.hidden_size),
             file="gdn_decoder_in_proj_weight.bf16",
             role="input",
             description="Dense row-major BF16 GDN [q,k,v] projection weight.",
@@ -620,7 +633,7 @@ def _weight_specs_without_hash() -> list[TensorSpec]:
         TensorSpec(
             name="gate_proj_weight",
             dtype="bf16",
-            shape=(GDN_OUTPUT_DIM, HIDDEN_SIZE),
+            shape=(config.gdn_output_dim, config.hidden_size),
             file="gdn_decoder_gate_proj_weight.bf16",
             role="input",
             description="Dense row-major BF16 GDN output-gate projection weight.",
@@ -628,7 +641,7 @@ def _weight_specs_without_hash() -> list[TensorSpec]:
         TensorSpec(
             name="a_proj_weight",
             dtype="bf16",
-            shape=(VALUE_HEADS, HIDDEN_SIZE),
+            shape=(config.value_heads, config.hidden_size),
             file="gdn_decoder_a_proj_weight.bf16",
             role="input",
             description="Dense row-major BF16 GDN decay-gate projection weight.",
@@ -636,7 +649,7 @@ def _weight_specs_without_hash() -> list[TensorSpec]:
         TensorSpec(
             name="b_proj_weight",
             dtype="bf16",
-            shape=(VALUE_HEADS, HIDDEN_SIZE),
+            shape=(config.value_heads, config.hidden_size),
             file="gdn_decoder_b_proj_weight.bf16",
             role="input",
             description="Dense row-major BF16 GDN beta-gate projection weight.",
@@ -644,7 +657,7 @@ def _weight_specs_without_hash() -> list[TensorSpec]:
         TensorSpec(
             name="conv_weight",
             dtype="bf16",
-            shape=(QKV_DIM, CONV_WIDTH),
+            shape=(config.qkv_dim, config.conv_width),
             file="gdn_decoder_conv_weight.bf16",
             role="input",
             description="Dense row-major BF16 depthwise causal conv weight.",
@@ -652,7 +665,7 @@ def _weight_specs_without_hash() -> list[TensorSpec]:
         TensorSpec(
             name="out_proj_weight",
             dtype="bf16",
-            shape=(HIDDEN_SIZE, GDN_OUTPUT_DIM),
+            shape=(config.hidden_size, config.gdn_output_dim),
             file="gdn_decoder_out_proj_weight.bf16",
             role="input",
             description="Dense row-major BF16 GDN output projection weight.",
@@ -660,7 +673,7 @@ def _weight_specs_without_hash() -> list[TensorSpec]:
         TensorSpec(
             name="moe_router_proj_weight",
             dtype="bf16",
-            shape=(MOE_NUM_EXPERTS, HIDDEN_SIZE),
+            shape=(MOE_NUM_EXPERTS, config.hidden_size),
             file="gdn_decoder_moe_router_proj_weight.bf16",
             role="input",
             description="Dense row-major BF16 MoE router projection weight.",
@@ -668,7 +681,7 @@ def _weight_specs_without_hash() -> list[TensorSpec]:
         TensorSpec(
             name="moe_gate_up_proj_weight",
             dtype="bf16",
-            shape=(MOE_NUM_EXPERTS, 2 * MOE_INTERMEDIATE, HIDDEN_SIZE),
+            shape=(MOE_NUM_EXPERTS, 2 * MOE_INTERMEDIATE, config.hidden_size),
             file="gdn_decoder_moe_gate_up_proj_weight.bf16",
             role="input",
             description="Dense row-major BF16 fused MoE gate/up projection weight.",
@@ -676,7 +689,7 @@ def _weight_specs_without_hash() -> list[TensorSpec]:
         TensorSpec(
             name="moe_down_proj_weight",
             dtype="bf16",
-            shape=(MOE_NUM_EXPERTS, HIDDEN_SIZE, MOE_INTERMEDIATE),
+            shape=(MOE_NUM_EXPERTS, config.hidden_size, MOE_INTERMEDIATE),
             file="gdn_decoder_moe_down_proj_weight.bf16",
             role="input",
             description="Dense row-major BF16 MoE down projection weight.",
@@ -684,7 +697,7 @@ def _weight_specs_without_hash() -> list[TensorSpec]:
         TensorSpec(
             name="moe_shared_gate_proj_weight",
             dtype="bf16",
-            shape=(MOE_INTERMEDIATE, HIDDEN_SIZE),
+            shape=(MOE_INTERMEDIATE, config.hidden_size),
             file="gdn_decoder_moe_shared_gate_proj_weight.bf16",
             role="input",
             description="Dense row-major BF16 shared expert gate projection weight.",
@@ -692,7 +705,7 @@ def _weight_specs_without_hash() -> list[TensorSpec]:
         TensorSpec(
             name="moe_shared_up_proj_weight",
             dtype="bf16",
-            shape=(MOE_INTERMEDIATE, HIDDEN_SIZE),
+            shape=(MOE_INTERMEDIATE, config.hidden_size),
             file="gdn_decoder_moe_shared_up_proj_weight.bf16",
             role="input",
             description="Dense row-major BF16 shared expert up projection weight.",
@@ -700,7 +713,7 @@ def _weight_specs_without_hash() -> list[TensorSpec]:
         TensorSpec(
             name="moe_shared_down_proj_weight",
             dtype="bf16",
-            shape=(HIDDEN_SIZE, MOE_INTERMEDIATE),
+            shape=(config.hidden_size, MOE_INTERMEDIATE),
             file="gdn_decoder_moe_shared_down_proj_weight.bf16",
             role="input",
             description="Dense row-major BF16 shared expert down projection weight.",
@@ -708,7 +721,7 @@ def _weight_specs_without_hash() -> list[TensorSpec]:
         TensorSpec(
             name="moe_shared_expert_gate_weight",
             dtype="bf16",
-            shape=(1, HIDDEN_SIZE),
+            shape=(1, config.hidden_size),
             file="gdn_decoder_moe_shared_expert_gate_weight.bf16",
             role="input",
             description="Dense row-major BF16 scalar shared expert gate weight.",
@@ -716,129 +729,139 @@ def _weight_specs_without_hash() -> list[TensorSpec]:
     ]
 
 
-def _write_weight_tensors(root: Path) -> list[WrittenTensor]:
-    conv_weight_words, _ = _build_conv_weight()
+def _write_weight_tensors(config: VectorConfig, root: Path) -> list[WrittenTensor]:
+    conv_weight_words, _ = _build_conv_weight(config)
     return [
         _write_row_coded_projection_weight(
+            config,
             root,
             "in_proj_weight",
-            QKV_DIM,
-            _build_gdn_projected_rows()[0],
+            config.qkv_dim,
+            _build_gdn_projected_rows(config)[0],
             "gdn_in_projection_weight",
             "Dense row-major BF16 GDN [q,k,v] projection weight.",
         ),
         _write_row_coded_projection_weight(
+            config,
             root,
             "gate_proj_weight",
-            GDN_OUTPUT_DIM,
-            _build_gdn_projected_rows()[1],
+            config.gdn_output_dim,
+            _build_gdn_projected_rows(config)[1],
             "gdn_gate_projection_weight",
             "Dense row-major BF16 GDN output-gate projection weight.",
         ),
         _write_row_coded_projection_weight(
+            config,
             root,
             "a_proj_weight",
-            VALUE_HEADS,
-            _build_gdn_projected_rows()[3],
+            config.value_heads,
+            _build_gdn_projected_rows(config)[3],
             "gdn_a_projection_weight",
             "Dense row-major BF16 GDN decay-gate projection weight.",
         ),
         _write_row_coded_projection_weight(
+            config,
             root,
             "b_proj_weight",
-            VALUE_HEADS,
-            _build_gdn_projected_rows()[2],
+            config.value_heads,
+            _build_gdn_projected_rows(config)[2],
             "gdn_b_projection_weight",
             "Dense row-major BF16 GDN beta-gate projection weight.",
         ),
         _write_weight_values_tensor(
             root,
             "conv_weight",
-            (QKV_DIM, CONV_WIDTH),
+            (config.qkv_dim, config.conv_width),
             conv_weight_words,
             "gdn_causal_conv_weight",
             "Dense row-major BF16 depthwise causal conv weight.",
         ),
         _write_projection_weight_tensor(
+            config,
             root,
             "out_proj_weight",
             "o_proj",
-            HIDDEN_SIZE,
-            GDN_OUTPUT_DIM,
+            config.hidden_size,
+            config.gdn_output_dim,
             "Dense row-major BF16 GDN output projection weight.",
         ),
         _write_sparse_bf16_weight_tensor(
             root,
             "moe_router_proj_weight",
-            (MOE_NUM_EXPERTS, HIDDEN_SIZE),
-            HIDDEN_SIZE,
+            (MOE_NUM_EXPERTS, config.hidden_size),
+            config.hidden_size,
             MOE_NUM_EXPERTS,
-            _moe_router_terms,
+            partial(_moe_router_terms, config),
             "Dense row-major BF16 MoE router projection weight.",
             {
                 "op": "moe_router_projection_weight",
-                "strides": [HIDDEN_SIZE, 1],
+                "strides": [config.hidden_size, 1],
                 "sparse_terms_per_row": MOE_ROUTER_TERMS,
             },
         ),
         _write_sparse_bf16_weight_tensor(
             root,
             "moe_gate_up_proj_weight",
-            (MOE_NUM_EXPERTS, 2 * MOE_INTERMEDIATE, HIDDEN_SIZE),
-            HIDDEN_SIZE,
+            (MOE_NUM_EXPERTS, 2 * MOE_INTERMEDIATE, config.hidden_size),
+            config.hidden_size,
             MOE_NUM_EXPERTS * 2 * MOE_INTERMEDIATE,
             lambda row_idx: _moe_gate_up_terms(
+                config,
                 row_idx // (2 * MOE_INTERMEDIATE),
                 row_idx % (2 * MOE_INTERMEDIATE),
             ),
             "Dense row-major BF16 fused MoE gate/up projection weight.",
             {
                 "op": "moe_gate_up_projection_weight",
-                "strides": [2 * MOE_INTERMEDIATE * HIDDEN_SIZE, HIDDEN_SIZE, 1],
+                "strides": [
+                    2 * MOE_INTERMEDIATE * config.hidden_size,
+                    config.hidden_size,
+                    1,
+                ],
                 "sparse_terms_per_row": MOE_GATE_UP_TERMS,
             },
         ),
-        _write_moe_down_weight_tensor(root),
+        _write_moe_down_weight_tensor(config, root),
         _write_sparse_bf16_weight_tensor(
             root,
             "moe_shared_gate_proj_weight",
-            (MOE_INTERMEDIATE, HIDDEN_SIZE),
-            HIDDEN_SIZE,
+            (MOE_INTERMEDIATE, config.hidden_size),
+            config.hidden_size,
             MOE_INTERMEDIATE,
-            lambda row_idx: _shared_proj_terms("gate", row_idx),
+            lambda row_idx: _shared_proj_terms(config, "gate", row_idx),
             "Dense row-major BF16 shared expert gate projection weight.",
             {
                 "op": "shared_expert_gate_projection_weight",
-                "strides": [HIDDEN_SIZE, 1],
+                "strides": [config.hidden_size, 1],
                 "sparse_terms_per_row": MOE_SHARED_TERMS,
             },
         ),
         _write_sparse_bf16_weight_tensor(
             root,
             "moe_shared_up_proj_weight",
-            (MOE_INTERMEDIATE, HIDDEN_SIZE),
-            HIDDEN_SIZE,
+            (MOE_INTERMEDIATE, config.hidden_size),
+            config.hidden_size,
             MOE_INTERMEDIATE,
-            lambda row_idx: _shared_proj_terms("up", row_idx),
+            lambda row_idx: _shared_proj_terms(config, "up", row_idx),
             "Dense row-major BF16 shared expert up projection weight.",
             {
                 "op": "shared_expert_up_projection_weight",
-                "strides": [HIDDEN_SIZE, 1],
+                "strides": [config.hidden_size, 1],
                 "sparse_terms_per_row": MOE_SHARED_TERMS,
             },
         ),
-        _write_shared_down_weight_tensor(root),
+        _write_shared_down_weight_tensor(config, root),
         _write_sparse_bf16_weight_tensor(
             root,
             "moe_shared_expert_gate_weight",
-            (1, HIDDEN_SIZE),
-            HIDDEN_SIZE,
+            (1, config.hidden_size),
+            config.hidden_size,
             1,
-            lambda row_idx: _shared_proj_terms("shared_gate", row_idx),
+            lambda row_idx: _shared_proj_terms(config, "shared_gate", row_idx),
             "Dense row-major BF16 scalar shared expert gate weight.",
             {
                 "op": "shared_expert_gate_weight",
-                "strides": [HIDDEN_SIZE, 1],
+                "strides": [config.hidden_size, 1],
                 "sparse_terms_per_row": MOE_SHARED_TERMS,
             },
         ),
@@ -888,6 +911,7 @@ def _write_weight_values_tensor(
 
 
 def _write_row_coded_projection_weight(
+    config: VectorConfig,
     root: Path,
     name: str,
     out_features: int,
@@ -901,7 +925,7 @@ def _write_row_coded_projection_weight(
     byte_count = 0
     with path.open("wb") as f:
         for out_feature in range(out_features):
-            row = array("H", [0]) * HIDDEN_SIZE
+            row = array("H", [0]) * config.hidden_size
             for token_row, input_col in enumerate(INPUT_COLUMNS):
                 row[input_col] = projected_rows[token_row * out_features + out_feature]
             if sys.byteorder != "little":
@@ -911,18 +935,18 @@ def _write_row_coded_projection_weight(
             digest.update(blob)
             byte_count += len(blob)
     sha256 = digest.hexdigest()
-    element_count = out_features * HIDDEN_SIZE
+    element_count = out_features * config.hidden_size
     return WrittenTensor(
         spec=TensorSpec(
             name=name,
             dtype="bf16",
-            shape=(out_features, HIDDEN_SIZE),
+            shape=(out_features, config.hidden_size),
             file=file_name,
             role="input",
             description=description,
             metadata={
                 "op": op,
-                "strides": [HIDDEN_SIZE, 1],
+                "strides": [config.hidden_size, 1],
                 "elements": element_count,
                 "bytes": byte_count,
                 "sha256": sha256,
@@ -936,6 +960,7 @@ def _write_row_coded_projection_weight(
 
 
 def _write_projection_weight_tensor(
+    config: VectorConfig,
     root: Path,
     name: str,
     kind: str,
@@ -950,7 +975,7 @@ def _write_projection_weight_tensor(
     with path.open("wb") as f:
         for out_feature in range(out_features):
             row = array("H", [0]) * in_features
-            for col, bits in _projection_terms(kind, out_feature, in_features):
+            for col, bits in _projection_terms(config, kind, out_feature, in_features):
                 row[col] = bits
             if sys.byteorder != "little":
                 row.byteswap()
@@ -1030,14 +1055,14 @@ def _write_sparse_bf16_weight_tensor(
     )
 
 
-def _write_moe_down_weight_tensor(root: Path) -> WrittenTensor:
+def _write_moe_down_weight_tensor(config: VectorConfig, root: Path) -> WrittenTensor:
     file_name = "gdn_decoder_moe_down_proj_weight.bf16"
     path = root / file_name
     digest = hashlib.sha256()
     byte_count = 0
     with path.open("wb") as f:
         for expert in range(MOE_NUM_EXPERTS):
-            for hidden in range(HIDDEN_SIZE):
+            for hidden in range(config.hidden_size):
                 row = array(
                     "H",
                     [
@@ -1053,19 +1078,19 @@ def _write_moe_down_weight_tensor(root: Path) -> WrittenTensor:
                 f.write(blob)
                 digest.update(blob)
                 byte_count += len(blob)
-    element_count = MOE_NUM_EXPERTS * HIDDEN_SIZE * MOE_INTERMEDIATE
+    element_count = MOE_NUM_EXPERTS * config.hidden_size * MOE_INTERMEDIATE
     sha256 = digest.hexdigest()
     return WrittenTensor(
         spec=TensorSpec(
             name="moe_down_proj_weight",
             dtype="bf16",
-            shape=(MOE_NUM_EXPERTS, HIDDEN_SIZE, MOE_INTERMEDIATE),
+            shape=(MOE_NUM_EXPERTS, config.hidden_size, MOE_INTERMEDIATE),
             file=file_name,
             role="input",
             description="Dense row-major BF16 MoE down projection weight.",
             metadata={
                 "op": "moe_down_projection_weight",
-                "strides": [HIDDEN_SIZE * MOE_INTERMEDIATE, MOE_INTERMEDIATE, 1],
+                "strides": [config.hidden_size * MOE_INTERMEDIATE, MOE_INTERMEDIATE, 1],
                 "elements": element_count,
                 "bytes": byte_count,
                 "sha256": sha256,
@@ -1076,13 +1101,13 @@ def _write_moe_down_weight_tensor(root: Path) -> WrittenTensor:
     )
 
 
-def _write_shared_down_weight_tensor(root: Path) -> WrittenTensor:
+def _write_shared_down_weight_tensor(config: VectorConfig, root: Path) -> WrittenTensor:
     file_name = "gdn_decoder_moe_shared_down_proj_weight.bf16"
     path = root / file_name
     digest = hashlib.sha256()
     byte_count = 0
     with path.open("wb") as f:
-        for hidden in range(HIDDEN_SIZE):
+        for hidden in range(config.hidden_size):
             row = array(
                 "H",
                 [
@@ -1096,13 +1121,13 @@ def _write_shared_down_weight_tensor(root: Path) -> WrittenTensor:
             f.write(blob)
             digest.update(blob)
             byte_count += len(blob)
-    element_count = HIDDEN_SIZE * MOE_INTERMEDIATE
+    element_count = config.hidden_size * MOE_INTERMEDIATE
     sha256 = digest.hexdigest()
     return WrittenTensor(
         spec=TensorSpec(
             name="moe_shared_down_proj_weight",
             dtype="bf16",
-            shape=(HIDDEN_SIZE, MOE_INTERMEDIATE),
+            shape=(config.hidden_size, MOE_INTERMEDIATE),
             file=file_name,
             role="input",
             description="Dense row-major BF16 shared expert down projection weight.",

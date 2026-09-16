@@ -1,9 +1,10 @@
 use super::{QwenConfig, checked_usize_product};
+use crate::dtype::BF16;
 use crate::{
     QWEN36_GDN_STATE_SLOTS_PER_LAYER,
     backend::{FloatStorage, GdnRecurrentState},
     constants::{
-        GdnRecurrentElement,
+        GdnRecurrentDType,
         gdn::{
             CONV_HISTORY_LEN, KEY_HEAD_DIM, NUM_VALUE_HEADS, PACKED_QKV_CHANNELS, VALUE_HEAD_DIM,
         },
@@ -96,8 +97,8 @@ impl GdnSlotMap {
 }
 
 pub(super) struct GdnState {
-    pub(super) conv: DeviceBuffer<u16>,
-    recurrent: DeviceBuffer<GdnRecurrentElement>,
+    pub(super) conv: DeviceBuffer<BF16>,
+    recurrent: DeviceBuffer<GdnRecurrentDType>,
     pub(super) slots: GdnSlotMap,
 }
 
@@ -123,8 +124,8 @@ impl GdnState {
     }
 
     pub(super) fn zero(&mut self) -> Result<(), Status> {
-        self.conv.zero(self.conv.cap)?;
-        self.recurrent.zero(self.recurrent.cap)
+        self.conv.zero()?;
+        self.recurrent.zero()
     }
 
     pub(super) fn conv_view(&self) -> Result<crate::backend::GdnConvState, Status> {

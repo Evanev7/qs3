@@ -4,6 +4,7 @@ use crate::{
         qscb::Qscb,
         qsfi::{Plan, Qsfi},
     },
+    dtype::{I32, U8},
     engine::{
         AppendBatch, AttentionLayer, Commit, DecodeBatch, DynDType, EngineConfig, EngineCore,
         KvLayout, Status, validate_supported_attention_grouping,
@@ -15,16 +16,15 @@ use crate::{
         BatchPrefillExecuteDesc, DTYPE_F16, MASK_MODE_CAUSAL, MASK_MODE_NONE, MaskModeRaw,
         PagedKvCache, PagedKvPlan, PagedKvTable, QoPlan, Tensor3, Tensor4,
     },
-    memory::{CudaCtx, DeviceBuffer, DeviceSpan},
+    memory::{CudaCtx, DeviceBuffer, DeviceSpan, HostBuffer},
 };
-use std::ptr;
-use std::rc::Rc;
+use std::{ptr, rc::Rc};
 
 // Cache allocation and retirement use the execution stream. Replacing a prefix
 // enqueues release after its prior cache accesses; it does not wait on the host.
 struct LayerCache {
-    k: DeviceBuffer<u8>,
-    v: DeviceBuffer<u8>,
+    k: DeviceBuffer<U8>,
+    v: DeviceBuffer<U8>,
 }
 
 struct PlanCache {
@@ -124,14 +124,14 @@ pub(crate) struct AttentionSession {
     qscb: Qscb,
     append_attention: AttentionDesc,
     decode_attention: AttentionDesc,
-    d_batch_tokens: DeviceBuffer<i32>,
-    d_batch_qo_indptr: DeviceBuffer<i32>,
-    d_batch_kv_indptr: DeviceBuffer<i32>,
-    d_batch_kv_indices: DeviceBuffer<i32>,
-    d_batch_last_page_len: DeviceBuffer<i32>,
-    d_batch_rope_pos_offset: DeviceBuffer<i32>,
-    d_batch_append_batch_indices: DeviceBuffer<i32>,
-    d_batch_append_positions: DeviceBuffer<i32>,
+    d_batch_tokens: DeviceBuffer<I32>,
+    d_batch_qo_indptr: DeviceBuffer<I32>,
+    d_batch_kv_indptr: DeviceBuffer<I32>,
+    d_batch_kv_indices: DeviceBuffer<I32>,
+    d_batch_last_page_len: DeviceBuffer<I32>,
+    d_batch_rope_pos_offset: DeviceBuffer<I32>,
+    d_batch_append_batch_indices: DeviceBuffer<I32>,
+    d_batch_append_positions: DeviceBuffer<I32>,
     append_plan: PlanCache,
     decode_plan: PlanCache,
 }
@@ -178,29 +178,51 @@ impl AttentionSession {
         if batch.request_ids.len() != batch.size as usize {
             return Err(Status::InternalError);
         }
-        // Device storage grows and is reused on the same stream as its consumers.
-        // Host metadata belongs to EngineCore and can be reused on abort/reprepare.
-        // Route upload failures through the completion boundary before callers
-        // can abort the batch and release or overwrite its host storage.
-        let result = (|| -> Result<(), Status> {
-            // SAFETY: all host sources remain borrowed and unchanged through
-            // the stream wait below; destination storage is owned by this session.
-            unsafe {
-                self.d_batch_tokens.upload(batch.tokens)?;
-                self.d_batch_qo_indptr.upload(batch.qo_indptr)?;
-                self.d_batch_kv_indptr.upload(batch.kv_indptr)?;
-                self.d_batch_kv_indices.upload(batch.kv_indices)?;
-                self.d_batch_last_page_len.upload(batch.last_page_len)?;
-                self.d_batch_rope_pos_offset.upload(batch.rope_pos_offset)?;
-                self.d_batch_append_batch_indices
-                    .upload(batch.append_batch_indices)?;
-                self.d_batch_append_positions.upload(batch.append_positions)
+        let sources = [
+            batch.tokens,
+            batch.qo_indptr,
+            batch.kv_indptr,
+            batch.kv_indices,
+            batch.last_page_len,
+            batch.rope_pos_offset,
+            batch.append_batch_indices,
+            batch.append_positions,
+        ]
+        .map(|values| {
+            let mut host = HostBuffer::<I32>::new(values.len())?;
+            for (bytes, value) in host.as_mut().chunks_exact_mut(4).zip(values) {
+                bytes.copy_from_slice(&value.to_ne_bytes());
             }
-        })();
-        // TODO(async-upload-lifetimes): retain attention metadata upload sources
-        // until completion across abort/reprepare, then remove this temporary wait.
-        let completion = self.ctx.synchronize();
-        result.and(completion)
+            Ok(host)
+        })
+        .into_iter()
+        .collect::<Result<Vec<_>, Status>>()?;
+        // Keep all host sources alive through the existing batch upload wait,
+        // including when an earlier enqueue fails.
+        let result = [
+            &mut self.d_batch_tokens,
+            &mut self.d_batch_qo_indptr,
+            &mut self.d_batch_kv_indptr,
+            &mut self.d_batch_kv_indices,
+            &mut self.d_batch_last_page_len,
+            &mut self.d_batch_rope_pos_offset,
+            &mut self.d_batch_append_batch_indices,
+            &mut self.d_batch_append_positions,
+        ]
+        .into_iter()
+        .zip(&sources)
+        .try_for_each(|(dst, src)| unsafe { dst.upload(src) });
+        // TODO(async-upload-lifetimes): retain staging until batch completion,
+        // then remove this existing preparation wait.
+        if let Err(status) = self.ctx.synchronize() {
+            let bytes: usize = sources.iter().map(|src| src.as_ref().len()).sum();
+            eprintln!(
+                "CUDA batch upload completion uncertain ({status:?}); leaking {bytes} host bytes"
+            );
+            std::mem::forget(sources);
+            return Err(status);
+        }
+        result
     }
 
     fn ensure_append_plan(&mut self) -> Result<(), Status> {
@@ -326,7 +348,7 @@ impl AttentionSession {
         })
     }
 
-    fn make_cache_tensor(&self, data: &DeviceSpan<u8>) -> Result<Tensor4, Status> {
+    fn make_cache_tensor(&self, data: &DeviceSpan<U8>) -> Result<Tensor4, Status> {
         let config = self.prefix.core.config();
         let mut shape = [0i64; 4];
         let mut stride = [0i64; 4];

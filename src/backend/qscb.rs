@@ -1,6 +1,7 @@
-use super::{BF16, DMat, F32, Workspace, dtype::DType, result_from_raw};
+use super::{DMat, Workspace, result_from_raw};
 use crate::{
     Status,
+    dtype::{BF16, DType, F32},
     ffi::{self, sys},
     memory::CudaCtx,
 };

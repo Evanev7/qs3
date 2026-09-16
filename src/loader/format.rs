@@ -17,7 +17,8 @@ use crate::{
         },
         model::HIDDEN_SIZE,
     },
-    engine::{DynDType, Status},
+    dtype::DynDType,
+    engine::Status,
 };
 
 use std::{
@@ -637,42 +638,32 @@ impl Qwen36TextConfig {
         Ok(())
     }
 }
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum WeightTensorDType {
-    Bf16,
-    F32,
-}
-
-impl WeightTensorDType {
+impl DynDType {
     pub(super) fn from_safetensors_name(name: &str, tensor_name: &str) -> LoadResult<Self> {
         match name {
-            "BF16" => Ok(Self::Bf16),
+            "BF16" => Ok(Self::BF16),
             "F32" => Ok(Self::F32),
+            "U8" => Ok(Self::U8),
+            "F8_E4M3" => Ok(Self::FP8E4M3),
             other => Err(WeightLoadError::invalid_safetensors(format!(
-                "tensor {tensor_name:?} has unsupported dtype {other:?}; BF16 loader rejects quantized/NVFP4 tensors"
+                "tensor {tensor_name:?} has unsupported dtype {other:?}"
             ))),
-        }
-    }
-
-    pub(super) fn to_runtime_dtype(self) -> DynDType {
-        match self {
-            Self::Bf16 => DynDType::BF16,
-            Self::F32 => DynDType::F32,
         }
     }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TensorMeta {
-    pub(super) dtype: WeightTensorDType,
+    pub(super) dtype: DynDType,
     pub(super) shape: Vec<u32>,
     pub(super) data_offsets: (u64, u64),
 }
 
 impl TensorMeta {
     pub(super) fn byte_len(&self) -> LoadResult<usize> {
-        storage_bytes(self.dtype, &self.shape)
+        self.dtype
+            .storage_bytes_for_shape(&self.shape)
+            .map_err(|_| WeightLoadError::tensor_table("tensor byte count overflow"))
     }
 }
 
@@ -773,10 +764,8 @@ impl SafetensorsHeader {
             let object = value.get::<HashMap<String, JsonValue>>().ok_or_else(|| {
                 WeightLoadError::json(format!("tensor {name:?} must be an object"))
             })?;
-            let dtype = WeightTensorDType::from_safetensors_name(
-                string_field(object, "dtype")?.as_str(),
-                &name,
-            )?;
+            let dtype =
+                DynDType::from_safetensors_name(string_field(object, "dtype")?.as_str(), &name)?;
             let shape = parse_shape(object, &name)?;
             let data_offsets = parse_data_offsets(object, &name)?;
             if data_offsets.0 > data_offsets.1 {
@@ -784,7 +773,10 @@ impl SafetensorsHeader {
                     "tensor {name:?} has decreasing data_offsets"
                 )));
             }
-            let expected_bytes = storage_bytes(dtype, &shape)? as u64;
+            let expected_bytes = dtype
+                .storage_bytes_for_shape(&shape)
+                .map_err(|_| WeightLoadError::tensor_table("tensor byte count overflow"))?
+                as u64;
             let actual_bytes = data_offsets.1 - data_offsets.0;
             if actual_bytes != expected_bytes {
                 return Err(WeightLoadError::invalid_safetensors(format!(
@@ -899,20 +891,6 @@ pub(super) fn validate_safetensors_spans(
     Ok(())
 }
 
-pub(super) fn storage_bytes(dtype: WeightTensorDType, shape: &[u32]) -> LoadResult<usize> {
-    let elements = shape.iter().try_fold(1usize, |acc, dim| {
-        acc.checked_mul(*dim as usize)
-            .ok_or_else(|| WeightLoadError::tensor_table("tensor element count overflow"))
-    })?;
-    let bytes_per_element = match dtype {
-        WeightTensorDType::Bf16 => 2,
-        WeightTensorDType::F32 => 4,
-    };
-    elements
-        .checked_mul(bytes_per_element)
-        .ok_or_else(|| WeightLoadError::tensor_table("tensor byte count overflow"))
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct SafetensorsIndex {
     pub(super) weight_map: BTreeMap<String, String>,
@@ -989,7 +967,7 @@ pub(crate) struct WeightTensorTarget {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct WeightTensorSpec {
     pub(super) name: String,
-    pub(super) dtype: WeightTensorDType,
+    pub(super) dtype: DynDType,
     pub(super) shape: Vec<u32>,
     pub(super) source: WeightTensorSource,
     pub(super) target: WeightTensorTarget,
@@ -997,7 +975,9 @@ pub(crate) struct WeightTensorSpec {
 
 impl WeightTensorSpec {
     pub(super) fn byte_len(&self) -> LoadResult<usize> {
-        storage_bytes(self.dtype, &self.shape)
+        self.dtype
+            .storage_bytes_for_shape(&self.shape)
+            .map_err(|_| WeightLoadError::tensor_table("tensor byte count overflow"))
     }
 }
 
@@ -1023,7 +1003,7 @@ pub(crate) fn expected_qwen36_bf16_specs(
     push_spec(
         &mut specs,
         format!("{TEXT_PREFIX}embed_tokens.weight"),
-        WeightTensorDType::Bf16,
+        DynDType::BF16,
         &[vocab, hidden],
         WeightTensorSource::Safetensors,
         None,
@@ -1032,7 +1012,7 @@ pub(crate) fn expected_qwen36_bf16_specs(
     push_spec(
         &mut specs,
         format!("{TEXT_PREFIX}norm.weight"),
-        WeightTensorDType::Bf16,
+        DynDType::BF16,
         &[hidden],
         WeightTensorSource::Safetensors,
         None,
@@ -1041,7 +1021,7 @@ pub(crate) fn expected_qwen36_bf16_specs(
     push_spec(
         &mut specs,
         "lm_head.weight",
-        WeightTensorDType::Bf16,
+        DynDType::BF16,
         &[vocab, hidden],
         WeightTensorSource::Safetensors,
         None,
@@ -1054,7 +1034,7 @@ pub(crate) fn expected_qwen36_bf16_specs(
         push_spec(
             &mut specs,
             format!("{prefix}.input_layernorm.weight"),
-            WeightTensorDType::Bf16,
+            DynDType::BF16,
             &[hidden],
             WeightTensorSource::Safetensors,
             Some(layer),
@@ -1063,7 +1043,7 @@ pub(crate) fn expected_qwen36_bf16_specs(
         push_spec(
             &mut specs,
             format!("{prefix}.post_attention_layernorm.weight"),
-            WeightTensorDType::Bf16,
+            DynDType::BF16,
             &[hidden],
             WeightTensorSource::Safetensors,
             Some(layer),
@@ -1076,7 +1056,7 @@ pub(crate) fn expected_qwen36_bf16_specs(
                 push_spec(
                     &mut specs,
                     format!("{attn}.q_norm.weight"),
-                    WeightTensorDType::Bf16,
+                    DynDType::BF16,
                     &[HEAD_DIM],
                     WeightTensorSource::Safetensors,
                     Some(layer),
@@ -1085,7 +1065,7 @@ pub(crate) fn expected_qwen36_bf16_specs(
                 push_spec(
                     &mut specs,
                     format!("{attn}.k_norm.weight"),
-                    WeightTensorDType::Bf16,
+                    DynDType::BF16,
                     &[HEAD_DIM],
                     WeightTensorSource::Safetensors,
                     Some(layer),
@@ -1094,7 +1074,7 @@ pub(crate) fn expected_qwen36_bf16_specs(
                 push_spec(
                     &mut specs,
                     format!("{attn}.q_proj.weight"),
-                    WeightTensorDType::Bf16,
+                    DynDType::BF16,
                     &[PACKED_Q_GATE_WIDTH, hidden],
                     WeightTensorSource::Safetensors,
                     Some(layer),
@@ -1103,7 +1083,7 @@ pub(crate) fn expected_qwen36_bf16_specs(
                 push_spec(
                     &mut specs,
                     format!("{attn}.k_proj.weight"),
-                    WeightTensorDType::Bf16,
+                    DynDType::BF16,
                     &[KV_WIDTH, hidden],
                     WeightTensorSource::Safetensors,
                     Some(layer),
@@ -1112,7 +1092,7 @@ pub(crate) fn expected_qwen36_bf16_specs(
                 push_spec(
                     &mut specs,
                     format!("{attn}.v_proj.weight"),
-                    WeightTensorDType::Bf16,
+                    DynDType::BF16,
                     &[KV_WIDTH, hidden],
                     WeightTensorSource::Safetensors,
                     Some(layer),
@@ -1121,7 +1101,7 @@ pub(crate) fn expected_qwen36_bf16_specs(
                 push_spec(
                     &mut specs,
                     format!("{attn}.o_proj.weight"),
-                    WeightTensorDType::Bf16,
+                    DynDType::BF16,
                     &[hidden, Q_WIDTH],
                     WeightTensorSource::Safetensors,
                     Some(layer),
@@ -1133,7 +1113,7 @@ pub(crate) fn expected_qwen36_bf16_specs(
                 push_spec(
                     &mut specs,
                     format!("{gdn}.in_proj_qkv.weight"),
-                    WeightTensorDType::Bf16,
+                    DynDType::BF16,
                     &[PACKED_QKV_CHANNELS, hidden],
                     WeightTensorSource::Safetensors,
                     Some(layer),
@@ -1142,7 +1122,7 @@ pub(crate) fn expected_qwen36_bf16_specs(
                 push_spec(
                     &mut specs,
                     format!("{gdn}.in_proj_z.weight"),
-                    WeightTensorDType::Bf16,
+                    DynDType::BF16,
                     &[OUTPUT_WIDTH, hidden],
                     WeightTensorSource::Safetensors,
                     Some(layer),
@@ -1151,7 +1131,7 @@ pub(crate) fn expected_qwen36_bf16_specs(
                 push_spec(
                     &mut specs,
                     format!("{gdn}.in_proj_a.weight"),
-                    WeightTensorDType::Bf16,
+                    DynDType::BF16,
                     &[gdn_v_heads, hidden],
                     WeightTensorSource::Safetensors,
                     Some(layer),
@@ -1160,7 +1140,7 @@ pub(crate) fn expected_qwen36_bf16_specs(
                 push_spec(
                     &mut specs,
                     format!("{gdn}.in_proj_b.weight"),
-                    WeightTensorDType::Bf16,
+                    DynDType::BF16,
                     &[gdn_v_heads, hidden],
                     WeightTensorSource::Safetensors,
                     Some(layer),
@@ -1169,7 +1149,7 @@ pub(crate) fn expected_qwen36_bf16_specs(
                 push_spec(
                     &mut specs,
                     format!("{gdn}.conv1d.weight"),
-                    WeightTensorDType::Bf16,
+                    DynDType::BF16,
                     &[PACKED_QKV_CHANNELS, 1, CONV_WIDTH],
                     WeightTensorSource::Safetensors,
                     Some(layer),
@@ -1178,7 +1158,7 @@ pub(crate) fn expected_qwen36_bf16_specs(
                 push_spec(
                     &mut specs,
                     format!("{gdn}.conv1d.bias"),
-                    WeightTensorDType::Bf16,
+                    DynDType::BF16,
                     &[PACKED_QKV_CHANNELS],
                     WeightTensorSource::ZeroFill,
                     Some(layer),
@@ -1187,7 +1167,7 @@ pub(crate) fn expected_qwen36_bf16_specs(
                 push_spec(
                     &mut specs,
                     format!("{gdn}.A_log"),
-                    WeightTensorDType::Bf16,
+                    DynDType::BF16,
                     &[gdn_v_heads],
                     WeightTensorSource::Safetensors,
                     Some(layer),
@@ -1196,7 +1176,7 @@ pub(crate) fn expected_qwen36_bf16_specs(
                 push_spec(
                     &mut specs,
                     format!("{gdn}.dt_bias"),
-                    WeightTensorDType::Bf16,
+                    DynDType::BF16,
                     &[gdn_v_heads],
                     WeightTensorSource::Safetensors,
                     Some(layer),
@@ -1205,7 +1185,7 @@ pub(crate) fn expected_qwen36_bf16_specs(
                 push_spec(
                     &mut specs,
                     format!("{gdn}.norm.weight"),
-                    WeightTensorDType::Bf16,
+                    DynDType::BF16,
                     &[gdn_v_dim],
                     WeightTensorSource::Safetensors,
                     Some(layer),
@@ -1214,7 +1194,7 @@ pub(crate) fn expected_qwen36_bf16_specs(
                 push_spec(
                     &mut specs,
                     format!("{gdn}.out_proj.weight"),
-                    WeightTensorDType::Bf16,
+                    DynDType::BF16,
                     &[hidden, OUTPUT_WIDTH],
                     WeightTensorSource::Safetensors,
                     Some(layer),
@@ -1245,7 +1225,7 @@ pub(crate) fn expected_qwen36_bf16_specs(
                 push_spec(
                     &mut specs,
                     format!("{mlp}.{name}"),
-                    WeightTensorDType::Bf16,
+                    DynDType::BF16,
                     &shape,
                     WeightTensorSource::Safetensors,
                     Some(layer),
@@ -1257,7 +1237,7 @@ pub(crate) fn expected_qwen36_bf16_specs(
         push_spec(
             &mut specs,
             format!("{mlp}.gate.weight"),
-            WeightTensorDType::Bf16,
+            DynDType::BF16,
             &[experts, hidden],
             WeightTensorSource::Safetensors,
             Some(layer),
@@ -1266,7 +1246,7 @@ pub(crate) fn expected_qwen36_bf16_specs(
         push_spec(
             &mut specs,
             format!("{mlp}.experts.gate_up_proj"),
-            WeightTensorDType::Bf16,
+            DynDType::BF16,
             &[experts, 2 * moe_i, hidden],
             WeightTensorSource::Safetensors,
             Some(layer),
@@ -1275,7 +1255,7 @@ pub(crate) fn expected_qwen36_bf16_specs(
         push_spec(
             &mut specs,
             format!("{mlp}.experts.down_proj"),
-            WeightTensorDType::Bf16,
+            DynDType::BF16,
             &[experts, hidden, moe_i],
             WeightTensorSource::Safetensors,
             Some(layer),
@@ -1284,7 +1264,7 @@ pub(crate) fn expected_qwen36_bf16_specs(
         push_spec(
             &mut specs,
             format!("{mlp}.shared_expert.gate_proj.weight"),
-            WeightTensorDType::Bf16,
+            DynDType::BF16,
             &[shared_i, hidden],
             WeightTensorSource::Safetensors,
             Some(layer),
@@ -1293,7 +1273,7 @@ pub(crate) fn expected_qwen36_bf16_specs(
         push_spec(
             &mut specs,
             format!("{mlp}.shared_expert.up_proj.weight"),
-            WeightTensorDType::Bf16,
+            DynDType::BF16,
             &[shared_i, hidden],
             WeightTensorSource::Safetensors,
             Some(layer),
@@ -1302,7 +1282,7 @@ pub(crate) fn expected_qwen36_bf16_specs(
         push_spec(
             &mut specs,
             format!("{mlp}.shared_expert.down_proj.weight"),
-            WeightTensorDType::Bf16,
+            DynDType::BF16,
             &[hidden, shared_i],
             WeightTensorSource::Safetensors,
             Some(layer),
@@ -1311,7 +1291,7 @@ pub(crate) fn expected_qwen36_bf16_specs(
         push_spec(
             &mut specs,
             format!("{mlp}.shared_expert_gate.weight"),
-            WeightTensorDType::Bf16,
+            DynDType::BF16,
             &[1, hidden],
             WeightTensorSource::Safetensors,
             Some(layer),
@@ -1325,7 +1305,7 @@ pub(crate) fn expected_qwen36_bf16_specs(
 pub(super) fn push_spec(
     specs: &mut Vec<WeightTensorSpec>,
     name: impl Into<String>,
-    dtype: WeightTensorDType,
+    dtype: DynDType,
     shape: &[u32],
     source: WeightTensorSource,
     layer: Option<u32>,

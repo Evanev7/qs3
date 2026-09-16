@@ -1,13 +1,27 @@
 //! Device storage and operations ordered on an owned CUDA stream.
 //!
-//! Except for `synchronize` and `DeviceBuffer::from_slice`, operations enqueue
+//! Except for `synchronize` and `HostBuffer::upload`, operations enqueue
 //! work without establishing host-visible completion. A successful stream wait,
 //! or a successful wait/query on an event recorded after the operation, establishes
 //! completion. An error does not establish completion. Rust borrows alone do not
 //! keep transfer storage alive after an asynchronous method returns.
 
-use crate::{backend::DeviceElement, engine::Status, ffi, ffi::cuda, model::result_from_cuda};
-use std::{mem, ops::Deref, ptr, rc::Rc};
+use crate::{
+    backend::{Bf16Heads, DMat, DTensor3, DVec, Workspace},
+    dtype::{BF16, DType, U8},
+    engine::Status,
+    ffi,
+    ffi::cuda,
+    model::result_from_cuda,
+};
+use std::{
+    alloc::{Layout, alloc_zeroed, dealloc, handle_alloc_error},
+    marker::PhantomData,
+    mem,
+    ops::Deref,
+    ptr,
+    rc::Rc,
+};
 
 /// Owns a CUDA stream on one device.
 ///
@@ -65,18 +79,15 @@ impl CudaCtx {
         self.activate()?;
         result_from_cuda(unsafe { cuda::cudaStreamSynchronize(self.stream) })
     }
-    /// Allocates uninitialized storage for `len` elements on this stream.
+    /// Allocates uninitialized storage for `bytes` bytes on this stream.
     ///
     /// The returned pointer carries ownership responsibility, not a Rust value or
     /// lifetime. Its allocation must precede every use, and its eventual release
-    /// must follow every use. This method does not initialize valid `T` values.
-    fn alloc<T>(&self, len: usize) -> Result<*mut T, Status> {
-        if len == 0 {
+    /// must follow every use. This method does not initialize the allocation.
+    fn alloc(&self, bytes: usize) -> Result<*mut u8, Status> {
+        if bytes == 0 {
             return Err(Status::InvalidArgument);
         };
-        let bytes = len
-            .checked_mul(mem::size_of::<T>())
-            .ok_or(Status::InvalidArgument)?;
         let mut ptr = ptr::null_mut();
         self.activate()?;
         result_from_cuda(unsafe { cuda::cudaMallocAsync(&mut ptr, bytes, self.stream) })?;
@@ -90,11 +101,11 @@ impl CudaCtx {
     /// must have exclusive authority to release it. Its allocation and all uses,
     /// including uses on other streams, must be ordered before this release.
     /// After a successful call, do not submit further uses or free it again.
-    unsafe fn free<T>(&self, ptr: *mut T) -> Result<(), Status> {
+    unsafe fn free(&self, ptr: *mut u8) -> Result<(), Status> {
         result_from_cuda(unsafe { cuda::cudaFreeAsync(ptr.cast(), self.stream) })
     }
 
-    /// Grows an allocation if necessary, preserving `old_cap` elements' bytes.
+    /// Grows an allocation if necessary, preserving `old_bytes` bytes.
     ///
     /// On success, ownership responsibility moves to the returned pointer. If no
     /// growth was needed it equals `ptr`; otherwise release of `ptr` was enqueued
@@ -104,23 +115,23 @@ impl CudaCtx {
     ///
     /// # Safety
     /// `ptr` must be a live allocation base accepted by `cudaFreeAsync`, covering
-    /// at least `old_cap * size_of::<T>()` bytes, with exclusive release authority
+    /// at least `old_bytes` bytes, with exclusive release authority
     /// held by the caller. Prior writes must be ordered before the copy, and all
     /// uses of the old allocation must be ordered before its release. No other
     /// owner may later free the retired pointer or submit further accesses to it.
-    unsafe fn realloc<T>(
+    unsafe fn realloc(
         &self,
-        ptr: *mut T,
-        old_cap: usize,
-        new_cap: usize,
-    ) -> Result<*mut T, Status> {
-        if new_cap <= old_cap {
+        ptr: *mut u8,
+        old_bytes: usize,
+        new_bytes: usize,
+    ) -> Result<*mut u8, Status> {
+        if new_bytes <= old_bytes {
             return Ok(ptr);
         }
         self.activate()?;
-        let dst = self.alloc::<T>(new_cap)?;
+        let dst = self.alloc(new_bytes)?;
         unsafe {
-            if let Err(e) = self.memcpy(ptr, dst, old_cap) {
+            if let Err(e) = self.memcpy(ptr, dst, old_bytes) {
                 _ = self.free(dst);
                 return Err(e);
             }
@@ -132,7 +143,7 @@ impl CudaCtx {
         Ok(dst)
     }
 
-    /// Enqueues a device-to-device copy of `cap * size_of::<T>()` bytes.
+    /// Enqueues a device-to-device copy of `bytes` bytes.
     ///
     /// # Safety
     /// `src` and `dst` must describe non-overlapping CUDA-accessible device regions
@@ -140,10 +151,7 @@ impl CudaCtx {
     /// copy and remain valid through completion. Source writes and conflicting
     /// destination accesses must be ordered around the copy, including accesses
     /// on other streams. Allocation release may be enqueued after the copy.
-    unsafe fn memcpy<T>(&self, src: *const T, dst: *mut T, cap: usize) -> Result<(), Status> {
-        let bytes = cap
-            .checked_mul(mem::size_of::<T>())
-            .ok_or(Status::InvalidArgument)?;
+    unsafe fn memcpy(&self, src: *const u8, dst: *mut u8, bytes: usize) -> Result<(), Status> {
         self.activate()?;
         result_from_cuda(unsafe {
             cuda::cudaMemcpyAsync(
@@ -156,7 +164,7 @@ impl CudaCtx {
         })
     }
 
-    /// Enqueues a host-to-device copy of `size_of_val(src)` bytes.
+    /// Enqueues a host-to-device copy of `src.len()` bytes.
     ///
     /// # Safety
     /// `dst` must cover that many writable device bytes and must not overlap the
@@ -164,52 +172,49 @@ impl CudaCtx {
     /// unmodified until completion, beyond the lifetime of this call's borrow.
     /// The destination allocation must be available before the copy and remain
     /// valid through it; conflicting accesses and release must be stream-ordered.
-    unsafe fn upload<T>(&self, src: &[T], dst: *mut T) -> Result<(), Status> {
+    unsafe fn upload(&self, src: &[u8], dst: *mut u8) -> Result<(), Status> {
         self.activate()?;
         result_from_cuda(unsafe {
             cuda::cudaMemcpyAsync(
                 dst.cast(),
                 src.as_ptr().cast(),
-                mem::size_of_val(src),
+                src.len(),
                 cuda::CUDA_MEMCPY_HOST_TO_DEVICE,
                 self.stream,
             )
         })
     }
 
-    /// Enqueues a device-to-host copy of `size_of_val(dst)` bytes.
+    /// Enqueues a device-to-host copy of `dst.len()` bytes.
     ///
     /// # Safety
-    /// `src` must cover that many readable device bytes representing valid `T`
-    /// values and must not overlap the destination. Its allocation must remain
+    /// `src` must cover that many readable device bytes and must not overlap
+    /// the destination. Its allocation must remain
     /// valid through the copy, with writes and release ordered around it.
     /// The host destination allocation must remain at the same address and must
     /// not be read, modified, reallocated, or dropped until completion, beyond
     /// the lifetime of this call's mutable borrow.
-    pub(crate) unsafe fn download<T>(&self, src: *const T, dst: &mut [T]) -> Result<(), Status> {
+    pub(crate) unsafe fn download(&self, src: *const u8, dst: &mut [u8]) -> Result<(), Status> {
         self.activate()?;
         result_from_cuda(unsafe {
             cuda::cudaMemcpyAsync(
                 dst.as_mut_ptr().cast(),
                 src.cast(),
-                mem::size_of_val(dst),
+                dst.len(),
                 cuda::CUDA_MEMCPY_DEVICE_TO_HOST,
                 self.stream,
             )
         })
     }
 
-    /// Enqueues a zero-byte fill of `len * size_of::<T>()` bytes.
+    /// Enqueues a zero-byte fill of `bytes` bytes.
     ///
     /// # Safety
     /// `ptr` must cover that many writable device bytes. Its allocation must be
     /// available before the fill and remain valid through completion. Conflicting
     /// accesses and release, including on other streams, must be ordered around
     /// the fill.
-    unsafe fn zero<T: DeviceElement>(&self, ptr: *mut T, len: usize) -> Result<(), Status> {
-        let bytes = len
-            .checked_mul(mem::size_of::<T>())
-            .ok_or(Status::InvalidArgument)?;
+    unsafe fn zero(&self, ptr: *mut u8, bytes: usize) -> Result<(), Status> {
         self.activate()?;
         result_from_cuda(unsafe { cuda::cudaMemsetAsync(ptr.cast(), 0, bytes, self.stream) })
     }
@@ -222,32 +227,40 @@ impl Drop for CudaCtx {
 }
 
 #[derive(Debug)]
-pub(crate) struct DeviceSpan<T> {
-    ptr: ffi::DevicePtr<T>,
-    pub(crate) cap: usize,
+pub(crate) struct DeviceSpan<D: DType> {
+    ptr: ffi::DevicePtr<D>,
+    pub(crate) len: usize,
 }
 
-impl<T> DeviceSpan<T> {
+impl<D: DType> DeviceSpan<D> {
     /// Describes device storage without taking ownership or proving its lifetime.
-    /// `cap` counts elements. Unsafe users must establish that the allocation is
+    /// `len` counts elements. Unsafe users must establish that the allocation is
     /// live, accessible, and large enough before submitting device work.
-    pub(crate) fn new(ptr: *mut T, cap: usize) -> Result<Self, Status> {
+    pub(crate) fn new(ptr: *mut u8, len: usize) -> Result<Self, Status> {
+        D::size_of(len)?;
+        if !(ptr as usize).is_multiple_of(D::ALIGN) {
+            return Err(Status::InvalidArgument);
+        }
         Ok(Self {
             ptr: ffi::DevicePtr::new(ptr).ok_or(Status::InvalidArgument)?,
-            cap,
+            len,
         })
     }
 
     pub(crate) fn check_view_len(&self, len: usize) -> Result<(), Status> {
-        if len == 0 || len > self.cap {
+        if len == 0 || len > self.len {
             return Err(Status::InvalidArgument);
         }
         Ok(())
     }
+
+    pub fn as_ptr(&self) -> ffi::DevicePtr<D> {
+        self.ptr
+    }
 }
 
-impl<T> Deref for DeviceSpan<T> {
-    type Target = ffi::DevicePtr<T>;
+impl<D: DType> Deref for DeviceSpan<D> {
+    type Target = ffi::DevicePtr<D>;
 
     fn deref(&self) -> &Self::Target {
         &self.ptr
@@ -257,200 +270,217 @@ impl<T> Deref for DeviceSpan<T> {
 // These descriptors check shapes against the declared extent, but do not own or
 // borrow the allocation. Unsafe launches must establish allocation validity and
 // retain its owner until all uses complete.
-impl<T: DeviceElement> DeviceSpan<T> {
-    pub(crate) fn matrix(
-        &self,
-        rows: u32,
-        cols: u32,
-    ) -> Result<crate::backend::DMat<T::DType>, Status> {
-        self.matrix_at(0, rows, cols)
+impl<D: DType> DeviceSpan<D> {
+    pub(crate) fn vector(&self, len: u32) -> Result<DVec<D>, Status> {
+        self.check_view_len(len as usize)?;
+        DVec::contiguous(self.ptr, len)
     }
 
-    pub(crate) fn matrix_at(
-        &self,
-        offset: usize,
-        rows: u32,
-        cols: u32,
-    ) -> Result<crate::backend::DMat<T::DType>, Status> {
+    pub(crate) fn matrix(&self, rows: u32, cols: u32) -> Result<DMat<D>, Status> {
         let len = (rows as usize)
             .checked_mul(cols as usize)
             .ok_or(Status::InvalidArgument)?;
-        self.check_view_len(offset.checked_add(len).ok_or(Status::InvalidArgument)?)?;
-        // A span does not prove that the backing allocation is still live.
-        // Wrapping arithmetic constructs metadata without requiring that proof;
-        // dereferencing the resulting address remains an unsafe launch obligation.
-        crate::backend::DMat::contiguous(self.ptr.as_raw().wrapping_add(offset).cast(), rows, cols)
+        self.check_view_len(len)?;
+        DMat::contiguous(self.ptr, rows, cols)
     }
 
-    pub(crate) fn vector(&self, len: u32) -> Result<crate::backend::DVec<T::DType>, Status> {
-        self.check_view_len(len as usize)?;
-        crate::backend::DVec::contiguous(self.erase(), len)
-    }
-
-    pub(crate) fn tensor3(
-        &self,
-        a: u32,
-        b: u32,
-        c: u32,
-    ) -> Result<crate::backend::DTensor3<T::DType>, Status> {
+    pub(crate) fn tensor3(&self, a: u32, b: u32, c: u32) -> Result<DTensor3<D>, Status> {
         let len = [a, b, c].into_iter().try_fold(1usize, |len, dim| {
             len.checked_mul(dim as usize).ok_or(Status::InvalidArgument)
         })?;
         self.check_view_len(len)?;
-        crate::backend::DTensor3::contiguous(self.erase(), a, b, c)
+        DTensor3::contiguous(self.ptr, a, b, c)
     }
 }
 
-impl DeviceSpan<u16> {
-    pub(crate) fn heads(
-        &self,
-        rows: u32,
-        heads: u32,
-        dim: u32,
-    ) -> Result<crate::backend::Bf16Heads, Status> {
+impl DeviceSpan<BF16> {
+    pub(crate) fn heads(&self, rows: u32, heads: u32, dim: u32) -> Result<Bf16Heads, Status> {
         let len = [rows, heads, dim]
             .into_iter()
             .try_fold(1usize, |len, dim| {
                 len.checked_mul(dim as usize).ok_or(Status::InvalidArgument)
             })?;
         self.check_view_len(len)?;
-        crate::backend::Bf16Heads::contiguous(self.erase(), rows, heads, dim)
+        Bf16Heads::contiguous(self.ptr, rows, heads, dim)
     }
 }
 
-impl DeviceSpan<u8> {
-    pub(crate) fn workspace(&self, bytes: usize) -> Result<crate::backend::Workspace, Status> {
+impl DeviceSpan<U8> {
+    pub(crate) fn workspace(&self, bytes: usize) -> Result<Workspace, Status> {
         if bytes == 0 {
-            return Ok(crate::backend::Workspace::none());
+            return Ok(Workspace::none());
         }
         self.check_view_len(bytes)?;
-        crate::backend::Workspace::new(self.erase(), bytes)
+        Workspace::new(self.erase(), bytes)
     }
 }
 
-/// Owns device storage; dropping it enqueues release on its context's stream.
-///
-/// Raw-pointer users must preserve the pointer/capacity ownership invariants and
-/// order all external uses before growth or destruction can release the storage.
-/// Allocation alone does not establish initialized contents.
+/// Owns dtype-sized device storage; Drop releases it on the context's stream.
+/// `len` counts logical elements, including for packed dtypes.
 #[derive(Debug)]
-pub(crate) struct DeviceBuffer<T> {
-    pub(crate) span: DeviceSpan<T>,
+pub(crate) struct DeviceBuffer<D: DType> {
+    pub(crate) span: DeviceSpan<D>,
     ctx: Rc<CudaCtx>,
 }
 
-impl<T> DeviceBuffer<T> {
-    pub(crate) fn with_capacity(ctx: Rc<CudaCtx>, cap: usize) -> Result<Self, Status> {
+impl<D: DType> DeviceBuffer<D> {
+    pub(crate) fn with_capacity(ctx: Rc<CudaCtx>, len: usize) -> Result<Self, Status> {
+        let bytes = D::size_of(len)?;
         Ok(Self {
-            span: DeviceSpan::new(ctx.alloc::<T>(cap)?, cap)?,
+            span: DeviceSpan::new(ctx.alloc(bytes)?, len)?,
             ctx,
         })
     }
-    pub(crate) fn realloc(&mut self, cap: usize) -> Result<&mut Self, Status> {
-        // SAFETY: self owns the allocation described by ptr/cap. Buffer operations
-        // share the context stream; raw-pointer users must order external uses.
-        // On success, replace the retired pointer without separately freeing it.
-        self.span = DeviceSpan::new(
-            unsafe { self.ctx.realloc(self.ptr.as_raw(), self.cap, cap) }?,
-            self.cap.max(cap),
-        )?;
+
+    pub(crate) fn realloc(&mut self, len: usize) -> Result<&mut Self, Status> {
+        let old_bytes = D::size_of(self.len)?;
+        let new_bytes = D::size_of(len)?;
+        // SAFETY: self owns storage; all accesses must be ordered on this stream.
+        let ptr = unsafe { self.ctx.realloc(self.as_raw(), old_bytes, new_bytes)? };
+        self.span = DeviceSpan::new(ptr, self.len.max(len))?;
         Ok(self)
     }
 
-    pub(crate) fn from_slice(ctx: Rc<CudaCtx>, values: &[T]) -> Result<Self, Status>
-    where
-        T: Copy,
-    {
-        let mut buffer = Self::with_capacity(ctx, values.len())?;
-        // SAFETY: values stays borrowed through the following synchronization;
-        // on success the upload has completed before returning to the caller.
-        unsafe {
-            buffer.upload(values)?;
-        }
-        buffer.ctx.synchronize()?;
-        Ok(buffer)
-    }
-
-    /// Grows storage if needed and enqueues an upload of `values`.
+    /// Grows storage as needed and uploads an encoded element prefix.
+    /// Host buffers contain whole bytes and whole DTypes, no slot is partially filled.
     ///
     /// # Safety
-    /// The host allocation backing `values` must remain at the same address and
-    /// unmodified until completion. The Rust borrow need not last that long, so
-    /// the caller must enforce this separately. External device accesses must be
-    /// ordered around the upload and any release caused by growth.
-    pub(crate) unsafe fn upload(&mut self, values: &[T]) -> Result<(), Status>
-    where
-        T: Copy,
-    {
-        if values.is_empty() {
+    /// Source bytes must remain live and unmodified until the stream completes.
+    /// External device accesses must be ordered around the upload and any growth.
+    pub(crate) unsafe fn upload(&mut self, buf: &HostBuffer<D>) -> Result<(), Status> {
+        if buf.len() == 0 {
             return Ok(());
         }
-        self.realloc(values.len())?;
-        unsafe {
-            self.ctx.upload(values, self.ptr.as_raw())?;
-        }
-        Ok(())
+        self.realloc(buf.len())?;
+        unsafe { self.ctx.upload(buf.as_ref(), self.as_raw()) }
     }
 
-    /// Enqueues a download of the first `out.len()` elements.
+    /// Downloads an encoded prefix sized by the host destination.
     ///
     /// # Safety
-    /// The source bytes must represent valid `T` values. The host allocation
-    /// backing `out` must remain at the same address and must not be read,
-    /// modified, reallocated, or dropped until completion. External device writes
-    /// must be ordered around the copy. This call does not wait for completion.
-    pub(crate) unsafe fn download(&self, out: &mut [T]) -> Result<(), Status>
-    where
-        T: Copy,
-    {
+    /// Destination must remain live and untouched until the stream completes.
+    /// External device writes must be ordered around this copy.
+    pub(crate) unsafe fn download(&self, out: &mut HostBuffer<D>) -> Result<(), Status> {
         unsafe { self.download_range(0, out) }
     }
 
-    /// Enqueues a download of `out.len()` elements starting at element `offset`.
-    /// Checks the requested extent against capacity, not initialization.
+    /// Downloads encoded elements from a byte-aligned element offset.
     ///
     /// # Safety
-    /// The selected source bytes must represent valid `T` values. The host
-    /// allocation backing `out` must remain at the same address and must not be
-    /// read, modified, reallocated, or dropped until completion. External device
-    /// writes must be ordered around the copy. This call does not wait.
-    pub(crate) unsafe fn download_range(&self, offset: usize, out: &mut [T]) -> Result<(), Status>
-    where
-        T: Copy,
-    {
+    /// Same lifetime and ordering requirements as `download`.
+    pub(crate) unsafe fn download_range(
+        &self,
+        offset: usize,
+        out: &mut HostBuffer<D>,
+    ) -> Result<(), Status> {
+        if offset
+            .checked_add(out.len())
+            .ok_or(Status::InvalidArgument)?
+            > self.len
+        {
+            return Err(Status::InvalidArgument);
+        }
         if out.is_empty() {
             return Ok(());
         }
-        let end = offset
-            .checked_add(out.len())
-            .ok_or(Status::InvalidArgument)?;
-        if end > self.cap {
-            return Err(Status::InvalidArgument);
-        }
-        unsafe {
-            self.ctx.download(self.ptr.as_raw().add(offset), out)?;
-        }
-        Ok(())
+        let bytes = D::size_of(offset)?;
+        unsafe { self.ctx.download(self.as_raw().add(bytes), out.as_mut()) }
+    }
+
+    pub(crate) fn zero(&mut self) -> Result<(), Status> {
+        unsafe { self.ctx.zero(self.as_raw(), D::size_of(self.len())?) }
+    }
+
+    pub fn len(&self) -> usize {
+        self.len
     }
 }
 
-impl<T: DeviceElement> DeviceBuffer<T> {
-    pub(crate) fn zero(&mut self, len: usize) -> Result<(), Status> {
-        if len > self.cap {
-            return Err(Status::InvalidArgument);
-        };
-        unsafe { self.ctx.zero(self.ptr.as_raw(), len) }
-    }
-}
-
-impl<T> Drop for DeviceBuffer<T> {
+impl<D: DType> Drop for DeviceBuffer<D> {
     fn drop(&mut self) {
-        unsafe { _ = self.ctx.free(self.ptr.as_raw()) };
+        unsafe { _ = self.ctx.free(self.as_raw()) };
     }
 }
-impl<T> Deref for DeviceBuffer<T> {
-    type Target = DeviceSpan<T>;
+impl<D: DType> Deref for DeviceBuffer<D> {
+    type Target = DeviceSpan<D>;
     fn deref(&self) -> &Self::Target {
         &self.span
+    }
+}
+
+// no HostSlice if offered until proven useful
+#[derive(Debug)]
+pub(crate) struct HostBuffer<D: DType> {
+    // contract: always a valid number of bytes based on dtype.
+    // always a valid number of dtype elements based on bytes.
+    // i.e. storage.len() is a multiple of 4 for F32s
+    // and always stores an even number of F4s
+    ptr: ptr::NonNull<u8>,
+    size: usize,
+    dtype: PhantomData<D>,
+}
+
+impl<D: DType> HostBuffer<D> {
+    pub(crate) fn new(len: usize) -> Result<Self, Status> {
+        let size = D::size_of(len)?;
+        let layout =
+            Layout::from_size_align(size, D::ALIGN).map_err(|_| Status::InvalidArgument)?;
+        // SAFETY: 0 is a u8
+        let ptr = if size == 0 {
+            layout.dangling_ptr()
+        } else {
+            ptr::NonNull::new(unsafe { alloc_zeroed(layout) })
+                .unwrap_or_else(|| handle_alloc_error(layout))
+        };
+
+        Ok(Self {
+            ptr,
+            size,
+            dtype: PhantomData,
+        })
+    }
+    pub(crate) fn len(&self) -> usize {
+        D::len_of(self.size).expect("assertion of container")
+    }
+    pub(crate) fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+    pub(crate) fn upload(self, ctx: Rc<CudaCtx>) -> Result<DeviceBuffer<D>, Status> {
+        let mut buffer = DeviceBuffer::with_capacity(ctx, self.len())?;
+        // SAFETY: source remains borrowed until the stream completes.
+        unsafe {
+            buffer.upload(&self)?;
+        }
+        buffer.ctx.synchronize().inspect_err(|_| {
+            eprintln!(
+                "CUDA upload failed to synchronize as a previous operation failed
+                We cannot be certain that the upload has been cancelled, so {}
+                bytes have been leaked.",
+                self.as_ref().len()
+            );
+            mem::forget(self)
+        })?;
+        Ok(buffer)
+    }
+
+}
+impl<D: DType> AsRef<[u8]> for HostBuffer<D> {
+    fn as_ref(&self) -> &[u8] {
+        unsafe { &*ptr::slice_from_raw_parts(self.ptr.as_ptr(), self.size) }
+    }
+}
+impl<D: DType> AsMut<[u8]> for HostBuffer<D> {
+    fn as_mut(&mut self) -> &mut [u8] {
+        unsafe { &mut *ptr::slice_from_raw_parts_mut(self.ptr.as_ptr(), self.size) }
+    }
+}
+
+impl<D: DType> Drop for HostBuffer<D> {
+    fn drop(&mut self) {
+        if self.size != 0 {
+            let layout =
+                Layout::from_size_align(self.size, D::ALIGN).expect("validated on construction");
+            unsafe { dealloc(self.ptr.as_ptr(), layout) }
+        }
     }
 }

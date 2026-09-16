@@ -1,16 +1,18 @@
 use super::BatchExecution;
 use crate::{
-    backend::{BF16, DMat},
+    backend::DMat,
     constants::gdn::{
         CONV_WIDTH, KEY_HEAD_DIM, NUM_KEY_HEADS, NUM_VALUE_HEADS, OUTPUT_WIDTH,
         PACKED_QKV_CHANNELS, VALUE_HEAD_DIM,
     },
+    dtype::BF16,
     engine::Status,
     memory::CudaCtx,
     model::{ActiveRunKind, weights::QwenGdnWeights},
 };
 
 impl BatchExecution<'_> {
+    // Append metadata must be prepared for `rows` on this stream before execution.
     pub(super) unsafe fn execute_gdn_layer(
         &mut self,
         ctx: &CudaCtx,
@@ -28,30 +30,13 @@ impl BatchExecution<'_> {
         let slots = state.layer_slots(gdn_layer_idx)?;
         let conv_state = state.conv_view()?;
         let recurrent_state = state.recurrent_view()?;
-        let live_slot = [i32::try_from(slots.live_slot).map_err(|_| Status::InvalidArgument)?];
-        let staged_slot = [i32::try_from(slots.staged_slot).map_err(|_| Status::InvalidArgument)?];
-        let sequence = [0, i32::try_from(rows).map_err(|_| Status::InvalidArgument)?];
-        let scratch = self.scratch.gdn.as_mut().ok_or(Status::InternalError)?;
-        // Keep host metadata alive through the explicit layer completion boundary.
-        // The closure also routes enqueue/validation failures through that wait.
-        unsafe {
-            scratch.state_indices.upload(&live_slot)?;
-            scratch.state_out_indices.upload(&staged_slot)?;
-        }
-        let seq_indptr = if matches!(kind, ActiveRunKind::Append) {
-            unsafe {
-                scratch.seq_indptr.upload(&sequence)?;
-            }
-            Some(scratch.seq_indptr.vector(2)?)
-        } else {
-            None
+        let scratch = self.scratch.gdn.as_ref().ok_or(Status::InternalError)?;
+        let seq_indptr = match kind {
+            ActiveRunKind::Append => Some(scratch.seq_indptr.vector(2)?),
+            ActiveRunKind::Decode => None,
         };
-        // TODO(async-upload-lifetimes): retain GDN host metadata until batch
-        // completion, then remove this temporary per-layer stream wait.
-        ctx.synchronize()?;
-
-        let read_indices = scratch.state_indices.vector(1)?;
-        let write_indices = Some(scratch.state_out_indices.vector(1)?);
+        let read_indices = scratch.state_index(slots.live_slot)?;
+        let write_indices = Some(scratch.state_index(slots.staged_slot)?);
         let packed = scratch.packed.matrix(rows, PACKED_QKV_CHANNELS)?;
         let conv_out = scratch.conv_out.matrix(rows, PACKED_QKV_CHANNELS)?;
         let a = scratch.a.matrix(rows, NUM_VALUE_HEADS)?;

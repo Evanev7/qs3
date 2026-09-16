@@ -1,4 +1,5 @@
 use super::BatchExecution;
+use crate::dtype::BF16;
 use crate::{
     QWEN36_MOE_ROUTER_RENORMALIZE, QWEN36_MOE_ROUTER_SCALING_FACTOR, QWEN36_MOE_ROUTER_SCORE,
     backend::qsfi::{FusedAddRmsNormBf16, MoeBf16Execute, MoeBf16ExecuteArgs},
@@ -14,9 +15,9 @@ impl BatchExecution<'_> {
     pub(super) unsafe fn execute_post_attention_mlp(
         &mut self,
         rows: u32,
-        norm: &DeviceSpan<u16>,
+        norm: &DeviceSpan<BF16>,
         mlp: &QwenMlpWeights,
-        next_norm: &DeviceSpan<u16>,
+        next_norm: &DeviceSpan<BF16>,
     ) -> Result<(), Status> {
         let hidden = self.config.hidden_size();
         let residual = self.scratch.residual.matrix(rows, hidden)?;
@@ -95,9 +96,9 @@ impl BatchExecution<'_> {
     pub(super) unsafe fn execute_moe_mlp(
         &mut self,
         rows: u32,
-        router_proj: &DeviceSpan<u16>,
-        gate_up_proj: &DeviceSpan<u16>,
-        down_proj: &DeviceSpan<u16>,
+        router_proj: &DeviceSpan<BF16>,
+        gate_up_proj: &DeviceSpan<BF16>,
+        down_proj: &DeviceSpan<BF16>,
         shared: Option<&QwenSharedExpertWeights>,
     ) -> Result<(), Status> {
         let hidden = self.config.hidden_size();
@@ -123,7 +124,7 @@ impl BatchExecution<'_> {
             )?,
             down_weight: down_proj.tensor3(moe.num_experts, hidden, moe.moe_intermediate_size)?,
             out: self.scratch.mlp_out.matrix(rows, hidden)?,
-            workspace: scratch.workspace.workspace(scratch.workspace.cap)?,
+            workspace: scratch.workspace.workspace(scratch.workspace.len)?,
         })?;
         {
             let mut ops = self.engine.operators();

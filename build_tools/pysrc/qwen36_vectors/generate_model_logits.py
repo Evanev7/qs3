@@ -4,6 +4,7 @@ import argparse
 from collections.abc import Sequence
 from pathlib import Path
 
+from .config import VectorConfig
 from .model_logits import (
     DEFAULT_OUTPUT,
     PAGE_SIZE,
@@ -19,6 +20,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Generate deterministic Qwen3.6 ModelRunner logits vectors."
     )
+    parser.add_argument("--config", required=True, type=Path)
     parser.add_argument(
         "--output",
         type=Path,
@@ -35,10 +37,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
-    manifest, metadata = build_model_logits_artifact()
+    config = VectorConfig.read(args.config)
+    manifest, metadata = build_model_logits_artifact(config)
     output = args.output
     if not args.check:
-        write_model_logits_artifact(output)
+        write_model_logits_artifact(config, output)
 
     tokens = metadata["tokens"]
     print(

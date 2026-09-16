@@ -1,8 +1,11 @@
 use crate::backend::{
-    BF16, Bf16Heads, DMat, DTensor3, DVec, F32, I32, require_supported_rope_dims, validate_eps,
-    validate_nonzero,
+    Bf16Heads, DMat, DTensor3, DVec, require_supported_rope_dims, validate_eps, validate_nonzero,
 };
-use crate::{Status, ffi};
+use crate::{
+    Status,
+    dtype::{BF16, F32, I32},
+    ffi,
+};
 
 use super::{MoePlan, Qsfi};
 use crate::backend::Workspace;
@@ -341,11 +344,14 @@ impl RopeApplyBf16 {
 #[cfg(test)]
 mod tests {
     use super::{FusedAddRmsNormBf16, RmsNormBf16};
-    use crate::backend::{BF16, DMat, DVec};
-    use std::ffi::c_void;
+    use crate::ffi::DevicePtr;
+    use crate::{
+        backend::{DMat, DVec},
+        dtype::BF16,
+    };
 
-    fn device_ptr(offset: usize) -> *mut c_void {
-        (0x1000usize + offset) as *mut c_void
+    fn device_ptr(offset: usize) -> DevicePtr<BF16> {
+        DevicePtr::new((0x1000usize + offset) as *mut u8).unwrap()
     }
 
     fn bf16_mat(offset: usize, rows: u32, cols: u32) -> DMat<BF16> {

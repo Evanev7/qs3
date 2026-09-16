@@ -1,7 +1,9 @@
-use crate::memory::CudaCtx;
+use crate::dtype::I32;
 use crate::{
+    backend,
     constants::attention::{HEAD_DIM, NUM_KV_HEADS, NUM_Q_HEADS},
     ffi,
+    memory::CudaCtx,
 };
 use std::rc::Rc;
 
@@ -15,7 +17,7 @@ pub struct Engine {
 }
 
 impl Engine {
-    pub(crate) fn operators(&mut self) -> crate::backend::Operators<'_> {
+    pub(crate) fn operators(&mut self) -> backend::Operators<'_> {
         self.inner.operators()
     }
 }
@@ -94,66 +96,7 @@ pub enum Status {
     Unreachable,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum DynDType {
-    F32,
-    F16,
-    BF16,
-    FP8E4M3,
-    FP8E5M2,
-    NVFP4E2M1,
-    MXFP4E2M1,
-    MXFP8E4M3,
-    I32,
-    U32,
-    I8,
-    U8,
-}
-
-impl DynDType {
-    pub fn bits(self) -> usize {
-        match self {
-            DynDType::F32 | DynDType::I32 | DynDType::U32 => 32,
-            DynDType::F16 | DynDType::BF16 => 16,
-            DynDType::FP8E4M3
-            | DynDType::FP8E5M2
-            | DynDType::MXFP8E4M3
-            | DynDType::I8
-            | DynDType::U8 => 8,
-            DynDType::NVFP4E2M1 | DynDType::MXFP4E2M1 => 4,
-        }
-    }
-
-    pub fn storage_bytes_for(self, elements: usize) -> Result<usize, Status> {
-        let bits = elements
-            .checked_mul(self.bits())
-            .ok_or(Status::InvalidArgument)?;
-        bits.checked_add(7)
-            .ok_or(Status::InvalidArgument)
-            .map(|bits| bits / 8)
-    }
-
-    fn is_runtime_supported(self) -> bool {
-        matches!(self, DynDType::F16 | DynDType::BF16)
-    }
-
-    pub(crate) fn to_raw(self) -> ffi::DTypeRaw {
-        match self {
-            DynDType::F32 => ffi::DTYPE_F32,
-            DynDType::F16 => ffi::DTYPE_F16,
-            DynDType::BF16 => ffi::DTYPE_BF16,
-            DynDType::FP8E4M3 => ffi::DTYPE_FP8_E4M3,
-            DynDType::FP8E5M2 => ffi::DTYPE_FP8_E5M2,
-            DynDType::NVFP4E2M1 => ffi::DTYPE_NVFP4_E2M1,
-            DynDType::MXFP4E2M1 => ffi::DTYPE_MXFP4_E2M1,
-            DynDType::MXFP8E4M3 => ffi::DTYPE_MXFP8_E4M3,
-            DynDType::I32 => ffi::DTYPE_I32,
-            DynDType::U32 => ffi::DTYPE_U32,
-            DynDType::I8 => ffi::DTYPE_I8,
-            DynDType::U8 => ffi::DTYPE_U8,
-        }
-    }
-}
+use crate::dtype::DynDType;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum KvLayout {
@@ -260,11 +203,11 @@ pub struct AttentionLayer {
 impl AttentionLayer {
     pub(crate) fn bf16_attention(
         layer_idx: u32,
-        q: crate::backend::Bf16Heads,
-        k: crate::backend::Bf16Heads,
-        v: crate::backend::Bf16Heads,
-        o: crate::backend::Bf16Heads,
-        q_rope_offset: crate::backend::DVec<crate::backend::I32>,
+        q: backend::Bf16Heads,
+        k: backend::Bf16Heads,
+        v: backend::Bf16Heads,
+        o: backend::Bf16Heads,
+        q_rope_offset: backend::DVec<I32>,
     ) -> Self {
         Self {
             layer_idx,

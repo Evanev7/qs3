@@ -7,8 +7,8 @@ use crate::constants::{
     gdn::{CONV_WIDTH, NUM_VALUE_HEADS, OUTPUT_WIDTH, PACKED_QKV_CHANNELS, VALUE_HEAD_DIM},
 };
 #[cfg(test)]
-use crate::memory::{CudaCtx, DeviceBuffer};
-use crate::{engine::Status, ext::SafeVec, memory::DeviceSpan};
+use crate::memory::{CudaCtx, HostBuffer};
+use crate::{dtype::BF16, engine::Status, ext::SafeVec, memory::DeviceSpan};
 use std::ops::Deref;
 #[cfg(test)]
 use std::rc::Rc;
@@ -16,7 +16,7 @@ use std::rc::Rc;
 /// Keeps the concrete allocation owner while exposing only the common view.
 /// Backends retain control over allocation and destruction; no growth or transfer
 /// behavior is required of weights. Boxing occurs only during materialization.
-pub(super) type QwenWeight = Box<dyn Deref<Target = DeviceSpan<u16>>>;
+pub(super) type QwenWeight = Box<dyn Deref<Target = DeviceSpan<BF16>>>;
 
 /// Dimensions needed to bind routed and shared expert tensors.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -48,7 +48,11 @@ pub struct QwenWeights {
 
 #[cfg(test)]
 fn bf16_weight(ctx: &Rc<CudaCtx>, values: &[u16]) -> Result<QwenWeight, Status> {
-    Ok(Box::new(DeviceBuffer::from_slice(ctx.clone(), values)?))
+    let mut host = HostBuffer::<BF16>::new(values.len())?;
+    for (bytes, value) in host.as_mut().chunks_exact_mut(2).zip(values) {
+        bytes.copy_from_slice(&value.to_ne_bytes());
+    }
+    Ok(Box::new(host.upload(ctx.clone())?))
 }
 
 fn loaded_mlp_weights<F>(
@@ -90,7 +94,7 @@ impl QwenWeights {
     ) -> Result<Self, Status>
     where
         F: FnMut(Option<u32>, &'static str) -> Result<A, Status>,
-        A: Deref<Target = DeviceSpan<u16>> + 'static,
+        A: Deref<Target = DeviceSpan<BF16>> + 'static,
     {
         config.validate()?;
         let mut take = |layer, slot| take(layer, slot).map(|owner| Box::new(owner) as QwenWeight);
@@ -467,14 +471,14 @@ pub(super) struct QwenSharedExpertWeights {
 }
 
 impl QwenLayerWeights {
-    pub(super) fn input_norm(&self) -> &DeviceSpan<u16> {
+    pub(super) fn input_norm(&self) -> &DeviceSpan<BF16> {
         match self {
             Self::AttentionMlp(layer) => &layer.attn_norm,
             Self::Gdn(layer) => &layer.norm,
         }
     }
 
-    pub(super) fn post_attention_mlp(&self) -> (&DeviceSpan<u16>, &QwenMlpWeights) {
+    pub(super) fn post_attention_mlp(&self) -> (&DeviceSpan<BF16>, &QwenMlpWeights) {
         match self {
             Self::AttentionMlp(layer) => (&layer.mlp_norm, &layer.mlp),
             Self::Gdn(layer) => (&layer.mlp_norm, &layer.mlp),

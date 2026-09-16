@@ -1,7 +1,15 @@
 # qwen36-vectors
 
-This subproject generates synthetic correctness vectors for qs3's narrow
-Qwen3.6-35B-A3B runtime path.
+This subproject generates synthetic correctness vectors for the selected Qwen
+build. `nixsrc/vectors.nix` exports numerical model inputs to
+`build/vectors/config.json`; generation receives that file through `--config`.
+Ninja tracks it as an input, so model changes regenerate the vectors. Checkpoint
+repository names and revisions are excluded.
+
+Generators take an explicit `VectorConfig`. Token counts, vocabulary size,
+reduced MLP widths, and synthetic data formulas remain fixture choices. The
+composed MoE fixtures continue testing MoE on dense builds; the public logits
+fixture selects dense or MoE according to the build configuration.
 
 It is an import package in the `build-tools` distribution, under
 `build_tools/pysrc/qwen36_vectors/`. Its console command is `qwen36-vectors`;
@@ -24,7 +32,10 @@ with optional executable-vLLM comparison only if the environment can support it.
 
 Generated artifacts live under `build/vectors/qwen36_semantics/` by default and
 are not committed. Byte-level oracle hashes live next to this generator under
-`build_tools/pysrc/qwen36_vectors/oracle_hashes/`.
+`build_tools/pysrc/qwen36_vectors/oracle_hashes/<config-key>/`. Each set includes
+its numerical `config.json`; the key is a hash of that config. Generation records
+the same config alongside the artifacts. Missing configurations and mismatched
+bytes fail verification; normal builds never refresh oracle hashes.
 
 ## Artifact format
 
@@ -110,7 +121,7 @@ just build_tools/generate-vectors
 
 That recipe writes all groups under `build/vectors/qwen36_semantics/` and checks
 the generated file set, byte lengths, and SHA256 hashes against
-`build_tools/pysrc/qwen36_vectors/oracle_hashes/*.oracle.json`.
+`build_tools/pysrc/qwen36_vectors/oracle_hashes/<config-key>/*.oracle.json`.
 
 The Ninja stamp tracks the project metadata, uv lockfile, committed
 oracle hashes, and the installed Python generator files through its depfile.
@@ -199,7 +210,7 @@ Current Rust coverage includes:
 Generate the full-attention primitive vectors with:
 
 ```sh
-build_tools/.venv/bin/qwen36-vectors generate-attention
+build_tools/.venv/bin/qwen36-vectors generate-attention --config build/vectors/config.json
 ```
 
 The `full_attention_primitives` group emits packed per-head `[q, output_gate]`
@@ -209,7 +220,7 @@ over rotary dim 64, and sigmoid output-gate artifacts.
 Generate the GDN decoder-layer vector with:
 
 ```sh
-build_tools/.venv/bin/qwen36-vectors generate-gdn-decoder-layer
+build_tools/.venv/bin/qwen36-vectors generate-gdn-decoder-layer --config build/vectors/config.json
 ```
 
 The `gdn_decoder_layer` group emits row-coded GDN projection weights for six

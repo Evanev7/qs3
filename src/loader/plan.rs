@@ -1,7 +1,9 @@
 use super::format::{
     LoadResult, Qwen36TextConfig, WeightLoadError, WeightTensorSpec, validate_qwen36_bf16_dir,
 };
-use super::transfer::{WeightFileRange, WeightLoadBackend, WeightLoadSpan, WeightTensorDesc};
+use super::transfer::{
+    WeightBuffer, WeightFileRange, WeightLoadBackend, WeightLoadSpan, WeightTensorDesc,
+};
 use super::{DEFAULT_MAX_HEADER_BYTES, DEFAULT_MAX_JSON_BYTES};
 
 use std::{
@@ -102,17 +104,15 @@ impl QwenBf16LoadPlan {
     }
 }
 
-#[derive(Debug)]
-pub(crate) struct LoadedWeightTensor {
+pub(crate) struct LoadedWeightTensor<B: WeightLoadBackend> {
     pub(super) spec: WeightTensorSpec,
-    pub(super) span: WeightLoadSpan,
+    pub(super) buffer: WeightBuffer<B>,
 }
 
-#[derive(Debug)]
 pub(crate) struct LoadedWeightPlan<B: WeightLoadBackend> {
     pub(super) config: Qwen36TextConfig,
-    pub(super) tensors: Vec<LoadedWeightTensor>,
-    pub(super) backend: B,
+    pub(super) tensors: Vec<LoadedWeightTensor<B>>,
+    pub(super) stats: B::Stats,
 }
 
 pub(crate) fn execute_qwen36_bf16_load_plan<B: WeightLoadBackend>(
@@ -120,8 +120,14 @@ pub(crate) fn execute_qwen36_bf16_load_plan<B: WeightLoadBackend>(
     mut backend: B,
     stream: *mut c_void,
 ) -> LoadResult<LoadedWeightPlan<B>> {
+    let mut targets = BTreeSet::new();
+    for entry in &plan.entries {
+        if !targets.insert((entry.spec.target.layer, entry.spec.target.slot)) {
+            return Err(WeightLoadError::tensor_table("duplicate loaded target"));
+        }
+    }
     let files = open_plan_files(plan)?;
-    let mut tensors = Vec::with_capacity(plan.entries.len());
+    let mut spans = Vec::with_capacity(plan.entries.len());
     for entry in &plan.entries {
         let bytes = match &entry.source {
             QwenLoadSource::FileRange { bytes, .. } | QwenLoadSource::ZeroFill { bytes } => *bytes,
@@ -129,15 +135,12 @@ pub(crate) fn execute_qwen36_bf16_load_plan<B: WeightLoadBackend>(
         let span = backend
             .alloc_tensor(WeightTensorDesc {
                 name: &entry.spec.name,
-                dtype: entry.spec.dtype.to_runtime_dtype(),
+                dtype: entry.spec.dtype,
                 shape: &entry.spec.shape,
                 bytes,
             })
             .map_err(WeightLoadError::Backend)?;
-        tensors.push(LoadedWeightTensor {
-            spec: entry.spec.clone(),
-            span,
-        });
+        spans.push(span);
     }
 
     let mut read_order = Vec::new();
@@ -190,7 +193,7 @@ pub(crate) fn execute_qwen36_bf16_load_plan<B: WeightLoadBackend>(
                     offset: *absolute_offset,
                     bytes: *bytes,
                 },
-                &tensors[idx].span,
+                &spans[idx],
                 stream,
             )
             .map_err(WeightLoadError::Backend)?;
@@ -198,16 +201,49 @@ pub(crate) fn execute_qwen36_bf16_load_plan<B: WeightLoadBackend>(
 
     for idx in zero_order {
         backend
-            .zero_fill(&tensors[idx].span, stream)
+            .zero_fill(&spans[idx], stream)
             .map_err(WeightLoadError::Backend)?;
     }
 
-    backend.seal(stream).map_err(WeightLoadError::Backend)?;
+    let (buffers, stats) = backend.finish(stream).map_err(WeightLoadError::Backend)?;
+    let tensors = pair_loaded_tensors(plan, spans, buffers)?;
     Ok(LoadedWeightPlan {
         config: plan.config.clone(),
         tensors,
-        backend,
+        stats,
     })
+}
+
+fn pair_loaded_tensors<B: WeightLoadBackend>(
+    plan: &QwenBf16LoadPlan,
+    spans: Vec<WeightLoadSpan>,
+    buffers: Vec<WeightBuffer<B>>,
+) -> LoadResult<Vec<LoadedWeightTensor<B>>> {
+    if buffers.len() != plan.entries.len() {
+        return Err(WeightLoadError::tensor_table(
+            "loaded tensor count does not match plan",
+        ));
+    }
+    plan.entries
+        .iter()
+        .zip(spans)
+        .zip(buffers)
+        .map(|((entry, span), buffer)| {
+            if buffer.dtype() != entry.spec.dtype
+                || entry.spec.byte_len()? != span.bytes
+                || !buffer.matches_span(span)
+            {
+                return Err(WeightLoadError::tensor_table(format!(
+                    "returned buffer does not match tensor {:?}",
+                    entry.spec.name,
+                )));
+            }
+            Ok(LoadedWeightTensor {
+                spec: entry.spec.clone(),
+                buffer,
+            })
+        })
+        .collect()
 }
 
 fn open_plan_files(plan: &QwenBf16LoadPlan) -> LoadResult<BTreeMap<PathBuf, File>> {

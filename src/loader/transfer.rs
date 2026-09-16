@@ -1,6 +1,7 @@
 use super::{PINNED_UPLOAD_BUFFER_BYTES, PINNED_UPLOAD_BUFFER_COUNT};
 use crate::{
-    engine::{DynDType, Status},
+    dtype::{BF16, DType, DynDType, F32, Fp8E4M3, U8},
+    engine::Status,
     ffi,
     memory::DeviceSpan,
 };
@@ -80,19 +81,19 @@ fn read_exact_at_raw(file: &File, dst: *mut u8, bytes: usize, offset: u64) -> io
     Ok(())
 }
 
-/// Backend interface for validated Qwen3.6 weight transfers.
+/// Backend interface for validated tensor byte transfers.
 ///
 /// Qwen3.6 manifest parsing and model validation stay above this trait: parse
 /// `config.json`, safetensors indexes, and all shard headers first; reject
 /// duplicate, missing, unexpected, wrong-dtype, wrong-shape, overlapping, or
 /// out-of-range tensors before allocating CUDA-visible memory. Once the exact
-/// BF16 tensor plan is validated, it should call this backend to allocate the
+/// tensor plan is validated, it should call this backend to allocate the
 /// final qs3-owned storage and fill it from safetensors byte ranges.
 ///
 /// Intended implementations:
 /// - `ManagedUmaBackend` for GB10/UMA: `cudaMallocManaged` final weights,
 ///   direct offset reads into the host-visible pointer, and one CUDA stream sync
-///   in `seal`.
+///   in `finish`.
 /// - `PinnedUploadBackend` for dGPU fallback: `cudaMalloc` final weights,
 ///   a small `cudaHostAlloc` ring, `preadv`, `cudaMemcpyAsync`, and events for
 ///   staging-buffer reuse.
@@ -101,19 +102,16 @@ fn read_exact_at_raw(file: &File, dst: *mut u8, bytes: usize, offset: u64) -> io
 ///   offsets are not guaranteed to be 4 KiB aligned.
 ///
 /// The backend must not expose or retain mmap/InstantTensor staging pointers as
-/// committed model weights. Returned spans are the durable pointers that
-/// `QwenWeights` will wrap after load completion. `seal` is the only load-time
-/// synchronization point required before the runner uses the weights.
-pub(crate) trait WeightLoadBackend {
-    /// Owns one final BF16 tensor. Its Drop implementation belongs to the
-    /// backend; consumers only borrow the device span through Deref.
-    type Allocation: Deref<Target = DeviceSpan<u16>> + 'static;
+/// committed model weights. Transfer spans remain backend-owned until `finish`
+/// returns typed owners for those allocations. The backend does not
+/// interpret quantization scales, packing, or kernel layouts. `finish` is the only
+/// load-time synchronization point required before the runner uses the weights.
+pub(crate) trait WeightLoadBackend: Sized {
+    /// Owns a final typed buffer with the backend's release policy.
+    type Buffer<D: DType>: Deref<Target = DeviceSpan<D>> + 'static;
 
-    fn device_ordinal(&self) -> i32;
-    fn allocations(&self) -> &[WeightLoadSpan];
-    /// Returns exactly the spans currently exposed by `allocations`, in the
-    /// same order, and leaves `allocations()` empty.
-    fn take_allocations(&mut self) -> Vec<Self::Allocation>;
+    type Stats;
+
     fn alloc_tensor(&mut self, desc: WeightTensorDesc<'_>) -> Result<WeightLoadSpan, Status>;
     fn read_exact(
         &mut self,
@@ -122,7 +120,42 @@ pub(crate) trait WeightLoadBackend {
         stream: *mut c_void,
     ) -> Result<(), Status>;
     fn zero_fill(&mut self, dst: &WeightLoadSpan, stream: *mut c_void) -> Result<(), Status>;
-    fn seal(&mut self, stream: *mut c_void) -> Result<(), Status>;
+    /// Completes loading and returns exclusive owners in allocation order,
+    /// independent of read order. Variants must match the allocation descriptors.
+    /// Staging resources are released before returning; no backend survives the
+    /// handoff. An error returns no owners and cleans up through backend Drop.
+    fn finish(self, stream: *mut c_void) -> Result<(Vec<WeightBuffer<Self>>, Self::Stats), Status>;
+}
+
+/// Owned checkpoint storage. Model assembly interprets tensor roles and recipes.
+pub(crate) enum WeightBuffer<B: WeightLoadBackend> {
+    Bf16(B::Buffer<BF16>),
+    F32(B::Buffer<F32>),
+    Fp8E4m3(B::Buffer<Fp8E4M3>),
+    U8(B::Buffer<U8>),
+}
+
+impl<B: WeightLoadBackend> WeightBuffer<B> {
+    pub(super) fn dtype(&self) -> DynDType {
+        match self {
+            Self::Bf16(_) => DynDType::BF16,
+            Self::F32(_) => DynDType::F32,
+            Self::Fp8E4m3(_) => DynDType::FP8E4M3,
+            Self::U8(_) => DynDType::U8,
+        }
+    }
+
+    pub(super) fn matches_span(&self, expected: WeightLoadSpan) -> bool {
+        fn matches<D: DType>(span: &DeviceSpan<D>, expected: WeightLoadSpan) -> bool {
+            span.erase() == expected.ptr && D::size_of(span.len) == Ok(expected.bytes)
+        }
+        match self {
+            Self::Bf16(buffer) => matches(buffer, expected),
+            Self::F32(buffer) => matches(buffer, expected),
+            Self::Fp8E4m3(buffer) => matches(buffer, expected),
+            Self::U8(buffer) => matches(buffer, expected),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -148,29 +181,33 @@ pub(crate) struct WeightLoadSpan {
 
 /// Final allocation owned by the existing managed and pinned-upload loaders.
 /// Loading/staging resources stay with the backend; only this owner is handed off.
-pub(crate) struct CudaWeightAllocation {
+pub(crate) struct CudaWeightBuffer<D: DType> {
     device_ordinal: i32,
-    span: DeviceSpan<u16>,
+    span: DeviceSpan<D>,
 }
 
-impl CudaWeightAllocation {
-    fn from_loaded(device_ordinal: i32, allocation: WeightLoadSpan) -> Self {
-        Self {
+impl<D: DType> CudaWeightBuffer<D> {
+    /// # Safety
+    /// `allocation` must be a live CUDA allocation on `device_ordinal`, with
+    /// completed transfers and storage matching `D`. On success the caller must
+    /// relinquish exclusive release authority to the returned owner.
+    unsafe fn from_loaded(device_ordinal: i32, allocation: WeightLoadSpan) -> Result<Self, Status> {
+        let span = DeviceSpan::new(allocation.ptr.cast(), D::len_of(allocation.bytes)?)?;
+        Ok(Self {
             device_ordinal,
-            span: DeviceSpan::new(allocation.ptr.cast(), allocation.bytes / size_of::<u16>())
-                .expect("loader allocation is non-null"),
-        }
+            span,
+        })
     }
 }
 
-impl Deref for CudaWeightAllocation {
-    type Target = DeviceSpan<u16>;
+impl<D: DType> Deref for CudaWeightBuffer<D> {
+    type Target = DeviceSpan<D>;
     fn deref(&self) -> &Self::Target {
         &self.span
     }
 }
 
-impl Drop for CudaWeightAllocation {
+impl<D: DType> Drop for CudaWeightBuffer<D> {
     fn drop(&mut self) {
         // This is the loader's original release policy. DeviceBuffer never
         // adopts these allocations or decides how they are released.
@@ -204,7 +241,7 @@ pub(crate) struct ManagedUmaLoadStats {
 /// payloads are read directly into those committed allocations.
 pub(crate) struct ManagedUmaBackend {
     pub(super) device_ordinal: i32,
-    pub(super) allocations: Vec<WeightLoadSpan>,
+    allocations: Vec<(DynDType, WeightLoadSpan)>,
     pub(super) stats: ManagedUmaLoadStats,
 }
 
@@ -216,10 +253,6 @@ impl ManagedUmaBackend {
             allocations: Vec::new(),
             stats: ManagedUmaLoadStats::default(),
         })
-    }
-
-    pub(crate) fn stats(&self) -> ManagedUmaLoadStats {
-        self.stats
     }
 
     fn add_stat(value: &mut usize, add: usize) -> Result<(), Status> {
@@ -237,7 +270,7 @@ impl ManagedUmaBackend {
     fn owns_span(&self, span: &WeightLoadSpan) -> bool {
         self.allocations
             .iter()
-            .any(|allocation| allocation.ptr == span.ptr && allocation.bytes == span.bytes)
+            .any(|(_, allocation)| allocation == span)
     }
 
     fn validate_span(&self, span: &WeightLoadSpan, bytes: usize) -> Result<(), Status> {
@@ -253,24 +286,17 @@ impl ManagedUmaBackend {
 }
 
 impl WeightLoadBackend for ManagedUmaBackend {
-    type Allocation = CudaWeightAllocation;
-    fn device_ordinal(&self) -> i32 {
-        self.device_ordinal
-    }
-
-    fn allocations(&self) -> &[WeightLoadSpan] {
-        &self.allocations
-    }
-
-    fn take_allocations(&mut self) -> Vec<Self::Allocation> {
-        self.allocations
-            .drain(..)
-            .map(|span| CudaWeightAllocation::from_loaded(self.device_ordinal, span))
-            .collect()
-    }
+    type Buffer<D: DType> = CudaWeightBuffer<D>;
+    type Stats = ManagedUmaLoadStats;
 
     fn alloc_tensor(&mut self, desc: WeightTensorDesc<'_>) -> Result<WeightLoadSpan, Status> {
-        if desc.bytes == 0 {
+        if desc.bytes == 0
+            || desc.dtype.storage_bytes_for_shape(desc.shape)? != desc.bytes
+            || !matches!(
+                desc.dtype,
+                DynDType::BF16 | DynDType::F32 | DynDType::FP8E4M3 | DynDType::U8
+            )
+        {
             return Err(Status::InvalidArgument);
         }
         activate_device(self.device_ordinal)?;
@@ -287,7 +313,7 @@ impl WeightLoadBackend for ManagedUmaBackend {
             bytes: desc.bytes,
             memory: WeightLoadMemory::ManagedUma,
         };
-        self.allocations.push(span);
+        self.allocations.push((desc.dtype, span));
         self.stats.tensors = self
             .stats
             .tensors
@@ -322,18 +348,51 @@ impl WeightLoadBackend for ManagedUmaBackend {
         Self::add_stat(&mut self.stats.zero_fill_bytes, dst.bytes)
     }
 
-    fn seal(&mut self, stream: *mut c_void) -> Result<(), Status> {
+    fn finish(
+        mut self,
+        stream: *mut c_void,
+    ) -> Result<(Vec<WeightBuffer<Self>>, Self::Stats), Status> {
         activate_device(self.device_ordinal)?;
         let started = Instant::now();
         result_from_cuda(unsafe { ffi::cuda::cudaStreamSynchronize(stream) })?;
-        Self::add_elapsed_us(&mut self.stats.seal_us, started)
+        Self::add_elapsed_us(&mut self.stats.seal_us, started)?;
+        let mut buffers = Vec::with_capacity(self.allocations.len());
+        while let Some(&(dtype, allocation)) = self.allocations.last() {
+            // Loading has completed. Remove from the backend only once an owner
+            // exists; on conversion failure Drop still owns the remaining spans.
+            let buffer = unsafe {
+                match dtype {
+                    DynDType::BF16 => WeightBuffer::Bf16(CudaWeightBuffer::from_loaded(
+                        self.device_ordinal,
+                        allocation,
+                    )?),
+                    DynDType::F32 => WeightBuffer::F32(CudaWeightBuffer::from_loaded(
+                        self.device_ordinal,
+                        allocation,
+                    )?),
+                    DynDType::FP8E4M3 => WeightBuffer::Fp8E4m3(CudaWeightBuffer::from_loaded(
+                        self.device_ordinal,
+                        allocation,
+                    )?),
+                    DynDType::U8 => WeightBuffer::U8(CudaWeightBuffer::from_loaded(
+                        self.device_ordinal,
+                        allocation,
+                    )?),
+                    _ => return Err(Status::InvalidArgument),
+                }
+            };
+            self.allocations.pop();
+            buffers.push(buffer);
+        }
+        buffers.reverse();
+        Ok((buffers, self.stats))
     }
 }
 
 impl Drop for ManagedUmaBackend {
     fn drop(&mut self) {
         let _ = activate_device(self.device_ordinal);
-        for allocation in self.allocations.drain(..) {
+        for (_, allocation) in self.allocations.drain(..) {
             unsafe {
                 ffi::cuda::cudaFree(allocation.ptr);
             }
@@ -369,7 +428,7 @@ struct PinnedUploadSlot {
 /// payloads pass through a fixed pinned host ring.
 pub(crate) struct PinnedUploadBackend {
     pub(super) device_ordinal: i32,
-    pub(super) allocations: Vec<WeightLoadSpan>,
+    allocations: Vec<(DynDType, WeightLoadSpan)>,
     slots: Vec<PinnedUploadSlot>,
     pub(super) next_slot: usize,
     pub(super) stats: PinnedUploadLoadStats,
@@ -427,10 +486,6 @@ impl PinnedUploadBackend {
         Ok(backend)
     }
 
-    pub(crate) fn stats(&self) -> PinnedUploadLoadStats {
-        self.stats
-    }
-
     fn add_stat(value: &mut usize, add: usize) -> Result<(), Status> {
         *value = value.checked_add(add).ok_or(Status::InvalidArgument)?;
         Ok(())
@@ -446,7 +501,7 @@ impl PinnedUploadBackend {
     fn owns_span(&self, span: &WeightLoadSpan) -> bool {
         self.allocations
             .iter()
-            .any(|allocation| allocation.ptr == span.ptr && allocation.bytes == span.bytes)
+            .any(|(_, allocation)| allocation == span)
     }
 
     fn validate_span(&self, span: &WeightLoadSpan, bytes: usize) -> Result<(), Status> {
@@ -485,24 +540,17 @@ impl PinnedUploadBackend {
 }
 
 impl WeightLoadBackend for PinnedUploadBackend {
-    type Allocation = CudaWeightAllocation;
-    fn device_ordinal(&self) -> i32 {
-        self.device_ordinal
-    }
-
-    fn allocations(&self) -> &[WeightLoadSpan] {
-        &self.allocations
-    }
-
-    fn take_allocations(&mut self) -> Vec<Self::Allocation> {
-        self.allocations
-            .drain(..)
-            .map(|span| CudaWeightAllocation::from_loaded(self.device_ordinal, span))
-            .collect()
-    }
+    type Buffer<D: DType> = CudaWeightBuffer<D>;
+    type Stats = PinnedUploadLoadStats;
 
     fn alloc_tensor(&mut self, desc: WeightTensorDesc<'_>) -> Result<WeightLoadSpan, Status> {
-        if desc.bytes == 0 {
+        if desc.bytes == 0
+            || desc.dtype.storage_bytes_for_shape(desc.shape)? != desc.bytes
+            || !matches!(
+                desc.dtype,
+                DynDType::BF16 | DynDType::F32 | DynDType::FP8E4M3 | DynDType::U8
+            )
+        {
             return Err(Status::InvalidArgument);
         }
         activate_device(self.device_ordinal)?;
@@ -517,7 +565,7 @@ impl WeightLoadBackend for PinnedUploadBackend {
             bytes: desc.bytes,
             memory: WeightLoadMemory::Device,
         };
-        self.allocations.push(span);
+        self.allocations.push((desc.dtype, span));
         self.stats.tensors = self
             .stats
             .tensors
@@ -595,14 +643,47 @@ impl WeightLoadBackend for PinnedUploadBackend {
         Self::add_stat(&mut self.stats.zero_fill_bytes, dst.bytes)
     }
 
-    fn seal(&mut self, stream: *mut c_void) -> Result<(), Status> {
+    fn finish(
+        mut self,
+        stream: *mut c_void,
+    ) -> Result<(Vec<WeightBuffer<Self>>, Self::Stats), Status> {
         activate_device(self.device_ordinal)?;
         let started = Instant::now();
         result_from_cuda(unsafe { ffi::cuda::cudaStreamSynchronize(stream) })?;
         for idx in 0..self.slots.len() {
             self.synchronize_slot(idx)?;
         }
-        Self::add_elapsed_us(&mut self.stats.seal_us, started)
+        Self::add_elapsed_us(&mut self.stats.seal_us, started)?;
+        let mut buffers = Vec::with_capacity(self.allocations.len());
+        while let Some(&(dtype, allocation)) = self.allocations.last() {
+            // Loading has completed. Remove from the backend only once an owner
+            // exists; on conversion failure Drop still owns the remaining spans.
+            let buffer = unsafe {
+                match dtype {
+                    DynDType::BF16 => WeightBuffer::Bf16(CudaWeightBuffer::from_loaded(
+                        self.device_ordinal,
+                        allocation,
+                    )?),
+                    DynDType::F32 => WeightBuffer::F32(CudaWeightBuffer::from_loaded(
+                        self.device_ordinal,
+                        allocation,
+                    )?),
+                    DynDType::FP8E4M3 => WeightBuffer::Fp8E4m3(CudaWeightBuffer::from_loaded(
+                        self.device_ordinal,
+                        allocation,
+                    )?),
+                    DynDType::U8 => WeightBuffer::U8(CudaWeightBuffer::from_loaded(
+                        self.device_ordinal,
+                        allocation,
+                    )?),
+                    _ => return Err(Status::InvalidArgument),
+                }
+            };
+            self.allocations.pop();
+            buffers.push(buffer);
+        }
+        buffers.reverse();
+        Ok((buffers, self.stats))
     }
 }
 
@@ -632,7 +713,7 @@ impl Drop for PinnedUploadBackend {
                 }
             }
         }
-        for allocation in self.allocations.drain(..) {
+        for (_, allocation) in self.allocations.drain(..) {
             unsafe {
                 ffi::cuda::cudaFree(allocation.ptr);
             }

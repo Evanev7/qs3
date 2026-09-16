@@ -1,8 +1,7 @@
 use super::{
-    BF16, Bf16Heads, DMat, DVec, F32, GdnStateIndexPolicy, I32, Qsfi, require_gdn_state_index_vec,
-    require_i32_vec, require_qwen36_gdn_heads, result_from_raw, validate_eps,
-    validate_gdn_recurrent_tensors, validate_nonzero, validate_soft_cap, zero_tensor1,
-    zero_tensor2,
+    Bf16Heads, DMat, DVec, GdnStateIndexPolicy, Qsfi, require_gdn_state_index_vec, require_i32_vec,
+    require_qwen36_gdn_heads, result_from_raw, validate_eps, validate_gdn_recurrent_tensors,
+    validate_nonzero, validate_soft_cap, zero_tensor1, zero_tensor2,
 };
 use crate::{
     QWEN36_MOE_MAX_EXPERTS, QWEN36_MOE_MAX_TOP_K, Status,
@@ -13,6 +12,7 @@ use crate::{
             VALUE_HEAD_DIM,
         },
     },
+    dtype::{BF16, F32, I32},
     ffi::{self, sys},
 };
 
@@ -51,13 +51,12 @@ impl<'a> Qscu<'a> {
         let height = (packed.rows as usize)
             .checked_mul(NUM_Q_HEADS as usize)
             .ok_or(Status::InvalidArgument)?;
-        let source = packed.tensor().data.cast::<u8>();
-        for (target, offset) in [(q.tensor().data, 0), (gate.tensor().data, width)] {
+        for (target, offset) in [(q.data, 0), (gate.data, width)] {
             let status = unsafe {
                 ffi::cuda::cudaMemcpy2DAsync(
-                    target,
+                    target.erase(),
                     width,
-                    source.add(offset).cast(),
+                    packed.data.erase().byte_add(offset),
                     width * 2,
                     width,
                     height,
@@ -516,7 +515,7 @@ pub(super) fn qwen36_gdn_causal_conv1d_desc(
             seq_indptr,
             batch_size.checked_add(1).ok_or(Status::InvalidArgument)?,
         )?;
-        seq_indptr.data
+        seq_indptr.data.erase()
     } else {
         if batch_size != x.rows {
             return Err(Status::InvalidArgument);
@@ -672,7 +671,7 @@ pub(super) fn qwen36_gdn_prefill_desc(
         a_log: a_log.tensor(),
         dt_bias: dt_bias.tensor(),
         state: state.tensor(),
-        seq_indptr: seq_indptr.data,
+        seq_indptr: seq_indptr.data.erase(),
         state_indices: state_indices.tensor(),
         state_out_indices: state_out_indices.map_or(zero_tensor1(ffi::DTYPE_I32), DVec::tensor),
         out: out.tensor(),

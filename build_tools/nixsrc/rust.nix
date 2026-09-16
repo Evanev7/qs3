@@ -4,10 +4,10 @@ let
   config = import ../../models/config.nix;
   text = config.model.config;
   dimensions = config.dimensions;
-  recurrentElement =
+  recurrentDType =
     {
-      bf16 = "u16";
-      f32 = "f32";
+      bf16 = "crate::dtype::BF16";
+      f32 = "crate::dtype::F32";
     }
     .${config.precision.gdn.recurrentState};
   json = builtins.toJSON;
@@ -114,5 +114,5 @@ in
 
 + ''
   // Primitive storage representation; consumers own backend dtype conversion.
-  pub type GdnRecurrentElement = ${recurrentElement};
+  pub type GdnRecurrentDType = ${recurrentDType};
 ''

@@ -1,4 +1,7 @@
-// Standalone generated-launcher integration test, run by run_cuda_test.sh.
+// Generated-launcher integration test, run by qstriton/test.py.
+use dtype::{BF16, DType, F32};
+use ffi::DevicePtr;
+use qs3::{dtype, ffi};
 use std::{ffi::c_void, ptr};
 
 mod full {
@@ -48,10 +51,10 @@ fn bf16(x: f32) -> u16 {
     ((bits + 0x7fff + ((bits >> 16) & 1)) >> 16) as u16
 }
 
-fn exercise<T: Copy + Default>(
+fn exercise<D: DType, T: Copy + Default>(
     k: usize,
     n: usize,
-    launch: impl FnOnce(*mut u16, *mut u16, *mut T),
+    launch: impl FnOnce(DevicePtr<BF16>, DevicePtr<BF16>, DevicePtr<D>),
     decode: impl Fn(T) -> f32,
     round_reference: impl Fn(f32) -> f32,
 ) {
@@ -80,7 +83,11 @@ fn exercise<T: Copy + Default>(
         unsafe { cudaMemset(y.0, 0xa5, (n + 2) * std::mem::size_of::<T>()) },
         0
     );
-    launch(x.0.cast(), w.0.cast(), unsafe { y.0.cast::<T>().add(1) });
+    launch(
+        DevicePtr::new(x.0.cast()).unwrap(),
+        DevicePtr::new(w.0.cast()).unwrap(),
+        DevicePtr::new(unsafe { y.0.cast::<T>().add(1).cast() }).unwrap(),
+    );
     let mut result = vec![T::default(); n + 2];
     assert_eq!(
         unsafe {
@@ -114,7 +121,7 @@ fn full_lm_head_f32() {
     // A CUDA runtime allocation establishes the primary context before load.
     let _context = Buffer::new(1);
     let kernel = unsafe { full::Kernel::load().unwrap() };
-    exercise(
+    exercise::<F32, f32>(
         k,
         full::GRID[0] as usize,
         |x, w, y| unsafe { kernel.launch(ptr::null_mut(), x, w, y).unwrap() },
@@ -127,7 +134,7 @@ fn full_lm_head_f32() {
 fn masked_tail_bf16() {
     let _context = Buffer::new(1);
     let kernel = unsafe { tail::Kernel::load().unwrap() };
-    exercise(
+    exercise::<BF16, u16>(
         93,
         tail::GRID[0] as usize,
         |x, w, y| unsafe { kernel.launch(ptr::null_mut(), x, w, y).unwrap() },
@@ -140,7 +147,7 @@ fn masked_tail_bf16() {
 fn gdn_qkv_bf16() {
     let _context = Buffer::new(1);
     let kernel = unsafe { qkv::Kernel::load().unwrap() };
-    exercise(
+    exercise::<BF16, u16>(
         qkv::constants::K as usize,
         qkv::GRID[0] as usize,
         |x, w, y| unsafe { kernel.launch(ptr::null_mut(), x, w, y).unwrap() },
