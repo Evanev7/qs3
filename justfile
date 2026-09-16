@@ -77,10 +77,6 @@ bench *args: ninja
         ninja -C build bench
         build/qsfi_bench_native {{args}}
 
-model-tps: ninja
-        ninja -C build
-        LIBRARY_PATH="{{cuda_lib_path}}:${LIBRARY_PATH:-}" cargo run --release --bin qs3-bench
-
 benchmark: (_benchmark "102" "32") (_benchmark "1024" "256")
 
 _benchmark context_tokens decode_samples:
@@ -89,7 +85,8 @@ _benchmark context_tokens decode_samples:
         driver_libs=$(mktemp -d)
         trap 'rm -rf "$driver_libs"' EXIT
         ln -s /lib/aarch64-linux-gnu/libcuda.so* /lib/aarch64-linux-gnu/libnvidia-*.so* "$driver_libs/"
-        # Keep host CUDA and system libraries out of the Nix runtime's search path.
+        snapshot=$(nix eval --offline --raw --file models/config.nix --apply 'config: let source = config.model.source; in "models--${builtins.replaceStrings ["/"] ["--"] source.repo}/snapshots/${source.rev}"')
+        export QS3_QWEN36_MODEL_DIR="${QS3_QWEN36_MODEL_DIR:-$HOME/.cache/huggingface/hub/$snapshot}"
         QS3_BENCH_CONTEXT_TOKENS={{context_tokens}} QS3_BENCH_DECODE_SAMPLES={{decode_samples}} \
         LD_LIBRARY_PATH="$driver_libs" nix run --impure .#benchmark
 
