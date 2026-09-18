@@ -856,7 +856,7 @@ fn validates_selected_checkpoint_manifest_when_available() {
     let model_dir = real_selected_model_dir();
     if !model_dir.is_dir() {
         eprintln!(
-            "skipping selected BF16 manifest smoke; {} does not exist",
+            "skipping selected checkpoint manifest smoke; {} does not exist",
             model_dir.display()
         );
         return;

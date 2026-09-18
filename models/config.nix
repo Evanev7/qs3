@@ -14,7 +14,7 @@ let
 in
 let
   engine = {
-    model = "qwen3.8-27b";
+    model = "qwen3.8-27b-nvfp4";
     mtp = false;
   };
 

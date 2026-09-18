@@ -12,11 +12,10 @@ use super::{
     plan::{QwenLoadPlan, execute_qwen_load_plan},
     transfer::{PinnedUploadBackend, result_from_cuda},
 };
-use crate::test_assets::require_real_qwen36_model_dir;
 use crate::{
     QwenTokenizer,
     backend::qsfi::MoeBf16Kernel,
-    model::{ModelRunner, QwenRequest},
+    model::{ModelRunner, Nvfp4Tactic, QwenRequest},
 };
 use std::time::Instant;
 
@@ -196,7 +195,11 @@ pub fn run_core_benchmark() -> JsonValue {
         Ok(value) if value == "prefill" => "prefill",
         _ => panic!("QS3_PROFILE must be unset, decode or prefill"),
     };
-    let model_dir = require_real_qwen36_model_dir();
+    // The benchmark recipe resolves models/config.nix to its pinned snapshot.
+    let model_dir = std::path::PathBuf::from(
+        std::env::var_os("QS3_QWEN36_MODEL_DIR")
+            .expect("run just benchmark or set QS3_QWEN36_MODEL_DIR to the checkpoint directory"),
+    );
     let started = Instant::now();
     let tokenizer =
         QwenTokenizer::from_model_dir(&model_dir).expect("failed to load pinned Qwen tokenizer");
@@ -239,11 +242,10 @@ pub fn run_core_benchmark() -> JsonValue {
             .expect("benchmark sequence length overflow"),
     )
     .expect("fixed benchmark sequence length exceeds u32");
-    let ctx = std::rc::Rc::new(crate::memory::CudaCtx::new(0).unwrap());
     let started = Instant::now();
+    let ctx = std::rc::Rc::new(crate::memory::CudaCtx::new(0).unwrap());
     let backend = PinnedUploadBackend::new(0).expect("failed to create pinned-upload backend");
-    let loaded = execute_qwen_load_plan(&plan, backend, &ctx)
-        .expect("failed to load tensors");
+    let loaded = execute_qwen_load_plan(&plan, backend, &ctx).expect("failed to load tensors");
     let weight_load = started.elapsed();
 
     let started = Instant::now();
@@ -251,6 +253,7 @@ pub fn run_core_benchmark() -> JsonValue {
         .into_qwen_model(max_seq_len)
         .expect("failed to materialize Qwen model weights");
     let weight_materialize = started.elapsed();
+    let quantized = weights.is_quantized();
     let started = Instant::now();
     let mut runner = ModelRunner::new(ctx.clone(), config, weights, tokenizer.token_count())
         .expect("failed to construct ModelRunner");
@@ -316,10 +319,26 @@ pub fn run_core_benchmark() -> JsonValue {
             "execution",
             object([
                 ("mode", "eager".to_owned().into()),
-                ("precision", "bf16".to_owned().into()),
+                (
+                    "precision",
+                    if quantized { "nvfp4_fp8" } else { "bf16" }
+                        .to_owned()
+                        .into(),
+                ),
+                ("kv_cache_dtype", "bf16".to_owned().into()),
+                ("residual_dtype", "bf16".to_owned().into()),
                 ("cuda_profiler_range", (profile_phase != "none").into()),
                 ("cuda_profiler_phase", profile_phase.to_owned().into()),
-                ("linear", "cublaslt_prepared_f32_accum".to_owned().into()),
+                (
+                    "linear",
+                    if quantized {
+                        "cublaslt_fp8_f32_accum"
+                    } else {
+                        "cublaslt_prepared_f32_accum"
+                    }
+                    .to_owned()
+                    .into(),
+                ),
                 ("lm_head", runner.lm_head_provider().to_owned().into()),
                 (
                     "gdn_qkv_decode",
@@ -463,7 +482,7 @@ pub fn run_core_benchmark() -> JsonValue {
             ]),
         ),
     ]);
-    if !HAS_EXPERTS {
+    {
         let execution = result
             .get_mut::<HashMap<String, JsonValue>>()
             .unwrap()
@@ -471,17 +490,44 @@ pub fn run_core_benchmark() -> JsonValue {
             .unwrap()
             .get_mut::<HashMap<String, JsonValue>>()
             .unwrap();
-        for key in [
-            "router",
-            "router_logits_dtype",
-            "moe_threadblocks",
-            "moe_kernel",
-            "moe_cta_tile",
-            "moe",
-        ] {
-            execution.remove(key);
+        if quantized {
+            let (tile_n, stream_k) = match config.nvfp4_tactic {
+                Nvfp4Tactic::Tile128x32Dp => (32, false),
+                Nvfp4Tactic::Tile128x32StreamK => (32, true),
+                Nvfp4Tactic::Tile128x64Dp => (64, false),
+                Nvfp4Tactic::Tile128x64StreamK => (64, true),
+            };
+            execution.insert(
+                "nvfp4".into(),
+                object([
+                    ("activation", "a4".to_owned().into()),
+                    ("tile_n", f64::from(tile_n).into()),
+                    ("stream_k", stream_k.into()),
+                ]),
+            );
         }
-        execution.insert("mlp".into(), "cublaslt_dense_bf16".to_owned().into());
+        if !HAS_EXPERTS {
+            for key in [
+                "router",
+                "router_logits_dtype",
+                "moe_threadblocks",
+                "moe_kernel",
+                "moe_cta_tile",
+                "moe",
+            ] {
+                execution.remove(key);
+            }
+            execution.insert(
+                "mlp".into(),
+                if quantized {
+                    "flashinfer-cutlass-nvfp4"
+                } else {
+                    "cublaslt_dense_bf16"
+                }
+                .to_owned()
+                .into(),
+            );
+        }
     }
     result
 }

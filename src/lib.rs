@@ -23,6 +23,7 @@ pub mod memory;
 pub mod model;
 pub mod tokenizer;
 
+#[cfg(test)]
 mod test_assets;
 
 pub use dtype::DynDType;
