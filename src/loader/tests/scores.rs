@@ -47,9 +47,9 @@ fn real_qwen36_same_prefix_scores() {
         model_dir.file_name().unwrap().to_str().unwrap(),
         spec["model_revision"].get::<String>().unwrap()
     );
-    let plan = QwenBf16LoadPlan::read(&model_dir).unwrap();
+    let plan = QwenLoadPlan::read(&model_dir).unwrap();
     let backend = PinnedUploadBackend::new(cuda_device_from_env()).unwrap();
-    let loaded = execute_qwen36_bf16_load_plan(&plan, backend, ptr::null_mut()).unwrap();
+    let loaded = execute_qwen_load_plan(&plan, backend, ptr::null_mut()).unwrap();
     let (config, weights) = loaded
         .into_qwen_model(u32::try_from(prompt.len() + forced.len() + 1).unwrap())
         .unwrap();

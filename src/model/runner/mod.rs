@@ -22,7 +22,7 @@ use crate::{
         scratch::RunnerScratch,
         state::GdnState,
         validate_token_ids,
-        weights::QwenLayerWeights,
+        weights::{QwenLayerWeights, QwenModel, W},
     },
 };
 
@@ -75,6 +75,15 @@ impl ModelRunner {
         weights: QwenWeights,
         tokenizer_token_count: usize,
     ) -> Result<Self, Status> {
+        if matches!(
+            weights,
+            QwenWeights::DenseNvfp4(_) | QwenWeights::MoeNvfp4(_)
+        ) {
+            return Err(Status::Unsupported);
+        }
+        if config.nvfp4_activation_override.is_some() {
+            return Err(Status::InvalidArgument);
+        }
         config.validate()?;
         let tokenizer_token_count =
             u32::try_from(tokenizer_token_count).map_err(|_| Status::InvalidArgument)?;
@@ -618,6 +627,22 @@ impl BatchExecution<'_> {
         &mut self,
         ctx: &CudaCtx,
         weights: &QwenWeights,
+        rows: u32,
+        kind: ActiveRunKind,
+    ) -> Result<(), Status> {
+        unsafe {
+            match weights {
+                QwenWeights::DenseBf16(model) => self.run_bf16(ctx, model, rows, kind),
+                QwenWeights::MoeBf16(model) => self.run_bf16(ctx, model, rows, kind),
+                QwenWeights::DenseNvfp4(_) | QwenWeights::MoeNvfp4(_) => Err(Status::Unsupported),
+            }
+        }
+    }
+
+    unsafe fn run_bf16<M: mlp::Bf16Mlp>(
+        &mut self,
+        ctx: &CudaCtx,
+        weights: &QwenModel<M, W<BF16>, W<BF16>>,
         rows: u32,
         kind: ActiveRunKind,
     ) -> Result<(), Status> {

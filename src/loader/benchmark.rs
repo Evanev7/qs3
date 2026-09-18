@@ -9,7 +9,7 @@ use std::{collections::HashMap, time::Duration};
 use tinyjson::JsonValue;
 
 use super::{
-    plan::{QwenBf16LoadPlan, execute_qwen36_bf16_load_plan},
+    plan::{QwenLoadPlan, execute_qwen_load_plan},
     transfer::{PinnedUploadBackend, result_from_cuda},
 };
 use crate::test_assets::require_real_qwen36_model_dir;
@@ -228,7 +228,7 @@ pub fn run_core_benchmark() -> JsonValue {
         .collect::<Vec<_>>();
 
     let started = Instant::now();
-    let plan = QwenBf16LoadPlan::read(&model_dir).expect("failed to build BF16 load plan");
+    let plan = QwenLoadPlan::read(&model_dir).expect("failed to build load plan");
     let weight_plan = started.elapsed();
     let max_seq_len = u32::try_from(
         prompt
@@ -241,8 +241,8 @@ pub fn run_core_benchmark() -> JsonValue {
     .expect("fixed benchmark sequence length exceeds u32");
     let started = Instant::now();
     let backend = PinnedUploadBackend::new(0).expect("failed to create pinned-upload backend");
-    let loaded = execute_qwen36_bf16_load_plan(&plan, backend, ptr::null_mut())
-        .expect("failed to load BF16 tensors");
+    let loaded = execute_qwen_load_plan(&plan, backend, ptr::null_mut())
+        .expect("failed to load tensors");
     let weight_load = started.elapsed();
 
     let started = Instant::now();

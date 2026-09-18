@@ -28,7 +28,7 @@ fn parses_mixed_storage_without_claiming_a_quantization_recipe() {
 #[test]
 fn bf16_manifest_still_rejects_quantized_tensor_storage() {
     let config = selected_text_config();
-    let specs = expected_qwen36_bf16_specs(&config).unwrap();
+    let specs = expected_specs(&config, None).unwrap();
     for dtype in [DynDType::U8, DynDType::FP8E4M3] {
         let mut table = tensor_table_from_specs(&specs);
         table
@@ -36,22 +36,24 @@ fn bf16_manifest_still_rejects_quantized_tensor_storage() {
             .unwrap()
             .meta
             .dtype = dtype;
-        let err = validate_qwen36_bf16_tensor_table(&table, &config).unwrap_err();
+        let err =
+            validate_tensor_specs(&table, expected_specs(&config, None).unwrap()).unwrap_err();
         assert!(err.to_string().contains("dtype"));
     }
 }
 
 #[test]
 fn bf16_model_rejects_other_storage() {
-    let mut plan = small_zero_plan();
+    let mut plan = bf16_zero_plan(qwen_text_config(4, 16));
     plan.entries[0].spec.dtype = DynDType::FP8E4M3;
-    plan.entries[0].spec.shape = vec![4];
+    let bytes = plan.entries[0].spec.byte_len().unwrap();
+    plan.entries[0].source = QwenLoadSource::ZeroFill { bytes };
     let loaded =
-        execute_qwen36_bf16_load_plan(&plan, RecordingBackend::default(), ptr::null_mut()).unwrap();
+        execute_qwen_load_plan(&plan, RecordingBackend::default(), ptr::null_mut()).unwrap();
     let err = loaded.into_fixture_model(8).err().unwrap();
     assert!(
         err.to_string()
-            .contains("BF16 model assembly requires BF16 tensor storage")
+            .contains("loaded tensor descriptor mismatch")
     );
 }
 
@@ -60,23 +62,11 @@ fn selected_bf16_model_retains_all_allocation_owners() {
     if !cuda_device_available_for_loader_test() {
         return;
     }
-    let config = selected_text_config();
-    let entries = expected_qwen36_bf16_specs(&config)
-        .unwrap()
-        .into_iter()
-        .map(|spec| {
-            let bytes = spec.byte_len().unwrap();
-            QwenLoadPlanEntry {
-                spec,
-                source: QwenLoadSource::ZeroFill { bytes },
-            }
-        })
-        .collect();
-    let plan = QwenBf16LoadPlan { config, entries };
+    let plan = bf16_zero_plan(selected_text_config());
     let count = plan.tensor_count();
     let state = Rc::new(TinyBackendState::default());
     let backend = TinyCudaBackend::new(cuda_device_from_env(), state.clone());
-    let loaded = execute_qwen36_bf16_load_plan(&plan, backend, ptr::null_mut()).unwrap();
+    let loaded = execute_qwen_load_plan(&plan, backend, ptr::null_mut()).unwrap();
     let (_, weights) = loaded.into_qwen_model(8).unwrap();
     assert_eq!(state.transferred.get(), count);
     assert_eq!(state.drop_calls.get(), 1);

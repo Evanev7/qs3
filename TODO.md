@@ -260,8 +260,26 @@
   prefixes; retain BF16 as a correctness baseline.
   Prioritize 3.8-27B's mixed W4A4 NVFP4 / FP8 recipe. Native kernel probes and
   an integration proposal are recorded in
-  `benchmarks/2026-09-14-nvfp4-survey/INTEGRATION.md`; runtime integration remains
+  `benchmarks/2026-09-14-nvfp4-survey/INTEGRATION.md`; quantized execution remains
   open. Its recipe differs from 3.6-27B's W4A16 recipe.
+- [x] Load mixed ModelOpt NVFP4/FP8 weights through the existing managed and
+  pinned backends. Validate recipes, packed extents, scale headers and scale
+  values before CUDA allocation; preserve typed packed weights, per-projection
+  globals and checkpoint activation precision in recipe metadata. A4/A16
+  overrides live in execution configuration, independently of weight storage.
+  Dense and split-expert MoE materialization retain allocation ownership.
+  One typed model description drives both tensor planning and materialization.
+  Dense/MoE variants carry concrete MLP types; fused BF16 and split NVFP4
+  expert storage stay explicit through the loader and runner generics.
+  The full remote suite and full 3.8-27B / 3.6-35B loads through both backends
+  pass, including sampled checkpoint-byte comparisons (2026-09-17).
+  The BF16 runner explicitly rejects quantized weights until compute is wired.
+- [ ] Evaluate replacing `W<T> = Box<dyn Deref<Target = DeviceSpan<T>>>`
+  with a wrapper holding `DeviceSpan<T>` by value and an erased allocation
+  owner (for example, `Box<dyn Any>`). Keep `DeviceSpan` independent of
+  destruction policy and preserve backend state and shared-allocation ownership.
+  Compare static span access against the current representation's indirection,
+  allocation cost and size before deciding; leave `W<T>` unchanged for now.
 - [ ] Experiment with typed NVFP4 weight blocks and GPU descriptors. Try
   `Nvfp4Block<const N: usize, const K: usize>` with logical weight extents,
   typed packed E2M1 and E4M3 block-scale storage, per-projection F32 globals

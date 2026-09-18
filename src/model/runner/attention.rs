@@ -11,12 +11,12 @@ use crate::{
 };
 
 impl BatchExecution<'_> {
-    pub(super) unsafe fn execute_attention_layer(
+    pub(super) unsafe fn execute_attention_layer<M>(
         &mut self,
         attention_layer_idx: u32,
         rows: u32,
         input: DMat<BF16>,
-        layer: &QwenAttentionMlpWeights,
+        layer: &QwenAttentionMlpWeights<M>,
         kind: ActiveRunKind,
     ) -> Result<(), Status> {
         let hidden = self.config.hidden_size();

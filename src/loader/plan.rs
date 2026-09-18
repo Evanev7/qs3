@@ -1,6 +1,9 @@
+use super::format::{LoadResult, Qwen36TextConfig, WeightLoadError, WeightTensorSpec};
 use super::format::{
-    LoadResult, Qwen36TextConfig, WeightLoadError, WeightTensorSpec, validate_qwen36_bf16_dir,
+    SafetensorsIndex, read_indexed_safetensors_table, read_json_object_with_limit,
+    validate_tensor_specs,
 };
+use super::quantization::Quantization;
 use super::transfer::{
     WeightBuffer, WeightFileRange, WeightLoadBackend, WeightLoadSpan, WeightTensorDesc,
 };
@@ -32,12 +35,13 @@ pub(crate) struct QwenLoadPlanEntry {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct QwenBf16LoadPlan {
+pub(crate) struct QwenLoadPlan {
     pub(super) config: Qwen36TextConfig,
     pub(super) entries: Vec<QwenLoadPlanEntry>,
+    pub(super) quantization: Option<Quantization>,
 }
 
-impl QwenBf16LoadPlan {
+impl QwenLoadPlan {
     pub(crate) fn read(model_dir: impl AsRef<Path>) -> LoadResult<Self> {
         Self::read_with_limits(model_dir, DEFAULT_MAX_JSON_BYTES, DEFAULT_MAX_HEADER_BYTES)
     }
@@ -80,9 +84,22 @@ impl QwenBf16LoadPlan {
         max_header_bytes: usize,
     ) -> LoadResult<Self> {
         let model_dir = model_dir.as_ref();
-        let validated = validate_qwen36_bf16_dir(model_dir, max_json_bytes, max_header_bytes)?;
-        let mut entries = Vec::with_capacity(validated.tensors.len());
-        for tensor in validated.tensors {
+        let root = read_json_object_with_limit(model_dir.join(super::CONFIG_FILE), max_json_bytes)?;
+        let config = Qwen36TextConfig::from_config_object(&root)?;
+        config.validate_compiled_model()?;
+        let mut quantization = Quantization::parse(&root)?;
+        let specs = super::schema::expected_specs(&config, quantization.as_ref())?;
+        let index = SafetensorsIndex::read_with_limit(model_dir, max_json_bytes)?;
+        let table = read_indexed_safetensors_table(model_dir, &index, max_header_bytes)?;
+        let tensors = validate_tensor_specs(&table, specs)?;
+        if let Some(q) = &mut quantization {
+            q.read_scales(model_dir, &tensors)?;
+        }
+        let mut entries = Vec::with_capacity(tensors.len());
+        for tensor in tensors {
+            if quantization.is_some() && tensor.spec.dtype == crate::dtype::DynDType::F32 {
+                continue;
+            }
             let bytes = tensor.spec.byte_len()?;
             let source = match tensor.file_meta {
                 Some(file_meta) => QwenLoadSource::FileRange {
@@ -98,8 +115,9 @@ impl QwenBf16LoadPlan {
             });
         }
         Ok(Self {
-            config: validated.config,
+            config,
             entries,
+            quantization,
         })
     }
 }
@@ -113,17 +131,18 @@ pub(crate) struct LoadedWeightPlan<B: WeightLoadBackend> {
     pub(super) config: Qwen36TextConfig,
     pub(super) tensors: Vec<LoadedWeightTensor<B>>,
     pub(super) stats: B::Stats,
+    pub(super) quantization: Option<Quantization>,
 }
 
-pub(crate) fn execute_qwen36_bf16_load_plan<B: WeightLoadBackend>(
-    plan: &QwenBf16LoadPlan,
+pub(crate) fn execute_qwen_load_plan<B: WeightLoadBackend>(
+    plan: &QwenLoadPlan,
     mut backend: B,
     stream: *mut c_void,
 ) -> LoadResult<LoadedWeightPlan<B>> {
-    let mut targets = BTreeSet::new();
+    let mut names = BTreeSet::new();
     for entry in &plan.entries {
-        if !targets.insert((entry.spec.target.layer, entry.spec.target.slot)) {
-            return Err(WeightLoadError::tensor_table("duplicate loaded target"));
+        if !names.insert(&entry.spec.name) {
+            return Err(WeightLoadError::tensor_table("duplicate loaded tensor"));
         }
     }
     let files = open_plan_files(plan)?;
@@ -211,11 +230,12 @@ pub(crate) fn execute_qwen36_bf16_load_plan<B: WeightLoadBackend>(
         config: plan.config.clone(),
         tensors,
         stats,
+        quantization: plan.quantization.clone(),
     })
 }
 
 fn pair_loaded_tensors<B: WeightLoadBackend>(
-    plan: &QwenBf16LoadPlan,
+    plan: &QwenLoadPlan,
     spans: Vec<WeightLoadSpan>,
     buffers: Vec<WeightBuffer<B>>,
 ) -> LoadResult<Vec<LoadedWeightTensor<B>>> {
@@ -246,7 +266,7 @@ fn pair_loaded_tensors<B: WeightLoadBackend>(
         .collect()
 }
 
-fn open_plan_files(plan: &QwenBf16LoadPlan) -> LoadResult<BTreeMap<PathBuf, File>> {
+fn open_plan_files(plan: &QwenLoadPlan) -> LoadResult<BTreeMap<PathBuf, File>> {
     let mut paths = BTreeSet::new();
     for entry in &plan.entries {
         if let QwenLoadSource::FileRange { shard_path, .. } = &entry.source {

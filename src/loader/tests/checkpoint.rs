@@ -114,7 +114,7 @@ fn other_checkpoint_is_rejected_before_reading_weight_index() {
     )
     .unwrap();
     // Config rejection must win over the missing index file.
-    let result = QwenBf16LoadPlan::read(&directory);
+    let result = QwenLoadPlan::read(&directory);
     std::fs::remove_dir_all(directory).unwrap();
     assert!(matches!(
         result,

@@ -13,13 +13,13 @@ use crate::{
 
 impl BatchExecution<'_> {
     // Append metadata must be prepared for `rows` on this stream before execution.
-    pub(super) unsafe fn execute_gdn_layer(
+    pub(super) unsafe fn execute_gdn_layer<M>(
         &mut self,
         ctx: &CudaCtx,
         gdn_layer_idx: u32,
         rows: u32,
         input: DMat<BF16>,
-        layer: &QwenGdnWeights,
+        layer: &QwenGdnWeights<M>,
         kind: ActiveRunKind,
     ) -> Result<(), Status> {
         if matches!(kind, ActiveRunKind::Decode) && rows != 1 {

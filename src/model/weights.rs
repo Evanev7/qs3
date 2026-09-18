@@ -1,5 +1,6 @@
 #[cfg(test)]
 use super::{DeterministicRng, checked_usize_product, constant_bf16_values, random_bf16_values};
+#[cfg(test)]
 use super::{QwenBlockKind, QwenConfig};
 #[cfg(test)]
 use crate::constants::{
@@ -7,8 +8,12 @@ use crate::constants::{
     gdn::{CONV_WIDTH, NUM_VALUE_HEADS, OUTPUT_WIDTH, PACKED_QKV_CHANNELS, VALUE_HEAD_DIM},
 };
 #[cfg(test)]
+use crate::engine::Status;
+#[cfg(test)]
+use crate::ext::SafeVec;
+#[cfg(test)]
 use crate::memory::{CudaCtx, HostBuffer};
-use crate::{dtype::BF16, engine::Status, ext::SafeVec, memory::DeviceSpan};
+use crate::{dtype::BF16, memory::DeviceSpan};
 use std::ops::Deref;
 #[cfg(test)]
 use std::rc::Rc;
@@ -16,11 +21,11 @@ use std::rc::Rc;
 /// Keeps the concrete allocation owner while exposing only the common view.
 /// Backends retain control over allocation and destruction; no growth or transfer
 /// behavior is required of weights. Boxing occurs only during materialization.
-pub(super) type QwenWeight = Box<dyn Deref<Target = DeviceSpan<BF16>>>;
+pub type W<T> = Box<dyn Deref<Target = DeviceSpan<T>>>;
 
 /// Dimensions needed to bind routed and shared expert tensors.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) struct MoeShape {
+pub(crate) struct MoeShape {
     pub num_experts: u32,
     pub num_experts_per_tok: u32,
     pub moe_intermediate_size: u32,
@@ -28,7 +33,7 @@ pub(super) struct MoeShape {
 }
 
 impl MoeShape {
-    pub(super) const fn compiled() -> Self {
+    pub(crate) const fn compiled() -> Self {
         use crate::constants::mlp;
         Self {
             num_experts: mlp::NUM_EXPERTS,
@@ -39,15 +44,15 @@ impl MoeShape {
     }
 }
 
-pub struct QwenWeights {
-    pub(super) token_embedding: QwenWeight,
-    pub(super) final_norm: QwenWeight,
-    pub(super) lm_head: QwenWeight,
-    pub(super) layers: Vec<QwenLayerWeights>,
+pub struct QwenModel<M, A, H, T = W<BF16>> {
+    pub(crate) token_embedding: T,
+    pub(crate) final_norm: T,
+    pub(crate) lm_head: H,
+    pub(crate) layers: Vec<QwenLayerWeights<M, A, T>>,
 }
 
 #[cfg(test)]
-fn bf16_weight(ctx: &Rc<CudaCtx>, values: &[u16]) -> Result<QwenWeight, Status> {
+fn bf16_weight(ctx: &Rc<CudaCtx>, values: &[u16]) -> Result<W<BF16>, Status> {
     let mut host = HostBuffer::<BF16>::new(values.len())?;
     for (bytes, value) in host.as_mut().chunks_exact_mut(2).zip(values) {
         bytes.copy_from_slice(&value.to_ne_bytes());
@@ -55,104 +60,13 @@ fn bf16_weight(ctx: &Rc<CudaCtx>, values: &[u16]) -> Result<QwenWeight, Status> 
     Ok(Box::new(host.upload(ctx.clone())?))
 }
 
-fn loaded_mlp_weights<F>(
-    layer: u32,
-    moe: Option<MoeShape>,
-    take: &mut F,
-) -> Result<QwenMlpWeights, Status>
-where
-    F: FnMut(Option<u32>, &'static str) -> Result<QwenWeight, Status>,
-{
-    let Some(moe) = moe else {
-        return Ok(QwenMlpWeights::Dense {
-            gate_proj: take(Some(layer), "mlp.gate")?,
-            up_proj: take(Some(layer), "mlp.up")?,
-            down_proj: take(Some(layer), "mlp.down")?,
-        });
-    };
-    Ok(QwenMlpWeights::Moe {
-        router_proj: take(Some(layer), "mlp.router")?,
-        gate_up_proj: take(Some(layer), "mlp.experts.gate_up")?,
-        down_proj: take(Some(layer), "mlp.experts.down")?,
-        shared: if moe.shared_expert_intermediate_size == 0 {
-            None
-        } else {
-            Some(QwenSharedExpertWeights {
-                gate_proj: take(Some(layer), "mlp.shared.gate")?,
-                up_proj: take(Some(layer), "mlp.shared.up")?,
-                down_proj: take(Some(layer), "mlp.shared.down")?,
-                shared_expert_gate: take(Some(layer), "mlp.shared.gate_score")?,
-            })
-        },
-    })
-}
-
-impl QwenWeights {
-    pub(crate) fn from_bf16_allocations<F, A>(
-        config: QwenConfig,
-        mut take: F,
-    ) -> Result<Self, Status>
-    where
-        F: FnMut(Option<u32>, &'static str) -> Result<A, Status>,
-        A: Deref<Target = DeviceSpan<BF16>> + 'static,
-    {
-        config.validate()?;
-        let mut take = |layer, slot| take(layer, slot).map(|owner| Box::new(owner) as QwenWeight);
-        let token_embedding = take(None, "token_embedding")?;
-        let final_norm = take(None, "final_norm")?;
-        let lm_head = take(None, "lm_head")?;
-        let mut layers = Vec::safe_new(config.num_layers() as usize)?;
-
-        for layer_idx in 0..config.num_layers() {
-            let input_norm = take(Some(layer_idx), "input_layernorm")?;
-            let mlp_norm = take(Some(layer_idx), "post_attention_layernorm")?;
-            let mlp = loaded_mlp_weights(layer_idx, config.moe_config(), &mut take)?;
-            let layer = match config.layer_kind(layer_idx) {
-                QwenBlockKind::FullAttention => {
-                    QwenLayerWeights::AttentionMlp(QwenAttentionMlpWeights {
-                        attn_norm: input_norm,
-                        q_norm: take(Some(layer_idx), "attn.q_norm")?,
-                        k_norm: take(Some(layer_idx), "attn.k_norm")?,
-                        q_proj: take(Some(layer_idx), "attn.q_proj")?,
-                        k_proj: take(Some(layer_idx), "attn.k_proj")?,
-                        v_proj: take(Some(layer_idx), "attn.v_proj")?,
-                        o_proj: take(Some(layer_idx), "attn.o_proj")?,
-                        mlp_norm,
-                        mlp,
-                    })
-                }
-                QwenBlockKind::LinearAttention => QwenLayerWeights::Gdn(QwenGdnWeights {
-                    norm: input_norm,
-                    in_proj: take(Some(layer_idx), "gdn.in_proj_qkv")?,
-                    gate_proj: take(Some(layer_idx), "gdn.gate_proj_z")?,
-                    a_proj: take(Some(layer_idx), "gdn.a_proj")?,
-                    b_proj: take(Some(layer_idx), "gdn.b_proj")?,
-                    conv_weight: take(Some(layer_idx), "gdn.conv_weight")?,
-                    conv_bias: take(Some(layer_idx), "gdn.conv_bias.zero")?,
-                    a_log: take(Some(layer_idx), "gdn.a_log")?,
-                    dt_bias: take(Some(layer_idx), "gdn.dt_bias")?,
-                    rms_weight: take(Some(layer_idx), "gdn.rms_weight")?,
-                    out_proj: take(Some(layer_idx), "gdn.out_proj")?,
-                    mlp_norm,
-                    mlp,
-                }),
-            };
-            layers.push(layer);
-        }
-
-        Ok(Self {
-            token_embedding,
-            final_norm,
-            lm_head,
-            layers,
-        })
-    }
-
-    #[cfg(test)]
-    pub(crate) fn random_bf16(
+#[cfg(test)]
+impl<M> QwenModel<M, W<BF16>, W<BF16>> {
+    fn random_bf16(
         ctx: Rc<CudaCtx>,
         config: &QwenConfig,
         seed: u64,
+        mlp: fn(Rc<CudaCtx>, &QwenConfig, &mut DeterministicRng) -> Result<M, Status>,
     ) -> Result<Self, Status> {
         config.validate()?;
         let mut rng = DeterministicRng::new(seed);
@@ -173,7 +87,7 @@ impl QwenWeights {
         let mut layers = Vec::safe_new(config.num_layers() as usize)?;
         for layer_idx in 0..config.num_layers() {
             let mlp_norm = bf16_weight(&ctx, &constant_bf16_values(hidden as usize, 0.0)?)?;
-            let mlp = Self::random_mlp_weights(ctx.clone(), config, &mut rng)?;
+            let mlp = mlp(ctx.clone(), config, &mut rng)?;
 
             if config.layer_kind(layer_idx) == QwenBlockKind::LinearAttention {
                 layers.push(QwenLayerWeights::Gdn(QwenGdnWeights {
@@ -305,20 +219,22 @@ impl QwenWeights {
             layers,
         })
     }
+}
 
-    #[cfg(test)]
-    pub(super) fn random_mlp_weights(
+#[cfg(test)]
+impl MoeMlp<FusedExperts<W<BF16>>, W<BF16>> {
+    fn random_bf16(
         ctx: Rc<CudaCtx>,
         config: &QwenConfig,
         rng: &mut DeterministicRng,
-    ) -> Result<QwenMlpWeights, Status> {
+    ) -> Result<Self, Status> {
         let hidden = config.hidden_size();
-        let intermediate = config.intermediate_size();
-        if let Some(moe) = config.moe_config() {
-            let shared = if moe.shared_expert_intermediate_size == 0 {
-                None
-            } else {
-                Some(QwenSharedExpertWeights {
+        let moe = config.moe_config().ok_or(Status::InvalidArgument)?;
+        let shared = if moe.shared_expert_intermediate_size == 0 {
+            None
+        } else {
+            Some(SharedExpert {
+                projections: DenseMlp {
                     gate_proj: bf16_weight(
                         &ctx,
                         &random_bf16_values(
@@ -343,21 +259,23 @@ impl QwenWeights {
                             0.03,
                         )?,
                     )?,
-                    shared_expert_gate: bf16_weight(
-                        &ctx,
-                        &random_bf16_values(rng, checked_usize_product(&[1, hidden])?, 0.03)?,
-                    )?,
-                })
-            };
-            Ok(QwenMlpWeights::Moe {
-                router_proj: bf16_weight(
+                },
+                gate: bf16_weight(
                     &ctx,
-                    &random_bf16_values(
-                        rng,
-                        checked_usize_product(&[moe.num_experts, hidden])?,
-                        0.03,
-                    )?,
+                    &random_bf16_values(rng, checked_usize_product(&[1, hidden])?, 0.03)?,
                 )?,
+            })
+        };
+        Ok(Self {
+            router_proj: bf16_weight(
+                &ctx,
+                &random_bf16_values(
+                    rng,
+                    checked_usize_product(&[moe.num_experts, hidden])?,
+                    0.03,
+                )?,
+            )?,
+            experts: FusedExperts {
                 gate_up_proj: bf16_weight(
                     &ctx,
                     &random_bf16_values(
@@ -383,105 +301,162 @@ impl QwenWeights {
                         0.03,
                     )?,
                 )?,
-                shared,
-            })
-        } else {
-            Ok(QwenMlpWeights::Dense {
-                gate_proj: bf16_weight(
-                    &ctx,
-                    &random_bf16_values(
-                        rng,
-                        checked_usize_product(&[intermediate, hidden])?,
-                        0.035,
-                    )?,
-                )?,
-                up_proj: bf16_weight(
-                    &ctx,
-                    &random_bf16_values(
-                        rng,
-                        checked_usize_product(&[intermediate, hidden])?,
-                        0.035,
-                    )?,
-                )?,
-                down_proj: bf16_weight(
-                    &ctx,
-                    &random_bf16_values(
-                        rng,
-                        checked_usize_product(&[hidden, intermediate])?,
-                        0.035,
-                    )?,
-                )?,
-            })
-        }
+            },
+            shared,
+        })
     }
 }
 
-pub(super) enum QwenLayerWeights {
-    AttentionMlp(QwenAttentionMlpWeights),
-    Gdn(QwenGdnWeights),
+#[cfg(test)]
+impl DenseMlp<W<BF16>> {
+    fn random_bf16(
+        ctx: Rc<CudaCtx>,
+        config: &QwenConfig,
+        rng: &mut DeterministicRng,
+    ) -> Result<Self, Status> {
+        let hidden = config.hidden_size();
+        let intermediate = config.intermediate_size();
+        Ok(Self {
+            gate_proj: bf16_weight(
+                &ctx,
+                &random_bf16_values(rng, checked_usize_product(&[intermediate, hidden])?, 0.035)?,
+            )?,
+            up_proj: bf16_weight(
+                &ctx,
+                &random_bf16_values(rng, checked_usize_product(&[intermediate, hidden])?, 0.035)?,
+            )?,
+            down_proj: bf16_weight(
+                &ctx,
+                &random_bf16_values(rng, checked_usize_product(&[hidden, intermediate])?, 0.035)?,
+            )?,
+        })
+    }
 }
 
-pub(super) struct QwenAttentionMlpWeights {
-    pub(super) attn_norm: QwenWeight,
-    pub(super) q_norm: QwenWeight,
-    pub(super) k_norm: QwenWeight,
-    pub(super) q_proj: QwenWeight,
-    pub(super) k_proj: QwenWeight,
-    pub(super) v_proj: QwenWeight,
-    pub(super) o_proj: QwenWeight,
-    pub(super) mlp_norm: QwenWeight,
-    pub(super) mlp: QwenMlpWeights,
+pub(crate) enum QwenLayerWeights<M, A = W<BF16>, T = W<BF16>> {
+    AttentionMlp(QwenAttentionMlpWeights<M, A, T>),
+    Gdn(QwenGdnWeights<M, A, T>),
 }
 
-pub(super) struct QwenGdnWeights {
-    pub(super) norm: QwenWeight,
-    pub(super) in_proj: QwenWeight,
-    pub(super) gate_proj: QwenWeight,
-    pub(super) a_proj: QwenWeight,
-    pub(super) b_proj: QwenWeight,
-    pub(super) conv_weight: QwenWeight,
-    pub(super) conv_bias: QwenWeight,
-    pub(super) a_log: QwenWeight,
-    pub(super) dt_bias: QwenWeight,
-    pub(super) rms_weight: QwenWeight,
-    pub(super) out_proj: QwenWeight,
-    pub(super) mlp_norm: QwenWeight,
-    pub(super) mlp: QwenMlpWeights,
+pub(crate) struct QwenAttentionMlpWeights<M, A = W<BF16>, T = W<BF16>> {
+    pub(crate) attn_norm: T,
+    pub(crate) q_norm: T,
+    pub(crate) k_norm: T,
+    pub(crate) q_proj: A,
+    pub(crate) k_proj: A,
+    pub(crate) v_proj: A,
+    pub(crate) o_proj: A,
+    pub(crate) mlp_norm: T,
+    pub(crate) mlp: M,
 }
 
-pub(super) enum QwenMlpWeights {
-    Dense {
-        gate_proj: QwenWeight,
-        up_proj: QwenWeight,
-        down_proj: QwenWeight,
-    },
-    Moe {
-        router_proj: QwenWeight,
-        gate_up_proj: QwenWeight,
-        down_proj: QwenWeight,
-        shared: Option<QwenSharedExpertWeights>,
-    },
+pub(crate) struct QwenGdnWeights<M, A = W<BF16>, T = W<BF16>> {
+    pub(crate) norm: T,
+    pub(crate) in_proj: A,
+    pub(crate) gate_proj: A,
+    pub(crate) a_proj: T,
+    pub(crate) b_proj: T,
+    pub(crate) conv_weight: T,
+    pub(crate) conv_bias: T,
+    pub(crate) a_log: T,
+    pub(crate) dt_bias: T,
+    pub(crate) rms_weight: T,
+    pub(crate) out_proj: A,
+    pub(crate) mlp_norm: T,
+    pub(crate) mlp: M,
 }
 
-pub(super) struct QwenSharedExpertWeights {
-    pub(super) gate_proj: QwenWeight,
-    pub(super) up_proj: QwenWeight,
-    pub(super) down_proj: QwenWeight,
-    pub(super) shared_expert_gate: QwenWeight,
-}
-
-impl QwenLayerWeights {
-    pub(super) fn input_norm(&self) -> &DeviceSpan<BF16> {
+impl<M> QwenLayerWeights<M> {
+    pub(crate) fn input_norm(&self) -> &DeviceSpan<BF16> {
         match self {
             Self::AttentionMlp(layer) => &layer.attn_norm,
             Self::Gdn(layer) => &layer.norm,
         }
     }
 
-    pub(super) fn post_attention_mlp(&self) -> (&DeviceSpan<BF16>, &QwenMlpWeights) {
+    pub(crate) fn post_attention_mlp(&self) -> (&DeviceSpan<BF16>, &M) {
         match self {
             Self::AttentionMlp(layer) => (&layer.mlp_norm, &layer.mlp),
             Self::Gdn(layer) => (&layer.mlp_norm, &layer.mlp),
         }
     }
+}
+
+/// Logical checkpoint storage; kernel-specific layouts are prepared separately.
+pub enum QwenWeights {
+    DenseBf16(QwenModel<DenseMlp<W<BF16>>, W<BF16>, W<BF16>>),
+    MoeBf16(QwenModel<MoeMlp<FusedExperts<W<BF16>>, W<BF16>>, W<BF16>, W<BF16>>),
+    DenseNvfp4(QwenModel<DenseMlp<Nvfp4Block>, Fp8Block, Nvfp4Block>),
+    MoeNvfp4(QwenModel<MoeMlp<SplitExperts<Nvfp4Block>, Nvfp4Block>, Fp8Block, Nvfp4Block>),
+}
+
+#[cfg(test)]
+impl QwenWeights {
+    pub(crate) fn random_bf16(
+        ctx: Rc<CudaCtx>,
+        config: &QwenConfig,
+        seed: u64,
+    ) -> Result<Self, Status> {
+        if config.moe_config().is_some() {
+            Ok(Self::MoeBf16(QwenModel::random_bf16(
+                ctx,
+                config,
+                seed,
+                MoeMlp::random_bf16,
+            )?))
+        } else {
+            Ok(Self::DenseBf16(QwenModel::random_bf16(
+                ctx,
+                config,
+                seed,
+                DenseMlp::random_bf16,
+            )?))
+        }
+    }
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+pub struct Nvfp4Block<P = W<crate::dtype::Nvfp4E2M1>, S = W<crate::dtype::Fp8E4M3>> {
+    pub(crate) weight: P,
+    pub(crate) weight_scale: S,
+    pub(crate) weight_scale_2: f32,
+    pub(crate) input_scale: Option<f32>,
+    pub(crate) shape: [u32; 2],
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+pub struct Fp8Block<T = W<crate::dtype::Fp8E4M3>> {
+    pub(crate) weight: T,
+    pub(crate) weight_scale: f32,
+    pub(crate) input_scale: f32,
+    pub(crate) shape: [u32; 2],
+}
+
+pub struct DenseMlp<P> {
+    pub(crate) gate_proj: P,
+    pub(crate) up_proj: P,
+    pub(crate) down_proj: P,
+}
+
+/// Experts stacked along the first dimension, with gate/up fused in each expert.
+pub struct FusedExperts<T> {
+    pub(crate) gate_up_proj: T,
+    pub(crate) down_proj: T,
+}
+
+/// Individually stored experts, each with separate gate, up and down projections.
+#[cfg_attr(not(test), allow(dead_code))]
+pub struct SplitExperts<P> {
+    pub(crate) projections: Vec<DenseMlp<P>>,
+}
+
+pub struct SharedExpert<P, T = W<BF16>> {
+    pub(crate) projections: DenseMlp<P>,
+    pub(crate) gate: T,
+}
+
+pub struct MoeMlp<E, P, T = W<BF16>> {
+    pub(crate) router_proj: T,
+    pub(crate) experts: E,
+    pub(crate) shared: Option<SharedExpert<P, T>>,
 }

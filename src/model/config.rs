@@ -12,10 +12,19 @@ pub(super) enum QwenBlockKind {
     LinearAttention,
 }
 
-/// Runtime resources for the model selected at build time.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Nvfp4Activation {
+    A4,
+    A16,
+}
+
+/// Runtime resources and execution choices for the model selected at build time.
 /// Model geometry and layer ordering come from `crate::constants`.
 #[derive(Clone, Copy, Debug)]
 pub struct QwenConfig {
+    /// Override the checkpoint recipe when preparing NVFP4 execution.
+    /// None leaves activation precision to the per-projection checkpoint recipe.
+    pub nvfp4_activation_override: Option<Nvfp4Activation>,
     pub max_live_requests: u32,
     pub max_batch_rows: u32,
     pub max_batch_tokens: u32,
@@ -48,6 +57,7 @@ impl QwenConfig {
     pub fn new(max_seq_len: u32) -> Result<Self, Status> {
         let page_size = 4;
         let config = Self {
+            nvfp4_activation_override: None,
             max_live_requests: 1,
             max_batch_rows: 1,
             max_batch_tokens: max_seq_len,

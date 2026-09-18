@@ -23,8 +23,8 @@ use crate::{
         scratch::{MlpScratch, MoeScratch, RunnerScratch, SharedExpertScratch},
         state::{GdnSlotMap, GdnState},
         weights::{
-            QwenAttentionMlpWeights, QwenGdnWeights, QwenLayerWeights, QwenMlpWeights,
-            QwenSharedExpertWeights,
+            DenseMlp, FusedExperts, MoeMlp, QwenAttentionMlpWeights, QwenGdnWeights,
+            QwenLayerWeights, QwenModel, SharedExpert, W,
         },
     },
 };
@@ -75,7 +75,7 @@ fn qwen36_hybrid_fixture_with_supported_attention(num_layers: u32) -> QwenConfig
     config
 }
 
-fn placeholder_weight() -> crate::model::weights::QwenWeight {
+fn placeholder_weight() -> crate::model::weights::W<BF16> {
     Box::new(Rc::new(
         DeviceSpan::new(std::ptr::NonNull::<u16>::dangling().as_ptr().cast(), 0).unwrap(),
     ))
@@ -130,20 +130,26 @@ fn bf16_buffer(ctx: Rc<CudaCtx>, values: &[u16]) -> Result<DeviceBuffer<BF16>, S
     host.upload(ctx)
 }
 
-fn empty_shared_expert_weights() -> QwenSharedExpertWeights {
-    QwenSharedExpertWeights {
-        gate_proj: placeholder_weight(),
-        up_proj: placeholder_weight(),
-        down_proj: placeholder_weight(),
-        shared_expert_gate: placeholder_weight(),
+type FusedBf16Mlp = MoeMlp<FusedExperts<W<BF16>>, W<BF16>>;
+
+fn empty_shared_expert_weights() -> SharedExpert<W<BF16>> {
+    SharedExpert {
+        projections: DenseMlp {
+            gate_proj: placeholder_weight(),
+            up_proj: placeholder_weight(),
+            down_proj: placeholder_weight(),
+        },
+        gate: placeholder_weight(),
     }
 }
 
-fn empty_qwen36_moe_mlp_weights() -> QwenMlpWeights {
-    QwenMlpWeights::Moe {
+fn empty_qwen36_moe_mlp_weights() -> FusedBf16Mlp {
+    MoeMlp {
         router_proj: placeholder_weight(),
-        gate_up_proj: placeholder_weight(),
-        down_proj: placeholder_weight(),
+        experts: FusedExperts {
+            gate_up_proj: placeholder_weight(),
+            down_proj: placeholder_weight(),
+        },
         shared: Some(empty_shared_expert_weights()),
     }
 }
@@ -522,12 +528,12 @@ fn full_attention_vector_config() -> QwenConfig {
 }
 
 fn placeholder_weights() -> QwenWeights {
-    QwenWeights {
+    QwenWeights::DenseBf16(QwenModel {
         token_embedding: placeholder_weight(),
         final_norm: placeholder_weight(),
         lm_head: placeholder_weight(),
         layers: Vec::new(),
-    }
+    })
 }
 
 fn moe_vector_config() -> QwenConfig {
@@ -979,12 +985,12 @@ fn full_attention_block_moe_vector_runner() -> ModelRunner {
 }
 
 struct FullAttentionBlockMoeLayer {
-    layer: QwenLayerWeights,
+    layer: QwenLayerWeights<FusedBf16Mlp>,
     next_norm: DeviceBuffer<BF16>,
 }
 
 impl FullAttentionBlockMoeLayer {
-    fn weights(&self) -> &QwenAttentionMlpWeights {
+    fn weights(&self) -> &QwenAttentionMlpWeights<FusedBf16Mlp> {
         match &self.layer {
             QwenLayerWeights::AttentionMlp(layer) => layer,
             QwenLayerWeights::Gdn(_) => unreachable!("full-attention block fixture is not GDN"),
@@ -997,150 +1003,160 @@ fn full_attention_block_moe_layer(ctx: &Rc<CudaCtx>) -> FullAttentionBlockMoeLay
     let q_hidden = Q_WIDTH;
     let kv_hidden = KV_WIDTH;
     let intermediate = FULL_ATTN_BLOCK_MOE_INTERMEDIATE;
-    let layer = QwenLayerWeights::AttentionMlp(QwenAttentionMlpWeights {
-        attn_norm: Box::new(
-            bf16_buffer(
-                ctx.clone(),
-                &read_block_bf16_vector("block_attn_norm_raw_weight.bf16", hidden as usize),
-            )
-            .unwrap(),
-        ),
-        q_norm: Box::new(
-            bf16_buffer(
-                ctx.clone(),
-                &read_block_bf16_vector("block_q_norm_raw_weight.bf16", HEAD_DIM as usize),
-            )
-            .unwrap(),
-        ),
-        k_norm: Box::new(
-            bf16_buffer(
-                ctx.clone(),
-                &read_block_bf16_vector("block_k_norm_raw_weight.bf16", HEAD_DIM as usize),
-            )
-            .unwrap(),
-        ),
-        q_proj: Box::new(
-            bf16_buffer(
-                ctx.clone(),
-                &read_block_bf16_vector(
-                    "block_q_proj_weight.bf16",
-                    checked_usize_product(&[PACKED_Q_GATE_WIDTH, hidden]).unwrap(),
-                ),
-            )
-            .unwrap(),
-        ),
-        k_proj: Box::new(
-            bf16_buffer(
-                ctx.clone(),
-                &read_block_bf16_vector(
-                    "block_k_proj_weight.bf16",
-                    checked_usize_product(&[kv_hidden, hidden]).unwrap(),
-                ),
-            )
-            .unwrap(),
-        ),
-        v_proj: Box::new(
-            bf16_buffer(
-                ctx.clone(),
-                &read_block_bf16_vector(
-                    "block_v_proj_weight.bf16",
-                    checked_usize_product(&[kv_hidden, hidden]).unwrap(),
-                ),
-            )
-            .unwrap(),
-        ),
-        o_proj: Box::new(
-            bf16_buffer(
-                ctx.clone(),
-                &read_block_bf16_vector(
-                    "block_o_proj_weight.bf16",
-                    checked_usize_product(&[hidden, q_hidden]).unwrap(),
-                ),
-            )
-            .unwrap(),
-        ),
-        mlp_norm: Box::new(
-            bf16_buffer(
-                ctx.clone(),
-                &read_block_bf16_vector("block_post_attn_norm_raw_weight.bf16", hidden as usize),
-            )
-            .unwrap(),
-        ),
-        mlp: QwenMlpWeights::Moe {
-            router_proj: Box::new(
+    let layer: QwenLayerWeights<FusedBf16Mlp> =
+        QwenLayerWeights::AttentionMlp(QwenAttentionMlpWeights {
+            attn_norm: Box::new(
+                bf16_buffer(
+                    ctx.clone(),
+                    &read_block_bf16_vector("block_attn_norm_raw_weight.bf16", hidden as usize),
+                )
+                .unwrap(),
+            ),
+            q_norm: Box::new(
+                bf16_buffer(
+                    ctx.clone(),
+                    &read_block_bf16_vector("block_q_norm_raw_weight.bf16", HEAD_DIM as usize),
+                )
+                .unwrap(),
+            ),
+            k_norm: Box::new(
+                bf16_buffer(
+                    ctx.clone(),
+                    &read_block_bf16_vector("block_k_norm_raw_weight.bf16", HEAD_DIM as usize),
+                )
+                .unwrap(),
+            ),
+            q_proj: Box::new(
                 bf16_buffer(
                     ctx.clone(),
                     &read_block_bf16_vector(
-                        "block_moe_router_proj_weight.bf16",
-                        checked_usize_product(&[VECTOR_EXPERTS, hidden]).unwrap(),
+                        "block_q_proj_weight.bf16",
+                        checked_usize_product(&[PACKED_Q_GATE_WIDTH, hidden]).unwrap(),
                     ),
                 )
                 .unwrap(),
             ),
-            gate_up_proj: Box::new(
+            k_proj: Box::new(
                 bf16_buffer(
                     ctx.clone(),
                     &read_block_bf16_vector(
-                        "block_moe_gate_up_proj_weight.bf16",
-                        checked_usize_product(&[VECTOR_EXPERTS, 2, intermediate, hidden]).unwrap(),
+                        "block_k_proj_weight.bf16",
+                        checked_usize_product(&[kv_hidden, hidden]).unwrap(),
                     ),
                 )
                 .unwrap(),
             ),
-            down_proj: Box::new(
+            v_proj: Box::new(
                 bf16_buffer(
                     ctx.clone(),
                     &read_block_bf16_vector(
-                        "block_moe_down_proj_weight.bf16",
-                        checked_usize_product(&[VECTOR_EXPERTS, hidden, intermediate]).unwrap(),
+                        "block_v_proj_weight.bf16",
+                        checked_usize_product(&[kv_hidden, hidden]).unwrap(),
                     ),
                 )
                 .unwrap(),
             ),
-            shared: Some(QwenSharedExpertWeights {
-                gate_proj: Box::new(
+            o_proj: Box::new(
+                bf16_buffer(
+                    ctx.clone(),
+                    &read_block_bf16_vector(
+                        "block_o_proj_weight.bf16",
+                        checked_usize_product(&[hidden, q_hidden]).unwrap(),
+                    ),
+                )
+                .unwrap(),
+            ),
+            mlp_norm: Box::new(
+                bf16_buffer(
+                    ctx.clone(),
+                    &read_block_bf16_vector(
+                        "block_post_attn_norm_raw_weight.bf16",
+                        hidden as usize,
+                    ),
+                )
+                .unwrap(),
+            ),
+            mlp: MoeMlp {
+                router_proj: Box::new(
                     bf16_buffer(
                         ctx.clone(),
                         &read_block_bf16_vector(
-                            "block_moe_shared_gate_proj_weight.bf16",
-                            checked_usize_product(&[intermediate, hidden]).unwrap(),
+                            "block_moe_router_proj_weight.bf16",
+                            checked_usize_product(&[VECTOR_EXPERTS, hidden]).unwrap(),
                         ),
                     )
                     .unwrap(),
                 ),
-                up_proj: Box::new(
-                    bf16_buffer(
-                        ctx.clone(),
-                        &read_block_bf16_vector(
-                            "block_moe_shared_up_proj_weight.bf16",
-                            checked_usize_product(&[intermediate, hidden]).unwrap(),
+                experts: FusedExperts {
+                    gate_up_proj: Box::new(
+                        bf16_buffer(
+                            ctx.clone(),
+                            &read_block_bf16_vector(
+                                "block_moe_gate_up_proj_weight.bf16",
+                                checked_usize_product(&[VECTOR_EXPERTS, 2, intermediate, hidden])
+                                    .unwrap(),
+                            ),
+                        )
+                        .unwrap(),
+                    ),
+                    down_proj: Box::new(
+                        bf16_buffer(
+                            ctx.clone(),
+                            &read_block_bf16_vector(
+                                "block_moe_down_proj_weight.bf16",
+                                checked_usize_product(&[VECTOR_EXPERTS, hidden, intermediate])
+                                    .unwrap(),
+                            ),
+                        )
+                        .unwrap(),
+                    ),
+                },
+                shared: Some(SharedExpert {
+                    projections: DenseMlp {
+                        gate_proj: Box::new(
+                            bf16_buffer(
+                                ctx.clone(),
+                                &read_block_bf16_vector(
+                                    "block_moe_shared_gate_proj_weight.bf16",
+                                    checked_usize_product(&[intermediate, hidden]).unwrap(),
+                                ),
+                            )
+                            .unwrap(),
                         ),
-                    )
-                    .unwrap(),
-                ),
-                down_proj: Box::new(
-                    bf16_buffer(
-                        ctx.clone(),
-                        &read_block_bf16_vector(
-                            "block_moe_shared_down_proj_weight.bf16",
-                            checked_usize_product(&[hidden, intermediate]).unwrap(),
+                        up_proj: Box::new(
+                            bf16_buffer(
+                                ctx.clone(),
+                                &read_block_bf16_vector(
+                                    "block_moe_shared_up_proj_weight.bf16",
+                                    checked_usize_product(&[intermediate, hidden]).unwrap(),
+                                ),
+                            )
+                            .unwrap(),
                         ),
-                    )
-                    .unwrap(),
-                ),
-                shared_expert_gate: Box::new(
-                    bf16_buffer(
-                        ctx.clone(),
-                        &read_block_bf16_vector(
-                            "block_moe_shared_expert_gate_weight.bf16",
-                            hidden as usize,
+                        down_proj: Box::new(
+                            bf16_buffer(
+                                ctx.clone(),
+                                &read_block_bf16_vector(
+                                    "block_moe_shared_down_proj_weight.bf16",
+                                    checked_usize_product(&[hidden, intermediate]).unwrap(),
+                                ),
+                            )
+                            .unwrap(),
                         ),
-                    )
-                    .unwrap(),
-                ),
-            }),
-        },
-    });
+                    },
+                    gate: Box::new(
+                        bf16_buffer(
+                            ctx.clone(),
+                            &read_block_bf16_vector(
+                                "block_moe_shared_expert_gate_weight.bf16",
+                                hidden as usize,
+                            ),
+                        )
+                        .unwrap(),
+                    ),
+                }),
+            },
+        });
     let next_norm = bf16_buffer(
         ctx.clone(),
         &read_block_bf16_vector("block_next_layer_norm_raw_weight.bf16", hidden as usize),
@@ -1217,12 +1233,12 @@ fn gdn_decoder_layer_vector_runner() -> ModelRunner {
 }
 
 struct GdnDecoderLayerFixture {
-    layer: QwenLayerWeights,
+    layer: QwenLayerWeights<FusedBf16Mlp>,
     next_norm: DeviceBuffer<BF16>,
 }
 
 impl GdnDecoderLayerFixture {
-    fn weights(&self) -> &QwenGdnWeights {
+    fn weights(&self) -> &QwenGdnWeights<FusedBf16Mlp> {
         match &self.layer {
             QwenLayerWeights::Gdn(layer) => layer,
             QwenLayerWeights::AttentionMlp(_) => {
@@ -1235,7 +1251,7 @@ impl GdnDecoderLayerFixture {
 fn gdn_decoder_layer_fixture(ctx: &Rc<CudaCtx>) -> GdnDecoderLayerFixture {
     let hidden = HIDDEN_SIZE;
     let intermediate = GDN_DECODER_LAYER_MOE_INTERMEDIATE;
-    let layer = QwenLayerWeights::Gdn(QwenGdnWeights {
+    let layer: QwenLayerWeights<FusedBf16Mlp> = QwenLayerWeights::Gdn(QwenGdnWeights {
         norm: Box::new(filled_bf16_buffer(ctx, hidden as usize, 0.0)),
         in_proj: Box::new(
             bf16_buffer(
@@ -1341,7 +1357,7 @@ fn gdn_decoder_layer_fixture(ctx: &Rc<CudaCtx>) -> GdnDecoderLayerFixture {
             )
             .unwrap(),
         ),
-        mlp: QwenMlpWeights::Moe {
+        mlp: MoeMlp {
             router_proj: Box::new(
                 bf16_buffer(
                     ctx.clone(),
@@ -1352,43 +1368,14 @@ fn gdn_decoder_layer_fixture(ctx: &Rc<CudaCtx>) -> GdnDecoderLayerFixture {
                 )
                 .unwrap(),
             ),
-            gate_up_proj: Box::new(
-                bf16_buffer(
-                    ctx.clone(),
-                    &read_gdn_decoder_bf16_vector(
-                        "gdn_decoder_moe_gate_up_proj_weight.bf16",
-                        checked_usize_product(&[VECTOR_EXPERTS, 2, intermediate, hidden]).unwrap(),
-                    ),
-                )
-                .unwrap(),
-            ),
-            down_proj: Box::new(
-                bf16_buffer(
-                    ctx.clone(),
-                    &read_gdn_decoder_bf16_vector(
-                        "gdn_decoder_moe_down_proj_weight.bf16",
-                        checked_usize_product(&[VECTOR_EXPERTS, hidden, intermediate]).unwrap(),
-                    ),
-                )
-                .unwrap(),
-            ),
-            shared: Some(QwenSharedExpertWeights {
-                gate_proj: Box::new(
+            experts: FusedExperts {
+                gate_up_proj: Box::new(
                     bf16_buffer(
                         ctx.clone(),
                         &read_gdn_decoder_bf16_vector(
-                            "gdn_decoder_moe_shared_gate_proj_weight.bf16",
-                            checked_usize_product(&[intermediate, hidden]).unwrap(),
-                        ),
-                    )
-                    .unwrap(),
-                ),
-                up_proj: Box::new(
-                    bf16_buffer(
-                        ctx.clone(),
-                        &read_gdn_decoder_bf16_vector(
-                            "gdn_decoder_moe_shared_up_proj_weight.bf16",
-                            checked_usize_product(&[intermediate, hidden]).unwrap(),
+                            "gdn_decoder_moe_gate_up_proj_weight.bf16",
+                            checked_usize_product(&[VECTOR_EXPERTS, 2, intermediate, hidden])
+                                .unwrap(),
                         ),
                     )
                     .unwrap(),
@@ -1397,13 +1384,47 @@ fn gdn_decoder_layer_fixture(ctx: &Rc<CudaCtx>) -> GdnDecoderLayerFixture {
                     bf16_buffer(
                         ctx.clone(),
                         &read_gdn_decoder_bf16_vector(
-                            "gdn_decoder_moe_shared_down_proj_weight.bf16",
-                            checked_usize_product(&[hidden, intermediate]).unwrap(),
+                            "gdn_decoder_moe_down_proj_weight.bf16",
+                            checked_usize_product(&[VECTOR_EXPERTS, hidden, intermediate]).unwrap(),
                         ),
                     )
                     .unwrap(),
                 ),
-                shared_expert_gate: Box::new(
+            },
+            shared: Some(SharedExpert {
+                projections: DenseMlp {
+                    gate_proj: Box::new(
+                        bf16_buffer(
+                            ctx.clone(),
+                            &read_gdn_decoder_bf16_vector(
+                                "gdn_decoder_moe_shared_gate_proj_weight.bf16",
+                                checked_usize_product(&[intermediate, hidden]).unwrap(),
+                            ),
+                        )
+                        .unwrap(),
+                    ),
+                    up_proj: Box::new(
+                        bf16_buffer(
+                            ctx.clone(),
+                            &read_gdn_decoder_bf16_vector(
+                                "gdn_decoder_moe_shared_up_proj_weight.bf16",
+                                checked_usize_product(&[intermediate, hidden]).unwrap(),
+                            ),
+                        )
+                        .unwrap(),
+                    ),
+                    down_proj: Box::new(
+                        bf16_buffer(
+                            ctx.clone(),
+                            &read_gdn_decoder_bf16_vector(
+                                "gdn_decoder_moe_shared_down_proj_weight.bf16",
+                                checked_usize_product(&[hidden, intermediate]).unwrap(),
+                            ),
+                        )
+                        .unwrap(),
+                    ),
+                },
+                gate: Box::new(
                     bf16_buffer(
                         ctx.clone(),
                         &read_gdn_decoder_bf16_vector(
@@ -1447,119 +1468,143 @@ fn model_logits_vector_config() -> QwenConfig {
 }
 
 fn model_logits_vector_weights(ctx: &Rc<CudaCtx>, config: QwenConfig) -> QwenWeights {
-    let hidden = config.hidden_size();
-    let q_hidden = config.q_hidden_size().unwrap();
-    let kv_hidden = config.kv_hidden_size().unwrap();
-    let vocab = config.vocab_size();
+    fn assemble<M>(
+        ctx: &Rc<CudaCtx>,
+        config: QwenConfig,
+        mlp: M,
+    ) -> QwenModel<M, W<BF16>, W<BF16>> {
+        let hidden = config.hidden_size();
+        let q_hidden = config.q_hidden_size().unwrap();
+        let kv_hidden = config.kv_hidden_size().unwrap();
+        let vocab = config.vocab_size();
 
-    let token_embedding = bf16_buffer(
-        ctx.clone(),
-        &read_model_logits_bf16_vector(
-            "model_token_embedding_weight.bf16",
-            checked_usize_product(&[vocab, hidden]).unwrap(),
-        ),
-    )
-    .unwrap();
-    let final_norm = bf16_buffer(
-        ctx.clone(),
-        &read_model_logits_bf16_vector("model_final_norm_raw_weight.bf16", hidden as usize),
-    )
-    .unwrap();
-    let lm_head = bf16_buffer(
-        ctx.clone(),
-        &read_model_logits_bf16_vector(
-            "model_lm_head_weight.bf16",
-            checked_usize_product(&[vocab, hidden]).unwrap(),
-        ),
-    )
-    .unwrap();
-    let layer = QwenLayerWeights::AttentionMlp(QwenAttentionMlpWeights {
-        attn_norm: Box::new(
-            bf16_buffer(
-                ctx.clone(),
-                &read_model_logits_bf16_vector("model_attn_norm_raw_weight.bf16", hidden as usize),
-            )
-            .unwrap(),
-        ),
-        q_norm: Box::new(
-            bf16_buffer(
-                ctx.clone(),
-                &read_model_logits_bf16_vector(
-                    "model_q_norm_raw_weight.bf16",
-                    config.head_dim() as usize,
-                ),
-            )
-            .unwrap(),
-        ),
-        k_norm: Box::new(
-            bf16_buffer(
-                ctx.clone(),
-                &read_model_logits_bf16_vector(
-                    "model_k_norm_raw_weight.bf16",
-                    config.head_dim() as usize,
-                ),
-            )
-            .unwrap(),
-        ),
-        q_proj: Box::new(
-            bf16_buffer(
-                ctx.clone(),
-                &read_model_logits_bf16_vector(
-                    "model_q_proj_weight.bf16",
-                    checked_usize_product(&[PACKED_Q_GATE_WIDTH, hidden]).unwrap(),
-                ),
-            )
-            .unwrap(),
-        ),
-        k_proj: Box::new(
-            bf16_buffer(
-                ctx.clone(),
-                &read_model_logits_bf16_vector(
-                    "model_k_proj_weight.bf16",
-                    checked_usize_product(&[kv_hidden, hidden]).unwrap(),
-                ),
-            )
-            .unwrap(),
-        ),
-        v_proj: Box::new(
-            bf16_buffer(
-                ctx.clone(),
-                &read_model_logits_bf16_vector(
-                    "model_v_proj_weight.bf16",
-                    checked_usize_product(&[kv_hidden, hidden]).unwrap(),
-                ),
-            )
-            .unwrap(),
-        ),
-        o_proj: Box::new(
-            bf16_buffer(
-                ctx.clone(),
-                &read_model_logits_bf16_vector(
-                    "model_o_proj_weight.bf16",
-                    checked_usize_product(&[hidden, q_hidden]).unwrap(),
-                ),
-            )
-            .unwrap(),
-        ),
-        mlp_norm: Box::new(
-            bf16_buffer(
-                ctx.clone(),
-                &read_model_logits_bf16_vector("model_mlp_norm_raw_weight.bf16", hidden as usize),
-            )
-            .unwrap(),
-        ),
-        mlp: if let Some(moe) = config.moe_config() {
-            QwenMlpWeights::Moe {
-                router_proj: Box::new(
-                    bf16_buffer(
-                        ctx.clone(),
-                        &read_model_logits_bf16_vector(
-                            "model_moe_router_proj_weight.bf16",
-                            checked_usize_product(&[moe.num_experts, hidden]).unwrap(),
-                        ),
-                    )
-                    .unwrap(),
-                ),
+        let token_embedding = bf16_buffer(
+            ctx.clone(),
+            &read_model_logits_bf16_vector(
+                "model_token_embedding_weight.bf16",
+                checked_usize_product(&[vocab, hidden]).unwrap(),
+            ),
+        )
+        .unwrap();
+        let final_norm = bf16_buffer(
+            ctx.clone(),
+            &read_model_logits_bf16_vector("model_final_norm_raw_weight.bf16", hidden as usize),
+        )
+        .unwrap();
+        let lm_head = bf16_buffer(
+            ctx.clone(),
+            &read_model_logits_bf16_vector(
+                "model_lm_head_weight.bf16",
+                checked_usize_product(&[vocab, hidden]).unwrap(),
+            ),
+        )
+        .unwrap();
+        let layer: QwenLayerWeights<M> = QwenLayerWeights::AttentionMlp(QwenAttentionMlpWeights {
+            attn_norm: Box::new(
+                bf16_buffer(
+                    ctx.clone(),
+                    &read_model_logits_bf16_vector(
+                        "model_attn_norm_raw_weight.bf16",
+                        hidden as usize,
+                    ),
+                )
+                .unwrap(),
+            ),
+            q_norm: Box::new(
+                bf16_buffer(
+                    ctx.clone(),
+                    &read_model_logits_bf16_vector(
+                        "model_q_norm_raw_weight.bf16",
+                        config.head_dim() as usize,
+                    ),
+                )
+                .unwrap(),
+            ),
+            k_norm: Box::new(
+                bf16_buffer(
+                    ctx.clone(),
+                    &read_model_logits_bf16_vector(
+                        "model_k_norm_raw_weight.bf16",
+                        config.head_dim() as usize,
+                    ),
+                )
+                .unwrap(),
+            ),
+            q_proj: Box::new(
+                bf16_buffer(
+                    ctx.clone(),
+                    &read_model_logits_bf16_vector(
+                        "model_q_proj_weight.bf16",
+                        checked_usize_product(&[PACKED_Q_GATE_WIDTH, hidden]).unwrap(),
+                    ),
+                )
+                .unwrap(),
+            ),
+            k_proj: Box::new(
+                bf16_buffer(
+                    ctx.clone(),
+                    &read_model_logits_bf16_vector(
+                        "model_k_proj_weight.bf16",
+                        checked_usize_product(&[kv_hidden, hidden]).unwrap(),
+                    ),
+                )
+                .unwrap(),
+            ),
+            v_proj: Box::new(
+                bf16_buffer(
+                    ctx.clone(),
+                    &read_model_logits_bf16_vector(
+                        "model_v_proj_weight.bf16",
+                        checked_usize_product(&[kv_hidden, hidden]).unwrap(),
+                    ),
+                )
+                .unwrap(),
+            ),
+            o_proj: Box::new(
+                bf16_buffer(
+                    ctx.clone(),
+                    &read_model_logits_bf16_vector(
+                        "model_o_proj_weight.bf16",
+                        checked_usize_product(&[hidden, q_hidden]).unwrap(),
+                    ),
+                )
+                .unwrap(),
+            ),
+            mlp_norm: Box::new(
+                bf16_buffer(
+                    ctx.clone(),
+                    &read_model_logits_bf16_vector(
+                        "model_mlp_norm_raw_weight.bf16",
+                        hidden as usize,
+                    ),
+                )
+                .unwrap(),
+            ),
+            mlp,
+        });
+
+        QwenModel {
+            token_embedding: Box::new(token_embedding),
+            final_norm: Box::new(final_norm),
+            lm_head: Box::new(lm_head),
+            layers: vec![layer],
+        }
+    }
+
+    let hidden = config.hidden_size();
+    if let Some(moe) = config.moe_config() {
+        let mlp: FusedBf16Mlp = MoeMlp {
+            router_proj: Box::new(
+                bf16_buffer(
+                    ctx.clone(),
+                    &read_model_logits_bf16_vector(
+                        "model_moe_router_proj_weight.bf16",
+                        checked_usize_product(&[moe.num_experts, hidden]).unwrap(),
+                    ),
+                )
+                .unwrap(),
+            ),
+            experts: FusedExperts {
                 gate_up_proj: Box::new(
                     bf16_buffer(
                         ctx.clone(),
@@ -1591,7 +1636,9 @@ fn model_logits_vector_weights(ctx: &Rc<CudaCtx>, config: QwenConfig) -> QwenWei
                     )
                     .unwrap(),
                 ),
-                shared: Some(QwenSharedExpertWeights {
+            },
+            shared: Some(SharedExpert {
+                projections: DenseMlp {
                     gate_proj: Box::new(
                         bf16_buffer(
                             ctx.clone(),
@@ -1634,44 +1681,39 @@ fn model_logits_vector_weights(ctx: &Rc<CudaCtx>, config: QwenConfig) -> QwenWei
                         )
                         .unwrap(),
                     ),
-                    shared_expert_gate: Box::new(
-                        bf16_buffer(
-                            ctx.clone(),
-                            &read_model_logits_bf16_vector(
-                                "model_moe_shared_expert_gate_weight.bf16",
-                                hidden as usize,
-                            ),
-                        )
-                        .unwrap(),
-                    ),
-                }),
-            }
-        } else {
-            let weight = |file: &str| {
-                Box::new(
+                },
+                gate: Box::new(
                     bf16_buffer(
                         ctx.clone(),
                         &read_model_logits_bf16_vector(
-                            file,
-                            checked_usize_product(&[hidden, MODEL_LOGITS_INTERMEDIATE]).unwrap(),
+                            "model_moe_shared_expert_gate_weight.bf16",
+                            hidden as usize,
                         ),
                     )
                     .unwrap(),
+                ),
+            }),
+        };
+        QwenWeights::MoeBf16(assemble(ctx, config, mlp))
+    } else {
+        let weight = |file: &str| {
+            Box::new(
+                bf16_buffer(
+                    ctx.clone(),
+                    &read_model_logits_bf16_vector(
+                        file,
+                        checked_usize_product(&[hidden, MODEL_LOGITS_INTERMEDIATE]).unwrap(),
+                    ),
                 )
-            };
-            QwenMlpWeights::Dense {
-                gate_proj: weight("model_dense_gate_proj_weight.bf16"),
-                up_proj: weight("model_dense_up_proj_weight.bf16"),
-                down_proj: weight("model_dense_down_proj_weight.bf16"),
-            }
-        },
-    });
-
-    QwenWeights {
-        token_embedding: Box::new(token_embedding),
-        final_norm: Box::new(final_norm),
-        lm_head: Box::new(lm_head),
-        layers: vec![layer],
+                .unwrap(),
+            )
+        };
+        let mlp: DenseMlp<W<BF16>> = DenseMlp {
+            gate_proj: weight("model_dense_gate_proj_weight.bf16"),
+            up_proj: weight("model_dense_up_proj_weight.bf16"),
+            down_proj: weight("model_dense_down_proj_weight.bf16"),
+        };
+        QwenWeights::DenseBf16(assemble(ctx, config, mlp))
     }
 }
 
@@ -2817,15 +2859,13 @@ fn qwen36_full_attention_block_vector_validates_oracle_seeded_moe_shared_and_nex
 
     let layer = full_attention_block_moe_layer(&ctx);
     let layer_weights = layer.weights();
-    let (router_proj, gate_up_proj, down_proj, shared) = match &layer_weights.mlp {
-        QwenMlpWeights::Moe {
-            router_proj,
-            gate_up_proj,
-            down_proj,
-            shared,
-        } => (router_proj, gate_up_proj, down_proj, shared.as_ref()),
-        QwenMlpWeights::Dense { .. } => unreachable!("block fixture must use MoE"),
-    };
+    let mlp = &layer_weights.mlp;
+    let (router_proj, gate_up_proj, down_proj, shared) = (
+        &mlp.router_proj,
+        &mlp.experts.gate_up_proj,
+        &mlp.experts.down_proj,
+        mlp.shared.as_ref(),
+    );
 
     unsafe {
         runner
@@ -3172,6 +3212,9 @@ fn randomized_full_attention_weights_seed_qwen_norm_raw_weights_as_zero() {
     let config = QwenConfig::randomized_dense_tiny_fixture();
     let ctx = Rc::new(CudaCtx::default().unwrap());
     let weights = QwenWeights::random_bf16(ctx.clone(), &config, 0x5153_3300_7177_6e6b).unwrap();
+    let QwenWeights::DenseBf16(weights) = weights else {
+        panic!("expected dense BF16");
+    };
     let hidden = config.hidden_size() as usize;
     let head_dim = config.head_dim() as usize;
 
@@ -3214,7 +3257,7 @@ fn randomized_full_attention_weights_seed_qwen_norm_raw_weights_as_zero() {
 
 #[test]
 fn qwen36_gdn_weights_carry_post_attention_shared_moe() {
-    let layer = QwenLayerWeights::Gdn(QwenGdnWeights {
+    let layer: QwenLayerWeights<FusedBf16Mlp> = QwenLayerWeights::Gdn(QwenGdnWeights {
         norm: placeholder_weight(),
         in_proj: placeholder_weight(),
         gate_proj: placeholder_weight(),
@@ -3231,12 +3274,10 @@ fn qwen36_gdn_weights_carry_post_attention_shared_moe() {
     });
 
     match &layer {
-        QwenLayerWeights::Gdn(gdn) => match gdn.mlp {
-            QwenMlpWeights::Moe {
-                shared: Some(_), ..
-            } => {}
-            _ => panic!("GDN layers must carry shared MoE post-attention weights"),
-        },
+        QwenLayerWeights::Gdn(gdn) => assert!(
+            gdn.mlp.shared.is_some(),
+            "GDN layers must carry shared MoE post-attention weights"
+        ),
         QwenLayerWeights::AttentionMlp(_) => unreachable!(),
     }
 }
@@ -3303,11 +3344,13 @@ fn shared_moe_execution_produces_routed_and_shared_outputs() {
         0.02,
     );
     let shared_expert_gate = filled_bf16_buffer(&ctx, hidden_len, 0.02);
-    let shared = QwenSharedExpertWeights {
-        gate_proj: Box::new(shared_gate_proj),
-        up_proj: Box::new(shared_up_proj),
-        down_proj: Box::new(shared_down_proj),
-        shared_expert_gate: Box::new(shared_expert_gate),
+    let shared: SharedExpert<W<BF16>> = SharedExpert {
+        projections: DenseMlp {
+            gate_proj: Box::new(shared_gate_proj),
+            up_proj: Box::new(shared_up_proj),
+            down_proj: Box::new(shared_down_proj),
+        },
+        gate: Box::new(shared_expert_gate),
     };
 
     unsafe {
@@ -3581,7 +3624,11 @@ impl ModelRunner {
                         .unwrap()
                         .row(rows - 1)
                         .unwrap(),
-                    self.weights.lm_head.matrix(vocab, hidden).unwrap(),
+                    match &self.weights {
+                        QwenWeights::DenseBf16(m) => m.lm_head.matrix(vocab, hidden).unwrap(),
+                        QwenWeights::MoeBf16(m) => m.lm_head.matrix(vocab, hidden).unwrap(),
+                        _ => unreachable!(),
+                    },
                     reference.matrix(1, vocab).unwrap(),
                     self.qscb_workspace
                         .workspace(self.config.qscb_workspace_bytes)
@@ -3628,13 +3675,22 @@ impl ModelRunner {
         let logits_before = self.last_logits_row_for_test().unwrap();
         // Fail after all candidate decoder layers, before replacing logits.
         // Restore ownership before assertions or dropping the runner.
-        let final_norm = std::mem::replace(&mut self.weights.final_norm, placeholder_weight());
+        let final_norm = match &mut self.weights {
+            QwenWeights::DenseBf16(m) => &mut m.final_norm,
+            QwenWeights::MoeBf16(m) => &mut m.final_norm,
+            _ => unreachable!(),
+        };
+        let final_norm = std::mem::replace(final_norm, placeholder_weight());
         let failed = self.run(QwenRequest {
             request_id,
             tokens: rewritten_prompt,
             max_new_tokens: 0,
         });
-        self.weights.final_norm = final_norm;
+        match &mut self.weights {
+            QwenWeights::DenseBf16(m) => m.final_norm = final_norm,
+            QwenWeights::MoeBf16(m) => m.final_norm = final_norm,
+            _ => unreachable!(),
+        };
         assert_eq!(failed.unwrap_err(), Status::InvalidArgument);
         assert_eq!(self.live_tokens(), live_before);
         assert_eq!(self.last_logits_row_for_test().unwrap(), logits_before);

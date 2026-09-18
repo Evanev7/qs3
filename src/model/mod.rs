@@ -8,8 +8,9 @@ mod runner;
 mod sampling;
 pub use sampling::SamplingParams;
 
+#[cfg(test)]
 use config::QwenBlockKind;
-pub use config::QwenConfig;
+pub use config::{Nvfp4Activation, QwenConfig};
 #[cfg(test)]
 use weights::MoeShape;
 #[cfg(test)]
@@ -17,7 +18,7 @@ mod fixtures;
 #[cfg(test)]
 mod lifecycle_tests;
 pub use runner::{ModelRunner, QwenRequest, QwenResult};
-mod weights;
+pub(crate) mod weights;
 
 pub use weights::QwenWeights;
 #[derive(Clone, Copy)]

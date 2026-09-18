@@ -1,23 +1,86 @@
 use super::{
-    format::{LoadResult, WeightLoadError},
+    format::{LoadResult, WeightLoadError, WeightTensorSource, WeightTensorSpec},
     plan::LoadedWeightPlan,
+    quantization::{ProjectionQuantization, Quantization},
+    schema::{self, Tensors},
     transfer::{WeightBuffer, WeightLoadBackend},
 };
 use crate::{
-    engine::Status,
-    model::{QwenConfig, QwenWeights},
+    dtype::DType,
+    memory::DeviceSpan,
+    model::{QwenConfig, QwenWeights, weights::W},
 };
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, ops::Deref};
 
-impl<B: WeightLoadBackend> LoadedWeightPlan<B> {
+/// Retains the backend's release policy, including U8 storage viewed as E2M1.
+struct TensorOwner<B: WeightLoadBackend, D: DType> {
+    _owner: WeightBuffer<B>,
+    span: DeviceSpan<D>,
+}
+impl<B: WeightLoadBackend, D: DType> Deref for TensorOwner<B, D> {
+    type Target = DeviceSpan<D>;
+    fn deref(&self) -> &Self::Target {
+        &self.span
+    }
+}
+struct LoadedTensors<B: WeightLoadBackend> {
+    tensors: BTreeMap<String, (WeightTensorSpec, WeightBuffer<B>)>,
+    quantization: Option<Quantization>,
+}
+impl<B: WeightLoadBackend + 'static> Tensors for LoadedTensors<B> {
+    type Tensor<D: DType> = W<D>;
+    fn tensor<D: DType>(
+        &mut self,
+        name: &str,
+        shape: &[u32],
+        source: WeightTensorSource,
+    ) -> LoadResult<W<D>> {
+        let (spec, owner) = self.tensors.remove(name).ok_or_else(|| {
+            WeightLoadError::tensor_table(format!("missing loaded tensor {name}"))
+        })?;
+        if spec != schema::tensor_spec::<D>(name, shape, source) {
+            return Err(WeightLoadError::tensor_table(format!(
+                "loaded tensor descriptor mismatch: {name}"
+            )));
+        }
+        let ptr = match &owner {
+            WeightBuffer::Bf16(b) => b.erase(),
+            WeightBuffer::Fp8E4m3(b) => b.erase(),
+            WeightBuffer::U8(b) => b.erase(),
+            WeightBuffer::F32(b) => b.erase(),
+        };
+        let span = DeviceSpan::new(
+            ptr.cast(),
+            D::len_of(spec.byte_len()?).map_err(WeightLoadError::Backend)?,
+        )
+        .map_err(WeightLoadError::Backend)?;
+        Ok(Box::new(TensorOwner {
+            _owner: owner,
+            span,
+        }))
+    }
+    fn scalar(&mut self, name: &str) -> LoadResult<f32> {
+        self.quantization
+            .as_mut()
+            .and_then(|q| q.globals.remove(name))
+            .ok_or_else(|| WeightLoadError::tensor_table(format!("missing loaded scalar {name}")))
+    }
+    fn recipe(&mut self, name: &str) -> LoadResult<ProjectionQuantization> {
+        self.quantization
+            .as_ref()
+            .ok_or_else(|| WeightLoadError::invalid_config("missing mixed recipe"))?
+            .recipe(name)
+    }
+}
+
+impl<B: WeightLoadBackend + 'static> LoadedWeightPlan<B> {
     pub(crate) fn into_qwen_model(self, max_seq_len: u32) -> LoadResult<(QwenConfig, QwenWeights)> {
         self.config.validate_compiled_model()?;
-        let config = QwenConfig::new(max_seq_len).map_err(|status| {
-            WeightLoadError::invalid_config(format!("invalid runtime resources: {status:?}"))
+        let config = QwenConfig::new(max_seq_len).map_err(|s| {
+            WeightLoadError::invalid_config(format!("invalid runtime resources: {s:?}"))
         })?;
-        self.into_model_with_config(config)
+        self.into_model(config)
     }
-
     #[cfg(test)]
     pub(super) fn into_fixture_model(
         self,
@@ -28,39 +91,41 @@ impl<B: WeightLoadBackend> LoadedWeightPlan<B> {
             self.config.vocab_size,
             max_seq_len,
         );
-        self.into_model_with_config(config)
+        self.into_model(config)
     }
-
-    fn into_model_with_config(self, config: QwenConfig) -> LoadResult<(QwenConfig, QwenWeights)> {
-        let mut tensors_by_target = BTreeMap::new();
+    fn into_model(self, config: QwenConfig) -> LoadResult<(QwenConfig, QwenWeights)> {
+        let mut tensors = BTreeMap::new();
         for tensor in self.tensors {
-            let key = (tensor.spec.target.layer, tensor.spec.target.slot);
-            let WeightBuffer::Bf16(buffer) = tensor.buffer else {
-                return Err(WeightLoadError::tensor_table(
-                    "BF16 model assembly requires BF16 tensor storage",
-                ));
-            };
-            tensors_by_target.insert(key, buffer);
+            if tensors
+                .insert(tensor.spec.name.clone(), (tensor.spec, tensor.buffer))
+                .is_some()
+            {
+                return Err(WeightLoadError::tensor_table("duplicate loaded tensor"));
+            }
         }
-
-        let mut missing = None;
-        let weights = QwenWeights::from_bf16_allocations(config, |layer, slot| {
-            tensors_by_target.remove(&(layer, slot)).ok_or_else(|| {
-                missing = Some((layer, slot));
-                Status::InternalError
-            })
-        })
-        .map_err(|status| {
-            let detail = missing
-                .map(|(layer, slot)| format!("missing target {layer:?}/{slot}"))
-                .unwrap_or_else(|| format!("model factory failed with {status:?}"));
-            WeightLoadError::tensor_table(detail)
-        })?;
-
-        if let Some(((layer, slot), _)) = tensors_by_target.into_iter().next() {
-            return Err(WeightLoadError::tensor_table(format!(
-                "unused loaded target {layer:?}/{slot}"
-            )));
+        let mut s = LoadedTensors {
+            tensors,
+            quantization: self.quantization,
+        };
+        let weights = if s.quantization.is_none() {
+            if self.config.num_experts > 0 {
+                QwenWeights::MoeBf16(schema::moe_bf16_model(&mut s, &self.config)?)
+            } else {
+                QwenWeights::DenseBf16(schema::dense_bf16_model(&mut s, &self.config)?)
+            }
+        } else if self.config.num_experts > 0 {
+            QwenWeights::MoeNvfp4(schema::moe_nvfp4_model(&mut s, &self.config)?)
+        } else {
+            QwenWeights::DenseNvfp4(schema::dense_nvfp4_model(&mut s, &self.config)?)
+        };
+        if !s.tensors.is_empty()
+            || s.quantization
+                .as_ref()
+                .is_some_and(|q| !q.globals.is_empty())
+        {
+            return Err(WeightLoadError::tensor_table(
+                "unused loaded tensors or scales",
+            ));
         }
         Ok((config, weights))
     }

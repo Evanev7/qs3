@@ -72,7 +72,9 @@ real qwen3.6-35b-a3b findings:
   match the old no-gqa/head-dim-64 fixture assumptions
 - bf16 experts use fused `mlp.experts.gate_up_proj` / `down_proj`; nvfp4 uses
   split per-expert tensors plus `input_scale`, `weight_scale`, `weight_scale_2`
-  reject nvfp4 until its scale/packing semantics are implemented
+  the loader preserves typed packed weights, scales and checkpoint recipes;
+  a4/a16 overrides belong to execution config. the bf16 runner rejects nvfp4
+  until quantized execution is wired
 - current full attention should keep explicit q/k norm + partial rope before
   `POS_ENCODING_NONE` attention as the correctness baseline. future fusion, if
   profiling justifies it, should be a qwen-specific prep kernel for packed q

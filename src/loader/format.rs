@@ -1,16 +1,10 @@
 use super::{
     CONFIG_FILE, DEFAULT_MAX_HEADER_BYTES, DEFAULT_MAX_JSON_BYTES, SAFETENSORS_INDEX_FILE,
-    TEXT_PREFIX,
 };
 use crate::{
     constants::{
-        attention::{
-            HEAD_DIM, KV_WIDTH, NUM_KV_HEADS, NUM_Q_HEADS, PACKED_Q_GATE_WIDTH, Q_WIDTH, ROTARY_DIM,
-        },
-        gdn::{
-            CONV_WIDTH, KEY_HEAD_DIM, NUM_KEY_HEADS, NUM_VALUE_HEADS, OUTPUT_WIDTH,
-            PACKED_QKV_CHANNELS, VALUE_HEAD_DIM,
-        },
+        attention::{HEAD_DIM, NUM_KV_HEADS, NUM_Q_HEADS, ROTARY_DIM},
+        gdn::{CONV_WIDTH, KEY_HEAD_DIM, NUM_KEY_HEADS, NUM_VALUE_HEADS, VALUE_HEAD_DIM},
         mlp::{
             HAS_EXPERTS, INTERMEDIATE_SIZE, NUM_EXPERTS, NUM_EXPERTS_PER_TOKEN,
             SHARED_EXPERT_INTERMEDIATE_SIZE,
@@ -91,34 +85,6 @@ pub(super) fn read_indexed_safetensors_table(
         }
     }
     Ok(table)
-}
-
-/// A fully validated Qwen3.6 BF16 file description. Constructing this value
-/// performs all config, index, header, dtype, shape, span, and tensor-table
-/// checks without allocating CUDA-visible storage.
-pub(super) struct ValidatedQwen36 {
-    pub(super) config: Qwen36TextConfig,
-    pub(super) tensors: Vec<ValidatedTensor>,
-}
-
-impl ValidatedQwen36 {
-    pub(super) fn tensor_count(&self) -> usize {
-        self.tensors.len()
-    }
-}
-
-pub(super) fn validate_qwen36_bf16_dir(
-    model_dir: impl AsRef<Path>,
-    max_json_bytes: usize,
-    max_header_bytes: usize,
-) -> LoadResult<ValidatedQwen36> {
-    let model_dir = model_dir.as_ref();
-    let config = Qwen36TextConfig::read_with_limit(model_dir, max_json_bytes)?;
-    config.validate_compiled_model()?;
-    let index = SafetensorsIndex::read_with_limit(model_dir, max_json_bytes)?;
-    let table = read_indexed_safetensors_table(model_dir, &index, max_header_bytes)?;
-    let tensors = validate_qwen36_bf16_tensor_table(&table, &config)?;
-    Ok(ValidatedQwen36 { config, tensors })
 }
 
 #[derive(Debug)]
@@ -959,18 +925,11 @@ pub(crate) enum WeightTensorSource {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct WeightTensorTarget {
-    pub(super) layer: Option<u32>,
-    pub(super) slot: &'static str,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct WeightTensorSpec {
     pub(super) name: String,
     pub(super) dtype: DynDType,
     pub(super) shape: Vec<u32>,
     pub(super) source: WeightTensorSource,
-    pub(super) target: WeightTensorTarget,
 }
 
 impl WeightTensorSpec {
@@ -987,350 +946,16 @@ pub(super) struct ValidatedTensor {
     pub(super) file_meta: Option<TensorFileMeta>,
 }
 
-pub(crate) fn expected_qwen36_bf16_specs(
-    config: &Qwen36TextConfig,
-) -> LoadResult<Vec<WeightTensorSpec>> {
-    config.validate_supported()?;
-    let hidden = config.hidden_size;
-    let vocab = config.vocab_size;
-    let experts = config.num_experts;
-    let moe_i = config.moe_intermediate_size;
-    let shared_i = config.shared_expert_intermediate_size;
-    let gdn_v_heads = config.linear_num_value_heads;
-    let gdn_v_dim = config.linear_value_head_dim;
-
-    let mut specs = Vec::new();
-    push_spec(
-        &mut specs,
-        format!("{TEXT_PREFIX}embed_tokens.weight"),
-        DynDType::BF16,
-        &[vocab, hidden],
-        WeightTensorSource::Safetensors,
-        None,
-        "token_embedding",
-    );
-    push_spec(
-        &mut specs,
-        format!("{TEXT_PREFIX}norm.weight"),
-        DynDType::BF16,
-        &[hidden],
-        WeightTensorSource::Safetensors,
-        None,
-        "final_norm",
-    );
-    push_spec(
-        &mut specs,
-        "lm_head.weight",
-        DynDType::BF16,
-        &[vocab, hidden],
-        WeightTensorSource::Safetensors,
-        None,
-        "lm_head",
-    );
-
-    for (layer_idx, layer_type) in config.layer_types.iter().copied().enumerate() {
-        let layer = layer_idx as u32;
-        let prefix = format!("{TEXT_PREFIX}layers.{layer_idx}");
-        push_spec(
-            &mut specs,
-            format!("{prefix}.input_layernorm.weight"),
-            DynDType::BF16,
-            &[hidden],
-            WeightTensorSource::Safetensors,
-            Some(layer),
-            "input_layernorm",
-        );
-        push_spec(
-            &mut specs,
-            format!("{prefix}.post_attention_layernorm.weight"),
-            DynDType::BF16,
-            &[hidden],
-            WeightTensorSource::Safetensors,
-            Some(layer),
-            "post_attention_layernorm",
-        );
-
-        match layer_type {
-            QwenLayerKind::FullAttention => {
-                let attn = format!("{prefix}.self_attn");
-                push_spec(
-                    &mut specs,
-                    format!("{attn}.q_norm.weight"),
-                    DynDType::BF16,
-                    &[HEAD_DIM],
-                    WeightTensorSource::Safetensors,
-                    Some(layer),
-                    "attn.q_norm",
-                );
-                push_spec(
-                    &mut specs,
-                    format!("{attn}.k_norm.weight"),
-                    DynDType::BF16,
-                    &[HEAD_DIM],
-                    WeightTensorSource::Safetensors,
-                    Some(layer),
-                    "attn.k_norm",
-                );
-                push_spec(
-                    &mut specs,
-                    format!("{attn}.q_proj.weight"),
-                    DynDType::BF16,
-                    &[PACKED_Q_GATE_WIDTH, hidden],
-                    WeightTensorSource::Safetensors,
-                    Some(layer),
-                    "attn.q_proj",
-                );
-                push_spec(
-                    &mut specs,
-                    format!("{attn}.k_proj.weight"),
-                    DynDType::BF16,
-                    &[KV_WIDTH, hidden],
-                    WeightTensorSource::Safetensors,
-                    Some(layer),
-                    "attn.k_proj",
-                );
-                push_spec(
-                    &mut specs,
-                    format!("{attn}.v_proj.weight"),
-                    DynDType::BF16,
-                    &[KV_WIDTH, hidden],
-                    WeightTensorSource::Safetensors,
-                    Some(layer),
-                    "attn.v_proj",
-                );
-                push_spec(
-                    &mut specs,
-                    format!("{attn}.o_proj.weight"),
-                    DynDType::BF16,
-                    &[hidden, Q_WIDTH],
-                    WeightTensorSource::Safetensors,
-                    Some(layer),
-                    "attn.o_proj",
-                );
-            }
-            QwenLayerKind::LinearAttention => {
-                let gdn = format!("{prefix}.linear_attn");
-                push_spec(
-                    &mut specs,
-                    format!("{gdn}.in_proj_qkv.weight"),
-                    DynDType::BF16,
-                    &[PACKED_QKV_CHANNELS, hidden],
-                    WeightTensorSource::Safetensors,
-                    Some(layer),
-                    "gdn.in_proj_qkv",
-                );
-                push_spec(
-                    &mut specs,
-                    format!("{gdn}.in_proj_z.weight"),
-                    DynDType::BF16,
-                    &[OUTPUT_WIDTH, hidden],
-                    WeightTensorSource::Safetensors,
-                    Some(layer),
-                    "gdn.gate_proj_z",
-                );
-                push_spec(
-                    &mut specs,
-                    format!("{gdn}.in_proj_a.weight"),
-                    DynDType::BF16,
-                    &[gdn_v_heads, hidden],
-                    WeightTensorSource::Safetensors,
-                    Some(layer),
-                    "gdn.a_proj",
-                );
-                push_spec(
-                    &mut specs,
-                    format!("{gdn}.in_proj_b.weight"),
-                    DynDType::BF16,
-                    &[gdn_v_heads, hidden],
-                    WeightTensorSource::Safetensors,
-                    Some(layer),
-                    "gdn.b_proj",
-                );
-                push_spec(
-                    &mut specs,
-                    format!("{gdn}.conv1d.weight"),
-                    DynDType::BF16,
-                    &[PACKED_QKV_CHANNELS, 1, CONV_WIDTH],
-                    WeightTensorSource::Safetensors,
-                    Some(layer),
-                    "gdn.conv_weight",
-                );
-                push_spec(
-                    &mut specs,
-                    format!("{gdn}.conv1d.bias"),
-                    DynDType::BF16,
-                    &[PACKED_QKV_CHANNELS],
-                    WeightTensorSource::ZeroFill,
-                    Some(layer),
-                    "gdn.conv_bias.zero",
-                );
-                push_spec(
-                    &mut specs,
-                    format!("{gdn}.A_log"),
-                    DynDType::BF16,
-                    &[gdn_v_heads],
-                    WeightTensorSource::Safetensors,
-                    Some(layer),
-                    "gdn.a_log",
-                );
-                push_spec(
-                    &mut specs,
-                    format!("{gdn}.dt_bias"),
-                    DynDType::BF16,
-                    &[gdn_v_heads],
-                    WeightTensorSource::Safetensors,
-                    Some(layer),
-                    "gdn.dt_bias",
-                );
-                push_spec(
-                    &mut specs,
-                    format!("{gdn}.norm.weight"),
-                    DynDType::BF16,
-                    &[gdn_v_dim],
-                    WeightTensorSource::Safetensors,
-                    Some(layer),
-                    "gdn.rms_weight",
-                );
-                push_spec(
-                    &mut specs,
-                    format!("{gdn}.out_proj.weight"),
-                    DynDType::BF16,
-                    &[hidden, OUTPUT_WIDTH],
-                    WeightTensorSource::Safetensors,
-                    Some(layer),
-                    "gdn.out_proj",
-                );
-            }
-        }
-
-        let mlp = format!("{prefix}.mlp");
-        if !HAS_EXPERTS {
-            for (name, slot, shape) in [
-                (
-                    "gate_proj.weight",
-                    "mlp.gate",
-                    [config.intermediate_size, hidden],
-                ),
-                (
-                    "up_proj.weight",
-                    "mlp.up",
-                    [config.intermediate_size, hidden],
-                ),
-                (
-                    "down_proj.weight",
-                    "mlp.down",
-                    [hidden, config.intermediate_size],
-                ),
-            ] {
-                push_spec(
-                    &mut specs,
-                    format!("{mlp}.{name}"),
-                    DynDType::BF16,
-                    &shape,
-                    WeightTensorSource::Safetensors,
-                    Some(layer),
-                    slot,
-                );
-            }
-            continue;
-        }
-        push_spec(
-            &mut specs,
-            format!("{mlp}.gate.weight"),
-            DynDType::BF16,
-            &[experts, hidden],
-            WeightTensorSource::Safetensors,
-            Some(layer),
-            "mlp.router",
-        );
-        push_spec(
-            &mut specs,
-            format!("{mlp}.experts.gate_up_proj"),
-            DynDType::BF16,
-            &[experts, 2 * moe_i, hidden],
-            WeightTensorSource::Safetensors,
-            Some(layer),
-            "mlp.experts.gate_up",
-        );
-        push_spec(
-            &mut specs,
-            format!("{mlp}.experts.down_proj"),
-            DynDType::BF16,
-            &[experts, hidden, moe_i],
-            WeightTensorSource::Safetensors,
-            Some(layer),
-            "mlp.experts.down",
-        );
-        push_spec(
-            &mut specs,
-            format!("{mlp}.shared_expert.gate_proj.weight"),
-            DynDType::BF16,
-            &[shared_i, hidden],
-            WeightTensorSource::Safetensors,
-            Some(layer),
-            "mlp.shared.gate",
-        );
-        push_spec(
-            &mut specs,
-            format!("{mlp}.shared_expert.up_proj.weight"),
-            DynDType::BF16,
-            &[shared_i, hidden],
-            WeightTensorSource::Safetensors,
-            Some(layer),
-            "mlp.shared.up",
-        );
-        push_spec(
-            &mut specs,
-            format!("{mlp}.shared_expert.down_proj.weight"),
-            DynDType::BF16,
-            &[hidden, shared_i],
-            WeightTensorSource::Safetensors,
-            Some(layer),
-            "mlp.shared.down",
-        );
-        push_spec(
-            &mut specs,
-            format!("{mlp}.shared_expert_gate.weight"),
-            DynDType::BF16,
-            &[1, hidden],
-            WeightTensorSource::Safetensors,
-            Some(layer),
-            "mlp.shared.gate_score",
-        );
-    }
-
-    Ok(specs)
-}
-
-pub(super) fn push_spec(
-    specs: &mut Vec<WeightTensorSpec>,
-    name: impl Into<String>,
-    dtype: DynDType,
-    shape: &[u32],
-    source: WeightTensorSource,
-    layer: Option<u32>,
-    slot: &'static str,
-) {
-    specs.push(WeightTensorSpec {
-        name: name.into(),
-        dtype,
-        shape: shape.to_vec(),
-        source,
-        target: WeightTensorTarget { layer, slot },
-    });
-}
-
 pub(super) fn ignored_qwen36_tensor(name: &str) -> bool {
     name.starts_with("model.visual.")
         || name.starts_with("mtp.")
         || name.ends_with("rotary_emb.inv_freq")
 }
 
-pub(super) fn validate_qwen36_bf16_tensor_table(
+pub(super) fn validate_tensor_specs(
     tensors: &BTreeMap<String, TensorFileMeta>,
-    config: &Qwen36TextConfig,
+    specs: Vec<WeightTensorSpec>,
 ) -> LoadResult<Vec<ValidatedTensor>> {
-    let specs = expected_qwen36_bf16_specs(config)?;
     let mut expected_names = HashSet::new();
     let mut validated = Vec::with_capacity(specs.len());
     for spec in specs {

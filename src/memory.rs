@@ -227,7 +227,7 @@ impl Drop for CudaCtx {
 }
 
 #[derive(Debug)]
-pub(crate) struct DeviceSpan<D: DType> {
+pub struct DeviceSpan<D: DType> {
     ptr: ffi::DevicePtr<D>,
     pub(crate) len: usize,
 }

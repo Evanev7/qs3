@@ -7,16 +7,76 @@ use crate::{
     memory::DeviceSpan,
     model::{
         scratch::MlpScratch,
-        weights::{QwenMlpWeights, QwenSharedExpertWeights},
+        weights::{DenseMlp, FusedExperts, MoeMlp, SharedExpert, W},
     },
 };
 
+pub(super) trait Bf16Mlp {
+    unsafe fn execute(&self, execution: &mut BatchExecution<'_>, rows: u32) -> Result<(), Status>;
+}
+
+impl Bf16Mlp for DenseMlp<W<BF16>> {
+    unsafe fn execute(&self, execution: &mut BatchExecution<'_>, rows: u32) -> Result<(), Status> {
+        let Self {
+            gate_proj,
+            up_proj,
+            down_proj,
+        } = self;
+        let MlpScratch::Dense(scratch) = &execution.scratch.mlp else {
+            return Err(Status::InternalError);
+        };
+        let hidden = execution.config.hidden_size();
+        let intermediate = execution.config.intermediate_size();
+        let input = execution.scratch.attn_proj.matrix(rows, hidden)?;
+        let gate = scratch.gate.matrix(rows, intermediate)?;
+        let up = scratch.up.matrix(rows, intermediate)?;
+        let activated = scratch.activated.matrix(rows, intermediate)?;
+        let mut ops = execution.engine.operators();
+        unsafe {
+            ops.qscb().linear(
+                input,
+                gate_proj.matrix(intermediate, hidden)?,
+                gate,
+                execution.linear_workspace,
+            )?;
+            ops.qscb().linear(
+                input,
+                up_proj.matrix(intermediate, hidden)?,
+                up,
+                execution.linear_workspace,
+            )?;
+            ops.qscu().silu_and_mul_bf16(gate, up, activated)?;
+            ops.qscb().linear(
+                activated,
+                down_proj.matrix(hidden, intermediate)?,
+                execution.scratch.mlp_out.matrix(rows, hidden)?,
+                execution.linear_workspace,
+            )?;
+        }
+        Ok(())
+    }
+}
+
+impl Bf16Mlp for MoeMlp<FusedExperts<W<BF16>>, W<BF16>> {
+    unsafe fn execute(&self, execution: &mut BatchExecution<'_>, rows: u32) -> Result<(), Status> {
+        unsafe {
+            execution.execute_moe_mlp(
+                rows,
+                &self.router_proj,
+                &self.experts.gate_up_proj,
+                &self.experts.down_proj,
+                self.shared.as_ref(),
+            )
+        }
+    }
+}
+
 impl BatchExecution<'_> {
-    pub(super) unsafe fn execute_post_attention_mlp(
+    pub(super) unsafe fn execute_post_attention_mlp<M: Bf16Mlp>(
         &mut self,
         rows: u32,
         norm: &DeviceSpan<BF16>,
-        mlp: &QwenMlpWeights,
+        mlp: &M,
         next_norm: &DeviceSpan<BF16>,
     ) -> Result<(), Status> {
         let hidden = self.config.hidden_size();
@@ -33,52 +93,7 @@ impl BatchExecution<'_> {
                 .qsfi()
                 .fused_add_rmsnorm_bf16(&before)?;
         }
-        match mlp {
-            QwenMlpWeights::Dense {
-                gate_proj,
-                up_proj,
-                down_proj,
-            } => {
-                let MlpScratch::Dense(scratch) = &self.scratch.mlp else {
-                    return Err(Status::InternalError);
-                };
-                let intermediate = self.config.intermediate_size();
-                let input = self.scratch.attn_proj.matrix(rows, hidden)?;
-                let gate = scratch.gate.matrix(rows, intermediate)?;
-                let up = scratch.up.matrix(rows, intermediate)?;
-                let activated = scratch.activated.matrix(rows, intermediate)?;
-                let mut ops = self.engine.operators();
-                unsafe {
-                    ops.qscb().linear(
-                        input,
-                        gate_proj.matrix(intermediate, hidden)?,
-                        gate,
-                        self.linear_workspace,
-                    )?;
-                    ops.qscb().linear(
-                        input,
-                        up_proj.matrix(intermediate, hidden)?,
-                        up,
-                        self.linear_workspace,
-                    )?;
-                    ops.qscu().silu_and_mul_bf16(gate, up, activated)?;
-                    ops.qscb().linear(
-                        activated,
-                        down_proj.matrix(hidden, intermediate)?,
-                        self.scratch.mlp_out.matrix(rows, hidden)?,
-                        self.linear_workspace,
-                    )?;
-                }
-            }
-            QwenMlpWeights::Moe {
-                router_proj,
-                gate_up_proj,
-                down_proj,
-                shared,
-            } => unsafe {
-                self.execute_moe_mlp(rows, router_proj, gate_up_proj, down_proj, shared.as_ref())?;
-            },
-        }
+        unsafe { mlp.execute(self, rows)? };
         let after = FusedAddRmsNormBf16::qwen_decoder_norm(
             self.scratch.mlp_out.matrix(rows, hidden)?,
             residual,
@@ -99,7 +114,7 @@ impl BatchExecution<'_> {
         router_proj: &DeviceSpan<BF16>,
         gate_up_proj: &DeviceSpan<BF16>,
         down_proj: &DeviceSpan<BF16>,
-        shared: Option<&QwenSharedExpertWeights>,
+        shared: Option<&SharedExpert<W<BF16>>>,
     ) -> Result<(), Status> {
         let hidden = self.config.hidden_size();
         let moe = self.config.moe_config().ok_or(Status::InternalError)?;
@@ -158,7 +173,7 @@ impl BatchExecution<'_> {
         &mut self,
         rows: u32,
         intermediate: u32,
-        shared: &QwenSharedExpertWeights,
+        shared: &SharedExpert<W<BF16>>,
     ) -> Result<(), Status> {
         let MlpScratch::Moe(moe) = &self.scratch.mlp else {
             return Err(Status::InternalError);
@@ -175,26 +190,26 @@ impl BatchExecution<'_> {
         unsafe {
             ops.qscb().linear(
                 input,
-                shared.gate_proj.matrix(intermediate, hidden)?,
+                shared.projections.gate_proj.matrix(intermediate, hidden)?,
                 gate,
                 self.linear_workspace,
             )?;
             ops.qscb().linear(
                 input,
-                shared.up_proj.matrix(intermediate, hidden)?,
+                shared.projections.up_proj.matrix(intermediate, hidden)?,
                 up,
                 self.linear_workspace,
             )?;
             ops.qscu().silu_and_mul_bf16(gate, up, activated)?;
             ops.qscb().linear(
                 activated,
-                shared.down_proj.matrix(hidden, intermediate)?,
+                shared.projections.down_proj.matrix(hidden, intermediate)?,
                 output,
                 self.linear_workspace,
             )?;
             ops.qscb().linear(
                 input,
-                shared.shared_expert_gate.matrix(1, hidden)?,
+                shared.gate.matrix(1, hidden)?,
                 logits,
                 self.linear_workspace,
             )?;
