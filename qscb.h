@@ -53,7 +53,7 @@ typedef struct qscb_linear_plan qscb_linear_plan;
 
 /* Preparation queries cuBLASLt once. Plans belong to ctx and must be destroyed
  * before it. Execution permits new addresses/scalars with identical dimensions,
- * row strides, output dtype, capped (256-byte) pointer alignments and workspace
+ * row strides, tensor dtypes, capped (256-byte) pointer alignments and workspace
  * capacity. Workspace pointers must be 256-byte aligned. No device sync occurs.
  */
 qsfi_status
@@ -61,6 +61,38 @@ qscb_linear_plan_create(qscb_context* ctx, const qscb_linear_desc* desc, qscb_li
 void qscb_linear_plan_destroy(qscb_linear_plan* plan);
 qsfi_status
 qscb_linear_execute(qscb_context* ctx, const qscb_linear_plan* plan, const qscb_linear_desc* desc);
+
+/* Tensor-scaled E4M3 W8A8, with BF16/F32 output and F32 accumulation.
+ * linear.x and linear.weight are E4M3; the remaining linear fields have the
+ * same meaning as above. Scales are device F32[1] dequantization multipliers,
+ * not reciprocals. Their values must be finite and positive. Callers own all
+ * buffers and validate scale values before use. Context/plan use is serialized
+ * by the caller. Scale addresses are rebound on every execution.
+ */
+typedef struct {
+    qscb_linear_desc linear;
+    qsfi_tensor1 x_scale;
+    qsfi_tensor1 weight_scale;
+} qscb_fp8_linear_desc;
+
+qsfi_status qscb_fp8_linear_plan_create(
+    qscb_context* ctx, const qscb_fp8_linear_desc* desc, qscb_linear_plan** out
+);
+qsfi_status qscb_fp8_linear_execute(
+    qscb_context* ctx, const qscb_linear_plan* plan, const qscb_fp8_linear_desc* desc
+);
+
+/* BF16 -> E4M3 round-to-nearest, finite saturation. Row strides may be padded.
+ * out = fp8(x / scale). scale is a caller-validated positive finite device
+ * F32[1] dequantization multiplier, also supplied to the subsequent GEMM.
+ * Input, output and scale storage must not overlap.
+ */
+typedef struct {
+    qsfi_tensor2 x;
+    qsfi_tensor2 out;
+    qsfi_tensor1 scale;
+} qscb_fp8_quantize_desc;
+qsfi_status qscb_fp8_quantize(qscb_context* ctx, const qscb_fp8_quantize_desc* desc);
 
 #ifdef __cplusplus
 }

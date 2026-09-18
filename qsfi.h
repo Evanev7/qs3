@@ -22,6 +22,75 @@ typedef struct qsfi_batch_decode_plan qsfi_batch_decode_plan;
 typedef struct qsfi_batch_prefill_plan qsfi_batch_prefill_plan;
 typedef struct qsfi_moe_plan qsfi_moe_plan;
 
+/* Dense NVFP4 W4A4 on SM121. All buffers belong to the caller. Packed matrices
+ * use logical NVFP4 element shapes/strides [rows,K], with two adjacent K
+ * elements per byte (low nibble first). BF16 output/intermediates are retained.
+ * K must be a multiple of 128, N a multiple of 8. Matrices are contiguous and
+ * 16-byte aligned. Scale storage is E4M3 in CUTLASS's padded 128x4 layout:
+ * ceil(rows/128)*128 * (K/16) bytes, aligned to 16 bytes.
+ * Device F32[1] globals must be aligned, positive and finite; block scales
+ * must be finite nonnegative E4M3. Callers validate values before preparation.
+ * Buffers for inputs, outputs, scales and workspace must not overlap.
+ */
+/* Supported tactic names. models/config.nix selects the available subset;
+ * preparation rejects supported names omitted from that build's tactic set.
+ */
+typedef enum {
+    QSFI_NVFP4_TILE128X32_DP = 0,
+    QSFI_NVFP4_TILE128X32_STREAM_K = 1,
+    QSFI_NVFP4_TILE128X64_DP = 2,
+    QSFI_NVFP4_TILE128X64_STREAM_K = 3
+} qsfi_nvfp4_tactic;
+
+typedef struct {
+    uint32_t rows;
+    uint32_t in_features;
+    uint32_t out_features;
+    qsfi_nvfp4_tactic tactic;
+} qsfi_nvfp4_plan_desc;
+typedef struct qsfi_nvfp4_plan qsfi_nvfp4_plan;
+
+/* Preparation selects a compiled tactic and queries workspace without launching
+ * GEMM. No GPU allocations, autotuning or stream synchronization. The plan
+ * belongs to ctx, must be destroyed first, and accepts new addresses at execute.
+ */
+qsfi_status qsfi_nvfp4_plan_create(
+    qsfi_context* ctx,
+    const qsfi_nvfp4_plan_desc* desc,
+    qsfi_nvfp4_plan** out,
+    size_t* workspace_bytes
+);
+void qsfi_nvfp4_plan_destroy(qsfi_nvfp4_plan* plan);
+
+typedef struct {
+    qsfi_tensor2 x;
+    qsfi_tensor2 weight;
+    qsfi_tensor1 x_scales;
+    qsfi_tensor1 weight_scales;
+    qsfi_tensor1 alpha; /* device F32[1]: input_scale * weight_scale_2 */
+    qsfi_tensor2 out; /* BF16 [M,N] */
+    qsfi_device_ptr workspace; /* 256-byte aligned */
+    size_t workspace_bytes;
+} qsfi_nvfp4_execute_desc;
+qsfi_status qsfi_nvfp4_execute(
+    qsfi_context* ctx, const qsfi_nvfp4_plan* plan, const qsfi_nvfp4_execute_desc* desc
+);
+
+typedef struct {
+    qsfi_tensor2 x; /* contiguous BF16 [M,K] */
+    qsfi_tensor2 out; /* contiguous NVFP4 [M,K], logical extents */
+    qsfi_tensor1 scales; /* padded E4M3 128x4 storage */
+    qsfi_tensor1 quant_multiplier; /* device F32[1]: 1 / checkpoint input_scale */
+} qsfi_nvfp4_quantize_desc;
+qsfi_status qsfi_nvfp4_quantize(qsfi_context* ctx, const qsfi_nvfp4_quantize_desc* desc);
+
+/* Load-time scale layout conversion, including zero-filled padded rows.
+ * Input is contiguous E4M3 [N,K/16]; output is padded E4M3 128x4 storage.
+ * This preserves bytes and never folds the weight_scale_2 global into E4M3.
+ */
+qsfi_status
+qsfi_nvfp4_swizzle_scales(qsfi_context* ctx, const qsfi_tensor2* scales, const qsfi_tensor1* out);
+
 typedef enum {
     /* K/V shape: [num_pages, page_size, num_kv_heads, head_dim]. */
     QSFI_KV_LAYOUT_NHD = 0,

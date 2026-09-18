@@ -176,6 +176,20 @@ assert
       projections = {
         provider = "cublaslt";
       };
+      nvfp4 = {
+        provider = "flashinfer-cutlass";
+        # Available dense W4A4 tactics are tileN × streamK.
+        # Preparation chooses one; tests exercise every enabled combination.
+        # Each tile compiles both schedulers; streamK controls API availability.
+        tileN = [
+          32
+          64
+        ];
+        streamK = [
+          false
+          true
+        ];
+      };
       lm_head = gemv text.vocab_size { precision = precision.lm_head; };
       gdn_qkv = gemv dimensions.gdn.packedQkvChannels { };
       sampling_prepare = triton "sampling_prepare" samplingBlocks {

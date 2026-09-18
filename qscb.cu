@@ -3,8 +3,10 @@
 
 #include <cublasLt.h>
 #include <cuda_bf16.h>
+#include <cuda_fp8.h>
 #include <cuda_runtime.h>
 
+#include <algorithm>
 #include <cstdarg>
 #include <cstdint>
 #include <cstdio>
@@ -71,6 +73,8 @@ static auto linear_key(const qscb_linear_desc& desc)
         desc.x.stride[0],
         desc.weight.stride[0],
         desc.out.stride[0],
+        desc.x.dtype,
+        desc.weight.dtype,
         desc.out.dtype,
         linear_alignment(desc.x.data),
         linear_alignment(desc.weight.data),
@@ -249,10 +253,21 @@ qsfi_status validate_shape(
     if (!tensor2_is_row_major(tensor)) {
         return set_qscb_invalid_arg(ctx, "%s must be row-major with stride[1] == 1", name);
     }
+    const size_t element_bytes = tensor.dtype == QSFI_DTYPE_FP8_E4M3 ? 1
+        : tensor.dtype == QSFI_DTYPE_F32                             ? 4
+                                                                     : 2;
+    if (linear_alignment(tensor.data) < element_bytes
+        || uint64_t(rows) > uint64_t(INT64_MAX) / uint64_t(tensor.stride[0]) / element_bytes) {
+        return set_qscb_invalid_arg(
+            ctx,
+            "%s addressing overflow or element alignment mismatch",
+            name
+        );
+    }
     return QSFI_STATUS_OK;
 }
 
-qsfi_status validate_linear_desc(qscb_context* ctx, const qscb_linear_desc* desc)
+qsfi_status validate_linear_desc(qscb_context* ctx, const qscb_linear_desc* desc, bool fp8 = false)
 {
     if (desc == nullptr) {
         return set_qscb_invalid_arg(ctx, "qscb linear desc is null");
@@ -271,10 +286,17 @@ qsfi_status validate_linear_desc(qscb_context* ctx, const qscb_linear_desc* desc
         return set_qscb_invalid_arg(ctx, "qscb linear workspace must be 256-byte aligned");
     }
 
-    qsfi_status status = qscb_validate_tensor(ctx, desc->x, "x", QSFI_DTYPE_BF16, 2);
+    qsfi_status status
+        = qscb_validate_tensor(ctx, desc->x, "x", fp8 ? QSFI_DTYPE_FP8_E4M3 : QSFI_DTYPE_BF16, 2);
     if (status != QSFI_STATUS_OK)
         return status;
-    status = qscb_validate_tensor(ctx, desc->weight, "weight", QSFI_DTYPE_BF16, 2);
+    status = qscb_validate_tensor(
+        ctx,
+        desc->weight,
+        "weight",
+        fp8 ? QSFI_DTYPE_FP8_E4M3 : QSFI_DTYPE_BF16,
+        2
+    );
     if (status != QSFI_STATUS_OK)
         return status;
     if (!supported_output_dtype(desc->out.dtype)) {
@@ -331,7 +353,7 @@ cublasStatus_t create_descriptors(const qscb_linear_desc* desc, linear_descripto
 
     status = cublasLtMatrixLayoutCreate(
         &out->a,
-        CUDA_R_16BF,
+        desc->weight.dtype == QSFI_DTYPE_FP8_E4M3 ? CUDA_R_8F_E4M3 : CUDA_R_16BF,
         desc->in_features,
         desc->out_features,
         desc->weight.stride[0]
@@ -340,7 +362,7 @@ cublasStatus_t create_descriptors(const qscb_linear_desc* desc, linear_descripto
         return status;
     status = cublasLtMatrixLayoutCreate(
         &out->b,
-        CUDA_R_16BF,
+        desc->x.dtype == QSFI_DTYPE_FP8_E4M3 ? CUDA_R_8F_E4M3 : CUDA_R_16BF,
         desc->in_features,
         desc->rows,
         desc->x.stride[0]
@@ -393,13 +415,74 @@ cublasStatus_t create_descriptors(const qscb_linear_desc* desc, linear_descripto
     return CUBLAS_STATUS_SUCCESS;
 }
 
-qsfi_status prepare_linear(qscb_context* ctx, const qscb_linear_desc* desc, qscb_linear_plan* plan)
+qsfi_status validate_scale(qscb_context* ctx, const qsfi_tensor1& scale)
+{
+    auto status = qscb_validate_tensor(ctx, scale, "scale", QSFI_DTYPE_F32, 1);
+    if (status != QSFI_STATUS_OK)
+        return status;
+    if (scale.shape[0] != 1 || scale.stride[0] != 1 || linear_alignment(scale.data) < 4)
+        return set_qscb_invalid_arg(ctx, "scale must be aligned contiguous device F32[1]");
+    return QSFI_STATUS_OK;
+}
+
+cublasStatus_t bind_fp8_scales(cublasLtMatmulDesc_t matmul, const qscb_fp8_linear_desc* desc)
+{
+    auto status = cublasLtMatmulDescSetAttribute(
+        matmul,
+        CUBLASLT_MATMUL_DESC_A_SCALE_POINTER,
+        &desc->weight_scale.data,
+        sizeof(void*)
+    );
+    if (status != CUBLAS_STATUS_SUCCESS)
+        return status;
+    return cublasLtMatmulDescSetAttribute(
+        matmul,
+        CUBLASLT_MATMUL_DESC_B_SCALE_POINTER,
+        &desc->x_scale.data,
+        sizeof(void*)
+    );
+}
+
+__global__ void fp8_quantize_kernel(
+    const __nv_bfloat16* x,
+    __nv_fp8_e4m3* out,
+    const float* scale,
+    size_t count,
+    int64_t cols,
+    int64_t xs,
+    int64_t os
+)
+{
+    for (size_t i = size_t(blockIdx.x) * blockDim.x + threadIdx.x; i < count;
+         i += size_t(blockDim.x) * gridDim.x) {
+        const size_t row = i / cols, col = i % cols;
+        out[row * os + col] = __nv_fp8_e4m3(__bfloat162float(x[row * xs + col]) / *scale);
+    }
+}
+
+qsfi_status prepare_linear(
+    qscb_context* ctx,
+    const qscb_linear_desc* desc,
+    qscb_linear_plan* plan,
+    const qscb_fp8_linear_desc* fp8 = nullptr
+)
 {
     auto& descriptors = plan->descriptors;
     cublasStatus_t status = create_descriptors(desc, &descriptors);
     if (status != CUBLAS_STATUS_SUCCESS)
         return set_qscb_cublaslt_error(ctx, status, "cublasLt descriptor create");
 
+    if (fp8 != nullptr) {
+        const auto mode = CUBLASLT_MATMUL_MATRIX_SCALE_SCALAR_32F;
+        for (auto attr : { CUBLASLT_MATMUL_DESC_A_SCALE_MODE, CUBLASLT_MATMUL_DESC_B_SCALE_MODE }) {
+            status = cublasLtMatmulDescSetAttribute(descriptors.matmul, attr, &mode, sizeof(mode));
+            if (status != CUBLAS_STATUS_SUCCESS)
+                return set_qscb_cublaslt_error(ctx, status, "FP8 scalar scale mode");
+        }
+        status = bind_fp8_scales(descriptors.matmul, fp8);
+        if (status != CUBLAS_STATUS_SUCCESS)
+            return set_qscb_cublaslt_error(ctx, status, "FP8 scale binding");
+    }
     cublasLtMatmulHeuristicResult_t heuristic {};
     int returned_count = 0;
     status = cublasLtMatmulAlgoGetHeuristic(
@@ -581,6 +664,110 @@ qscb_linear_execute(qscb_context* ctx, const qscb_linear_plan* plan, const qscb_
     if (status != QSFI_STATUS_OK)
         return status;
     return run_linear(ctx, plan, desc);
+}
+
+qsfi_status qscb_fp8_linear_plan_create(
+    qscb_context* ctx, const qscb_fp8_linear_desc* desc, qscb_linear_plan** out
+)
+{
+    if (out == nullptr)
+        return QSFI_STATUS_INVALID_ARGUMENT;
+    *out = nullptr;
+    if (ctx == nullptr)
+        return QSFI_STATUS_INVALID_ARGUMENT;
+    qsfi_clear_error_info(&ctx->last_error);
+    if (desc == nullptr)
+        return set_qscb_invalid_arg(ctx, "FP8 descriptor is null");
+    auto status = validate_linear_desc(ctx, &desc->linear, true);
+    if (status != QSFI_STATUS_OK)
+        return status;
+    for (const auto& scale : { desc->x_scale, desc->weight_scale }) {
+        status = validate_scale(ctx, scale);
+        if (status != QSFI_STATUS_OK)
+            return status;
+    }
+    status = activate_qscb_context(ctx);
+    if (status != QSFI_STATUS_OK)
+        return status;
+    std::unique_ptr<qscb_linear_plan> plan(new (std::nothrow) qscb_linear_plan);
+    if (!plan)
+        return QSFI_STATUS_OUT_OF_MEMORY;
+    status = prepare_linear(ctx, &desc->linear, plan.get(), desc);
+    if (status != QSFI_STATUS_OK)
+        return status;
+    *out = plan.release();
+    return QSFI_STATUS_OK;
+}
+
+qsfi_status qscb_fp8_linear_execute(
+    qscb_context* ctx, const qscb_linear_plan* plan, const qscb_fp8_linear_desc* desc
+)
+{
+    if (ctx == nullptr)
+        return QSFI_STATUS_INVALID_ARGUMENT;
+    qsfi_clear_error_info(&ctx->last_error);
+    if (desc == nullptr || plan == nullptr || plan->owner != ctx)
+        return set_qscb_invalid_arg(ctx, "FP8 descriptor/plan/context mismatch");
+    auto status = validate_linear_desc(ctx, &desc->linear, true);
+    if (status != QSFI_STATUS_OK)
+        return status;
+    if (plan->key != linear_key(desc->linear))
+        return set_qscb_invalid_arg(ctx, "FP8 plan layout/alignment/workspace mismatch");
+    for (const auto& scale : { desc->x_scale, desc->weight_scale }) {
+        status = validate_scale(ctx, scale);
+        if (status != QSFI_STATUS_OK)
+            return status;
+    }
+    status = activate_qscb_context(ctx);
+    if (status != QSFI_STATUS_OK)
+        return status;
+    const auto bound = bind_fp8_scales(plan->descriptors.matmul, desc);
+    if (bound != CUBLAS_STATUS_SUCCESS)
+        return set_qscb_cublaslt_error(ctx, bound, "FP8 scale rebinding");
+    return run_linear(ctx, plan, &desc->linear);
+}
+
+qsfi_status qscb_fp8_quantize(qscb_context* ctx, const qscb_fp8_quantize_desc* desc)
+{
+    if (ctx == nullptr)
+        return QSFI_STATUS_INVALID_ARGUMENT;
+    qsfi_clear_error_info(&ctx->last_error);
+    if (desc == nullptr)
+        return set_qscb_invalid_arg(ctx, "FP8 quantizer descriptor is null");
+    auto status = qscb_validate_tensor(ctx, desc->x, "x", QSFI_DTYPE_BF16, 2);
+    if (status != QSFI_STATUS_OK)
+        return status;
+    status = qscb_validate_tensor(ctx, desc->out, "out", QSFI_DTYPE_FP8_E4M3, 2);
+    if (status != QSFI_STATUS_OK)
+        return status;
+    status = validate_scale(ctx, desc->scale);
+    if (status != QSFI_STATUS_OK)
+        return status;
+    const auto& x = desc->x;
+    const auto& out = desc->out;
+    if (!tensor2_is_row_major(x) || !tensor2_is_row_major(out) || x.shape[0] != out.shape[0]
+        || x.shape[1] != out.shape[1] || linear_alignment(x.data) < 2
+        || uint64_t(x.shape[0]) > uint64_t(INT64_MAX) / uint64_t(x.stride[0]) / 2
+        || uint64_t(out.shape[0]) > uint64_t(INT64_MAX) / uint64_t(out.stride[0]))
+        return set_qscb_invalid_arg(
+            ctx,
+            "FP8 quantizer shape/stride/alignment overflow or mismatch"
+        );
+    status = activate_qscb_context(ctx);
+    if (status != QSFI_STATUS_OK)
+        return status;
+    const size_t count = size_t(x.shape[0]) * x.shape[1];
+    const unsigned blocks = static_cast<unsigned>(std::min<size_t>((count + 255) / 256, 65535));
+    fp8_quantize_kernel<<<blocks, 256, 0, ctx->stream>>>(
+        static_cast<const __nv_bfloat16*>(x.data),
+        static_cast<__nv_fp8_e4m3*>(out.data),
+        static_cast<const float*>(desc->scale.data),
+        count,
+        x.shape[1],
+        x.stride[0],
+        out.stride[0]
+    );
+    return set_qscb_cuda_error(ctx, cudaGetLastError(), "FP8 quantization");
 }
 
 } // extern "C"

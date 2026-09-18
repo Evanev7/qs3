@@ -4,6 +4,7 @@
 #include "qsfi_macros.h"
 
 #include <cuda_bf16.h>
+#include <cuda_fp8.h>
 #include <cuda_runtime.h>
 
 #include <algorithm>
@@ -2644,6 +2645,7 @@ void test_checked_moe_rejects_non_finite_route_weight()
 #include "tests_cuda_qscb_linear.inc"
 #include "tests_cuda_qscu_gdn_router.inc"
 #include "tests_cuda_qscu_utils.inc"
+#include "tests_cuda_quantized.inc"
 
 } // namespace
 
@@ -2712,6 +2714,9 @@ int main()
     test_qsfi_fused_add_rmsnorm_bf16_inplace_updates_residual();
     test_qsfi_fused_add_rmsnorm_rejects_non_alias_out();
     test_qsfi_rope_apply_bf16_neox_full_head_matches_cpu();
+    test_qscb_fp8();
+    test_qsfi_nvfp4();
+    test_qsfi_nvfp4_qwen_shapes();
     test_qscb_context_lifecycle();
     test_qscb_linear_bf16_hidden_output_strided();
     test_qscb_linear_bf16_output_beta();

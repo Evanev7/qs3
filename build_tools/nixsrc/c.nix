@@ -64,6 +64,33 @@ in
   map (name: "#define ${name} ${defines.${name}}") (builtins.attrNames defines)
 )
 + "\n\n"
++ builtins.concatStringsSep " \\\n" (
+  [ "#define QSFI_NVFP4_TILES(X)" ]
+  ++ map (
+    tileN:
+    assert builtins.isInt tileN;
+    "    X(${toString tileN})"
+  ) config.kernels.nvfp4.tileN
+)
++ "\n"
++ builtins.concatStringsSep " \\\n" (
+  [ "#define QSFI_NVFP4_TACTICS(X)" ]
+  ++ builtins.concatMap (
+    tileN:
+    map (
+      streamK:
+      assert builtins.isBool streamK;
+      let
+        suffix = if streamK then "STREAM_K" else "DP";
+        launcher = "genericFp4GemmKernelLauncher" + (if streamK then "StreamK" else "");
+      in
+      "    X(QSFI_NVFP4_TILE128X${toString tileN}_${suffix}, ${toString tileN}, ${
+            if streamK then "true" else "false"
+          }, ${launcher})"
+    ) config.kernels.nvfp4.streamK
+  ) config.kernels.nvfp4.tileN
+)
++ "\n\n"
 +
   dispatch "QSFI_DISPATCH_CTA_TILE_Q" "cta_tile_q" "CTA_TILE_Q" "uint32_t"
     config.kernels.attention.ctaTileQ
