@@ -18,6 +18,28 @@ pub(crate) struct Qscb {
 }
 
 impl Qscb {
+    pub(crate) unsafe fn requantize_fp8(
+        &mut self,
+        weight: DMat<Fp8E4M3>,
+        source_scale: f32,
+        shared_scale: f32,
+    ) -> Result<(), Status> {
+        if [source_scale, shared_scale]
+            .iter()
+            .any(|s| !s.is_finite() || *s <= 0.0)
+        {
+            return Err(Status::InvalidArgument);
+        }
+        result_from_raw(unsafe {
+            sys::qscb_fp8_requantize(
+                self.raw.as_ptr(),
+                &weight.tensor(),
+                source_scale,
+                shared_scale,
+            )
+        })
+    }
+
     pub(crate) unsafe fn quantize_fp8(
         &mut self,
         input: DMat<BF16>,

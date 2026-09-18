@@ -8,7 +8,7 @@ use super::{
     },
 };
 use crate::{
-    backend::{Qsfi, qsfi::scale_count},
+    backend::{Qscb, Qsfi, qsfi::scale_count},
     dtype::{DynDType, F32, Fp8E4M3},
     ffi::cuda,
     memory::{CudaCtx, DeviceSpan, HostBuffer},
@@ -16,6 +16,13 @@ use crate::{
 use std::collections::{BTreeMap, BTreeSet};
 
 enum Transform {
+    Fp8 {
+        source: usize,
+        n: u32,
+        k: u32,
+        source_scale: f32,
+        shared_scale: f32,
+    },
     Scales {
         source: usize,
         n: u32,
@@ -41,6 +48,7 @@ pub(super) struct Preparation {
     transforms: Vec<Transform>,
     allocations: Vec<Allocation>,
     provider: Option<Qsfi>,
+    fp8_provider: Option<Qscb>,
 }
 impl Preparation {
     /// Validate the complete preparation recipe before any device allocation.
@@ -60,7 +68,7 @@ impl Preparation {
                 used.insert(name);
                 Ok(value)
             };
-            for entry in &plan.entries {
+            for (source, entry) in plan.entries.iter().enumerate() {
                 let Some(name) = entry.spec.name.strip_suffix(".weight") else {
                     continue;
                 };
@@ -69,7 +77,52 @@ impl Preparation {
                 }
                 let input = scalar(format!("{name}.input_scale"))?;
                 let values = match q.recipe(name)? {
-                    ProjectionQuantization::Fp8 => [input, scalar(format!("{name}.weight_scale"))?],
+                    ProjectionQuantization::Fp8 => {
+                        let weight = scalar(format!("{name}.weight_scale"))?;
+                        let [n, k] = entry.spec.shape.as_slice() else {
+                            return Err(WeightLoadError::tensor_table("invalid FP8 weight shape"));
+                        };
+                        let mut shared_input = input;
+                        let mut shared_weight = weight;
+                        let mut requantize = false;
+                        for sibling in fp8_group(name)? {
+                            let tensor = plan
+                                .entries
+                                .iter()
+                                .find(|e| e.spec.name == format!("{sibling}.weight"))
+                                .ok_or_else(|| {
+                                    WeightLoadError::tensor_table(format!(
+                                        "missing fused FP8 projection {sibling}"
+                                    ))
+                                })?;
+                            if q.recipe(&sibling)? != ProjectionQuantization::Fp8
+                                || tensor.spec.dtype != DynDType::FP8E4M3
+                                || tensor.spec.shape.len() != 2
+                                || tensor.spec.shape[1] != *k
+                            {
+                                return Err(WeightLoadError::tensor_table(
+                                    "incompatible fused FP8 projection",
+                                ));
+                            }
+                            shared_input =
+                                shared_input.max(scalar(format!("{sibling}.input_scale"))?);
+                            let sibling_weight = scalar(format!("{sibling}.weight_scale"))?;
+                            shared_weight = shared_weight.max(sibling_weight);
+                            requantize |= sibling_weight != weight;
+                        }
+                        // vLLM requantizes every segment when any group scales differ,
+                        // including the segment already using the maximum scale.
+                        if requantize {
+                            transforms.push(Transform::Fp8 {
+                                source,
+                                n: *n,
+                                k: *k,
+                                source_scale: weight,
+                                shared_scale: shared_weight,
+                            });
+                        }
+                        [shared_input, shared_weight]
+                    }
                     ProjectionQuantization::Nvfp4 | ProjectionQuantization::W4A16Nvfp4 => {
                         let scale_name = format!("{name}.weight_scale");
                         let source = plan
@@ -127,6 +180,7 @@ impl Preparation {
             transforms,
             allocations: Vec::new(),
             provider: None,
+            fp8_provider: None,
         })
     }
 
@@ -137,7 +191,32 @@ impl Preparation {
         ctx: &CudaCtx,
     ) -> LoadResult<()> {
         for transform in &self.transforms {
+            if let Transform::Fp8 {
+                source,
+                n,
+                k,
+                source_scale,
+                shared_scale,
+            } = transform
+            {
+                if self.fp8_provider.is_none() {
+                    self.fp8_provider = Some(Qscb::new(ctx).map_err(WeightLoadError::Backend)?);
+                }
+                let weight =
+                    DeviceSpan::<Fp8E4M3>::new(sources[*source].ptr.cast(), sources[*source].bytes)
+                        .map_err(WeightLoadError::Backend)?;
+                unsafe {
+                    self.fp8_provider.as_mut().unwrap().requantize_fp8(
+                        weight.matrix(*n, *k).map_err(WeightLoadError::Backend)?,
+                        *source_scale,
+                        *shared_scale,
+                    )
+                }
+                .map_err(WeightLoadError::Backend)?;
+                continue;
+            }
             let (name, dtype, count) = match transform {
+                Transform::Fp8 { .. } => unreachable!(),
                 Transform::Scales { source, count, .. } => (
                     format!("prepared.scales.{source}"),
                     DynDType::FP8E4M3,
@@ -159,6 +238,7 @@ impl Preparation {
                 })
                 .map_err(WeightLoadError::Backend)?;
             match transform {
+                Transform::Fp8 { .. } => unreachable!(),
                 Transform::Scales {
                     source,
                     n,
@@ -238,4 +318,29 @@ impl Preparation {
         }
         Ok(scale_parameters)
     }
+}
+
+/// Qwen's FP8 groups in vLLM's Qwen3_5Model. Keep the checkpoint's split storage,
+/// but use the same represented weights and activation scales as fused serving.
+fn fp8_group(name: &str) -> LoadResult<Vec<String>> {
+    for suffixes in [
+        &[".linear_attn.in_proj_qkv", ".linear_attn.in_proj_z"][..],
+        &[
+            ".self_attn.q_proj",
+            ".self_attn.k_proj",
+            ".self_attn.v_proj",
+        ][..],
+    ] {
+        for suffix in suffixes {
+            if let Some(prefix) = name.strip_suffix(suffix) {
+                return Ok(suffixes.iter().map(|s| format!("{prefix}{s}")).collect());
+            }
+        }
+    }
+    if name.ends_with(".linear_attn.out_proj") || name.ends_with(".self_attn.o_proj") {
+        return Ok(vec![name.into()]);
+    }
+    Err(WeightLoadError::tensor_table(format!(
+        "unexpected Qwen FP8 projection {name}"
+    )))
 }

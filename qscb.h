@@ -94,6 +94,15 @@ typedef struct {
 } qscb_fp8_quantize_desc;
 qsfi_status qscb_fp8_quantize(qscb_context* ctx, const qscb_fp8_quantize_desc* desc);
 
+/* Load-time ModelOpt fused-projection preparation, in place:
+ * weight = E4M3(FP16(F32(weight) * source_scale) / shared_scale).
+ * The FP16 intermediate matches vLLM per_tensor_dequantize. Both scales are
+ * positive finite host values. Runs on ctx's stream without synchronization.
+ */
+qsfi_status qscb_fp8_requantize(
+    qscb_context* ctx, const qsfi_tensor2* weight, float source_scale, float shared_scale
+);
+
 #ifdef __cplusplus
 }
 #endif

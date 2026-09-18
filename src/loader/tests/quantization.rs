@@ -565,6 +565,18 @@ fn assert_file_samples<D: DType>(
             .unwrap();
         }
         ctx.synchronize().unwrap();
+        if entry.spec.dtype == DynDType::FP8E4M3
+            && let Some(projection) = name.strip_suffix(".weight")
+            && let Some(q) = &plan.quantization
+        {
+            let (scales, requantize) = reference_fp8_scales(q, projection);
+            if requantize {
+                let old = q.globals[&format!("{projection}.weight_scale")];
+                for code in &mut expected {
+                    *code = reference_requantize(*code, old, scales[1]);
+                }
+            }
+        }
         assert_eq!(got, expected, "{name} at byte {offset}");
     }
 }
@@ -677,13 +689,9 @@ fn assert_model_samples<M>(
             fp8.weight.len,
             fp8.shape[0] as usize * fp8.shape[1] as usize
         );
-        let globals = &plan.quantization.as_ref().unwrap().globals;
         assert_eq!(
             scalar_record(&fp8.scales, ctx),
-            [
-                globals[&format!("{name}.input_scale")],
-                globals[&format!("{name}.weight_scale")],
-            ]
+            reference_fp8_scales(plan.quantization.as_ref().unwrap(), &name).0
         );
         check_mlp(&format!("{prefix}.mlp"), mlp);
     }
@@ -985,6 +993,163 @@ fn both_load_backends_swizzle_scales_and_zero_padding_before_handoff() {
         &scales,
         n,
         cols,
+        &ctx,
+    );
+    std::fs::remove_file(path).unwrap();
+}
+
+// Independent test reference: decode E4M3 arithmetically, round onto the FP16
+// number grid, then search the finite E4M3 codebook with ties to even.
+fn reference_requantize(code: u8, old: f32, new: f32) -> u8 {
+    fn decode(code: u8) -> f32 {
+        let e = (code >> 3) & 15;
+        let m = code & 7;
+        if e == 0 {
+            f32::from(m) * 2.0f32.powi(-9)
+        } else {
+            (1.0 + f32::from(m) / 8.0) * 2.0f32.powi(i32::from(e) - 7)
+        }
+    }
+    assert_ne!(code & 127, 127, "nonfinite checkpoint weight");
+    let value = decode(code & 127) * old;
+    let half = if value >= 65520.0 {
+        f32::INFINITY
+    } else if value == 0.0 {
+        0.0
+    } else {
+        let quantum = 2.0f32.powi((value.log2().floor() as i32 - 10).max(-24));
+        (value / quantum).round_ties_even() * quantum
+    };
+    let target = (half / new).min(448.0);
+    let result = (0..=126u8)
+        .min_by(|&a, &b| {
+            (decode(a) - target)
+                .abs()
+                .total_cmp(&(decode(b) - target).abs())
+                .then((a & 1).cmp(&(b & 1)))
+        })
+        .unwrap();
+    result | (code & 128)
+}
+
+fn reference_fp8_scales(q: &Quantization, name: &str) -> ([f32; 2], bool) {
+    let (prefix, leaf) = name.rsplit_once('.').unwrap();
+    let group = match leaf {
+        "in_proj_qkv" | "in_proj_z" => vec!["in_proj_qkv", "in_proj_z"],
+        "q_proj" | "k_proj" | "v_proj" => vec!["q_proj", "k_proj", "v_proj"],
+        _ => vec![leaf],
+    };
+    let mut values = [0.0f32; 2];
+    let old = q.globals[&format!("{name}.weight_scale")];
+    let mut requantize = false;
+    for member in group {
+        for (i, scale) in ["input_scale", "weight_scale"].iter().enumerate() {
+            let v = q.globals[&format!("{prefix}.{member}.{scale}")];
+            values[i] = values[i].max(v);
+            requantize |= i == 1 && v != old;
+        }
+    }
+    (values, requantize)
+}
+
+#[test]
+fn fp8_fused_groups_prepare_weights_and_scales_on_both_backends() {
+    let ctx = crate::memory::CudaCtx::new(cuda_device_from_env()).unwrap();
+    let path = env::temp_dir().join(format!("qs3-fp8-fusion-{}", std::process::id()));
+    let payload = [0x38u8, 0x40, 0x48, 0xb8, 0xc0, 0xc8, 0, 0x80];
+    std::fs::write(&path, payload).unwrap();
+    let names = [
+        "model.language_model.layers.0.linear_attn.in_proj_qkv",
+        "model.language_model.layers.0.linear_attn.in_proj_z",
+        "model.language_model.layers.3.self_attn.q_proj",
+        "model.language_model.layers.3.self_attn.k_proj",
+        "model.language_model.layers.3.self_attn.v_proj",
+        "model.language_model.layers.3.self_attn.o_proj",
+    ];
+    let weights = [0.25, 0.5, 0.25, 0.5, 1.0, 0.25];
+    let inputs = [0.125, 0.25, 0.5, 0.25, 0.125, 0.125];
+    let mut q = Quantization {
+        projections: BTreeMap::new(),
+        globals: BTreeMap::new(),
+    };
+    let mut entries = Vec::new();
+    for (i, name) in names.iter().enumerate() {
+        q.projections
+            .insert((*name).into(), ProjectionQuantization::Fp8);
+        q.globals.insert(format!("{name}.input_scale"), inputs[i]);
+        q.globals.insert(format!("{name}.weight_scale"), weights[i]);
+        entries.push(QwenLoadPlanEntry {
+            spec: WeightTensorSpec {
+                name: format!("{name}.weight"),
+                dtype: DynDType::FP8E4M3,
+                shape: vec![2, 4],
+                source: WeightTensorSource::Safetensors,
+            },
+            source: QwenLoadSource::FileRange {
+                shard_path: path.clone(),
+                absolute_offset: 0,
+                bytes: payload.len(),
+            },
+        });
+    }
+    let plan = QwenLoadPlan {
+        config: qwen_text_config(4, 16),
+        entries,
+        quantization: Some(q),
+    };
+    fn check<B: WeightLoadBackend>(
+        loaded: crate::loader::plan::LoadedWeightPlan<B>,
+        ctx: &crate::memory::CudaCtx,
+    ) {
+        let expected = [
+            [0x30u8, 0x38, 0x40, 0xb0, 0xb8, 0xc0, 0, 0x80],
+            [0x38, 0x40, 0x48, 0xb8, 0xc0, 0xc8, 0, 0x80],
+            [0x28, 0x30, 0x38, 0xa8, 0xb0, 0xb8, 0, 0x80],
+            [0x30, 0x38, 0x40, 0xb0, 0xb8, 0xc0, 0, 0x80],
+            [0x38, 0x40, 0x48, 0xb8, 0xc0, 0xc8, 0, 0x80],
+            [0x38, 0x40, 0x48, 0xb8, 0xc0, 0xc8, 0, 0x80],
+        ];
+        let scales = [
+            [0.25, 0.5],
+            [0.25, 0.5],
+            [0.5, 1.0],
+            [0.5, 1.0],
+            [0.5, 1.0],
+            [0.125, 0.25],
+        ];
+        for (i, tensor) in loaded.tensors.iter().enumerate() {
+            let WeightBuffer::Fp8E4m3(buffer) = &tensor.buffer else {
+                panic!("FP8 buffer")
+            };
+            let mut got = [0u8; 8];
+            unsafe {
+                ctx.download(buffer.as_raw(), &mut got).unwrap();
+            }
+            ctx.synchronize().unwrap();
+            assert_eq!(got, expected[i]);
+            let name = tensor.spec.name.strip_suffix(".weight").unwrap();
+            let WeightBuffer::F32(params) = &loaded.scale_parameters[name] else {
+                panic!("scale buffer")
+            };
+            assert_eq!(scalar_record(params, ctx), scales[i]);
+        }
+    }
+    check(
+        execute_qwen_load_plan(
+            &plan,
+            ManagedUmaBackend::new(cuda_device_from_env()).unwrap(),
+            &ctx,
+        )
+        .unwrap(),
+        &ctx,
+    );
+    check(
+        execute_qwen_load_plan(
+            &plan,
+            PinnedUploadBackend::new(cuda_device_from_env()).unwrap(),
+            &ctx,
+        )
+        .unwrap(),
         &ctx,
     );
     std::fs::remove_file(path).unwrap();

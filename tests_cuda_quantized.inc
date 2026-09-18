@@ -294,6 +294,76 @@ static void test_qscb_fp8()
         QSFI_STATUS_INVALID_ARGUMENT,
         "FP8 invalid quantizer"
     );
+    // All finite E4M3 codes, with padded rows and non-power-of-two scales.
+    // Include FP16 underflow and rounding: a direct FP32 scale ratio is wrong.
+    for (auto scales : { std::pair { .0005318777984939516f, .0009722028626129031f },
+                         std::pair { 1.e-7f, .0009722028626129031f },
+                         std::pair { .0009722028626129031f, .0009722028626129031f } }) {
+        std::vector<uint8_t> bytes(2 * 131, 0x55);
+        for (int row = 0; row < 2; ++row)
+            for (int col = 0; col < 127; ++col)
+                bytes[row * 131 + col] = uint8_t(row * 128 + col);
+        QuantBuffer<uint8_t> weights(bytes.size());
+        weights.upload(bytes);
+        auto tensor = quant_matrix(weights.data, QSFI_DTYPE_FP8_E4M3, 2, 127, 131);
+        check_status(
+            qscb_fp8_requantize(ctx, &tensor, scales.first, scales.second),
+            QSFI_STATUS_OK,
+            "FP8 fused weight preparation"
+        );
+        const auto got = weights.download(stream);
+        for (int row = 0; row < 2; ++row)
+            for (int col = 0; col < 131; ++col) {
+                const int index = row * 131 + col;
+                uint8_t expected = bytes[index];
+                if (col < 127) {
+                    const float dequantized = __half2float(
+                        __float2half_rn(quant_fp8_value(bytes[index]) * scales.first)
+                    );
+                    // Independent nearest-code search with ties to even.
+                    const float value = std::abs(dequantized / scales.second);
+                    float distance = INFINITY;
+                    uint8_t code = 0;
+                    for (int candidate = 0; candidate <= 126; ++candidate) {
+                        const float d = std::abs(value - quant_fp8_value(uint8_t(candidate)));
+                        if (d < distance || (d == distance && !(candidate & 1))) {
+                            distance = d;
+                            code = uint8_t(candidate);
+                        }
+                    }
+                    expected = code | (std::signbit(dequantized) ? 128 : 0);
+                }
+                if (got[index] != expected) {
+                    std::fprintf(
+                        stderr,
+                        "FAIL: FP8 requantize index %d got %u expected %u\n",
+                        index,
+                        got[index],
+                        expected
+                    );
+                    ++failures;
+                    break;
+                }
+            }
+        for (float invalid : { 0.f, -1.f, INFINITY, NAN }) {
+            check_status(
+                qscb_fp8_requantize(ctx, &tensor, invalid, 1.f),
+                QSFI_STATUS_INVALID_ARGUMENT,
+                "FP8 invalid source scale"
+            );
+            check_status(
+                qscb_fp8_requantize(ctx, &tensor, 1.f, invalid),
+                QSFI_STATUS_INVALID_ARGUMENT,
+                "FP8 invalid shared scale"
+            );
+        }
+        tensor.stride[0] = 126;
+        check_status(
+            qscb_fp8_requantize(ctx, &tensor, 1.f, 1.f),
+            QSFI_STATUS_INVALID_ARGUMENT,
+            "FP8 invalid weight stride"
+        );
+    }
     qscb_context_destroy(ctx);
     cudaStreamDestroy(stream);
 }

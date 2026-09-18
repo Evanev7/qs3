@@ -7,6 +7,7 @@
 #include <cuda_runtime.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdarg>
 #include <cstdint>
 #include <cstdio>
@@ -443,6 +444,24 @@ cublasStatus_t bind_fp8_scales(cublasLtMatmulDesc_t matmul, const qscb_fp8_linea
     );
 }
 
+__global__ void fp8_requantize_kernel(
+    __nv_fp8_e4m3* weight,
+    size_t count,
+    size_t cols,
+    size_t stride,
+    float source_scale,
+    float shared_scale
+)
+{
+    for (size_t i = size_t(blockIdx.x) * blockDim.x + threadIdx.x; i < count;
+         i += size_t(gridDim.x) * blockDim.x) {
+        const size_t offset = (i / cols) * stride + i % cols;
+        const float dequantized
+            = __half2float(__float2half_rn(float(weight[offset]) * source_scale));
+        weight[offset] = __nv_fp8_e4m3(dequantized / shared_scale);
+    }
+}
+
 __global__ void fp8_quantize_kernel(
     const __nv_bfloat16* x,
     __nv_fp8_e4m3* out,
@@ -768,6 +787,38 @@ qsfi_status qscb_fp8_quantize(qscb_context* ctx, const qscb_fp8_quantize_desc* d
         out.stride[0]
     );
     return set_qscb_cuda_error(ctx, cudaGetLastError(), "FP8 quantization");
+}
+
+qsfi_status qscb_fp8_requantize(
+    qscb_context* ctx, const qsfi_tensor2* weight, float source_scale, float shared_scale
+)
+{
+    if (ctx == nullptr)
+        return QSFI_STATUS_INVALID_ARGUMENT;
+    qsfi_clear_error_info(&ctx->last_error);
+    if (weight == nullptr || !std::isfinite(source_scale) || source_scale <= 0.f
+        || !std::isfinite(shared_scale) || shared_scale <= 0.f)
+        return set_qscb_invalid_arg(ctx, "invalid FP8 requantization weight/scales");
+    auto status = qscb_validate_tensor(ctx, *weight, "weight", QSFI_DTYPE_FP8_E4M3, 2);
+    if (status != QSFI_STATUS_OK)
+        return status;
+    if (!tensor2_is_row_major(*weight)
+        || uint64_t(weight->shape[0]) > uint64_t(INT64_MAX) / uint64_t(weight->stride[0]))
+        return set_qscb_invalid_arg(ctx, "invalid FP8 requantization strides/extent");
+    status = activate_qscb_context(ctx);
+    if (status != QSFI_STATUS_OK)
+        return status;
+    const size_t count = size_t(weight->shape[0]) * weight->shape[1];
+    const unsigned blocks = static_cast<unsigned>(std::min<size_t>((count + 255) / 256, 65535));
+    fp8_requantize_kernel<<<blocks, 256, 0, ctx->stream>>>(
+        static_cast<__nv_fp8_e4m3*>(weight->data),
+        count,
+        weight->shape[1],
+        weight->stride[0],
+        source_scale,
+        shared_scale
+    );
+    return set_qscb_cuda_error(ctx, cudaGetLastError(), "FP8 weight requantization");
 }
 
 } // extern "C"
