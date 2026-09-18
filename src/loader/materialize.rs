@@ -26,9 +26,33 @@ impl<B: WeightLoadBackend, D: DType> Deref for TensorOwner<B, D> {
 struct LoadedTensors<B: WeightLoadBackend> {
     tensors: BTreeMap<String, (WeightTensorSpec, WeightBuffer<B>)>,
     quantization: Option<Quantization>,
+    // Generated Fp8Scales/Nvfp4Scales storage, keyed by projection name.
+    scale_parameters: BTreeMap<String, WeightBuffer<B>>,
 }
 impl<B: WeightLoadBackend + 'static> Tensors for LoadedTensors<B> {
     type Tensor<D: DType> = W<D>;
+    fn scale_parameters<D: DType>(&mut self, name: &str) -> LoadResult<W<D>> {
+        let owner = self.scale_parameters.remove(name).ok_or_else(|| {
+            WeightLoadError::tensor_table(format!("missing prepared scale parameters {name}"))
+        })?;
+        let WeightBuffer::F32(buffer) = &owner else {
+            return Err(WeightLoadError::tensor_table(
+                "prepared scale parameters dtype mismatch",
+            ));
+        };
+        if crate::dtype::F32::size_of(buffer.len).map_err(WeightLoadError::Backend)?
+            != D::size_of(1).map_err(WeightLoadError::Backend)?
+        {
+            return Err(WeightLoadError::tensor_table(
+                "prepared scale parameters size mismatch",
+            ));
+        }
+        let span = DeviceSpan::new(buffer.as_raw(), 1).map_err(WeightLoadError::Backend)?;
+        Ok(Box::new(TensorOwner {
+            _owner: owner,
+            span,
+        }))
+    }
     fn tensor<D: DType>(
         &mut self,
         name: &str,
@@ -49,11 +73,20 @@ impl<B: WeightLoadBackend + 'static> Tensors for LoadedTensors<B> {
             WeightBuffer::U8(b) => b.erase(),
             WeightBuffer::F32(b) => b.erase(),
         };
-        let span = DeviceSpan::new(
-            ptr.cast(),
-            D::len_of(spec.byte_len()?).map_err(WeightLoadError::Backend)?,
-        )
-        .map_err(WeightLoadError::Backend)?;
+        let len = if self.quantization.is_some() && name.ends_with(".weight_scale") {
+            let [n, cols] = shape else {
+                return Err(WeightLoadError::tensor_table("invalid block scale shape"));
+            };
+            crate::backend::qsfi::scale_count(
+                *n,
+                cols.checked_mul(16)
+                    .ok_or_else(|| WeightLoadError::tensor_table("scale extent overflow"))?,
+            )
+            .map_err(WeightLoadError::Backend)? as usize
+        } else {
+            D::len_of(spec.byte_len()?).map_err(WeightLoadError::Backend)?
+        };
+        let span = DeviceSpan::new(ptr.cast(), len).map_err(WeightLoadError::Backend)?;
         Ok(Box::new(TensorOwner {
             _owner: owner,
             span,
@@ -106,6 +139,7 @@ impl<B: WeightLoadBackend + 'static> LoadedWeightPlan<B> {
         let mut s = LoadedTensors {
             tensors,
             quantization: self.quantization,
+            scale_parameters: self.scale_parameters,
         };
         let weights = if s.quantization.is_none() {
             if self.config.num_experts > 0 {
@@ -118,7 +152,8 @@ impl<B: WeightLoadBackend + 'static> LoadedWeightPlan<B> {
         } else {
             QwenWeights::DenseNvfp4(schema::dense_nvfp4_model(&mut s, &self.config)?)
         };
-        if !s.tensors.is_empty()
+        if !s.scale_parameters.is_empty()
+            || !s.tensors.is_empty()
             || s.quantization
                 .as_ref()
                 .is_some_and(|q| !q.globals.is_empty())

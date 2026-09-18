@@ -1,4 +1,7 @@
-use super::{BatchRun, ModelRunner, QwenRequest};
+use super::{
+    BatchRun, ModelRunner, QwenRequest,
+    mlp::{Mlp, MlpView},
+};
 use crate::dtype::{BF16, F32, I32};
 use crate::memory::{CudaCtx, DeviceBuffer, DeviceSpan, HostBuffer};
 use crate::{
@@ -527,8 +530,8 @@ fn full_attention_vector_config() -> QwenConfig {
     config
 }
 
-fn placeholder_weights() -> QwenWeights {
-    QwenWeights::DenseBf16(QwenModel {
+fn placeholder_weights() -> super::QwenWeights {
+    super::QwenWeights::DenseBf16(QwenModel {
         token_embedding: placeholder_weight(),
         final_norm: placeholder_weight(),
         lm_head: placeholder_weight(),
@@ -589,6 +592,7 @@ fn moe_vector_runner() -> ModelRunner {
         config,
         tokenizer_token_count: config.vocab_size(),
         weights: placeholder_weights(),
+        quantized_scratch: None,
         engine,
         moe_plan: Some(moe_plan),
         gdn_state: None,
@@ -881,6 +885,7 @@ fn full_attention_vector_runner() -> ModelRunner {
         config,
         tokenizer_token_count: config.vocab_size(),
         weights: placeholder_weights(),
+        quantized_scratch: None,
         engine,
         moe_plan: None,
         gdn_state: None,
@@ -909,6 +914,7 @@ fn full_attention_block_vector_runner() -> ModelRunner {
         config,
         tokenizer_token_count: config.vocab_size(),
         weights: placeholder_weights(),
+        quantized_scratch: None,
         engine,
         moe_plan: None,
         gdn_state: None,
@@ -971,6 +977,7 @@ fn full_attention_block_moe_vector_runner() -> ModelRunner {
         config,
         tokenizer_token_count: config.vocab_size(),
         weights: placeholder_weights(),
+        quantized_scratch: None,
         engine,
         moe_plan: Some(moe_plan),
         gdn_state: None,
@@ -1219,6 +1226,7 @@ fn gdn_decoder_layer_vector_runner() -> ModelRunner {
         config,
         tokenizer_token_count: config.vocab_size(),
         weights: placeholder_weights(),
+        quantized_scratch: None,
         engine,
         moe_plan: Some(moe_plan),
         gdn_state,
@@ -2860,19 +2868,16 @@ fn qwen36_full_attention_block_vector_validates_oracle_seeded_moe_shared_and_nex
     let layer = full_attention_block_moe_layer(&ctx);
     let layer_weights = layer.weights();
     let mlp = &layer_weights.mlp;
-    let (router_proj, gate_up_proj, down_proj, shared) = (
-        &mlp.router_proj,
-        &mlp.experts.gate_up_proj,
-        &mlp.experts.down_proj,
-        mlp.shared.as_ref(),
-    );
+    let MlpView::Moe(view) = mlp.view(&runner.config).unwrap() else {
+        panic!("expected MoE view");
+    };
 
     unsafe {
         runner
             .execution()
             .unwrap()
             .1
-            .execute_moe_mlp(rows, router_proj, gate_up_proj, down_proj, shared)
+            .execute_moe_mlp(rows, view)
             .unwrap();
     }
     ctx.synchronize().unwrap();
@@ -3316,12 +3321,23 @@ fn shared_moe_execution_produces_routed_and_shared_outputs() {
         0.01,
     );
 
+    let mut mlp: FusedBf16Mlp = MoeMlp {
+        router_proj: Box::new(router_proj),
+        experts: FusedExperts {
+            gate_up_proj: Box::new(gate_up_proj),
+            down_proj: Box::new(down_proj),
+        },
+        shared: None,
+    };
+    let MlpView::Moe(view) = mlp.view(&config).unwrap() else {
+        panic!("expected MoE view");
+    };
     unsafe {
         runner
             .execution()
             .unwrap()
             .1
-            .execute_moe_mlp(rows, &router_proj, &gate_up_proj, &down_proj, None)
+            .execute_moe_mlp(rows, view)
             .unwrap();
     }
     let routed = download_bf16(&runner.scratch.mlp_out, &ctx, hidden_len);
@@ -3353,12 +3369,16 @@ fn shared_moe_execution_produces_routed_and_shared_outputs() {
         gate: Box::new(shared_expert_gate),
     };
 
+    mlp.shared = Some(shared);
+    let MlpView::Moe(view) = mlp.view(&config).unwrap() else {
+        panic!("expected MoE view");
+    };
     unsafe {
         runner
             .execution()
             .unwrap()
             .1
-            .execute_moe_mlp(rows, &router_proj, &gate_up_proj, &down_proj, Some(&shared))
+            .execute_moe_mlp(rows, view)
             .unwrap();
     }
 
@@ -3625,8 +3645,10 @@ impl ModelRunner {
                         .row(rows - 1)
                         .unwrap(),
                     match &self.weights {
-                        QwenWeights::DenseBf16(m) => m.lm_head.matrix(vocab, hidden).unwrap(),
-                        QwenWeights::MoeBf16(m) => m.lm_head.matrix(vocab, hidden).unwrap(),
+                        super::QwenWeights::DenseBf16(m) => {
+                            m.lm_head.matrix(vocab, hidden).unwrap()
+                        }
+                        super::QwenWeights::MoeBf16(m) => m.lm_head.matrix(vocab, hidden).unwrap(),
                         _ => unreachable!(),
                     },
                     reference.matrix(1, vocab).unwrap(),
@@ -3676,9 +3698,10 @@ impl ModelRunner {
         // Fail after all candidate decoder layers, before replacing logits.
         // Restore ownership before assertions or dropping the runner.
         let final_norm = match &mut self.weights {
-            QwenWeights::DenseBf16(m) => &mut m.final_norm,
-            QwenWeights::MoeBf16(m) => &mut m.final_norm,
-            _ => unreachable!(),
+            super::QwenWeights::DenseBf16(m) => &mut m.final_norm,
+            super::QwenWeights::MoeBf16(m) => &mut m.final_norm,
+            super::QwenWeights::DenseNvfp4(m) => &mut m.final_norm,
+            super::QwenWeights::MoeNvfp4(m) => &mut m.final_norm,
         };
         let final_norm = std::mem::replace(final_norm, placeholder_weight());
         let failed = self.run(QwenRequest {
@@ -3687,9 +3710,10 @@ impl ModelRunner {
             max_new_tokens: 0,
         });
         match &mut self.weights {
-            QwenWeights::DenseBf16(m) => m.final_norm = final_norm,
-            QwenWeights::MoeBf16(m) => m.final_norm = final_norm,
-            _ => unreachable!(),
+            super::QwenWeights::DenseBf16(m) => m.final_norm = final_norm,
+            super::QwenWeights::MoeBf16(m) => m.final_norm = final_norm,
+            super::QwenWeights::DenseNvfp4(m) => m.final_norm = final_norm,
+            super::QwenWeights::MoeNvfp4(m) => m.final_norm = final_norm,
         };
         assert_eq!(failed.unwrap_err(), Status::InvalidArgument);
         assert_eq!(self.live_tokens(), live_before);

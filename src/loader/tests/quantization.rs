@@ -7,6 +7,19 @@ use crate::model::{Nvfp4Activation, QwenWeights, weights::QwenLayerWeights};
 use std::collections::HashMap;
 use tinyjson::JsonValue;
 
+fn scalar_record<D: DType>(span: &DeviceSpan<D>, ctx: &crate::memory::CudaCtx) -> [f32; 2] {
+    let mut bytes = [0u8; 8];
+    assert_eq!(D::size_of(span.len).unwrap(), bytes.len());
+    unsafe {
+        ctx.download(span.as_raw(), &mut bytes).unwrap();
+    }
+    ctx.synchronize().unwrap();
+    [
+        f32::from_ne_bytes(bytes[..4].try_into().unwrap()),
+        f32::from_ne_bytes(bytes[4..].try_into().unwrap()),
+    ]
+}
+
 fn selected_quantized_config() -> HashMap<String, JsonValue> {
     let model = crate::constants::engine::MODEL.trim_end_matches("-nvfp4");
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -205,9 +218,12 @@ fn both_activation_modes_materialize_and_preserve_scales() {
     ] {
         for execution in [None, Some(Nvfp4Activation::A4), Some(Nvfp4Activation::A16)] {
             let plan = zero_plan(checkpoint);
-            let loaded =
-                execute_qwen_load_plan(&plan, RecordingBackend::default(), ptr::null_mut())
-                    .unwrap();
+            let loaded = execute_qwen_load_plan(
+                &plan,
+                ManagedUmaBackend::new(cuda_device_from_env()).unwrap(),
+                &ctx,
+            )
+            .unwrap();
             let (mut config, weights) = loaded.into_fixture_model(8).unwrap();
             assert_eq!(config.nvfp4_activation_override, None);
             config.nvfp4_activation_override = execution;
@@ -224,8 +240,7 @@ fn both_activation_modes_materialize_and_preserve_scales() {
                     let QwenLayerWeights::Gdn(layer) = &model.layers[0] else {
                         panic!("expected GDN")
                     };
-                    assert_eq!(layer.in_proj.weight_scale, 0.25);
-                    assert_eq!(layer.in_proj.input_scale, 0.125);
+                    assert_eq!(scalar_record(&layer.in_proj.scales, &ctx), [0.125, 0.25]);
                     &model.lm_head
                 }
                 QwenWeights::MoeNvfp4(model) => {
@@ -240,21 +255,34 @@ fn both_activation_modes_materialize_and_preserve_scales() {
                 }
                 _ => panic!("expected quantized model"),
             };
-            assert_eq!(head.weight_scale_2, 0.25);
-            assert_eq!(head.input_scale, Some(0.125));
+            let activation = if checkpoint == ProjectionQuantization::Nvfp4 {
+                Nvfp4Activation::A4
+            } else {
+                Nvfp4Activation::A16
+            };
+            assert_eq!(head.activation, activation);
+            assert_eq!(scalar_record(&head.parameters, &ctx), [8.0, 0.03125]);
             assert_eq!(head.shape, [16, plan.config.hidden_size]);
             assert_eq!(head.weight.len, 16 * plan.config.hidden_size as usize);
-            assert_eq!(head.weight_scale.len, head.weight.len / 16);
-            assert!(matches!(
-                crate::model::ModelRunner::new(ctx.clone(), config, weights, 16),
-                Err(Status::Unsupported)
-            ));
+            assert_eq!(
+                head.weight_scale.len,
+                crate::backend::qsfi::scale_count(head.shape[0], head.shape[1]).unwrap() as usize
+            );
+            // A16 and quantized MoE remain explicit execution rejections.
+            if execution.unwrap_or(activation) == Nvfp4Activation::A16
+                || matches!(weights, QwenWeights::MoeNvfp4(_))
+            {
+                assert!(matches!(
+                    crate::model::ModelRunner::new(ctx.clone(), config, weights, 16),
+                    Err(Status::Unsupported)
+                ));
+            }
         }
     }
     let (mut config, weights) = execute_qwen_load_plan(
         &bf16_zero_plan(tensor::selected_text_config()),
         RecordingBackend::default(),
-        ptr::null_mut(),
+        &ctx,
     )
     .unwrap()
     .into_fixture_model(8)
@@ -269,16 +297,21 @@ fn both_activation_modes_materialize_and_preserve_scales() {
 
 #[test]
 fn materialization_rejects_missing_scales_and_unconsumed_storage() {
+    let ctx = crate::memory::CudaCtx::new(cuda_device_from_env()).unwrap();
     for extra in [false, true] {
-        let mut plan = zero_plan(ProjectionQuantization::Nvfp4);
-        let globals = &mut plan.quantization.as_mut().unwrap().globals;
+        let plan = zero_plan(ProjectionQuantization::Nvfp4);
+        let mut loaded = execute_qwen_load_plan(
+            &plan,
+            ManagedUmaBackend::new(cuda_device_from_env()).unwrap(),
+            &ctx,
+        )
+        .unwrap();
+        let globals = &mut loaded.quantization.as_mut().unwrap().globals;
         if extra {
             globals.insert("unused.scale".into(), 1.0);
         } else {
             globals.remove("lm_head.weight_scale_2");
         }
-        let loaded =
-            execute_qwen_load_plan(&plan, RecordingBackend::default(), ptr::null_mut()).unwrap();
         assert!(loaded.into_fixture_model(8).is_err());
     }
 }
@@ -371,7 +404,7 @@ fn real_nvfp4_loads_both_backends() {
             execute_qwen_load_plan(
                 &plan,
                 PinnedUploadBackend::new(cuda_device_from_env()).unwrap(),
-                ctx.stream,
+                &ctx,
             )
             .unwrap()
             .into_qwen_model(8)
@@ -380,7 +413,7 @@ fn real_nvfp4_loads_both_backends() {
             execute_qwen_load_plan(
                 &plan,
                 ManagedUmaBackend::new(cuda_device_from_env()).unwrap(),
-                ctx.stream,
+                &ctx,
             )
             .unwrap()
             .into_qwen_model(8)
@@ -425,6 +458,71 @@ fn real_nvfp4_loads_both_backends() {
             _ => panic!("expected quantized weights"),
         }
         drop(weights);
+    }
+}
+
+#[test]
+#[ignore = "full dense checkpoint execution; run explicitly after the required suite"]
+fn real_nvfp4_dense_prefill_decode_and_reset() {
+    use crate::{ModelRunner, QwenRequest, QwenTokenizer};
+    let directory = real_nvfp4_dir();
+    let plan = QwenLoadPlan::read(&directory).unwrap();
+    assert_eq!(
+        plan.config.num_experts, 0,
+        "this probe exercises dense W4A4"
+    );
+    let tokenizer = QwenTokenizer::from_model_dir(&directory).unwrap();
+    let ctx = std::rc::Rc::new(crate::memory::CudaCtx::new(cuda_device_from_env()).unwrap());
+    let (config, weights) = execute_qwen_load_plan(
+        &plan,
+        PinnedUploadBackend::new(cuda_device_from_env()).unwrap(),
+        &ctx,
+    )
+    .unwrap()
+    .into_qwen_model(16)
+    .unwrap();
+    let mut runner = ModelRunner::new(ctx, config, weights, tokenizer.token_count()).unwrap();
+    // Saved vLLM probe: nvfp4-vllm_checkpoint_probe-20260914T203250Z-qpls36fp.
+    // Force the same prefixes; report numerical differences without claiming
+    // this smoke/replay check is an external model-quality acceptance test.
+    let prompt = QwenRequest {
+        request_id: 93,
+        tokens: &[1, 2, 3, 4],
+        max_new_tokens: 0,
+    };
+    let mut first = Vec::new();
+    for pass in 0..2 {
+        runner.reset().unwrap();
+        runner.run(prompt).unwrap();
+        for step in 0..4 {
+            if step > 0 {
+                runner
+                    .decode_forced_token_for_test([5, 0, 31][step - 1])
+                    .unwrap();
+            }
+            let logits = runner.last_logits_row_for_test().unwrap();
+            assert!(logits.iter().all(|v| v.is_finite()));
+            assert!(logits.windows(2).any(|v| v[0] != v[1]));
+            if pass == 0 {
+                let mut ids: Vec<_> = (0..tokenizer.token_count()).collect();
+                ids.sort_by(|&a, &b| logits[b].total_cmp(&logits[a]).then(a.cmp(&b)));
+                let max = f64::from(logits[ids[0]]);
+                let log_z = max
+                    + logits
+                        .iter()
+                        .map(|v| (f64::from(*v) - max).exp())
+                        .sum::<f64>()
+                        .ln();
+                let top: Vec<_> = ids[..5]
+                    .iter()
+                    .map(|&i| (i, logits[i], f64::from(logits[i]) - log_z))
+                    .collect();
+                eprintln!("NVFP4 forced-prefix step {step} (id, logit, logprob): {top:?}");
+                first.push(logits);
+            } else {
+                assert_eq!(logits, first[step], "reset/replay step {step}");
+            }
+        }
     }
 }
 
@@ -478,21 +576,62 @@ fn assert_block_samples(
     ctx: &crate::memory::CudaCtx,
 ) {
     assert_file_samples(plan, &format!("{name}.weight"), &block.weight, ctx);
-    assert_file_samples(
+    assert_swizzled_scale_samples(
         plan,
         &format!("{name}.weight_scale"),
         &block.weight_scale,
         ctx,
     );
     let globals = &plan.quantization.as_ref().unwrap().globals;
+    let input = globals[&format!("{name}.input_scale")];
+    let weight = globals[&format!("{name}.weight_scale_2")];
     assert_eq!(
-        block.weight_scale_2,
-        globals[&format!("{name}.weight_scale_2")]
+        scalar_record(&block.parameters, ctx),
+        [1.0 / input, input * weight]
     );
-    assert_eq!(
-        block.input_scale,
-        Some(globals[&format!("{name}.input_scale")])
-    );
+}
+
+fn assert_swizzled_scale_samples(
+    plan: &QwenLoadPlan,
+    name: &str,
+    span: &DeviceSpan<Fp8E4M3>,
+    ctx: &crate::memory::CudaCtx,
+) {
+    use std::os::unix::fs::FileExt;
+    let entry = plan.entries.iter().find(|e| e.spec.name == name).unwrap();
+    let [rows, cols] = entry.spec.shape.as_slice() else {
+        panic!("scale matrix");
+    };
+    let rows = *rows as usize;
+    let cols = *cols as usize;
+    assert_eq!(span.len, rows.div_ceil(128) * 128 * cols);
+    let QwenLoadSource::FileRange {
+        shard_path,
+        absolute_offset,
+        ..
+    } = &entry.source
+    else {
+        panic!("file scales");
+    };
+    let file = std::fs::File::open(shard_path).unwrap();
+    // Compare complete sampled rows, covering both swizzle axes and padded rows.
+    for r in [0, rows / 2, rows - 1, rows.div_ceil(128) * 128 - 1] {
+        let mut expected = vec![0u8; cols];
+        if r < rows {
+            file.read_exact_at(&mut expected, absolute_offset + (r * cols) as u64)
+                .unwrap();
+        }
+        let mut tile = vec![0u8; 128 * cols];
+        unsafe {
+            ctx.download(span.as_raw().add((r / 128) * 128 * cols), &mut tile)
+                .unwrap();
+        }
+        ctx.synchronize().unwrap();
+        let got: Vec<_> = (0..cols)
+            .map(|c| tile[(c / 4) * 512 + (r % 32) * 16 + ((r % 128) / 32) * 4 + c % 4])
+            .collect();
+        assert_eq!(got, expected, "{name} row {r}");
+    }
 }
 
 fn assert_model_samples<M>(
@@ -539,8 +678,13 @@ fn assert_model_samples<M>(
             fp8.shape[0] as usize * fp8.shape[1] as usize
         );
         let globals = &plan.quantization.as_ref().unwrap().globals;
-        assert_eq!(fp8.weight_scale, globals[&format!("{name}.weight_scale")]);
-        assert_eq!(fp8.input_scale, globals[&format!("{name}.input_scale")]);
+        assert_eq!(
+            scalar_record(&fp8.scales, ctx),
+            [
+                globals[&format!("{name}.input_scale")],
+                globals[&format!("{name}.weight_scale")],
+            ]
+        );
         check_mlp(&format!("{prefix}.mlp"), mlp);
     }
 }
@@ -556,35 +700,292 @@ fn assert_dense_samples(
     assert_block_samples(plan, &format!("{prefix}.down_proj"), &mlp.down_proj, ctx);
 }
 
+struct TrackingBuffer<D: DType> {
+    inner: crate::loader::transfer::CudaWeightBuffer<D>,
+    drops: std::rc::Rc<std::cell::Cell<usize>>,
+}
+impl<D: DType> std::ops::Deref for TrackingBuffer<D> {
+    type Target = DeviceSpan<D>;
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+impl<D: DType> Drop for TrackingBuffer<D> {
+    fn drop(&mut self) {
+        self.drops.set(self.drops.get() + 1);
+    }
+}
+struct TrackingBackend {
+    inner: Option<ManagedUmaBackend>,
+    allocations: std::rc::Rc<std::cell::Cell<usize>>,
+    drops: std::rc::Rc<std::cell::Cell<usize>>,
+    dropped: std::rc::Rc<std::cell::Cell<bool>>,
+    fail_at: Option<usize>,
+}
+impl Drop for TrackingBackend {
+    fn drop(&mut self) {
+        self.dropped.set(true);
+    }
+}
+impl WeightLoadBackend for TrackingBackend {
+    type Buffer<D: DType> = TrackingBuffer<D>;
+    type Stats = ();
+    fn alloc_tensor(&mut self, desc: WeightTensorDesc<'_>) -> Result<WeightLoadSpan, Status> {
+        if self.fail_at == Some(self.allocations.get()) {
+            return Err(Status::OutOfMemory);
+        }
+        let span = self.inner.as_mut().unwrap().alloc_tensor(desc)?;
+        self.allocations.set(self.allocations.get() + 1);
+        Ok(span)
+    }
+    fn read_exact(
+        &mut self,
+        src: WeightFileRange<'_>,
+        dst: &WeightLoadSpan,
+        stream: *mut c_void,
+    ) -> Result<(), Status> {
+        self.inner.as_mut().unwrap().read_exact(src, dst, stream)
+    }
+    fn zero_fill(&mut self, dst: &WeightLoadSpan, stream: *mut c_void) -> Result<(), Status> {
+        self.inner.as_mut().unwrap().zero_fill(dst, stream)
+    }
+    fn finish(mut self, stream: *mut c_void) -> Result<(Vec<WeightBuffer<Self>>, ()), Status> {
+        let (buffers, _) = self.inner.take().unwrap().finish(stream)?;
+        let buffers = buffers
+            .into_iter()
+            .map(|b| match b {
+                WeightBuffer::Bf16(inner) => WeightBuffer::Bf16(TrackingBuffer {
+                    inner,
+                    drops: self.drops.clone(),
+                }),
+                WeightBuffer::F32(inner) => WeightBuffer::F32(TrackingBuffer {
+                    inner,
+                    drops: self.drops.clone(),
+                }),
+                WeightBuffer::Fp8E4m3(inner) => WeightBuffer::Fp8E4m3(TrackingBuffer {
+                    inner,
+                    drops: self.drops.clone(),
+                }),
+                WeightBuffer::U8(inner) => WeightBuffer::U8(TrackingBuffer {
+                    inner,
+                    drops: self.drops.clone(),
+                }),
+            })
+            .collect();
+        Ok((buffers, ()))
+    }
+}
+
 #[test]
 fn quantized_owners_survive_handoff_and_release_on_assembly_failure() {
     use std::{cell::Cell, rc::Rc};
-    for fail_assembly in [false, true] {
-        let mut plan = zero_plan(ProjectionQuantization::Nvfp4);
-        let count = plan.tensor_count();
-        if fail_assembly {
-            plan.quantization
-                .as_mut()
-                .unwrap()
-                .globals
-                .remove("lm_head.input_scale");
-        }
+    let ctx = crate::memory::CudaCtx::new(cuda_device_from_env()).unwrap();
+    for failure in 0..3 {
+        let plan = zero_plan(ProjectionQuantization::Nvfp4);
+        let source_count = plan
+            .entries
+            .iter()
+            .filter(|e| e.spec.name.ends_with(".weight_scale"))
+            .count();
+        let allocations = Rc::new(Cell::new(0));
         let dropped = Rc::new(Cell::new(false));
-        let owner_drops = Rc::new(Cell::new(0));
-        let mut backend = RecordingBackend::default();
-        backend.dropped = Some(dropped.clone());
-        backend.owner_drops = Some(owner_drops.clone());
-        let loaded = execute_qwen_load_plan(&plan, backend, ptr::null_mut()).unwrap();
+        let drops = Rc::new(Cell::new(0));
+        let backend = TrackingBackend {
+            inner: Some(ManagedUmaBackend::new(cuda_device_from_env()).unwrap()),
+            allocations: allocations.clone(),
+            drops: drops.clone(),
+            dropped: dropped.clone(),
+            // Fail after the first scale swizzle was submitted, before its scalar upload.
+            fail_at: (failure == 2).then_some(plan.tensor_count() + 1),
+        };
+        let result = execute_qwen_load_plan(&plan, backend, &ctx);
         assert!(dropped.get());
-        assert_eq!(owner_drops.get(), 0);
-        let result = loaded.into_fixture_model(8);
-        if fail_assembly {
+        if failure == 2 {
             assert!(result.is_err());
         } else {
-            let (_, weights) = result.unwrap();
-            assert_eq!(owner_drops.get(), 0);
-            drop(weights);
+            let mut loaded = result.unwrap();
+            assert_eq!(
+                drops.get(),
+                source_count,
+                "only retired source scales are released"
+            );
+            if failure == 1 {
+                loaded
+                    .quantization
+                    .as_mut()
+                    .unwrap()
+                    .globals
+                    .remove("lm_head.input_scale");
+            }
+            let result = loaded.into_fixture_model(8);
+            if failure == 1 {
+                assert!(result.is_err());
+            } else {
+                let (_, weights) = result.unwrap();
+                assert_eq!(drops.get(), source_count);
+                drop(weights);
+            }
         }
-        assert_eq!(owner_drops.get(), count);
+        assert_eq!(drops.get(), allocations.get());
     }
+}
+
+#[test]
+fn invalid_preparation_scalars_fail_before_device_allocation() {
+    let ctx = crate::memory::CudaCtx::new(cuda_device_from_env()).unwrap();
+    use std::{cell::Cell, rc::Rc};
+    for fault in 0..4 {
+        let mut plan = zero_plan(ProjectionQuantization::Nvfp4);
+        let globals = &mut plan.quantization.as_mut().unwrap().globals;
+        match fault {
+            0 => {
+                globals.remove("lm_head.input_scale");
+            }
+            1 => {
+                globals.insert("unused.scale".into(), 1.0);
+            }
+            2 => {
+                globals.insert("lm_head.input_scale".into(), f32::from_bits(1));
+            }
+            _ => {
+                globals.insert("lm_head.weight_scale_2".into(), f32::NAN);
+            }
+        }
+        let allocations = Rc::new(Cell::new(0));
+        let backend = TrackingBackend {
+            inner: Some(ManagedUmaBackend::new(cuda_device_from_env()).unwrap()),
+            allocations: allocations.clone(),
+            drops: Rc::new(Cell::new(0)),
+            dropped: Rc::new(Cell::new(false)),
+            fail_at: None,
+        };
+        assert!(execute_qwen_load_plan(&plan, backend, &ctx).is_err());
+        assert_eq!(allocations.get(), 0);
+    }
+}
+
+#[test]
+fn both_load_backends_swizzle_scales_and_zero_padding_before_handoff() {
+    use crate::loader::plan::LoadedWeightPlan;
+    let (n, k) = (136u32, 256u32);
+    let cols = k / 16;
+    let path = env::temp_dir().join(format!("qs3-swizzle-{}", std::process::id()));
+    let packed = vec![0x12u8; (n * k / 2) as usize];
+    let scales: Vec<_> = (0..n * cols)
+        .map(|i| [0x30, 0x38, 0x40][i as usize % 3])
+        .collect();
+    let mut bytes = packed.clone();
+    bytes.extend_from_slice(&scales);
+    std::fs::write(&path, bytes).unwrap();
+    let plan = QwenLoadPlan {
+        config: qwen_text_config(4, 16),
+        entries: vec![
+            QwenLoadPlanEntry {
+                spec: WeightTensorSpec {
+                    name: "lm_head.weight".into(),
+                    dtype: DynDType::U8,
+                    shape: vec![n, k / 2],
+                    source: WeightTensorSource::Safetensors,
+                },
+                source: QwenLoadSource::FileRange {
+                    shard_path: path.clone(),
+                    absolute_offset: 0,
+                    bytes: packed.len(),
+                },
+            },
+            QwenLoadPlanEntry {
+                spec: WeightTensorSpec {
+                    name: "lm_head.weight_scale".into(),
+                    dtype: DynDType::FP8E4M3,
+                    shape: vec![n, cols],
+                    source: WeightTensorSource::Safetensors,
+                },
+                source: QwenLoadSource::FileRange {
+                    shard_path: path.clone(),
+                    absolute_offset: packed.len() as u64,
+                    bytes: scales.len(),
+                },
+            },
+        ],
+        quantization: Some(Quantization {
+            projections: [("lm_head".into(), ProjectionQuantization::Nvfp4)]
+                .into_iter()
+                .collect(),
+            globals: [
+                ("lm_head.input_scale".into(), 0.125),
+                ("lm_head.weight_scale_2".into(), 0.25),
+            ]
+            .into_iter()
+            .collect(),
+        }),
+    };
+    fn check<B: WeightLoadBackend>(
+        loaded: LoadedWeightPlan<B>,
+        expected: &[u8],
+        n: u32,
+        cols: u32,
+        ctx: &crate::memory::CudaCtx,
+    ) {
+        let WeightBuffer::Fp8E4m3(buffer) = &loaded.tensors[1].buffer else {
+            panic!("scale storage");
+        };
+        assert_eq!(buffer.len, n.div_ceil(128) as usize * 128 * cols as usize);
+        let mut bytes = vec![0u8; buffer.len];
+        unsafe {
+            ctx.download(buffer.as_raw(), &mut bytes).unwrap();
+        }
+        ctx.synchronize().unwrap();
+        // Walk destination coordinates in layout order, independent of the CUDA
+        // kernel's source-index-to-destination-offset calculation.
+        let mut offset = 0;
+        for tile in 0..n.div_ceil(128) {
+            for column_group in 0..cols / 4 {
+                for row in 0..32 {
+                    for group in 0..4 {
+                        for column in 0..4 {
+                            let r = tile * 128 + group * 32 + row;
+                            let c = column_group * 4 + column;
+                            let value = if r < n {
+                                expected[(r * cols + c) as usize]
+                            } else {
+                                0
+                            };
+                            assert_eq!(bytes[offset], value, "scale ({r}, {c})");
+                            offset += 1;
+                        }
+                    }
+                }
+            }
+        }
+        let WeightBuffer::F32(record) = &loaded.scale_parameters["lm_head"] else {
+            panic!("scalar record");
+        };
+        assert_eq!(scalar_record(&**record, ctx), [8.0, 0.03125]);
+    }
+    let ctx = crate::memory::CudaCtx::new(cuda_device_from_env()).unwrap();
+    check(
+        execute_qwen_load_plan(
+            &plan,
+            ManagedUmaBackend::new(cuda_device_from_env()).unwrap(),
+            &ctx,
+        )
+        .unwrap(),
+        &scales,
+        n,
+        cols,
+        &ctx,
+    );
+    check(
+        execute_qwen_load_plan(
+            &plan,
+            PinnedUploadBackend::new(cuda_device_from_env()).unwrap(),
+            &ctx,
+        )
+        .unwrap(),
+        &scales,
+        n,
+        cols,
+        &ctx,
+    );
+    std::fs::remove_file(path).unwrap();
 }

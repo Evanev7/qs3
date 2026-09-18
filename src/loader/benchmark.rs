@@ -18,7 +18,7 @@ use crate::{
     backend::qsfi::MoeBf16Kernel,
     model::{ModelRunner, QwenRequest},
 };
-use std::{ptr, time::Instant};
+use std::time::Instant;
 
 unsafe extern "C" {
     fn cudaProfilerStart() -> i32;
@@ -239,9 +239,10 @@ pub fn run_core_benchmark() -> JsonValue {
             .expect("benchmark sequence length overflow"),
     )
     .expect("fixed benchmark sequence length exceeds u32");
+    let ctx = std::rc::Rc::new(crate::memory::CudaCtx::new(0).unwrap());
     let started = Instant::now();
     let backend = PinnedUploadBackend::new(0).expect("failed to create pinned-upload backend");
-    let loaded = execute_qwen_load_plan(&plan, backend, ptr::null_mut())
+    let loaded = execute_qwen_load_plan(&plan, backend, &ctx)
         .expect("failed to load tensors");
     let weight_load = started.elapsed();
 
@@ -251,7 +252,6 @@ pub fn run_core_benchmark() -> JsonValue {
         .expect("failed to materialize Qwen model weights");
     let weight_materialize = started.elapsed();
     let started = Instant::now();
-    let ctx = std::rc::Rc::new(crate::memory::CudaCtx::default().unwrap());
     let mut runner = ModelRunner::new(ctx.clone(), config, weights, tokenizer.token_count())
         .expect("failed to construct ModelRunner");
     let runner_init = started.elapsed();

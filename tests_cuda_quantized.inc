@@ -23,6 +23,10 @@ template <typename T> struct QuantBuffer {
             cudaMemcpy(data, v.data(), v.size() * sizeof(T), cudaMemcpyHostToDevice),
             "quantized upload"
         );
+        // Pageable H2D copies may return after staging, before device completion.
+        // These tests launch on nonblocking streams, which do not wait on the
+        // default stream used by cudaMemcpy. Complete the fixture upload first.
+        check_cuda(cudaStreamSynchronize(nullptr), "quantized upload completion");
     }
     std::vector<T> download(cudaStream_t stream) const
     {
@@ -196,7 +200,18 @@ static void test_qscb_fp8()
                         error += (got - ref) * (got - ref);
                         norm += ref * ref;
                     }
-                quant_check_error(error, norm, "FP8 GEMM");
+                char label[128];
+                std::snprintf(
+                    label,
+                    sizeof(label),
+                    "FP8 GEMM M=%d dtype=%s sx=%g sw=%g beta=%g",
+                    m,
+                    f32 ? "F32" : "BF16",
+                    sx,
+                    sw,
+                    previous ? .25 : 0.
+                );
+                quant_check_error(error, norm, label);
             };
             check_status(qscb_fp8_linear_execute(ctx, plan, &d), QSFI_STATUS_OK, "FP8 execute");
             verify(.25f, .125f);

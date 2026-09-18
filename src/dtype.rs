@@ -4,10 +4,16 @@ use crate::ffi::{
     DTYPE_BF16, DTYPE_F16, DTYPE_F32, DTYPE_FP8_E4M3, DTYPE_FP8_E5M2, DTYPE_I8, DTYPE_I32,
     DTYPE_MXFP4_E2M1, DTYPE_MXFP8_E4M3, DTYPE_NVFP4_E2M1, DTYPE_U8, DTYPE_U32, DTypeRaw,
 };
+/// Device element storage. Defaults describe a concrete Rust record.
+///
+/// # Safety
+/// BITS must be nonzero and describe one device element; ALIGN must be a valid
+/// allocation alignment. RAW must match the native element type, or be INVALID
+/// for structured storage that cannot be passed as a native tensor element.
 pub unsafe trait DType: Copy + 'static {
-    const RAW: DTypeRaw;
-    const BITS: usize;
-    const ALIGN: usize = (Self::BITS + 7) / 8;
+    const RAW: DTypeRaw = crate::ffi::sys::QSFI_DTYPE_INVALID;
+    const BITS: usize = std::mem::size_of::<Self>() * 8;
+    const ALIGN: usize = std::mem::align_of::<Self>();
     #[inline(always)]
     fn size_of(elements: usize) -> Result<usize, Status> {
         elements
@@ -33,6 +39,7 @@ macro_rules! impl_dtype {
         unsafe impl DType for $t {
             const RAW: DTypeRaw = $e;
             const BITS: usize = $bits;
+            const ALIGN: usize = ($bits + 7) / 8;
         }
     };
 }

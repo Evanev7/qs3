@@ -15,6 +15,7 @@ use std::collections::BTreeSet;
 
 pub(super) trait Tensors {
     type Tensor<D: DType>;
+    fn scale_parameters<D: DType>(&mut self, name: &str) -> LoadResult<Self::Tensor<D>>;
     fn tensor<D: DType>(
         &mut self,
         name: &str,
@@ -26,8 +27,15 @@ pub(super) trait Tensors {
 }
 
 type Bf16<S> = <S as Tensors>::Tensor<BF16>;
-type Fp8<S> = Fp8Block<<S as Tensors>::Tensor<Fp8E4M3>>;
-type Fp4<S> = Nvfp4Block<<S as Tensors>::Tensor<Nvfp4E2M1>, <S as Tensors>::Tensor<Fp8E4M3>>;
+type Fp8<S> = Fp8Block<
+    <S as Tensors>::Tensor<Fp8E4M3>,
+    <S as Tensors>::Tensor<crate::model::scales::Fp8Scales>,
+>;
+type Fp4<S> = Nvfp4Block<
+    <S as Tensors>::Tensor<Nvfp4E2M1>,
+    <S as Tensors>::Tensor<Fp8E4M3>,
+    <S as Tensors>::Tensor<crate::model::scales::Nvfp4Scales>,
+>;
 type DenseBf16Model<S> = QwenModel<DenseMlp<Bf16<S>>, Bf16<S>, Bf16<S>, Bf16<S>>;
 type MoeBf16Model<S> =
     QwenModel<MoeMlp<FusedExperts<Bf16<S>>, Bf16<S>, Bf16<S>>, Bf16<S>, Bf16<S>, Bf16<S>>;
@@ -48,20 +56,21 @@ fn fp8<S: Tensors>(s: &mut S, name: &str, shape: [u32; 2]) -> LoadResult<Fp8<S>>
             "expected FP8 recipe for {name}"
         )));
     }
+    s.scalar(&format!("{name}.weight_scale"))?;
+    s.scalar(&format!("{name}.input_scale"))?;
     Ok(Fp8Block {
+        scales: s.scale_parameters(name)?,
         weight: s.tensor::<Fp8E4M3>(
             &format!("{name}.weight"),
             &shape,
             WeightTensorSource::Safetensors,
         )?,
-        weight_scale: s.scalar(&format!("{name}.weight_scale"))?,
-        input_scale: s.scalar(&format!("{name}.input_scale"))?,
         shape,
     })
 }
 fn nvfp4<S: Tensors>(s: &mut S, name: &str, shape: [u32; 2]) -> LoadResult<Fp4<S>> {
-    let (ProjectionQuantization::Nvfp4 | ProjectionQuantization::W4A16Nvfp4) = s.recipe(name)?
-    else {
+    let recipe = s.recipe(name)?;
+    let (ProjectionQuantization::Nvfp4 | ProjectionQuantization::W4A16Nvfp4) = recipe else {
         return Err(WeightLoadError::invalid_config(format!(
             "expected NVFP4 recipe for {name}"
         )));
@@ -72,7 +81,15 @@ fn nvfp4<S: Tensors>(s: &mut S, name: &str, shape: [u32; 2]) -> LoadResult<Fp4<S
             "NVFP4 requires positive N and K divisible by 16",
         ));
     }
+    s.scalar(&format!("{name}.weight_scale_2"))?;
+    s.scalar(&format!("{name}.input_scale"))?;
     Ok(Nvfp4Block {
+        parameters: s.scale_parameters(name)?,
+        activation: match recipe {
+            ProjectionQuantization::Nvfp4 => crate::model::Nvfp4Activation::A4,
+            ProjectionQuantization::W4A16Nvfp4 => crate::model::Nvfp4Activation::A16,
+            ProjectionQuantization::Fp8 => unreachable!(),
+        },
         weight: s.tensor::<Nvfp4E2M1>(
             &format!("{name}.weight"),
             &shape,
@@ -83,9 +100,6 @@ fn nvfp4<S: Tensors>(s: &mut S, name: &str, shape: [u32; 2]) -> LoadResult<Fp4<S
             &[n, k / 16],
             WeightTensorSource::Safetensors,
         )?,
-        weight_scale_2: s.scalar(&format!("{name}.weight_scale_2"))?,
-        // ModelOpt's A16 checkpoints also store this scalar. Retain it for A4 overrides.
-        input_scale: Some(s.scalar(&format!("{name}.input_scale"))?),
         shape,
     })
 }
@@ -328,6 +342,9 @@ pub(super) fn expected_specs(
     }
     impl Tensors for Specs<'_> {
         type Tensor<D: DType> = ();
+        fn scale_parameters<D: DType>(&mut self, _: &str) -> LoadResult<()> {
+            Ok(())
+        }
         fn tensor<D: DType>(
             &mut self,
             name: &str,

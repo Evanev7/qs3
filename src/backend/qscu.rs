@@ -27,6 +27,20 @@ pub(crate) struct Qscu<'a> {
 }
 
 impl<'a> Qscu<'a> {
+    pub(crate) unsafe fn logits_bf16_to_f32(
+        &mut self,
+        input: DMat<BF16>,
+        output: DMat<F32>,
+    ) -> Result<(), Status> {
+        input.require_contiguous()?;
+        output.require_contiguous()?;
+        if !input.same_shape(output) || input.rows != 1 {
+            return Err(Status::InvalidArgument);
+        }
+        result_from_raw(unsafe {
+            sys::qscu_logits_bf16_to_f32(&input.tensor(), &output.tensor(), *self.stream)
+        })
+    }
     pub(super) fn new(stream: &'a ffi::CudaStream, qsfi: &'a mut Qsfi) -> Self {
         Self { stream, qsfi }
     }

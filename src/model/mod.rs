@@ -10,7 +10,7 @@ pub use sampling::SamplingParams;
 
 #[cfg(test)]
 use config::QwenBlockKind;
-pub use config::{Nvfp4Activation, QwenConfig};
+pub use config::{Nvfp4Activation, Nvfp4Tactic, QwenConfig};
 #[cfg(test)]
 use weights::MoeShape;
 #[cfg(test)]
@@ -122,3 +122,5 @@ pub(crate) fn result_from_cuda(err: i32) -> Result<(), Status> {
         Err(Status::CudaError)
     }
 }
+
+pub(crate) mod scales;

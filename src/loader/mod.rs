@@ -2,6 +2,7 @@
 
 mod materialize;
 mod plan;
+mod prepare;
 mod quantization;
 mod schema;
 

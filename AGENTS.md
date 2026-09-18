@@ -73,8 +73,8 @@ real qwen3.6-35b-a3b findings:
 - bf16 experts use fused `mlp.experts.gate_up_proj` / `down_proj`; nvfp4 uses
   split per-expert tensors plus `input_scale`, `weight_scale`, `weight_scale_2`
   the loader preserves typed packed weights, scales and checkpoint recipes;
-  a4/a16 overrides belong to execution config. the bf16 runner rejects nvfp4
-  until quantized execution is wired
+  a4/a16 overrides belong to execution config. the runner supports dense mixed
+  w4a4 nvfp4/fp8; w4a16 and quantized moe remain unsupported
 - current full attention should keep explicit q/k norm + partial rope before
   `POS_ENCODING_NONE` attention as the correctness baseline. future fusion, if
   profiling justifies it, should be a qwen-specific prep kernel for packed q
@@ -89,10 +89,11 @@ real qwen3.6-35b-a3b findings:
 loader direction:
 - `src/loader/transfer.rs` has the backend trait. keep qwen-specific manifest
   parsing/validation above it
-- a loaded bf16 plan owns its backend until consuming materialization drains
-  the backend's final allocation list into devicebuffers. backend drop frees
-  pre-handoff failures and still cleans pinned staging resources; do not forget
-  the whole backend
+- the loader enqueues transfers, scale swizzling and scale-parameter uploads on
+  the caller's CudaCtx before backend.finish waits and hands off allocation
+  owners. materialization attaches final storage to QwenWeights; the runner owns
+  activation scratch and plans. retire canonical scales only after completion;
+  backend drop still cleans pre-handoff failures and pinned staging resources
 - validate full config + safetensors indexes/headers before cuda allocation:
   duplicate, missing, unexpected, wrong dtype/shape, overlapping, or out-of-range
   tensors must fail before device addressing

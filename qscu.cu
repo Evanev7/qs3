@@ -25,6 +25,12 @@ constexpr uint32_t qwen36_gdn_packed_dim(uint32_t value_heads)
         + value_heads * QSFI_QWEN36_GDN_VALUE_DIM;
 }
 constexpr uint32_t kElementwiseThreads = 256;
+__global__ void logits_bf16_to_f32_kernel(const __nv_bfloat16* input, float* output, uint64_t count)
+{
+    uint64_t i = uint64_t(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (i < count)
+        output[i] = __bfloat162float(input[i]);
+}
 constexpr uint32_t kRouterMaxTopK = 8;
 constexpr uint32_t kRouterMaxExperts = 256;
 constexpr float kRouterNegInf = -3.4028234663852886e38f;
@@ -1545,6 +1551,36 @@ qsfi_status validate_greedy_argmax_desc(const qscu_sampling_desc* desc)
 } // namespace
 
 extern "C" {
+qsfi_status qscu_logits_bf16_to_f32(
+    const qsfi_tensor2* input, const qsfi_tensor2* output, qsfi_cuda_stream stream
+)
+{
+    if (!input || !output)
+        return QSFI_STATUS_INVALID_ARGUMENT;
+    auto status = validate_tensor2(*input, QSFI_DTYPE_BF16, QSFI_DTYPE_BF16);
+    if (status != QSFI_STATUS_OK)
+        return status;
+    status = validate_tensor2(*output, QSFI_DTYPE_F32, QSFI_DTYPE_F32);
+    if (status != QSFI_STATUS_OK)
+        return status;
+    if (input->shape[0] != 1 || output->shape[0] != 1 || input->shape[1] != output->shape[1]
+        || input->stride[1] != 1 || output->stride[1] != 1)
+        return QSFI_STATUS_INVALID_ARGUMENT;
+    uint32_t blocks = 0;
+    status = checked_grid(input->shape[1], kElementwiseThreads, &blocks);
+    if (status != QSFI_STATUS_OK)
+        return status;
+    logits_bf16_to_f32_kernel<<<
+        blocks,
+        kElementwiseThreads,
+        0,
+        static_cast<cudaStream_t>(stream)>>>(
+        static_cast<const __nv_bfloat16*>(input->data),
+        static_cast<float*>(output->data),
+        input->shape[1]
+    );
+    return validate_cuda(cudaGetLastError());
+}
 
 qsfi_status qscu_silu_and_mul_bf16(const qscu_silu_and_mul_desc* desc, qsfi_cuda_stream stream)
 {

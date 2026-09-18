@@ -366,7 +366,7 @@ pub(crate) struct QwenGdnWeights<M, A = W<BF16>, T = W<BF16>> {
     pub(crate) mlp: M,
 }
 
-impl<M> QwenLayerWeights<M> {
+impl<M, A> QwenLayerWeights<M, A> {
     pub(crate) fn input_norm(&self) -> &DeviceSpan<BF16> {
         match self {
             Self::AttentionMlp(layer) => &layer.attn_norm,
@@ -382,12 +382,18 @@ impl<M> QwenLayerWeights<M> {
     }
 }
 
-/// Logical checkpoint storage; kernel-specific layouts are prepared separately.
+/// Model storage ready for the compiled providers; the loader prepares scale layouts.
 pub enum QwenWeights {
     DenseBf16(QwenModel<DenseMlp<W<BF16>>, W<BF16>, W<BF16>>),
     MoeBf16(QwenModel<MoeMlp<FusedExperts<W<BF16>>, W<BF16>>, W<BF16>, W<BF16>>),
     DenseNvfp4(QwenModel<DenseMlp<Nvfp4Block>, Fp8Block, Nvfp4Block>),
     MoeNvfp4(QwenModel<MoeMlp<SplitExperts<Nvfp4Block>, Nvfp4Block>, Fp8Block, Nvfp4Block>),
+}
+
+impl QwenWeights {
+    pub(crate) fn is_quantized(&self) -> bool {
+        matches!(self, Self::DenseNvfp4(_) | Self::MoeNvfp4(_))
+    }
 }
 
 #[cfg(test)]
@@ -416,19 +422,22 @@ impl QwenWeights {
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
-pub struct Nvfp4Block<P = W<crate::dtype::Nvfp4E2M1>, S = W<crate::dtype::Fp8E4M3>> {
+pub struct Nvfp4Block<
+    P = W<crate::dtype::Nvfp4E2M1>,
+    S = W<crate::dtype::Fp8E4M3>,
+    G = W<super::scales::Nvfp4Scales>,
+> {
+    pub(crate) parameters: G,
+    pub(crate) activation: super::Nvfp4Activation,
     pub(crate) weight: P,
     pub(crate) weight_scale: S,
-    pub(crate) weight_scale_2: f32,
-    pub(crate) input_scale: Option<f32>,
     pub(crate) shape: [u32; 2],
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
-pub struct Fp8Block<T = W<crate::dtype::Fp8E4M3>> {
+pub struct Fp8Block<T = W<crate::dtype::Fp8E4M3>, G = W<super::scales::Fp8Scales>> {
+    pub(crate) scales: G,
     pub(crate) weight: T,
-    pub(crate) weight_scale: f32,
-    pub(crate) input_scale: f32,
     pub(crate) shape: [u32; 2],
 }
 

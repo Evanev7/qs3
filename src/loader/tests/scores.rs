@@ -27,6 +27,7 @@ fn ids(spec: &JsonValue, key: &str, limit: usize) -> Vec<i32> {
 #[test]
 #[ignore = "loads real BF16 weights and dumps forced-prefix scores for an external comparison"]
 fn real_qwen36_same_prefix_scores() {
+    let ctx = std::rc::Rc::new(crate::memory::CudaCtx::new(cuda_device_from_env()).unwrap());
     let input = std::env::var("QS3_SCORE_INPUT").expect("QS3_SCORE_INPUT JSON path");
     let output = std::path::PathBuf::from(
         std::env::var("QS3_SCORE_OUTPUT").expect("QS3_SCORE_OUTPUT directory"),
@@ -49,18 +50,13 @@ fn real_qwen36_same_prefix_scores() {
     );
     let plan = QwenLoadPlan::read(&model_dir).unwrap();
     let backend = PinnedUploadBackend::new(cuda_device_from_env()).unwrap();
-    let loaded = execute_qwen_load_plan(&plan, backend, ptr::null_mut()).unwrap();
+    let loaded = execute_qwen_load_plan(&plan, backend, &ctx).unwrap();
     let (config, weights) = loaded
         .into_qwen_model(u32::try_from(prompt.len() + forced.len() + 1).unwrap())
         .unwrap();
     assert_eq!(GDN_RECURRENT_STATE, "f32");
-    let mut runner = crate::model::ModelRunner::new(
-        std::rc::Rc::new(crate::memory::CudaCtx::default().unwrap()),
-        config,
-        weights,
-        token_count,
-    )
-    .unwrap();
+    let mut runner =
+        crate::model::ModelRunner::new(ctx.clone(), config, weights, token_count).unwrap();
     assert_eq!(runner.gdn_qkv_provider(), "triton");
     const REQUEST: u64 = 0x53434f5245;
     runner

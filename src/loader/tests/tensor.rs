@@ -44,12 +44,12 @@ fn bf16_manifest_still_rejects_quantized_tensor_storage() {
 
 #[test]
 fn bf16_model_rejects_other_storage() {
+    let ctx = crate::memory::CudaCtx::new(cuda_device_from_env()).unwrap();
     let mut plan = bf16_zero_plan(qwen_text_config(4, 16));
     plan.entries[0].spec.dtype = DynDType::FP8E4M3;
     let bytes = plan.entries[0].spec.byte_len().unwrap();
     plan.entries[0].source = QwenLoadSource::ZeroFill { bytes };
-    let loaded =
-        execute_qwen_load_plan(&plan, RecordingBackend::default(), ptr::null_mut()).unwrap();
+    let loaded = execute_qwen_load_plan(&plan, RecordingBackend::default(), &ctx).unwrap();
     let err = loaded.into_fixture_model(8).err().unwrap();
     assert!(
         err.to_string()
@@ -62,11 +62,12 @@ fn selected_bf16_model_retains_all_allocation_owners() {
     if !cuda_device_available_for_loader_test() {
         return;
     }
+    let ctx = crate::memory::CudaCtx::new(cuda_device_from_env()).unwrap();
     let plan = bf16_zero_plan(selected_text_config());
     let count = plan.tensor_count();
     let state = Rc::new(TinyBackendState::default());
     let backend = TinyCudaBackend::new(cuda_device_from_env(), state.clone());
-    let loaded = execute_qwen_load_plan(&plan, backend, ptr::null_mut()).unwrap();
+    let loaded = execute_qwen_load_plan(&plan, backend, &ctx).unwrap();
     let (_, weights) = loaded.into_qwen_model(8).unwrap();
     assert_eq!(state.transferred.get(), count);
     assert_eq!(state.drop_calls.get(), 1);

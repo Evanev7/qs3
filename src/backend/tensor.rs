@@ -61,6 +61,9 @@ pub(crate) struct DMat<DT: DType> {
 }
 
 impl<DT: DType> DMat<DT> {
+    pub(crate) fn shape(self) -> [u32; 2] {
+        [self.rows, self.cols]
+    }
     pub(crate) fn contiguous(data: DevicePtr<DT>, rows: u32, cols: u32) -> Result<Self, Status> {
         Self::new(data, rows, cols, cols)
     }

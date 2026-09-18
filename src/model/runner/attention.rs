@@ -1,4 +1,4 @@
-use super::BatchExecution;
+use super::{BatchExecution, Projection};
 use crate::{
     backend::{
         DMat,
@@ -11,12 +11,12 @@ use crate::{
 };
 
 impl BatchExecution<'_> {
-    pub(super) unsafe fn execute_attention_layer<M>(
+    pub(super) unsafe fn execute_attention_layer<M, A: Projection>(
         &mut self,
         attention_layer_idx: u32,
         rows: u32,
         input: DMat<BF16>,
-        layer: &QwenAttentionMlpWeights<M>,
+        layer: &QwenAttentionMlpWeights<M, A>,
         kind: ActiveRunKind,
     ) -> Result<(), Status> {
         let hidden = self.config.hidden_size();
@@ -25,10 +25,11 @@ impl BatchExecution<'_> {
         {
             let mut ops = self.engine.operators();
             unsafe {
-                ops.qscb().linear(
+                ops.linear(
                     input,
-                    layer.q_proj.matrix(PACKED_Q_GATE_WIDTH, hidden)?,
+                    layer.q_proj.view(PACKED_Q_GATE_WIDTH, hidden)?,
                     self.scratch.q_proj_out.matrix(rows, PACKED_Q_GATE_WIDTH)?,
+                    self.quantized_scratch,
                     self.linear_workspace,
                 )?;
                 ops.qscu().qwen36_extract_q_and_gate_bf16(
@@ -36,16 +37,18 @@ impl BatchExecution<'_> {
                     self.scratch.q.matrix(rows, q_hidden)?,
                     self.scratch.attn_gate.matrix(rows, q_hidden)?,
                 )?;
-                ops.qscb().linear(
+                ops.linear(
                     input,
-                    layer.k_proj.matrix(kv_hidden, hidden)?,
+                    layer.k_proj.view(kv_hidden, hidden)?,
                     self.scratch.k.matrix(rows, kv_hidden)?,
+                    self.quantized_scratch,
                     self.linear_workspace,
                 )?;
-                ops.qscb().linear(
+                ops.linear(
                     input,
-                    layer.v_proj.matrix(kv_hidden, hidden)?,
+                    layer.v_proj.view(kv_hidden, hidden)?,
                     self.scratch.v.matrix(rows, kv_hidden)?,
+                    self.quantized_scratch,
                     self.linear_workspace,
                 )?;
                 for (buffer, weight, heads) in [
@@ -104,10 +107,11 @@ impl BatchExecution<'_> {
                 self.scratch.attn_gate.matrix(rows, q_hidden)?,
                 out,
             )?;
-            ops.qscb().linear(
+            ops.linear(
                 out,
-                layer.o_proj.matrix(hidden, q_hidden)?,
+                layer.o_proj.view(hidden, q_hidden)?,
                 self.scratch.attn_proj.matrix(rows, hidden)?,
+                self.quantized_scratch,
                 self.linear_workspace,
             )
         }

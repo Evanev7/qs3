@@ -1,4 +1,4 @@
-use super::BatchExecution;
+use super::{BatchExecution, Projection, linear::LinearWeight};
 use crate::{
     backend::DMat,
     constants::gdn::{
@@ -13,13 +13,13 @@ use crate::{
 
 impl BatchExecution<'_> {
     // Append metadata must be prepared for `rows` on this stream before execution.
-    pub(super) unsafe fn execute_gdn_layer<M>(
+    pub(super) unsafe fn execute_gdn_layer<M, A: Projection>(
         &mut self,
         ctx: &CudaCtx,
         gdn_layer_idx: u32,
         rows: u32,
         input: DMat<BF16>,
-        layer: &QwenGdnWeights<M>,
+        layer: &QwenGdnWeights<M, A>,
         kind: ActiveRunKind,
     ) -> Result<(), Status> {
         if matches!(kind, ActiveRunKind::Decode) && rows != 1 {
@@ -55,15 +55,21 @@ impl BatchExecution<'_> {
             .heads(rows, NUM_VALUE_HEADS, VALUE_HEAD_DIM)?;
         let mut ops = self.engine.operators();
         unsafe {
-            let weight = layer.in_proj.matrix(PACKED_QKV_CHANNELS, hidden)?;
-            match (kind, self.gdn_qkv) {
-                (ActiveRunKind::Decode, Some(kernel)) => {
+            match (
+                kind,
+                self.gdn_qkv,
+                layer.in_proj.view(PACKED_QKV_CHANNELS, hidden)?,
+            ) {
+                (ActiveRunKind::Decode, Some(kernel), LinearWeight::Bf16(weight)) => {
                     kernel.launch(ctx.stream, input, weight, packed)?;
                 }
-                _ => {
-                    ops.qscb()
-                        .linear(input, weight, packed, self.linear_workspace)?;
-                }
+                (_, _, weight) => ops.linear(
+                    input,
+                    weight,
+                    packed,
+                    self.quantized_scratch,
+                    self.linear_workspace,
+                )?,
             }
             ops.qscb().linear(
                 input,
@@ -77,10 +83,11 @@ impl BatchExecution<'_> {
                 b,
                 self.linear_workspace,
             )?;
-            ops.qscb().linear(
+            ops.linear(
                 input,
-                layer.gate_proj.matrix(OUTPUT_WIDTH, hidden)?,
+                layer.gate_proj.view(OUTPUT_WIDTH, hidden)?,
                 scratch.gate.matrix(rows, OUTPUT_WIDTH)?,
+                self.quantized_scratch,
                 self.linear_workspace,
             )?;
             ops.qscu().qwen36_gdn_causal_conv1d_bf16(
@@ -133,10 +140,11 @@ impl BatchExecution<'_> {
                 norm_out,
                 self.config.rms_norm_eps(),
             )?;
-            ops.qscb().linear(
+            ops.linear(
                 scratch.norm_out.matrix(rows, OUTPUT_WIDTH)?,
-                layer.out_proj.matrix(hidden, OUTPUT_WIDTH)?,
+                layer.out_proj.view(hidden, OUTPUT_WIDTH)?,
                 self.scratch.attn_proj.matrix(rows, hidden)?,
+                self.quantized_scratch,
                 self.linear_workspace,
             )
         }

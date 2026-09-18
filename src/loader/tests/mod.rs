@@ -447,12 +447,13 @@ fn manifest_preserves_checkpoint_names_shapes_and_synthetic_bias() {
 
 #[test]
 fn materialization_consumes_every_planned_tensor_once() {
+    let ctx = crate::memory::CudaCtx::new(cuda_device_from_env()).unwrap();
     let plan = bf16_zero_plan(tensor::selected_text_config());
     let count = plan.tensor_count();
     let drops = std::rc::Rc::new(std::cell::Cell::new(0));
     let mut backend = RecordingBackend::default();
     backend.owner_drops = Some(drops.clone());
-    let loaded = execute_qwen_load_plan(&plan, backend, ptr::null_mut()).unwrap();
+    let loaded = execute_qwen_load_plan(&plan, backend, &ctx).unwrap();
     assert_eq!(loaded.stats.allocs.len(), count);
     let (_, weights) = loaded.into_qwen_model(8).unwrap();
     assert_eq!(drops.get(), 0);
@@ -658,6 +659,7 @@ impl WeightLoadBackend for RecordingBackend {
 
 #[test]
 fn executes_validated_plan_against_backend() {
+    let ctx = crate::memory::CudaCtx::new(cuda_device_from_env()).unwrap();
     let tmp = std::env::temp_dir().join(format!("qs3-weight-loader-test-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&tmp);
     std::fs::create_dir(&tmp).unwrap();
@@ -708,7 +710,7 @@ fn executes_validated_plan_against_backend() {
     let dropped = std::rc::Rc::new(std::cell::Cell::new(false));
     let mut backend = RecordingBackend::default();
     backend.dropped = Some(dropped.clone());
-    let loaded = execute_qwen_load_plan(&plan, backend, ptr::null_mut()).unwrap();
+    let loaded = execute_qwen_load_plan(&plan, backend, &ctx).unwrap();
 
     assert_eq!(loaded.tensors.len(), 3);
     assert_eq!(loaded.stats.allocs.len(), 3);
@@ -746,12 +748,13 @@ fn loaded_plan_transfers_allocations_into_qwen_weights_once() {
     if !cuda_device_available_for_loader_test() {
         return;
     }
+    let ctx = crate::memory::CudaCtx::new(cuda_device_from_env()).unwrap();
     let plan = bf16_zero_plan(qwen_text_config(4, 32));
     let count = plan.tensor_count();
     let state = std::rc::Rc::new(TinyBackendState::default());
     let backend = TinyCudaBackend::new(0, state.clone());
 
-    let loaded = execute_qwen_load_plan(&plan, backend, ptr::null_mut()).unwrap();
+    let loaded = execute_qwen_load_plan(&plan, backend, &ctx).unwrap();
     let (_, weights) = loaded.into_fixture_model(8).unwrap();
 
     assert_eq!(state.transferred.get(), count);
@@ -802,18 +805,18 @@ fn small_zero_plan() -> QwenLoadPlan {
 
 #[test]
 fn load_rejects_duplicate_names_before_allocation() {
+    let ctx = crate::memory::CudaCtx::new(cuda_device_from_env()).unwrap();
     let mut plan = small_zero_plan();
     plan.entries[1].spec.name = plan.entries[0].spec.name.clone();
     // An invalid device makes accidental allocation fail with a different error.
     let backend = TinyCudaBackend::new(-1, Default::default());
-    let err = execute_qwen_load_plan(&plan, backend, ptr::null_mut())
-        .err()
-        .unwrap();
+    let err = execute_qwen_load_plan(&plan, backend, &ctx).err().unwrap();
     assert!(err.to_string().contains("duplicate loaded tensor"));
 }
 
 #[test]
 fn load_rejects_mismatched_finished_buffers() {
+    let ctx = crate::memory::CudaCtx::new(cuda_device_from_env()).unwrap();
     for fault in [
         FinishFault::Reorder,
         FinishFault::Missing,
@@ -824,7 +827,7 @@ fn load_rejects_mismatched_finished_buffers() {
         let mut backend = RecordingBackend::default();
         backend.fault = fault;
         backend.dropped = Some(dropped.clone());
-        let err = execute_qwen_load_plan(&small_zero_plan(), backend, ptr::null_mut())
+        let err = execute_qwen_load_plan(&small_zero_plan(), backend, &ctx)
             .err()
             .unwrap();
         assert!(matches!(err, WeightLoadError::TensorTable(_)));
@@ -837,10 +840,11 @@ fn failed_finish_drops_transferred_and_remaining_allocations() {
     if !cuda_device_available_for_loader_test() {
         return;
     }
+    let ctx = crate::memory::CudaCtx::new(cuda_device_from_env()).unwrap();
     let state = std::rc::Rc::new(TinyBackendState::default());
     let mut backend = TinyCudaBackend::new(cuda_device_from_env(), state.clone());
     backend.fail_after = Some(1);
-    assert!(execute_qwen_load_plan(&small_zero_plan(), backend, ptr::null_mut()).is_err());
+    assert!(execute_qwen_load_plan(&small_zero_plan(), backend, &ctx).is_err());
     assert_eq!(state.transferred.get(), 1);
     assert_eq!(state.allocation_drops.get(), 1);
     assert_eq!(state.drop_calls.get(), 1);
@@ -877,6 +881,7 @@ fn validates_selected_checkpoint_manifest_when_available() {
 #[test]
 #[ignore = "loads and executes the full real Qwen3.6 BF16 model"]
 fn real_qwen36_bf16_generates_reference_tokens() {
+    let ctx = std::rc::Rc::new(crate::memory::CudaCtx::new(cuda_device_from_env()).unwrap());
     eprintln!(
         "real BF16 model with {} GDN recurrence and {} MoE",
         crate::constants::precision::GDN_RECURRENT_STATE,
@@ -886,15 +891,11 @@ fn real_qwen36_bf16_generates_reference_tokens() {
     let tokenizer = crate::tokenizer::QwenTokenizer::from_model_dir(&model_dir).unwrap();
     let plan = QwenLoadPlan::read(model_dir).unwrap();
     let backend = ManagedUmaBackend::new(cuda_device_from_env()).unwrap();
-    let loaded = execute_qwen_load_plan(&plan, backend, ptr::null_mut()).unwrap();
+    let loaded = execute_qwen_load_plan(&plan, backend, &ctx).unwrap();
     let (config, weights) = loaded.into_qwen_model(8).unwrap();
-    let mut runner = crate::model::ModelRunner::new(
-        std::rc::Rc::new(crate::memory::CudaCtx::default().unwrap()),
-        config,
-        weights,
-        tokenizer.token_count(),
-    )
-    .unwrap();
+    let mut runner =
+        crate::model::ModelRunner::new(ctx.clone(), config, weights, tokenizer.token_count())
+            .unwrap();
     assert_eq!(runner.gdn_qkv_provider(), "triton");
     let request_id = 0xBF16_0001;
 
@@ -959,6 +960,7 @@ fn real_qwen36_bf16_generates_reference_tokens() {
 #[test]
 #[ignore = "reads the full real BF16 model into CUDA managed memory"]
 fn bench_real_qwen36_bf16_managed_uma_load() {
+    let ctx = crate::memory::CudaCtx::new(cuda_device_from_env()).unwrap();
     let model_dir = require_real_qwen36_model_dir();
     let plan_started = Instant::now();
     let plan = QwenLoadPlan::read(&model_dir).unwrap();
@@ -975,7 +977,7 @@ fn bench_real_qwen36_bf16_managed_uma_load() {
     println!("backend setup {:.3}s", backend_setup.as_secs_f64());
 
     let load_started = Instant::now();
-    let loaded = execute_qwen_load_plan(&plan, backend, ptr::null_mut()).unwrap();
+    let loaded = execute_qwen_load_plan(&plan, backend, &ctx).unwrap();
     let elapsed = load_started.elapsed();
     println!(
         "backend setup + load {:.3}s",
@@ -1012,6 +1014,7 @@ fn bench_real_qwen36_bf16_managed_uma_load() {
 #[test]
 #[ignore = "reads the full real BF16 model through pinned staging into CUDA device memory"]
 fn bench_real_qwen36_bf16_pinned_upload_load() {
+    let ctx = crate::memory::CudaCtx::new(cuda_device_from_env()).unwrap();
     let model_dir = require_real_qwen36_model_dir();
     let plan_started = Instant::now();
     let plan = QwenLoadPlan::read(&model_dir).unwrap();
@@ -1028,7 +1031,7 @@ fn bench_real_qwen36_bf16_pinned_upload_load() {
     println!("backend setup {:.3}s", backend_setup.as_secs_f64());
 
     let load_started = Instant::now();
-    let loaded = execute_qwen_load_plan(&plan, backend, ptr::null_mut()).unwrap();
+    let loaded = execute_qwen_load_plan(&plan, backend, &ctx).unwrap();
     let elapsed = load_started.elapsed();
     println!(
         "backend setup + load {:.3}s",

@@ -3,7 +3,9 @@ use crate::dtype::F32;
 use crate::dtype::{BF16, I32, U8};
 mod attention;
 mod gdn;
+mod linear;
 mod mlp;
+use linear::{Projection, QuantizedScratch};
 #[cfg(test)]
 mod tests;
 
@@ -22,7 +24,7 @@ use crate::{
         scratch::RunnerScratch,
         state::GdnState,
         validate_token_ids,
-        weights::{QwenLayerWeights, QwenModel, W},
+        weights::{QwenLayerWeights, QwenModel},
     },
 };
 
@@ -51,6 +53,7 @@ pub struct ModelRunner {
     config: QwenConfig,
     tokenizer_token_count: u32,
     weights: QwenWeights,
+    quantized_scratch: Option<QuantizedScratch>,
     engine: Engine,
     moe_plan: Option<MoePlan>,
     gdn_state: Option<GdnState>,
@@ -75,14 +78,34 @@ impl ModelRunner {
         weights: QwenWeights,
         tokenizer_token_count: usize,
     ) -> Result<Self, Status> {
-        if matches!(
-            weights,
-            QwenWeights::DenseNvfp4(_) | QwenWeights::MoeNvfp4(_)
-        ) {
+        if matches!(weights, QwenWeights::MoeNvfp4(_)) {
             return Err(Status::Unsupported);
         }
-        if config.nvfp4_activation_override.is_some() {
+        if config.nvfp4_activation_override.is_some()
+            && !matches!(weights, QwenWeights::DenseNvfp4(_))
+        {
             return Err(Status::InvalidArgument);
+        }
+        if let QwenWeights::DenseNvfp4(model) = &weights {
+            let validate = |p: &crate::model::weights::Nvfp4Block| -> Result<(), Status> {
+                if config.nvfp4_activation_override.unwrap_or(p.activation)
+                    != super::Nvfp4Activation::A4
+                {
+                    return Err(Status::Unsupported);
+                }
+                crate::backend::qsfi::scale_count(p.shape[0], p.shape[1])?;
+                if !p.shape[0].is_multiple_of(8) {
+                    return Err(Status::InvalidArgument);
+                }
+                Ok(())
+            };
+            validate(&model.lm_head)?;
+            for layer in &model.layers {
+                let (_, mlp) = layer.post_attention_mlp();
+                for p in [&mlp.gate_proj, &mlp.up_proj, &mlp.down_proj] {
+                    validate(p)?;
+                }
+            }
         }
         config.validate()?;
         let tokenizer_token_count =
@@ -112,20 +135,26 @@ impl ModelRunner {
         } else {
             (None, 0)
         };
+        let quantized_scratch = weights
+            .is_quantized()
+            .then(|| QuantizedScratch::new(ctx.clone(), config.vocab_size()))
+            .transpose()?;
         let scratch = RunnerScratch::new(ctx.clone(), &config, moe_workspace_bytes)?;
         let qscb_workspace = DeviceBuffer::with_capacity(ctx.clone(), config.qscb_workspace_bytes)?;
         let gdn_state = config
             .has_gdn_layers()
             .then(|| GdnState::new(ctx.clone(), &config))
             .transpose()?;
-        let gdn_qkv = (gdn_state.is_some()
+        let gdn_qkv = (!weights.is_quantized()
+            && gdn_state.is_some()
             && GdnQkv::supports(config.hidden_size(), PACKED_QKV_CHANNELS))
         .then(|| unsafe { GdnQkv::load() })
         .transpose()?;
         // Engine construction and allocations establish the primary context.
-        let lm_head = LmHead::supports(config.hidden_size(), config.vocab_size())
-            .then(|| unsafe { LmHead::load() })
-            .transpose()?;
+        let lm_head = (!weights.is_quantized()
+            && LmHead::supports(config.hidden_size(), config.vocab_size()))
+        .then(|| unsafe { LmHead::load() })
+        .transpose()?;
         Ok(Self {
             ctx,
             sampler: None,
@@ -136,6 +165,7 @@ impl ModelRunner {
             config,
             tokenizer_token_count,
             weights,
+            quantized_scratch,
             engine,
             moe_plan,
             gdn_state,
@@ -214,7 +244,9 @@ impl ModelRunner {
     }
 
     pub(crate) fn lm_head_provider(&self) -> &'static str {
-        if self.lm_head.is_some() {
+        if self.quantized_scratch.is_some() {
+            "flashinfer-cutlass-nvfp4"
+        } else if self.lm_head.is_some() {
             "triton"
         } else {
             "cublaslt"
@@ -222,7 +254,9 @@ impl ModelRunner {
     }
 
     pub(crate) fn gdn_qkv_provider(&self) -> &'static str {
-        if self.gdn_qkv.is_some() {
+        if self.quantized_scratch.is_some() {
+            "cublaslt-fp8"
+        } else if self.gdn_qkv.is_some() {
             "triton"
         } else {
             "cublaslt"
@@ -454,6 +488,9 @@ impl ModelRunner {
         validate_token_ids(run.tokens, self.config.vocab_size())?;
         self.scratch.reserve(rows)?;
         self.upload_batch_inputs(run)?;
+        if let Some(quantized_scratch) = self.quantized_scratch.as_mut() {
+            quantized_scratch.prepare(&mut self.engine, &self.weights, rows, &self.config)?;
+        }
 
         let ctx = self.ctx.clone();
 
@@ -480,6 +517,7 @@ impl ModelRunner {
                 lm_head: self.lm_head.as_ref(),
                 gdn_qkv: self.gdn_qkv.as_ref(),
                 linear_workspace,
+                quantized_scratch: self.quantized_scratch.as_ref(),
             },
         ))
     }
@@ -620,6 +658,7 @@ struct BatchExecution<'a> {
     lm_head: Option<&'a LmHead>,
     gdn_qkv: Option<&'a GdnQkv>,
     linear_workspace: Workspace,
+    quantized_scratch: Option<&'a QuantizedScratch>,
 }
 
 impl BatchExecution<'_> {
@@ -632,17 +671,18 @@ impl BatchExecution<'_> {
     ) -> Result<(), Status> {
         unsafe {
             match weights {
-                QwenWeights::DenseBf16(model) => self.run_bf16(ctx, model, rows, kind),
-                QwenWeights::MoeBf16(model) => self.run_bf16(ctx, model, rows, kind),
-                QwenWeights::DenseNvfp4(_) | QwenWeights::MoeNvfp4(_) => Err(Status::Unsupported),
+                QwenWeights::DenseBf16(model) => self.run_model(ctx, model, rows, kind),
+                QwenWeights::MoeBf16(model) => self.run_model(ctx, model, rows, kind),
+                QwenWeights::DenseNvfp4(model) => self.run_model(ctx, model, rows, kind),
+                QwenWeights::MoeNvfp4(_) => Err(Status::Unsupported),
             }
         }
     }
 
-    unsafe fn run_bf16<M: mlp::Bf16Mlp>(
+    unsafe fn run_model<M: mlp::Mlp, A: Projection, H: Projection>(
         &mut self,
         ctx: &CudaCtx,
-        weights: &QwenModel<M, W<BF16>, W<BF16>>,
+        weights: &QwenModel<M, A, H>,
         rows: u32,
         kind: ActiveRunKind,
     ) -> Result<(), Status> {
@@ -702,16 +742,13 @@ impl BatchExecution<'_> {
         }
         unsafe {
             let input = input.row(rows - 1)?;
-            let weight = weights.lm_head.matrix(self.config.vocab_size(), hidden)?;
             let output = self.scratch.logits.matrix(1, self.config.vocab_size())?;
-            if let Some(lm_head) = self.lm_head {
-                lm_head.launch(ctx.stream, input, weight, output)
-            } else {
-                self.engine
-                    .operators()
-                    .qscb()
-                    .linear(input, weight, output, self.linear_workspace)
-            }
+            self.project_logits(
+                ctx,
+                input,
+                weights.lm_head.view(self.config.vocab_size(), hidden)?,
+                output,
+            )
         }
     }
 }

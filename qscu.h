@@ -89,6 +89,11 @@ typedef struct {
 qsfi_status
 qscu_embedding_gather_bf16(const qscu_embedding_gather_desc* desc, qsfi_cuda_stream stream);
 
+/* W4A4 produces BF16 logits; widen one contiguous row for the F32 sampler. */
+qsfi_status qscu_logits_bf16_to_f32(
+    const qsfi_tensor2* input, const qsfi_tensor2* output, qsfi_cuda_stream stream
+);
+
 /* In-place F32 logits soft cap: logits = cap * tanh(logits / cap). cap <= 0 is a no-op. */
 qsfi_status qscu_logits_soft_cap_f32(
     const qsfi_tensor2* logits,

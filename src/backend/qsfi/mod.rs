@@ -10,8 +10,11 @@ use crate::{
 use crate::backend::result_from_raw;
 use crate::ffi::sys;
 
+mod nvfp4;
 mod ops;
 pub(crate) use crate::backend::Workspace;
+pub use nvfp4::Nvfp4Tactic;
+pub(crate) use nvfp4::{Nvfp4Plan, scale_count};
 pub use ops::MoeBf16Kernel;
 pub(crate) use ops::{
     FusedAddRmsNormBf16, MoeBf16Execute, MoeBf16ExecuteArgs, MoeBf16PlanConfig, RmsNormBf16,

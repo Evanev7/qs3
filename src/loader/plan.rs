@@ -9,9 +9,10 @@ use super::transfer::{
 };
 use super::{DEFAULT_MAX_HEADER_BYTES, DEFAULT_MAX_JSON_BYTES};
 
+use crate::memory::CudaCtx;
+
 use std::{
     collections::{BTreeMap, BTreeSet},
-    ffi::c_void,
     fs::File,
     path::{Path, PathBuf},
 };
@@ -131,13 +132,14 @@ pub(crate) struct LoadedWeightPlan<B: WeightLoadBackend> {
     pub(super) config: Qwen36TextConfig,
     pub(super) tensors: Vec<LoadedWeightTensor<B>>,
     pub(super) stats: B::Stats,
+    pub(super) scale_parameters: BTreeMap<String, WeightBuffer<B>>,
     pub(super) quantization: Option<Quantization>,
 }
 
 pub(crate) fn execute_qwen_load_plan<B: WeightLoadBackend>(
     plan: &QwenLoadPlan,
     mut backend: B,
-    stream: *mut c_void,
+    ctx: &CudaCtx,
 ) -> LoadResult<LoadedWeightPlan<B>> {
     let mut names = BTreeSet::new();
     for entry in &plan.entries {
@@ -145,6 +147,7 @@ pub(crate) fn execute_qwen_load_plan<B: WeightLoadBackend>(
             return Err(WeightLoadError::tensor_table("duplicate loaded tensor"));
         }
     }
+    let mut preparation = super::prepare::Preparation::plan(plan)?;
     let files = open_plan_files(plan)?;
     let mut spans = Vec::with_capacity(plan.entries.len());
     for entry in &plan.entries {
@@ -213,23 +216,40 @@ pub(crate) fn execute_qwen_load_plan<B: WeightLoadBackend>(
                     bytes: *bytes,
                 },
                 &spans[idx],
-                stream,
+                ctx.stream,
             )
             .map_err(WeightLoadError::Backend)?;
     }
 
     for idx in zero_order {
         backend
-            .zero_fill(&spans[idx], stream)
+            .zero_fill(&spans[idx], ctx.stream)
             .map_err(WeightLoadError::Backend)?;
     }
 
-    let (buffers, stats) = backend.finish(stream).map_err(WeightLoadError::Backend)?;
-    let tensors = pair_loaded_tensors(plan, spans, buffers)?;
+    let prepared = preparation.enqueue(&mut backend, &spans, ctx);
+    // Finish also settles any transfers submitted before a preparation error.
+    // An unsuccessful finish does not establish that host uploads are complete.
+    let finished = backend.finish(ctx.stream);
+    let (mut buffers, stats) = match finished {
+        Ok(result) => result,
+        Err(status) => {
+            std::mem::forget(preparation);
+            return Err(WeightLoadError::Backend(status));
+        }
+    };
+    prepared?;
+    if buffers.len() < plan.entries.len() {
+        return Err(WeightLoadError::tensor_table("missing loaded buffers"));
+    }
+    let extra = buffers.split_off(plan.entries.len());
+    let mut tensors = pair_loaded_tensors(plan, spans, buffers)?;
+    let scale_parameters = preparation.commit(&mut tensors, extra)?;
     Ok(LoadedWeightPlan {
         config: plan.config.clone(),
         tensors,
         stats,
+        scale_parameters,
         quantization: plan.quantization.clone(),
     })
 }
