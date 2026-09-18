@@ -69,7 +69,7 @@ HTML = r'''<!doctype html>
 <p id="mixed" class="foot" hidden>Mixed models: differences include model architecture and quantization, not just changes across commits.</p>
 <section class="chart-panel" aria-label="Benchmark comparison"><div class="chart-heading"><strong id="chart-title"></strong><span><span class="legend"><i class="dot"></i> Latest run</span> · Oldest → newest</span></div><div class="axis-row"><span class="axis-label">Commit / configuration</span><div class="axis" id="axis"></div></div><div id="chart"></div></section>
 <section class="detail" id="detail" aria-live="polite"></section>
-<p class="foot">Each bar is one recorded run; repeated commits retain their separate measurements. The default view selects the latest recorded model. Model IDs match the models directory, including separate -nvfp4 variants. Workloads are separated by prompt length and measured decode steps. Precision, kernel settings and loading strategy changed over this history, so adjacent bars are not necessarily controlled A/B comparisons. Missing historical metadata is shown as “not recorded”. The chart contains the core JSON files in this directory; source links open the original measurements.</p>
+<p class="foot">Each bar is one recorded run; repeated commits retain their separate measurements. The default view selects Qwen3.8-27B NVFP4. Model IDs match the models directory, including separate -nvfp4 variants. Workloads are separated by prompt length and measured decode steps. Precision, kernel settings and loading strategy changed over this history, so adjacent bars are not necessarily controlled A/B comparisons. Missing historical metadata is shown as “not recorded”. The chart contains the core JSON files in this directory; source links open the original measurements.</p>
 <noscript><p>This interactive chart needs JavaScript enabled. All data is embedded in this file; no network access is required.</p></noscript>
 </main>
 <script id="benchmark-data" type="application/json">__DATA__</script>
@@ -81,9 +81,10 @@ const metrics = {tps:{label:'Decode throughput',unit:'tok/s',direction:'Higher i
 const escape = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const format = n => Number(n).toLocaleString('en-US',{minimumFractionDigits:3,maximumFractionDigits:3});
 const stamp = s => s.replace('T',' ').slice(0,19)+' UTC';
-const models = [...new Set(runs.map(r=>r.model_name))].sort();
+const defaultModel = 'qwen3.8-27b-nvfp4';
+const models = [...new Set([defaultModel,...runs.map(r=>r.model_name)])].sort();
 for(const model of models){const opt=document.createElement('option');opt.value=model;opt.textContent=model;$('model').append(opt);}
-$('model').value=runs.at(-1)?.model_name||'all';
+$('model').value=defaultModel;
 const workloads = [...new Set(runs.map(r=>`${r.prompt}/${r.samples}`))].sort((a,b)=>Number(a.split('/')[0])-Number(b.split('/')[0]));
 for(const key of workloads){const [p,n]=key.split('/');const opt=document.createElement('option');opt.value=key;opt.textContent=`${Number(p).toLocaleString()} prompt / ${n} decode`; $('workload').append(opt);}
 const params = new URLSearchParams(location.search);
