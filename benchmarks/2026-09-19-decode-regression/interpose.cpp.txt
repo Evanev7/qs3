@@ -1,0 +1,55 @@
+// Isolated diagnostic: record exact Lt recipe/bindings and optionally relocate workspace.
+#include <cublasLt.h>
+#include <cuda_runtime_api.h>
+#include <dlfcn.h>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <set>
+#include <tuple>
+
+extern "C" cublasStatus_t cublasLtMatmul(cublasLtHandle_t handle,
+ cublasLtMatmulDesc_t desc,const void* alpha,const void* a,cublasLtMatrixLayout_t ad,
+ const void* b,cublasLtMatrixLayout_t bd,const void* beta,const void* c,
+ cublasLtMatrixLayout_t cd,void* d,cublasLtMatrixLayout_t dd,
+ const cublasLtMatmulAlgo_t* algo,void* workspace,size_t capacity,cudaStream_t stream) {
+ static auto run=reinterpret_cast<decltype(&cublasLtMatmul)>(dlsym(RTLD_NEXT,"cublasLtMatmul"));
+ static auto attr=reinterpret_cast<decltype(&cublasLtMatrixLayoutGetAttribute)>(dlsym(RTLD_NEXT,"cublasLtMatrixLayoutGetAttribute"));
+ static auto allocate=reinterpret_cast<decltype(&cudaMalloc)>(dlsym(RTLD_NEXT,"cudaMalloc"));
+ static const char* mode=std::getenv("DR_WORKSPACE_OFFSET");
+ static void* replacement=nullptr;
+ static size_t replacement_capacity=0;
+ if(mode && capacity) {
+  if(!replacement) {
+   size_t offset=std::strtoull(mode,nullptr,10);
+   void* base=nullptr;
+   if(allocate(&base,capacity+offset)!=cudaSuccess)std::abort();
+   replacement=static_cast<char*>(base)+offset;replacement_capacity=capacity;
+   // Allocation lives until this one-model diagnostic process exits.
+  }
+  if(capacity>replacement_capacity)std::abort();
+  if(std::strcmp(mode,"alternate")!=0)workspace=replacement;
+ }
+ uint64_t ar=0,ac=0,br=0,bc=0;size_t written=0;
+ attr(ad,CUBLASLT_MATRIX_LAYOUT_ROWS,&ar,sizeof(ar),&written);
+ attr(ad,CUBLASLT_MATRIX_LAYOUT_COLS,&ac,sizeof(ac),&written);
+ attr(bd,CUBLASLT_MATRIX_LAYOUT_ROWS,&br,sizeof(br),&written);
+ attr(bd,CUBLASLT_MATRIX_LAYOUT_COLS,&bc,sizeof(bc),&written);
+ if(mode && std::strcmp(mode,"alternate")==0 && ar==5120 && ac==10240 && br==5120 && bc==1) {
+  static unsigned calls=0;
+  if((calls/48)%2)workspace=replacement;
+  ++calls;
+ }
+ static std::set<std::tuple<const void*,uint64_t,uint64_t,uint64_t,uint64_t>> seen;
+ if(seen.emplace(a,ar,ac,br,bc).second) {
+  std::fprintf(stderr,"DR a=%p b=%p d=%p workspace=%p bytes=%zu a_shape=%lux%lu b_shape=%lux%lu algo=",a,b,d,workspace,capacity,ar,ac,br,bc);
+  for(size_t i=0;i<sizeof(*algo);++i)std::fprintf(stderr,"%02x",reinterpret_cast<const unsigned char*>(algo)[i]);
+  static auto config=reinterpret_cast<decltype(&cublasLtMatmulAlgoConfigGetAttribute)>(dlsym(RTLD_NEXT,"cublasLtMatmulAlgoConfigGetAttribute"));
+  for(auto key:{CUBLASLT_ALGO_CONFIG_ID,CUBLASLT_ALGO_CONFIG_TILE_ID,CUBLASLT_ALGO_CONFIG_SPLITK_NUM,CUBLASLT_ALGO_CONFIG_REDUCTION_SCHEME,CUBLASLT_ALGO_CONFIG_CTA_SWIZZLING,CUBLASLT_ALGO_CONFIG_CUSTOM_OPTION,CUBLASLT_ALGO_CONFIG_STAGES_ID,CUBLASLT_ALGO_CONFIG_CLUSTER_SHAPE_ID}) {
+   unsigned value=0;size_t size=0;auto status=config(algo,key,&value,sizeof(value),&size);
+   std::fprintf(stderr," config%d=%u(status=%d)",(int)key,value,(int)status);
+  }
+  std::fprintf(stderr,"\n");
+ }
+ return run(handle,desc,alpha,a,ad,b,bd,beta,c,cd,d,dd,algo,workspace,capacity,stream);
+}

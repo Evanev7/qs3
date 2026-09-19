@@ -1,0 +1,24 @@
+"""Alternate existing committed binaries; no build or runtime-source modifications."""
+import json,os,subprocess
+from pathlib import Path
+root=Path.home()/'qs3'
+out=root/'.prototypes/out/decode-regression-repeat';out.mkdir(exist_ok=True)
+driver=out/'driver-libs';driver.mkdir(exist_ok=True)
+for pattern in ['libcuda.so*','libnvidia-*.so*']:
+ for library in Path('/lib/aarch64-linux-gnu').glob(pattern):
+  target=driver/library.name
+  if not target.exists():target.symlink_to(library)
+binaries=json.loads((root/'.prototypes/decode_regression/binaries.json').read_text())
+env=dict(os.environ,QS3_QWEN36_MODEL_DIR=str(Path.home()/'.cache/huggingface/hub/models--nvidia--Qwen3.8-27B-NVFP4/snapshots/dbb8f445b3145f8a4c18ddc769f032d57d32867c'),QS3_BENCH_CONTEXT_TOKENS='102',QS3_BENCH_DECODE_SAMPLES='32')
+env['LD_LIBRARY_PATH']=str(driver)
+env.pop('QS3_PROFILE',None)
+results=[]
+for trial in range(3):
+ for rev in (list(binaries) if trial%2==0 else list(reversed(binaries))):
+  name=f'{trial}-{rev}'
+  with (out/(name+'.json')).open('w') as f,(out/(name+'.log')).open('w') as log:
+   subprocess.run([binaries[rev],'--measure-pass'],env=env,stdout=f,stderr=log,check=True)
+  d=json.loads((out/(name+'.json')).read_text());m=d.get('measurement',d)
+  row=dict(trial=trial,rev=rev,decode_p50_ms=m['decode']['p50_ms'],prefill_p50_ms=m['prefill']['p50_ms'],tokens=m['decode']['generated_token_ids'])
+  results.append(row);print(json.dumps({k:v for k,v in row.items() if k!='tokens'}),flush=True)
+  (out/'summary.json').write_text(json.dumps(results,indent=2)+'\n')

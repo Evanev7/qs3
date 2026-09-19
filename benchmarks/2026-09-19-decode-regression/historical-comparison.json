@@ -1,0 +1,98 @@
+[
+  {
+    "artifact": "benchmarks/2026-09-18T225405.036650551Z-df6f07e.json",
+    "revision": "df6f07e",
+    "prompt_tokens": 102,
+    "unprofiled_decode_p50_ms": 93.2450715,
+    "profiled_decode_p50_ms": 93.90915249999999,
+    "fp8_64x128_ms_per_decode": 16.493249,
+    "fp8_calls_per_decode": 48.0,
+    "gdn_recurrence_ms_per_decode": 0.933537,
+    "kernel_ms_per_decode": 92.1510645,
+    "gpu_idle_ms_per_decode": 2.1294265
+  },
+  {
+    "artifact": "benchmarks/2026-09-18T225438.212289570Z-df6f07e.json",
+    "revision": "df6f07e",
+    "prompt_tokens": 1024,
+    "unprofiled_decode_p50_ms": 93.22599199999999,
+    "profiled_decode_p50_ms": 94.0891805,
+    "fp8_64x128_ms_per_decode": 15.975126875,
+    "fp8_calls_per_decode": 48.0,
+    "gdn_recurrence_ms_per_decode": 0.9734435,
+    "kernel_ms_per_decode": 92.23583659765625,
+    "gpu_idle_ms_per_decode": 2.17930027734375
+  },
+  {
+    "artifact": "benchmarks/2026-09-19T005405.800847842Z-b143912.json",
+    "revision": "b143912",
+    "prompt_tokens": 102,
+    "unprofiled_decode_p50_ms": 96.313076,
+    "profiled_decode_p50_ms": 93.9017095,
+    "fp8_64x128_ms_per_decode": 16.410539,
+    "fp8_calls_per_decode": 48.0,
+    "gdn_recurrence_ms_per_decode": 0.945698,
+    "kernel_ms_per_decode": 92.11659771875,
+    "gpu_idle_ms_per_decode": 2.14697028125
+  },
+  {
+    "artifact": "benchmarks/2026-09-19T005439.162702917Z-b143912.json",
+    "revision": "b143912",
+    "prompt_tokens": 1024,
+    "unprofiled_decode_p50_ms": 94.146854,
+    "profiled_decode_p50_ms": 94.811387,
+    "fp8_64x128_ms_per_decode": 16.731996875,
+    "fp8_calls_per_decode": 48.0,
+    "gdn_recurrence_ms_per_decode": 0.942157125,
+    "kernel_ms_per_decode": 93.009231359375,
+    "gpu_idle_ms_per_decode": 2.167972015625
+  },
+  {
+    "artifact": "benchmarks/2026-09-19T012145.016839315Z-a6cb1ba.json",
+    "revision": "a6cb1ba",
+    "prompt_tokens": 102,
+    "unprofiled_decode_p50_ms": 96.39508500000001,
+    "profiled_decode_p50_ms": 97.10395249999999,
+    "fp8_64x128_ms_per_decode": 19.373518,
+    "fp8_calls_per_decode": 48.0,
+    "gdn_recurrence_ms_per_decode": 0.949772,
+    "kernel_ms_per_decode": 95.2893115625,
+    "gpu_idle_ms_per_decode": 2.1088644375
+  },
+  {
+    "artifact": "benchmarks/2026-09-19T012210.420121283Z-a6cb1ba.json",
+    "revision": "a6cb1ba",
+    "prompt_tokens": 1024,
+    "unprofiled_decode_p50_ms": 94.22949799999999,
+    "profiled_decode_p50_ms": 94.89841200000001,
+    "fp8_64x128_ms_per_decode": 16.75447375,
+    "fp8_calls_per_decode": 48.0,
+    "gdn_recurrence_ms_per_decode": 0.944521625,
+    "kernel_ms_per_decode": 93.1511764140625,
+    "gpu_idle_ms_per_decode": 2.1487628359375
+  },
+  {
+    "artifact": "benchmarks/2026-09-19T134627.635456349Z-f284ac6.json",
+    "revision": "f284ac6",
+    "prompt_tokens": 102,
+    "unprofiled_decode_p50_ms": 96.511438,
+    "profiled_decode_p50_ms": 94.4104955,
+    "fp8_64x128_ms_per_decode": 16.704511,
+    "fp8_calls_per_decode": 48.0,
+    "gdn_recurrence_ms_per_decode": 0.951175,
+    "kernel_ms_per_decode": 92.62685115625,
+    "gpu_idle_ms_per_decode": 2.13075784375
+  },
+  {
+    "artifact": "benchmarks/2026-09-19T134653.185391398Z-f284ac6.json",
+    "revision": "f284ac6",
+    "prompt_tokens": 1024,
+    "unprofiled_decode_p50_ms": 94.59801499999999,
+    "profiled_decode_p50_ms": 95.308438,
+    "fp8_64x128_ms_per_decode": 16.857167,
+    "fp8_calls_per_decode": 48.0,
+    "gdn_recurrence_ms_per_decode": 0.945998625,
+    "kernel_ms_per_decode": 93.45848174609375,
+    "gpu_idle_ms_per_decode": 2.17497350390625
+  }
+]

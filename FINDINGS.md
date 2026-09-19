@@ -20,7 +20,7 @@ or adopting a candidate. TODO.md is the implementation checklist.
 ## Active work and ownership
 
 GPU checkout: `sp10@sp10:qs3`; one GPU workflow at a time.
-This experiment pass is finished; no GPU workflow is running or reserved.
+No GPU workflow is running or reserved. DR01 diagnostics are archived below.
 Working sources: `.prototypes/kernel_replacements/`; curated snapshots/results
 are linked below. Update ownership here before starting another probe.
 Do not run `remote.sh test`, `benchmark`, or another GPU probe concurrently.
@@ -35,6 +35,7 @@ Preserve Rust scheduling/state transactions and AOT inference without Python/JIT
 | KR05 | cuTile Rust | AOT SM121 native launches pass: SAXPY 64/64, NVFP4 768/768 exact with isolated tileiras 13.4.92 | Real-shape performance and useful fusion; 13.3 compiler fails NVFP4 on SM121 |
 | KR06 | vLLM fused SiLU×up + NVFP4 quantization | 42/42 packed-value/scale cases exact; K17408 M1 5.38→1.87 µs, M1024 655→359 µs | Small production implementation, then full-model/tests/benchmark |
 | KR07 | Row-dependent NVFP4 selection | Adopted: N32 below 128 rows, N64 from 128, QuTLASS from 512; configured AOT | Small decode/MTP shapes retain N32; revisit when measuring sequential batches |
+| DR01 | Decode slowdown following `b143912` | Short workload +3.1 ms; captured FP8 QKV group explains ~2.96 ms; same binary can run fast; workspace-only test negative | [Evidence](benchmarks/2026-09-19-decode-regression/README.md); isolate algorithm and activation/output placement |
 | KR08 | 16 MiB cuBLASLt workspace | Hold: ~4.9% faster decode, changes outputs at 55/29 tokens | Same-prefix vLLM reference and selected-algorithm investigation; keep 64 MiB default |
 
 ## Rules for comparing candidates
@@ -52,13 +53,13 @@ Current artifacts and pinned sources: [kernel replacement experiments](benchmark
 
 ## Next experiment
 
-KR06 has the strongest exact intermediate evidence. Start from
-`.prototypes/kernel_replacements/silu_quant_native.cu`; replace the probe's
-vLLM helper copy with existing FlashInfer packed-vector/conversion helpers,
-then rerun `silu_quant_probe.py`. Only wire Rust dispatch after packed-byte and
-scale equality holds. Full `./remote.sh test`, the saved-logit diagnostic, and
-`./remote.sh benchmark` are the adoption checks, in that order. KR03 is the
-larger possible decode gain, but its reduction differences require model evidence.
+Decode is the priority. DR01 narrows the regression to the large FP8 GDN QKV
+projection, but its process-dependent trigger remains unresolved. Compare
+public cuBLASLt algorithm attributes and controlled activation/output bindings.
+KR03 targets this same projection: qualify its native AOT FP32 reducer against
+the production library and real-model logits before integration, including
+small batches through 16 rows. KR06 remains an exact-intermediate fusion
+candidate with a smaller expected decode gain.
 
 ## Ideas to retain
 

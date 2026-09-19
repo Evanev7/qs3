@@ -1,0 +1,12 @@
+[
+  {
+    "artifact": "benchmarks/2026-09-19-decode-regression/alternate/0-b143912-alternate.json",
+    "original_workspace_p50_ms": 93.73750150000001,
+    "replacement_workspace_p50_ms": 93.72689249999999
+  },
+  {
+    "artifact": "benchmarks/2026-09-19-decode-regression/alternate/1-b143912-alternate.json",
+    "original_workspace_p50_ms": 93.8194775,
+    "replacement_workspace_p50_ms": 93.7485975
+  }
+]

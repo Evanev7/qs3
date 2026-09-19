@@ -249,7 +249,14 @@
 
 ## 6. Adopt and measure optimized providers
 
-Current experiment ownership/status is in `FINDINGS.md` (KR01–KR08).
+Current experiment ownership/status is in `FINDINGS.md` (KR01–KR08, DR01).
+
+- [ ] DR01: Resolve the repeated ~3 ms short-workload decode slowdown after
+  `b143912`. Traces localize a slow case to FP8 GDN QKV, not recurrence/idle.
+  Identical binaries can run fast or slow; within-process workspace alternation
+  did not reproduce it. Next: public Lt recipe attributes and controlled
+  activation/output allocation, then prioritize KR03 real-model qualification.
+  Evidence: `benchmarks/2026-09-19-decode-regression/README.md`.
 
 - [ ] KR01: AOT-port and measure vLLM's fused Q/K norm + partial RoPE + gate
   extraction on the actual 27B geometry; preserve BF16 boundaries and validate
