@@ -6,11 +6,13 @@ readme = "README.md"
 requires-python = ">=3.14,<3.15"
 dependencies = [
     "dacite>=1.9.2",
+    "nvidia-cutlass-dsl[cu13]==4.6.2",
     "triton==3.8.0",
 ]
 
 [project.scripts]
 qstriton = "qstriton.builder:main"
+qscute = "qscute.builder:main"
 qwen36-vectors = "qwen36_vectors:main"
 
 [build-system]
@@ -19,7 +21,7 @@ build-backend = "uv_build"
 
 [tool.uv.build-backend]
 module-root = "pysrc"
-module-name = ["qsutil", "qstriton", "qwen36_vectors"]
+module-name = ["qsutil", "qstriton", "qscute", "qwen36_vectors"]
 
 [dependency-groups]
 dev = [
@@ -28,3 +30,7 @@ dev = [
     "ruff>=0.13,<1",
     "ty>=0.0.61,<0.1",
 ]
+
+[tool.ty.environment]
+# CuTe adds this directory through executable .pth code, which ty does not run.
+extra-paths = [".venv/lib/python3.14/site-packages/nvidia_cutlass_dsl/dsl_packages"]

@@ -37,3 +37,12 @@ class TritonSpec:
 
 def parse[T](source: str, ty: type[T]) -> T:
     return dacite.from_dict(ty, json.loads(source), config=dacite.Config(strict=True))
+
+
+@dataclass
+class CuteSpec:
+    precision: dict[str, str]
+    alignments: dict[str, int]
+    constants: dict[str, bool | int | float | str | None | DtypeConstant]
+    # CuTe owns launch geometry in its host entrypoint. These are compiler options.
+    options: dict[str, bool | int | str]

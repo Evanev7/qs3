@@ -32,7 +32,7 @@ class VectorConfig:
     has_experts: bool
 
     @classmethod
-    def read(cls, path: str | Path) -> "VectorConfig":
+    def read(cls, path: str | Path) -> VectorConfig:
         return parse(Path(path).read_text(), cls)
 
     def json(self) -> str:

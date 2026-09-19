@@ -216,6 +216,9 @@
 
 ## 4. Capture steady decode
 
+- [ ] Explore explicit CUDA graph construction from Rust: define nodes and
+  dependencies directly, instantiate once, and launch the prepared graph.
+  Evaluate this as an alternative to stream capture.
 - [ ] Make decode buffers, workspaces, and device metadata addresses persistent.
   Complete provider initialization and preparation before capture; replay must
   not allocate, compile kernels, or select algorithms.
@@ -263,6 +266,13 @@ Current experiment ownership/status is in `FINDINGS.md` (KR01–KR08, DR01).
   prefill/decode, positions, reset/rebuild, and full-model logits.
 - [x] KR03: Qualify native b12x FP8 CuTe GEMM + AOT Triton FP32 reducer.
   Three M1/N10240/K5120 fixtures pass tolerance; rare BF16 differences remain.
+- [ ] KR03: Finish qscute build integration and GPU qualification. Isolated
+  compiler, direct Rust MLIR bindings, and SAXPY source exist; 24 local build-tools
+  tests pass, including SM121/AArch64 F32/BF16 exports. Full `./remote.sh test`
+  passes with direct Rust calls: F32/BF16 CUDA execution, stream ordering, tail
+  guards, duplicate-load panics, and unload/reload. Main Ninja/Nix linking and
+  model kernel integration remain pending. For TMA kernels, consider a separate
+  preparation API: b12x currently constructs descriptors in its host entrypoint.
 - [ ] KR03: Compare against production cuBLASLt, then full-model logits. FP32 split-K probe gains ~19% on largest M1 projection;
   default BF16 atomics change outputs. Other shapes have smaller gains/regressions.
 - [x] KR04/KR07: Adopt QuTLASS prefill and AOT row selection. Full tests pass;

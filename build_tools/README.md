@@ -12,8 +12,8 @@ just ninja
 ninja -C build triton/kernels
 ```
 
-`build_tools/` is one uv project; `pysrc/` contains `qstriton`, `qsutil`, and
-`qwen36_vectors`. Raw kernels live in `triton_kernels/`. In `models/config.nix`,
+`build_tools/` is one uv project; `pysrc/` contains `qstriton`, `qscute`, `qsutil`, and
+`qwen36_vectors`. Raw kernels live in `triton_kernels/` and `cute_kernels/`. In `models/config.nix`,
 each Triton recipe's attribute name determines output filenames; `source` is
 repository-relative and `spec` supplies compiler inputs.
 
@@ -45,7 +45,8 @@ rejects incompatible checkpoint configuration before reading the weight index or
 allocating CUDA memory. Small model fixtures and randomized weight constructors
 exist only in the crate's test build; `just model-test` runs their lifecycle tests.
 
-See [qstriton](pysrc/qstriton/README.md) for the compiler interface and
+See [qstriton](pysrc/qstriton/README.md) and [qscute](pysrc/qscute/README.md)
+for the compiler interfaces and
 [qwen36_vectors](pysrc/qwen36_vectors/README.md) for vector generation.
 
 The gitignored `remote.sh` prepares the remote CUDA/Python environment and runs

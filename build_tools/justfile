@@ -3,11 +3,11 @@ cuda_lib_path := cuda_root + "/lib64:" + cuda_root + "/lib:"
 qwen36_vectors := ".venv/bin/qwen36-vectors"
 
 fmt:
-        .venv/bin/ruff format . ../triton_kernels
+        .venv/bin/ruff format . ../triton_kernels ../cute_kernels
 
 check:
-        .venv/bin/ruff check --fix . ../triton_kernels
-        .venv/bin/ty check --project . . ../triton_kernels
+        .venv/bin/ruff check --fix . ../triton_kernels ../cute_kernels
+        .venv/bin/ty check --project . . ../triton_kernels ../cute_kernels
 
 uv-sync:
         uv sync --locked
@@ -26,7 +26,7 @@ unit-test:
         .venv/bin/python -m pytest tests
 
 python-test: check unit-test
-        .venv/bin/ruff format --check . ../triton_kernels
+        .venv/bin/ruff format --check . ../triton_kernels ../cute_kernels
         just --justfile ../justfile ninja
         ninja -C ../build vectors/config.json
         {{qwen36_vectors}} generate-all --config ../build/vectors/config.json --output-root ../build/vectors/python-test --clean
@@ -36,3 +36,8 @@ triton-test:
         mkdir -p ../build/triton-test
         nix eval --json --file ../models/config.nix > ../build/triton-test/config.json
         LIBRARY_PATH="{{cuda_lib_path}}:${LIBRARY_PATH:-}" .venv/bin/python pysrc/qstriton/test.py ../build/triton-test/config.json
+
+cute-test:
+        mkdir -p ../build/cute-test
+        nix eval --json --file ../models/config.nix > ../build/cute-test/config.json
+        LIBRARY_PATH="{{cuda_lib_path}}:${LIBRARY_PATH:-}" .venv/bin/python pysrc/qscute/test.py ../build/cute-test/config.json
