@@ -91,7 +91,7 @@
                 "${toString ./.}/build_tools/uv.lock"
               ]
               || (lib.hasPrefix "${toString ./.}/triton_kernels/" path && lib.hasSuffix ".py" path)
-              || builtins.match ".*\\.(c|cu|h|inc|ninja)$" path != null
+              || builtins.match ".*\\.(c|cu|cuh|h|inc|ninja)$" path != null
             );
         };
         flashinferSrc = pkgs.fetchFromGitHub {
@@ -112,7 +112,7 @@
                 relative = lib.removePrefix "${toString ./.}/" path;
               in
               (type == "directory" && (path == toString ./. || relative == "build_tools"))
-              || builtins.match "[^/]*\\.(c|cu|h|inc)" relative != null
+              || builtins.match "[^/]*\\.(c|cu|cuh|h|inc)" relative != null
               || builtins.elem relative [
                 "build_tools/cuda.ninja"
               ];
