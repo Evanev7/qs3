@@ -12,6 +12,7 @@ build: ninja
         cargo build --lib
 
 test:
+        python3 -m unittest discover -s benchmarks -p 'test_gpu_timeline.py'
         just build_tools/python-test triton-test
         just cargo-test cuda-test
 

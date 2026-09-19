@@ -437,16 +437,16 @@ fn summarize(database: &Connection, steps: f64) -> Result<JsonValue> {
     ]))
 }
 
-fn read_pass(json: &str, profiled: bool) -> Result<JsonValue> {
+fn read_pass(json: &str, phase: &str) -> Result<JsonValue> {
     let value: JsonValue = json.trim().parse()?;
     let m = field(&value, "measurement")?;
     let e = field(m, "execution")?;
     if field(m, "profile")?.get::<String>().map(String::as_str) != Some("release")
-        || field(e, "cuda_profiler_range")?.get::<bool>() != Some(&profiled)
+        || field(e, "cuda_profiler_range")?.get::<bool>() != Some(&(phase != "none"))
         || field(e, "cuda_profiler_phase")?
             .get::<String>()
             .map(String::as_str)
-            != Some(if profiled { "decode" } else { "none" })
+            != Some(phase)
     {
         return Err("benchmark pass used the wrong build or profiling mode".into());
     }
@@ -686,7 +686,7 @@ pub(super) fn run() -> Result<JsonValue> {
     logged(&mut benchmark, &directory, "benchmark")?;
     let mut result = read_pass(
         &fs::read_to_string(directory.join("benchmark.stdout.log"))?,
-        false,
+        "none",
     )?;
 
     let mut capture = Command::new("nsys");
@@ -715,7 +715,7 @@ pub(super) fn run() -> Result<JsonValue> {
     if lines.len() != 1 {
         return Err("Nsight pass did not emit exactly one benchmark result".into());
     }
-    let profiled = read_pass(lines[0], true)?;
+    let profiled = read_pass(lines[0], "decode")?;
     validate_pair(&result, &profiled)?;
     let database = directory.join("decode.sqlite");
     eprintln!("Exporting and reducing the CUDA trace");
@@ -762,6 +762,62 @@ pub(super) fn run() -> Result<JsonValue> {
         &mut summary,
         "profiled_measurement",
         field(&profiled, "measurement")?.clone(),
+    )?;
+    // A separate capture preserves the unprofiled measurements and the warmed
+    // decode trace. The existing workload marks its first measured prefill only.
+    let mut prefill_capture = Command::new("nsys");
+    prefill_capture
+        .args([
+            "profile",
+            "--trace=cuda",
+            "--sample=none",
+            "--cpuctxsw=none",
+            "--capture-range=cudaProfilerApi",
+            "--capture-range-end=stop",
+            "--cuda-memory-usage=true",
+        ])
+        .arg(format!("--output={}", directory.join("prefill").display()))
+        .arg(&executable)
+        .arg("--measure-pass")
+        .env("QS3_PROFILE", "prefill");
+    eprintln!("Capturing warmed prefill with Nsight Systems");
+    logged(&mut prefill_capture, &directory, "prefill")?;
+    let log = fs::read_to_string(directory.join("prefill.stdout.log"))?;
+    let lines: Vec<_> = log.lines().filter(|line| line.starts_with('{')).collect();
+    if lines.len() != 1 {
+        return Err("prefill pass did not emit exactly one benchmark result".into());
+    }
+    let prefill = read_pass(lines[0], "prefill")?;
+    validate_pair(&result, &prefill)?;
+    let prefill_path = directory.join("prefill.sqlite");
+    logged(
+        Command::new("nsys")
+            .args(["export", "--type=sqlite"])
+            .arg(format!("--output={}", prefill_path.display()))
+            .arg(directory.join("prefill.nsys-rep")),
+        &directory,
+        "prefill-export",
+    )?;
+    let prefill_database =
+        Connection::open_with_flags(prefill_path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let count: i64 = prefill_database.query_row(
+        "SELECT COUNT(*) FROM CUPTI_ACTIVITY_KIND_KERNEL",
+        [],
+        |row| row.get(0),
+    )?;
+    if count == 0 {
+        return Err("prefill capture contains no CUDA kernels".into());
+    }
+    insert(
+        &mut summary,
+        "prefill",
+        object([
+            ("kernel_count", (count as f64).into()),
+            (
+                "profiled_measurement",
+                field(&prefill, "measurement")?.clone(),
+            ),
+        ]),
     )?;
     insert(&mut result, "nsight", summary)?;
     Ok(result)
@@ -917,17 +973,21 @@ mod tests {
         let mut profiled = plain.clone();
         profiled["measurement"]["execution"]["cuda_profiler_range"] = true.into();
         profiled["measurement"]["execution"]["cuda_profiler_phase"] = "decode".to_owned().into();
-        read_pass(&plain.stringify()?, false)?;
-        read_pass(&profiled.stringify()?, true)?;
+        read_pass(&plain.stringify()?, "none")?;
+        read_pass(&profiled.stringify()?, "decode")?;
         validate_pair(&plain, &profiled)?;
-        assert!(read_pass(&plain.stringify()?, true).is_err());
+        profiled["measurement"]["execution"]["cuda_profiler_phase"] = "prefill".to_owned().into();
+        read_pass(&profiled.stringify()?, "prefill")?;
+        validate_pair(&plain, &profiled)?;
+        assert!(read_pass(&profiled.stringify()?, "decode").is_err());
+        assert!(read_pass(&plain.stringify()?, "decode").is_err());
         profiled["measurement"]["decode"]["generated_token_ids"][2] = 99.0.into();
         assert!(validate_pair(&plain, &profiled).is_err());
         profiled = plain.clone();
         profiled["measurement"]["execution"]["precision"] = "fp8".to_owned().into();
         assert!(validate_pair(&plain, &profiled).is_err());
         profiled["measurement"]["decode"]["samples"] = 32.0.into();
-        assert!(read_pass(&profiled.stringify()?, false).is_err());
+        assert!(read_pass(&profiled.stringify()?, "none").is_err());
         Ok(())
     }
 }

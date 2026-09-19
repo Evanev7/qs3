@@ -11,3 +11,5 @@ run_core_benchmark.sh
 remote.sh
 .prototypes
 benchmarks/performance.html
+
+benchmarks/*.gpu.html

@@ -137,7 +137,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         record(qs3::run_core_benchmark)
     } else if args == ["--help"] {
         println!(
-            "qs3-bench: run the core benchmark, then capture warmed decode with Nsight Systems.\n\
+            "qs3-bench: run the core benchmark, then capture warmed prefill and decode with Nsight Systems.\n\
              Emits one JSON result; measurement contains unprofiled throughput and nsight\n\
              contains GPU timelines and CPU samples. Requires host nsys and process-tree\n\
              perf sampling permissions (perf_event_paranoid <= 2). No sudo is used.\n\
