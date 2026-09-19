@@ -1,0 +1,118 @@
+/*
+ * Copyright (C) 2025 Roberto L. Castro (Roberto.LopezCastro@ist.ac.at). All Rights Reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *       http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#include "cutlass/cutlass.h"
+#include "cutlass/gemm/collective/collective_builder.hpp"
+#include "cutlass/epilogue/collective/collective_builder.hpp"
+#include "cutlass/gemm/device/gemm_universal_adapter.h"
+#include "cutlass/gemm/kernel/gemm_universal.hpp"
+#include "cutlass/util/packed_stride.hpp"
+
+#include "cutlass/util/command_line.h"
+#include "cutlass/util/distribution.h"
+#include "cutlass/util/host_tensor.h"
+#include "cutlass/util/tensor_view_io.h"
+#include "cutlass/util/reference/device/gemm.h"
+#include "cutlass/util/reference/device/tensor_compare.h"
+#include "cutlass/util/reference/host/tensor_fill.h"
+#include "cutlass/util/reference/host/gett.hpp"
+#include "cutlass/util/reference/host/tensor_norm.h"
+#include "cutlass/util/reference/host/tensor_compare.h"
+#include "cutlass/detail/sm100_blockscaled_layout.hpp"
+
+
+
+using namespace cute;
+
+template <typename MmaTileShape, typename ClusterShape, typename PerSmTileShape_MNK,
+          typename ArchTag,
+          typename ElementA, typename LayoutATag, int AlignmentA,
+          typename ElementB, typename LayoutBTag, int AlignmentB>
+struct FpGemm {
+    using ElementD = cutlass::bfloat16_t;
+    using ElementC = cutlass::bfloat16_t;
+    using LayoutCTag = cutlass::layout::RowMajor;
+    using LayoutDTag = cutlass::layout::RowMajor;
+    static constexpr int AlignmentD = 128 / cutlass::sizeof_bits<ElementD>::value;
+    static constexpr int AlignmentC = 128 / cutlass::sizeof_bits<ElementC>::value;
+
+    using ElementAccumulator = float;
+    using OperatorClass = cutlass::arch::OpClassBlockScaledTensorOp;
+
+    using CollectiveEpilogue =
+        typename cutlass::epilogue::collective::CollectiveBuilder<
+            ArchTag, OperatorClass,
+            PerSmTileShape_MNK, ClusterShape,
+            cutlass::epilogue::collective::EpilogueTileAuto,
+            ElementAccumulator, ElementAccumulator,
+            ElementC, LayoutCTag, AlignmentC,
+            ElementD, LayoutDTag, AlignmentD,
+            cutlass::epilogue::collective::EpilogueScheduleAuto
+            >::CollectiveOp;
+
+    using CollectiveMainloop =
+        typename cutlass::gemm::collective::CollectiveBuilder<
+            ArchTag, OperatorClass,
+            ElementA, LayoutATag, AlignmentA,
+            ElementB, LayoutBTag, AlignmentB,
+            ElementAccumulator,
+            MmaTileShape, ClusterShape,
+            cutlass::gemm::collective::StageCountAutoCarveout<
+                static_cast<int>(
+                    sizeof(typename CollectiveEpilogue::SharedStorage))>,
+            cutlass::gemm::collective::KernelScheduleAuto
+            >::CollectiveOp;
+
+    using GemmKernel =
+        cutlass::gemm::kernel::GemmUniversal<
+            Shape<int, int, int, int>,
+            CollectiveMainloop,
+            CollectiveEpilogue,
+            void>;
+
+    using Gemm =
+        cutlass::gemm::device::GemmUniversalAdapter<GemmKernel>;
+};
+
+
+#include <stdexcept>
+template<int TM> size_t invoke(void* out,const void* a,const void* b,const void* as,const void* bs,const float* alpha,int m,int n,int k,void* ws,size_t capacity,cudaStream_t stream) {
+ using Shape=cute::Shape<cute::Int<TM>,cute::_128,cute::_128>;
+ using G=typename FpGemm<Shape,cute::Shape<cute::_1,cute::_1,cute::_1>,Shape,cutlass::arch::Sm120,
+  cutlass::nv_float4_t<cutlass::float_e2m1_t>,cutlass::layout::RowMajor,32,
+  cutlass::nv_float4_t<cutlass::float_e2m1_t>,cutlass::layout::ColumnMajor,32>::Gemm;
+ using Config=typename G::GemmKernel::CollectiveMainloop::Sm1xxBlkScaledConfig;
+ auto sa=cutlass::make_cute_packed_stride(typename G::GemmKernel::StrideA{}, {m,k,1});
+ auto sb=cutlass::make_cute_packed_stride(typename G::GemmKernel::StrideB{}, {n,k,1});
+ auto sd=cutlass::make_cute_packed_stride(typename G::GemmKernel::StrideD{}, {m,n,1});
+ auto la=Config::tile_atom_to_shape_SFA(cute::make_shape(m,n,k,1));
+ auto lb=Config::tile_atom_to_shape_SFB(cute::make_shape(m,n,k,1));
+ typename G::Arguments args{cutlass::gemm::GemmUniversalMode::kGemm,{m,n,k,1},
+  {static_cast<typename G::ElementA const*>(a),sa,static_cast<typename G::ElementB const*>(b),sb,
+   static_cast<cutlass::float_ue4m3_t const*>(as),la,static_cast<cutlass::float_ue4m3_t const*>(bs),lb},
+  {{},static_cast<typename G::ElementD const*>(out),sd,static_cast<typename G::ElementD*>(out),sd}};
+ args.epilogue.thread.alpha_ptr=alpha;
+ size_t bytes=G::get_workspace_size(args);if(!out)return bytes;
+ if(bytes>capacity)throw std::runtime_error("workspace too small");
+ G gemm;
+ for(auto status:{gemm.can_implement(args),gemm.initialize(args,ws,stream)})
+  if(status!=cutlass::Status::kSuccess)throw std::runtime_error(cutlassGetStatusString(status));
+ auto status=gemm.run(stream);if(status!=cutlass::Status::kSuccess)throw std::runtime_error(cutlassGetStatusString(status));return bytes;
+}
+extern "C" size_t qs3_probe_qutlass(void* out,const void* a,const void* b,const void* as,const void* bs,const float* alpha,int m,int n,int k,void* ws,size_t cap,cudaStream_t stream) {
+ if(m<512)return invoke<128>(out,a,b,as,bs,alpha,m,n,k,ws,cap,stream);
+ return invoke<256>(out,a,b,as,bs,alpha,m,n,k,ws,cap,stream);
+}

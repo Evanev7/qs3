@@ -1,0 +1,21 @@
+#include <cuda.h>
+#include <cstdio>
+#include <cstdlib>
+#define CK(x) do { CUresult r=(x); if(r) {const char* s=nullptr;cuGetErrorString(r,&s);fprintf(stderr,"%s: %s\n",#x,s);return 1;} } while(0)
+int main(int argc,char** argv) {
+  if(argc!=2)return 2;
+  CK(cuInit(0)); CUdevice dev;CK(cuDeviceGet(&dev,0));CUcontext ctx;CK(cuDevicePrimaryCtxRetain(&ctx,dev));CK(cuCtxSetCurrent(ctx));
+  CUmodule mod;CK(cuModuleLoad(&mod,argv[1]));CUfunction fn;CK(cuModuleGetFunction(&fn,mod,"saxpy_entry"));
+  CUdeviceptr x,y;CK(cuMemAlloc(&x,64*4));CK(cuMemAlloc(&y,64*4));
+  float hx[64],hy[64];for(int i=0;i<64;i++){hx[i]=float(i-32)*.25f;hy[i]=float(i%7);}
+  CK(cuMemcpyHtoD(x,hx,sizeof(hx)));CK(cuMemcpyHtoD(y,hy,sizeof(hy)));
+  int dim=8,stride=1,tiles=4,tile=2;float a=1.5f;
+  // Signature emitted by pinned cutile-rs: pointer, shape, strides, tile shape,
+  // partition counts; scalar; read-only pointer, shape, strides.
+  void* args[]={&y,&dim,&dim,&dim,&stride,&tile,&tile,&tiles,&tiles,&a,&x,&dim,&dim,&dim,&stride};
+  CK(cuLaunchKernel(fn,4,4,1,1,1,1,0,nullptr,args,nullptr));CK(cuCtxSynchronize());
+  float actual[64];CK(cuMemcpyDtoH(actual,y,sizeof(actual)));
+  for(int i=0;i<64;i++)if(actual[i]!=a*hx[i]+hy[i]){fprintf(stderr,"mismatch %d: %g vs %g\n",i,actual[i],a*hx[i]+hy[i]);return 3;}
+  puts("64/64 exact; SM121 TileIR cubin launched by CUDA Driver API, no Rust/Python/compiler runtime");
+  CK(cuMemFree(x));CK(cuMemFree(y));CK(cuModuleUnload(mod));CK(cuDevicePrimaryCtxRelease(dev));
+}

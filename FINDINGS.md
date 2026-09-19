@@ -18,22 +18,25 @@ or adopting a candidate. TODO.md is the implementation checklist.
 ## Active work and ownership
 
 Owner: main agent. GPU checkout: `sp10@sp10:qs3`; one GPU workflow at a time.
-Working sources: `.prototypes/kernel_replacements/`. No GPU job currently active.
+Working sources: `.prototypes/kernel_replacements/`. Main agent owns ongoing
+kernel probes; check this handoff before taking the GPU.
 Do not run `remote.sh test`, `benchmark`, or another GPU probe concurrently.
 Preserve Rust scheduling/state transactions and AOT inference without Python/JIT.
 
 | ID | Candidate | Status / evidence | Next decisive check |
 | --- | --- | --- | --- |
-| KR01 | vLLM Triton fused Q/K norm + partial RoPE + gate extraction | Source inspection; directly replaces multiple attention-prep launches | AOT compile; compare outputs across positions, tails, and rows 1–16 / prefill; then full model |
+| KR01 | vLLM Triton fused Q/K norm + partial RoPE + gate extraction | 8.13→1.53 µs at M1, 404→253 µs at M1024; gate exact, Q/K differ | Match current RoPE/reduction; native AOT and full model before adoption |
 | KR02 | vLLM packed GDN decode / b12x batched recurrence | Source inspection; current prep + recurrence ~0.99 ms/token | Compare state layout/rounding and small batched sequence semantics; retain separate read/write state slots |
-| KR03 | b12x tensor FP8 / dense NVFP4 CuTeDSL | Investigating; projections dominate (~88 ms/token total) | Real projection shapes at M=1,2,4,8,16,128,1024; same operands; exported native execution |
-| KR04 | QuTLASS SM120 NVFP4 GEMM / fused quantization | Investigating pinned source | Compile without CMake; packing/global-scale compatibility and full cost including quantization |
-| KR05 | cuTile Rust | Investigating current upstream; host currently CUDA 13.0, tileiras absent | Pin source, check AOT/export path and compiler/hardware requirements before attempting integration |
+| KR03 | b12x tensor FP8 / dense NVFP4 CuTeDSL | FP8 M1 evicted 356→283 µs on largest projection, but BF16 atomic split-K changes outputs | Probe FP32 reduction; upstream four-slice selection fails, two-slice restriction needed |
+| KR04 | QuTLASS SM120 NVFP4 GEMM / fused quantization | Native compile and 16 shape checks pass; no decode gain; M1024 ~17% faster than N64DP | Repeat large-prefill comparison and test full-model/native integration cost |
+| KR05 | cuTile Rust | AOT SM121 cubin and native Driver API launch pass, 64/64 exact | Evaluate a useful model fusion; toolchain/library path recorded in experiment README |
 | KR06 | vLLM fused SiLU×up + NVFP4 quantization | Source available; scope includes BF16 rounding boundary | Same-input packed values/scales against current two-stage path |
 | KR07 | Large-prefill N=64 DP | 15.7% faster at M=1024, 69/69 logit rows exact at both tested workspaces | AOT shape selection after crossover measurement; not a GDN/MTP decode architecture decision |
 | KR08 | 16 MiB cuBLASLt workspace | Hold: ~4.9% faster decode, changes outputs at 55/29 tokens | Same-prefix vLLM reference and selected-algorithm investigation; keep 64 MiB default |
 
 ## Rules for comparing candidates
+
+Current artifacts and pinned sources: [kernel replacement experiments](benchmarks/2026-09-19-kernel-replacements/README.md).
 
 1. Record source commits, model/config/precision, shape, compiled flags, and toolchain.
 2. Record same-input numerical checks before timings; compare recurrent state too.

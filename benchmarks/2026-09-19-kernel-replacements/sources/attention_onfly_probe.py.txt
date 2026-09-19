@@ -1,0 +1,57 @@
+"""KR01: copied vLLM fused attention preparation against actual qs3 native ops."""
+import ctypes
+import json
+from pathlib import Path
+import torch
+import triton
+from attention_onfly_kernel import kernel
+
+ROOT=Path('/repo'); HERE=ROOT/'.prototypes/kernel_replacements'
+OUT=ROOT/'.prototypes/out/kr01-attention-onfly'
+OUT.mkdir(exist_ok=True)
+lib=ctypes.CDLL(str(ROOT/'.prototypes/out/kr01-attention/native.so'))
+lib.initialize.argtypes=[ctypes.c_void_p];lib.initialize.restype=ctypes.c_int
+lib.reference.argtypes=[ctypes.c_void_p]*8+[ctypes.c_int];lib.reference.restype=ctypes.c_int
+assert lib.initialize(torch.cuda.current_stream().cuda_stream)==0
+lib.select_stream.argtypes=[ctypes.c_void_p];lib.select_stream.restype=ctypes.c_int
+
+def metric(a,b):
+ d=(a.float()-b.float()).double()
+ return dict(exact=torch.equal(a,b),changed=int((a!=b).sum()),max_abs=float(d.abs().max()),rmse=float(d.square().mean().sqrt()))
+
+def main():
+ torch.manual_seed(1987)
+ results=[]
+ # The native FlashInfer path computes FP32 sin/cos; compare both upstream cache dtypes.
+ inv=1.0/(10000000.0**(torch.arange(0,64,2,device='cuda').float()/64))
+ angles=torch.arange(32768,device='cuda').float()[:,None]*inv[None,:]
+ cache=torch.cat((angles.cos(),angles.sin()),dim=-1).contiguous()
+ for m in [1,2,4,8,16,128,1024]:
+  packed=(torch.randn(m,12288,device='cuda')*.7).bfloat16()
+  kin=(torch.randn(m,1024,device='cuda')*.7).bfloat16()
+  qw=(torch.randn(256,device='cuda')*.2).bfloat16();kw=(torch.randn_like(qw)*.2).bfloat16()
+  q=torch.empty(m,6144,device='cuda',dtype=torch.bfloat16);k=torch.empty_like(kin);gate=torch.empty_like(q)
+  refq=torch.empty_like(q);refk=torch.empty_like(k);refg=torch.empty_like(gate)
+  for position in [0,137,30000]:
+   pos=torch.arange(position,position+m,device='cuda',dtype=torch.int32)
+   def reference():
+    assert lib.select_stream(torch.cuda.current_stream().cuda_stream)==0
+    status=lib.reference(*[x.data_ptr() for x in (packed,kin,refq,refk,refg,qw,kw,pos)],m)
+    assert status==0,status
+   reference()
+   for dtype in [torch.float32]:
+    c=cache.to(dtype)
+    def fused():
+     return kernel[(m,28)](packed,kin,q,k,gate,qw,kw,c,pos,12288,1024,6144,1024,6144,64,0,1,24,4,256,64,32,1e-6,1.,triton.language.bfloat16,256,32,True,False,0,0,num_warps=4,enable_fp_fusion=False)
+    compiled=fused();torch.cuda.synchronize()
+    row=dict(m=m,position=position,cache_dtype=str(dtype),q=metric(q,refq),k=metric(k,refk),gate=metric(gate,refg))
+    if position==137:
+     row['reference_us']=triton.testing.do_bench_cudagraph(reference,rep=150)*1000
+     row['fused_us']=triton.testing.do_bench_cudagraph(fused,rep=150)*1000
+    results.append(row);print(json.dumps(row),flush=True)
+    (OUT/'results.json').write_text(json.dumps(results,indent=2)+'\n')
+    (OUT/f'kernel-{dtype}.cubin').write_bytes(compiled.asm['cubin'])
+    (OUT/f'kernel-{dtype}.ptx').write_text(compiled.asm['ptx'])
+    (OUT/f'kernel-{dtype}.json').write_text(json.dumps(compiled.metadata._asdict(),indent=2,default=str)+'\n')
+
+if __name__=='__main__':main()

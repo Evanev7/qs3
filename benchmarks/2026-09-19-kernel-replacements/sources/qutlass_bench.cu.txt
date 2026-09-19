@@ -1,0 +1,90 @@
+#include <cuda_runtime.h>
+#include <cuda_bf16.h>
+#include <cuda_fp8.h>
+#include <cublas_v2.h>
+#include <algorithm>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <fstream>
+#include <string>
+#include <vector>
+#define CK(x) do { auto e=(x); if(e!=0) { fprintf(stderr,"%s: %d at %d\n",#x,(int)e,__LINE__); exit(1); } } while(0)
+extern "C" size_t qs3_probe_fp4(void*,const void*,const void*,const void*,const void*,const float*,int,int,int,void*,size_t,cudaStream_t,int);
+extern "C" void qs3_probe_quant(const __nv_bfloat16*,void*,void*,const float*,int,int,int,cudaStream_t);
+extern "C" size_t qs3_probe_qutlass(void*,const void*,const void*,const void*,const void*,const float*,int,int,int,void*,size_t,cudaStream_t);
+size_t probe(void* out,const void* a,const void* b,const void* as,const void* bs,const float* alpha,int m,int n,int k,void* ws,size_t cap,cudaStream_t stream,int tactic) {
+ if(tactic==4)return qs3_probe_qutlass(out,a,b,as,bs,alpha,m,n,k,ws,cap,stream);
+ return qs3_probe_fp4(out,a,b,as,bs,alpha,m,n,k,ws,cap,stream,tactic);
+}
+// Same exact packed fixture as triton_aot/bench.cu, with 128x4 SF swizzle.
+__host__ __device__ float fp4(unsigned n) { const float v[8]={0,.5f,1,1.5f,2,3,4,6};return(n&8)?-v[n&7]:v[n&7]; }
+__global__ void fill(unsigned char* packed,unsigned char* scales,__nv_bfloat16* dense,int rows,int k,int seed) {
+  size_t pair=blockIdx.x*blockDim.x+threadIdx.x;if(pair>=size_t(rows)*k/2)return;
+  size_t row=pair/(k/2),kp=pair%(k/2);
+  unsigned h=unsigned(pair)^unsigned(seed*0x9e3779b9u);h^=h>>16;h*=0x7feb352du;h^=h>>15;h*=0x846ca68bu;h^=h>>16;
+  unsigned a=h&15,b=(h>>8)&15;unsigned char s=0x30+((row*3+(kp/8)*5+seed)&7);
+  float sf=.5f+(s-0x30)*.0625f;packed[pair]=a|(b<<4);
+  if(kp%8==0){size_t col=kp/8,kblocks=(k/16+3)/4;
+    size_t index=((((row/128*kblocks+col/4)*32+row%32)*4+(row%128)/32)*4+col%4);
+    scales[index]=s;}
+  dense[pair*2]=__float2bfloat16(fp4(a)*sf);dense[pair*2+1]=__float2bfloat16(fp4(b)*sf);
+}
+__global__ void flush_l2(unsigned* p,size_t n){size_t i=blockIdx.x*blockDim.x+threadIdx.x;if(i<n)p[i]+=1;}
+__global__ void dequant(const unsigned char* packed,const unsigned char* scales,__nv_bfloat16* dense,int rows,int k){
+  size_t i=blockIdx.x*blockDim.x+threadIdx.x;if(i>=size_t(rows)*k)return;
+  size_t row=i/k,col=(i%k)/16,kblocks=(k/16+3)/4;
+  size_t index=((((row/128*kblocks+col/4)*32+row%32)*4+(row%128)/32)*4+col%4);
+  __nv_fp8_e4m3 sf;sf.__x=scales[index];unsigned q=(packed[i/2]>>(i%2*4))&15;
+  dense[i]=__float2bfloat16(fp4(q)*float(sf));
+}
+struct Buffer {void* p;size_t n;Buffer(size_t bytes):n(bytes){CK(cudaMalloc(&p,std::max(bytes,size_t(1))));CK(cudaMemset(p,0,bytes));}~Buffer(){cudaFree(p);}};
+size_t scale_size(int rows,int k){return size_t((rows+127)/128)*128*((k/16+3)/4)*4;}
+static bool prefill_mode=false;
+template<class F> float time_us(F fn,Buffer* flush=nullptr,int iters=30){
+  if(prefill_mode)iters=10;
+  for(int i=0;i<(prefill_mode?2:10);i++)fn();CK(cudaDeviceSynchronize());
+  cudaEvent_t a,b;CK(cudaEventCreate(&a));CK(cudaEventCreate(&b));std::vector<float> us;
+  for(int i=0;i<iters;i++){
+    if(flush)flush_l2<<<(flush->n/4+255)/256,256>>>((unsigned*)flush->p,flush->n/4);
+    CK(cudaEventRecord(a));fn();CK(cudaEventRecord(b));CK(cudaEventSynchronize(b));
+    float ms;CK(cudaEventElapsedTime(&ms,a,b));us.push_back(ms*1000);
+  }
+  CK(cudaEventDestroy(a));CK(cudaEventDestroy(b));std::sort(us.begin(),us.end());return us[us.size()/2];
+}
+int main(int argc,char** argv){
+  if(argc!=2){fprintf(stderr,"usage: native_bench OUTDIR\n");return 1;}
+  prefill_mode=std::getenv("QS3_NVFP4_PREFILL")!=nullptr;
+  CK(cudaSetDevice(0));cudaDeviceProp prop;CK(cudaGetDeviceProperties(&prop,0));
+  fprintf(stderr,"device=%s sm=%d%d; prequantized operands; no Python or graphs\n",prop.name,prop.major,prop.minor);
+  std::ofstream csv(std::string(argv[1])+"/results.csv");csv<<"m,n,k,kernel,trial,warm_us,evicted_us,max_abs_error,relative_l2_error,workspace_bytes\n";
+  cublasHandle_t blas;CK(cublasCreate(&blas));CK(cublasSetMathMode(blas,CUBLAS_DEFAULT_MATH));
+  Buffer cache(128<<20),alpha_d(4);float alpha=1,beta=0;CK(cudaMemcpy(alpha_d.p,&alpha,4,cudaMemcpyHostToDevice));
+  const std::vector<std::pair<int,int>> shapes{{17408,5120},{5120,17408}};
+  const std::vector<int> rows{1,2,4,8,16,128,512,1024};
+  for(auto& shape:shapes){int n=shape.first,k=shape.second;Buffer wq(size_t(n)*k/2),ws(scale_size(n,k)),wd(size_t(n)*k*2);
+    fill<<<(size_t(n)*k/2+255)/256,256>>>((unsigned char*)wq.p,(unsigned char*)ws.p,(__nv_bfloat16*)wd.p,n,k,17);CK(cudaGetLastError());
+    for(int m:rows){Buffer aq(size_t(m)*k/2),as(scale_size(m,k)),ad(size_t(m)*k*2),y(size_t(m)*n*2),ref(size_t(m)*n*4);
+      fill<<<(size_t(m)*k/2+255)/256,256>>>((unsigned char*)aq.p,(unsigned char*)as.p,(__nv_bfloat16*)ad.p,m,k,3);CK(cudaGetLastError());
+      auto baseline=[&](){CK(cublasGemmEx(blas,CUBLAS_OP_T,CUBLAS_OP_N,n,m,k,&alpha,wd.p,CUDA_R_16BF,k,ad.p,CUDA_R_16BF,k,&beta,ref.p,CUDA_R_32F,n,CUBLAS_COMPUTE_32F,CUBLAS_GEMM_DEFAULT_TENSOR_OP));};
+      float warm=time_us(baseline),cold=time_us(baseline,&cache);
+      std::vector<float> reference(size_t(m)*n);CK(cudaMemcpy(reference.data(),ref.p,reference.size()*4,cudaMemcpyDeviceToHost));
+      csv<<m<<','<<n<<','<<k<<",cublas_bf16_fp32out,0,"<<warm<<','<<cold<<",0,0,0\n";csv.flush();
+      int best_tactic=0;float best_us=1e30f;
+      for(int tactic=0;tactic<5;tactic++){
+        try{size_t size=probe(nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,m,n,k,nullptr,0,nullptr,tactic);Buffer scratch(size);
+          auto launch=[&](){probe(y.p,aq.p,wq.p,as.p,ws.p,(float*)alpha_d.p,m,n,k,scratch.p,size,nullptr,tactic);};
+          launch();std::vector<__nv_bfloat16> actual(size_t(m)*n);CK(cudaMemcpy(actual.data(),y.p,actual.size()*2,cudaMemcpyDeviceToHost));
+          double err2=0,ref2=0;float maxerr=0;for(size_t i=0;i<actual.size();i++){
+            float v=__bfloat162float(actual[i]);if(!std::isfinite(v)){fprintf(stderr,"nonfinite tactic%d\n",tactic);return 2;}
+            double d=double(v)-reference[i];err2+=d*d;ref2+=double(reference[i])*reference[i];maxerr=std::max(maxerr,float(std::abs(d)));}
+          double rel=std::sqrt(err2/std::max(ref2,1e-30));if(rel>.005){fprintf(stderr,"mismatch tactic%d M%d N%d K%d rel=%g max=%g\n",tactic,m,n,k,rel,maxerr);return 2;}
+          for(int trial=0;trial<3;trial++){warm=time_us(launch);cold=time_us(launch,&cache);
+          if(cold<best_us){best_us=cold;best_tactic=tactic;}
+          csv<<m<<','<<n<<','<<k<<",provider_"<<tactic<<','<<trial<<','<<warm<<','<<cold<<','<<maxerr<<','<<rel<<','<<size<<'\n';csv.flush();}
+        }catch(const std::exception& e){fprintf(stderr,"tactic%d M%d N%d K%d: %s\n",tactic,m,n,k,e.what());}
+      }
+      fprintf(stderr,"validated and timed M%d N%d K%d\n",m,n,k);
+    }
+  }CK(cublasDestroy(blas));
+}

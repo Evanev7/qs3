@@ -1,0 +1,20 @@
+#include "qsfi.h"
+#include <cuda_runtime.h>
+#include <cstdint>
+static qsfi_context* ctx;
+static cudaStream_t stream;
+static qsfi_tensor1 vec(void* p, int n, qsfi_dtype dtype = QSFI_DTYPE_BF16) { return {p,dtype,{n},{1}}; }
+static qsfi_tensor2 mat(void* p, int m, int n) { return {p,QSFI_DTYPE_BF16,{m,n},{n,1}}; }
+static qsfi_tensor3 heads(void* p, int m, int h) { return {p,QSFI_DTYPE_BF16,{m,h,256},{h*256,256,1}}; }
+extern "C" int initialize(void* s) { stream=(cudaStream_t)s; qsfi_context_desc desc{0,s}; return qsfi_context_create(&desc,&ctx); }
+extern "C" int select_stream(void* s) { stream=(cudaStream_t)s; return qsfi_context_set_stream(ctx,s); }
+extern "C" int reference(void* packed,void* kin,void* q,void* k,void* gate,void* qw,void* kw,void* pos,int m) {
+    if (cudaMemcpy2DAsync(q,512,packed,1024,512,m*24,cudaMemcpyDeviceToDevice,stream)!=cudaSuccess) return -1;
+    if (cudaMemcpy2DAsync(gate,512,(char*)packed+512,1024,512,m*24,cudaMemcpyDeviceToDevice,stream)!=cudaSuccess) return -2;
+    qsfi_rmsnorm_desc qn{mat(q,m*24,256),vec(qw,256),mat(q,m*24,256),256,1e-6f};
+    qsfi_rmsnorm_desc kn{mat(kin,m*4,256),vec(kw,256),mat(k,m*4,256),256,1e-6f};
+    int status=qsfi_rmsnorm(ctx,&qn); if(status) return status;
+    status=qsfi_rmsnorm(ctx,&kn); if(status) return status;
+    qsfi_rope_apply_desc rope{heads(q,m,24),heads(k,m,4),heads(q,m,24),heads(k,m,4),vec(pos,m,QSFI_DTYPE_I32),24,4,256,64,1.0f,10000000.0f,0};
+    return qsfi_rope_apply(ctx,&rope);
+}

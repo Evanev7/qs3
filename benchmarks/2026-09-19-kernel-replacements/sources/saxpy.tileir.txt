@@ -1,0 +1,76 @@
+cuda_tile.module @probe {
+  entry @saxpy_entry(%0: tile<ptr<f32>>, %1: tile<i32>, %2: tile<i32>, %3: tile<i32>, %4: tile<i32>, %5: tile<i32>, %6: tile<i32>, %7: tile<i32>, %8: tile<i32>, %9: tile<f32>, %10: tile<ptr<f32>>, %11: tile<i32>, %12: tile<i32>, %13: tile<i32>, %14: tile<i32>) di_name = "saxpy" {
+    %15 = constant <i32: 2> : tile<i32>
+    %16 = constant <i32: 2> : tile<i32>
+    %17 = assume bounded<0, ?>, %1 : tile<i32>
+    %18 = assume bounded<0, ?>, %2 : tile<i32>
+    %19 = make_token : token
+    %20 = make_tensor_view %0, shape = [%17, %18], strides = [8, 1] : tile<i32> -> tensor_view<?x?xf32, strides=[8,1]>
+    %21 = assume bounded<0, ?>, %11 : tile<i32>
+    %22 = assume bounded<0, ?>, %12 : tile<i32>
+    %23 = make_token : token
+    %24 = make_tensor_view %10, shape = [%21, %22], strides = [8, 1] : tile<i32> -> tensor_view<?x?xf32, strides=[8,1]>
+    %25 = constant <i32: 2> : tile<i32>
+    %26 = constant <i32: 2> : tile<i32>
+    %27 = constant <i32: 2> : tile<i32>
+    %28 = constant <i32: 2> : tile<i32>
+    %29 = constant <i32: -1> : tile<i32>
+    %30 = constant <i32: -1> : tile<i32>
+    %31 = constant <i32: 2> : tile<i32>
+    %32 = constant <i32: 2> : tile<i32>
+    %33 = constant <i32: -1> : tile<i32>
+    %34 = constant <i32: -1> : tile<i32>
+    %35, %36, %37 = get_tile_block_id : tile<i32>
+    %38 = assume bounded<0, ?>, %35 : tile<i32>
+    %39 = assume bounded<0, ?>, %36 : tile<i32>
+    %40 = assume bounded<0, ?>, %37 : tile<i32>
+    %41 = constant <i32: 2> : tile<i32>
+    %42 = constant <i32: 2> : tile<i32>
+    %43 = constant <i32: -1> : tile<i32>
+    %44 = constant <i32: -1> : tile<i32>
+    %45 = make_partition_view %24 : partition_view<tile=(2x2), padding_value = zero, tensor_view<?x?xf32, strides=[8,1]>>
+    %46, %47 = load_view_tko weak %45[%38, %39] token = %23 : partition_view<tile=(2x2), padding_value = zero, tensor_view<?x?xf32, strides=[8,1]>>, tile<i32> -> tile<2x2xf32>, token
+    %48 = constant <i32: 2> : tile<i32>
+    %49 = constant <i32: 2> : tile<i32>
+    %50 = constant <i32: 2> : tile<i32>
+    %51 = constant <i32: 2> : tile<i32>
+    %52, %53, %54 = get_tile_block_id : tile<i32>
+    %55 = assume bounded<0, ?>, %52 : tile<i32>
+    %56 = assume bounded<0, ?>, %53 : tile<i32>
+    %57 = assume bounded<0, ?>, %54 : tile<i32>
+    %58 = constant <i32: 2> : tile<i32>
+    %59 = constant <i32: 2> : tile<i32>
+    %60 = make_partition_view %20 : partition_view<tile=(2x2), tensor_view<?x?xf32, strides=[8,1]>>
+    %61, %62 = load_view_tko weak %60[%55, %56] token = %19 : partition_view<tile=(2x2), tensor_view<?x?xf32, strides=[8,1]>>, tile<i32> -> tile<2x2xf32>, token
+    %63 = constant <i32: 2> : tile<i32>
+    %64 = constant <i32: 2> : tile<i32>
+    %65 = constant <i32: 2> : tile<i32>
+    %66 = constant <i32: 2> : tile<i32>
+    %67 = constant <i32: 2> : tile<i32>
+    %68 = constant <i32: 2> : tile<i32>
+    %69 = constant <i32: 1> : tile<i32>
+    %70 = constant <i32: 1> : tile<i32>
+    %71 = constant <i32: 1> : tile<i32>
+    %72 = reshape %9 : tile<f32> -> tile<1x1xf32>
+    %73 = constant <i32: 1> : tile<i32>
+    %74 = constant <i32: 1> : tile<i32>
+    %75 = constant <i32: 2> : tile<i32>
+    %76 = constant <i32: 2> : tile<i32>
+    %77 = broadcast %72 : tile<1x1xf32> -> tile<2x2xf32>
+    %78 = mulf %77, %46 : tile<2x2xf32>
+    %79 = addf %78, %61 : tile<2x2xf32>
+    %80 = constant <i32: 2> : tile<i32>
+    %81 = constant <i32: 2> : tile<i32>
+    %82 = constant <i32: 2> : tile<i32>
+    %83 = constant <i32: 2> : tile<i32>
+    %84, %85, %86 = get_tile_block_id : tile<i32>
+    %87 = assume bounded<0, ?>, %84 : tile<i32>
+    %88 = assume bounded<0, ?>, %85 : tile<i32>
+    %89 = assume bounded<0, ?>, %86 : tile<i32>
+    %90 = constant <i32: 2> : tile<i32>
+    %91 = constant <i32: 2> : tile<i32>
+    %92 = make_partition_view %20 : partition_view<tile=(2x2), tensor_view<?x?xf32, strides=[8,1]>>
+    %93 = store_view_tko weak %79, %92[%87, %88] token = %19 : tile<2x2xf32>, partition_view<tile=(2x2), tensor_view<?x?xf32, strides=[8,1]>>, tile<i32> -> token
+    return
+  }
+}

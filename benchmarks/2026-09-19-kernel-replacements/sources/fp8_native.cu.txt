@@ -1,0 +1,15 @@
+#include "qscb.h"
+#include <cuda_runtime.h>
+#include <cstdio>
+struct Probe { qscb_context* ctx; qscb_linear_plan* plan; qscb_fp8_linear_desc desc; };
+extern "C" void* prepare(void* x,void* w,void* y,void* xs,void* ws,void* workspace,void* stream,int m,int n,int k) {
+    auto* p=new Probe{}; qscb_context_desc ctx{0,stream};
+    int status=qscb_context_create(&ctx,&p->ctx);
+    if(status) { delete p; return nullptr; }
+    p->desc={{{x,QSFI_DTYPE_FP8_E4M3,{m,k},{k,1}}, {w,QSFI_DTYPE_FP8_E4M3,{n,k},{k,1}}, {y,QSFI_DTYPE_BF16,{m,n},{n,1}}, (uint32_t)m,(uint32_t)k,(uint32_t)n,1.0f,0.0f,workspace,64<<20}, {xs,QSFI_DTYPE_F32,{1},{1}}, {ws,QSFI_DTYPE_F32,{1},{1}}};
+    status=qscb_fp8_linear_plan_create(p->ctx,&p->desc,&p->plan);
+    if(status) { qsfi_error_info e{}; qscb_context_get_last_error(p->ctx,&e); fprintf(stderr,"%s\n",e.message); qscb_context_destroy(p->ctx);delete p;return nullptr; }
+    return p;
+}
+extern "C" int execute(void* ptr) {auto* p=(Probe*)ptr;return qscb_fp8_linear_execute(p->ctx,p->plan,&p->desc);}
+extern "C" void release(void* ptr) {auto* p=(Probe*)ptr;qscb_linear_plan_destroy(p->plan);qscb_context_destroy(p->ctx);delete p;}

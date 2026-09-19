@@ -257,8 +257,11 @@ Current experiment ownership/status is in `FINDINGS.md` (KR01–KR08).
 - [ ] KR03/KR04: Compare b12x CuTeDSL tensor-FP8/dense-NVFP4 and QuTLASS SM120
   kernels on real projection shapes, including M=1,2,4,8,16. Include quantization
   and split-K reduction; promote only after native AOT and model-level validation.
-- [ ] KR05: Audit current cutile-rs for AOT/native launch feasibility on GB10,
-  pinned toolchain requirements, and useful small-batch kernel candidates.
+- [x] KR05: Qualify pinned cutile-rs AOT compilation and native cubin launch on
+  GB10. Compile-only Rust → TileIR → SM121 cubin → CUDA Driver API passes;
+  isolated CUDA 13.3 compiler libraries are required. See the experiment README.
+- [ ] KR05: Measure a useful model fusion with cuTile Rust; AOT feasibility
+  alone does not justify adding another compiler to the production build.
 - [ ] KR06: Probe fused SiLU×up + NVFP4 quantization against current packed
   activations/scales; retain intermediate-rounding evidence.
 - [ ] KR02: Investigate upstream packed/batched GDN decode with <=16 token

@@ -1,0 +1,26 @@
+// Compile-only AOT feasibility probe; no CUDA context or runtime launches.
+#[cutile::module]
+mod probe {
+    use cutile::core::*;
+    #[cutile::entry()]
+    fn saxpy<const S: [i32; 2]>(y: &mut Tensor<f32, S>, a: f32, x: &Tensor<f32, { [-1, -1] }>) {
+        let tx = x.load_like(y);
+        let ty = y.load();
+        y.store(a.broadcast(y.shape()) * tx + ty);
+    }
+}
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let out = std::path::PathBuf::from(std::env::args().nth(1).expect("output directory"));
+    std::fs::create_dir_all(&out)?;
+    let artifacts = cutile::compile_api::KernelCompiler::new(probe::__module_ast_self, "probe", "saxpy")
+        .generics(vec!["2".into(), "2".into()])
+        .strides(&[("y", &[8, 1]), ("x", &[8, 1])])
+        .target("sm_121")
+        .compile()?;
+    std::fs::write(out.join("saxpy.tileir"), artifacts.ir_text())?;
+    std::fs::write(out.join("saxpy.bytecode"), artifacts.bytecode()?)?;
+    let cubin = cutile_compiler::cuda_tile_runtime_utils::compile_tile_ir_module(artifacts.module(), "sm_121")?;
+    std::fs::write(out.join("saxpy.cubin"), cubin)?;
+    println!("AOT artifacts generated for sm_121 without a CUDA context");
+    Ok(())
+}
