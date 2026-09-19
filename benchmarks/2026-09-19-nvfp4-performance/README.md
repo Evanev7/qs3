@@ -118,9 +118,11 @@ the adjacent logs retain the test and comparison output. Raw SQLite remains in
 `.prototypes/out/trace-reducer-validation/` locally and the original profile
 directory on sp10, rather than in Git.
 
-To reproduce the host-only check, copy `trace-reducer/harness` to a temporary
-directory, copy the current `src/bin/qs3_bench/profile.rs` to its `src/profile.rs`,
-and append this wrapper to the copied file:
+The archived harness files use `.txt` extensions so they do not become inputs
+to the main Nix/Cargo build. To reproduce the host-only check, copy them to a
+temporary crate as `Cargo.toml`, `Cargo.lock`, and `src/main.rs`. Copy the current
+`src/bin/qs3_bench/profile.rs` to its `src/profile.rs`, and append this wrapper
+to the copied file:
 
 ```rust
 pub fn offline_cpu_summary(db: &rusqlite::Connection) -> Result<tinyjson::JsonValue> {
@@ -137,4 +139,20 @@ source before these experiments (`gdn-integration-tests.log`), and again with
 the reducer change now committed as `1516ae4` (`full-tests.log`). The latter
 includes 17 Python tests, three standalone AOT launcher tests, 164 library tests
 (with six existing ignored cases), the benchmark/integration suites, and all
-four native CUDA suites. A standard benchmark of the committed reducer follows.
+four native CUDA suites. The standard benchmark of committed source `a6cb1ba`
+(the reducer plus this experiment record) then passed both workloads:
+
+| Context / measured decode tokens | Prefill p50 | Decode tok/s | Decode p50 |
+| --- | ---: | ---: | ---: |
+| 102 / 32 | 128.745 ms | 10.366 | 96.395 ms |
+| 1024 / 256 | 518.081 ms | 10.607 | 94.229 ms |
+
+Results: [102/32](../2026-09-19T012145.016839315Z-a6cb1ba.json) and
+[1024/256](../2026-09-19T012210.420121283Z-a6cb1ba.json).
+The complete 36 / 260 generated IDs, including warmups, exactly match the earlier
+`b143912` benchmark. `committed-benchmark-validation.json` records those checks.
+There is no inference-performance improvement from changing the report reducer.
+The complete command, including the Nix build and both measurement/profile
+workloads, took 3m27s (`committed-benchmark.log`). Both CPU reports completed,
+with 3746 / 30078 sampled events. The final evidence-only commit renames the
+archived harness files to `.txt`; production code is unchanged from this run.

@@ -2,9 +2,9 @@
 
 This is the qs3 evidence log on Spark. TODO.md remains the completion checklist.
 The current 3.8-27B NVFP4 eager baseline is about **10.6 tok/s**, with 1024-token
-prefill around **516 ms** after the GDN chunk integration. The BF16 baseline is
-about **4.5 tok/s**, effectively tied with pinned vLLM. Earlier 35B BF16 results reached the
-**31 tok/s** eager decode target. Broader cross-runtime correctness remains open.
+prefill around **518 ms** after the GDN chunk integration. The BF16 baseline is
+about **4.5 tok/s**, effectively tied with pinned vLLM. Earlier 35B BF16 results
+reached the **31 tok/s** eager decode target. Broader cross-runtime correctness remains open.
 
 The current measurements are first; detailed investigations are grouped by
 topic below. Within each topic, observations retain their historical context: an
@@ -40,6 +40,12 @@ saved long CPU report; the isolated local reduction takes 0.930 s. The linked
 evidence contains raw samples, source overlays, logit hashes, same-prefix flags,
 and reproduction instructions. These experiments do not establish full-model
 parity with vLLM after GDN chunk integration.
+
+The full required test workflow passes for reducer commit `1516ae4`. A standard
+benchmark on `a6cb1ba` then measures 128.745 / 518.081 ms prefill and 10.366 /
+10.607 tok/s decode. All 36 / 260 generated IDs match `b143912`, including
+warmups. Both profile reductions complete; the full command, including its Nix
+build, takes 3m27s. The production edit changes reporting, not inference.
 
 ## Qwen3.8-27B BF16 performance baseline (2026-09-15)
 

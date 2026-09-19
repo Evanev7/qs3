@@ -1,0 +1,16 @@
+[
+  {
+    "benchmark": "benchmarks/2026-09-19T012145.016839315Z-a6cb1ba.json",
+    "control": "benchmarks/2026-09-19T005405.800847842Z-b143912.json",
+    "generated_tokens": 36,
+    "tokens_exact": true,
+    "source_commit": "a6cb1baecc8f6f7329d9fdc72760cdf6533fa3d2"
+  },
+  {
+    "benchmark": "benchmarks/2026-09-19T012210.420121283Z-a6cb1ba.json",
+    "control": "benchmarks/2026-09-19T005439.162702917Z-b143912.json",
+    "generated_tokens": 260,
+    "tokens_exact": true,
+    "source_commit": "a6cb1baecc8f6f7329d9fdc72760cdf6533fa3d2"
+  }
+]
