@@ -1,0 +1,1453 @@
+# Findings and direction
+
+This is the qs3 evidence log on Spark. TODO.md remains the completion checklist.
+The current 3.8-27B NVFP4 eager baseline is about **10.6 tok/s**, with 1024-token
+prefill around **518 ms** after the GDN chunk integration. The BF16 baseline is
+about **4.5 tok/s**, effectively tied with pinned vLLM. Earlier 35B BF16 results
+reached the **31 tok/s** eager decode target. Broader cross-runtime correctness remains open.
+
+The current measurements are first; detailed investigations are grouped by
+topic below. Within each topic, observations retain their historical context: an
+early result or proposed next step may be superseded by a later result. Test
+counts and pass claims describe the cited change, not every subsequent revision.
+
+## Qwen3.8-27B NVFP4 performance experiments (2026-09-19)
+
+The [28-case tactic/workspace survey](../../benchmarks/2026-09-19-nvfp4-performance/README.md)
+finds two candidates on sp10, while retaining the current runtime defaults:
+
+- N=64 DP reduces 1024-token prefill from 519.637 to 437.923 ms (15.7%), but
+  slightly slows decode. Separate captures match N=32 DP bit-for-bit on all 69
+  full logit rows, at both 64 MiB and 16 MiB cuBLASLt workspace. Measure smaller
+  row counts before choosing a crossover; this should support future MTP shapes.
+- Reducing cuBLASLt workspace from 64 to 16 MiB improves decode about 4.8–4.9%,
+  to 11.09 / 11.06 tok/s at 102 / 1024 context. It also changes the numerical
+  path: independent greedy prefixes agree for only 55 / 29 tokens. At their
+  first differing choices, identical-prefix KL(control || candidate) is 0.234 /
+  0.265. Do not treat this as a neutral memory-budget adjustment or demonstrated
+  model-quality improvement.
+
+The standard `b143912` benchmark records 129.391 / 515.756 ms prefill and
+10.374 / 10.616 tok/s decode at 102/32 and 1024/256. Long prefill is about 30%
+faster than the earlier `df6f07e` run; decode has not improved. In the long trace,
+NVFP4 and FP8 matrix kernels account for about 49.75 and 38.56 ms/token;
+local GDN decode recurrence takes 0.94 ms/token. This favors projection work
+over a single-token GDN rewrite. No MTP work was introduced.
+
+The CPU trace reducer now indexes merged GPU intervals instead of scanning the
+whole trace for every CPU sample. Its output exactly matches every field of the
+saved long CPU report; the isolated local reduction takes 0.930 s. The linked
+evidence contains raw samples, source overlays, logit hashes, same-prefix flags,
+and reproduction instructions. These experiments do not establish full-model
+parity with vLLM after GDN chunk integration.
+
+The full required test workflow passes for reducer commit `1516ae4`. A standard
+benchmark on `a6cb1ba` then measures 128.745 / 518.081 ms prefill and 10.366 /
+10.607 tok/s decode. All 36 / 260 generated IDs match `b143912`, including
+warmups. Both profile reductions complete; the full command, including its Nix
+build, takes 3m27s. The production edit changes reporting, not inference.
+
+## Qwen3.8-27B BF16 performance baseline (2026-09-15)
+
+The [unprofiled baseline](../../benchmarks/2026-09-15-qwen38-27b-performance/README.md)
+measures qs3 eager at **4.509 tok/s** for 102/32 and **4.491 tok/s** for 1024/256.
+Pinned vLLM 0.29.0, model runner v1 with CUDA graphs, measures **4.508** and
+**4.487 tok/s**. Decode p50 is 221.605 / 222.602 ms for qs3 versus
+221.786 / 222.820 ms for vLLM. Differences below 0.1% establish no decode
+performance advantage. vLLM prefill is faster: 267.016 / 796.080 ms versus
+qs3's 295.535 / 1026.327 ms.
+
+Both use the pinned 3.8-27B BF16 snapshot and FP32 GDN state on sp10/GB10.
+Prompt fingerprints and decode context ranges match, but independent greedy
+continuations first differ at output indices 18 and 3. These timings therefore
+do not establish identical-prefix numerical agreement. Loading/graph preparation
+are excluded from steady samples; no profiler or logit capture ran alongside
+them. All four benchmark contract tests pass, and the full timing artifacts,
+software identities, raw samples and sources are retained at the link above.
+
+The production-code change only corrects model/GQA/dense-MLP benchmark labels;
+`remote.sh` and inference kernels are unchanged. Use this as the BF16 starting
+point for NVFP4 work, without starting a deep BF16 tuning campaign.
+
+## Qwen3.8-27B BF16 reference replay (2026-09-15)
+
+The [full-model comparison](../../benchmarks/2026-09-15-qwen38-27b-correctness/README.md)
+completes all four release score replays on sp10 after selecting 3.8-27B in the
+build and retargeting the diagnostic recipe. Native/Triton builds succeed;
+all 1,051 saved vLLM reference rows pass fresh size/SHA256 checks. Argmax matches
+are **4/4, 36/37, 204/205 and 794/805** for the small, 102/32, 500/200 and
+4000/800 cases. Six of thirteen differing choices attain tied maxima in vLLM.
+Both runtimes use BF16 weights/activations and FP32 GDN state; qs3 retains FP32
+LM-head output while the reference has BF16 output saved as FP32.
+
+This establishes executable full 3.8-27B prefill and sustained forced decode,
+but numerical correctness remains open. The 500/200 prefill has KL(vLLM || qs3)
+**0.5045** despite agreeing on its winner. At 4000/800 step 1, qs3 selects
+248046 versus vLLM's 492, with KL **19.6994**; final BF16 logit rounding cannot
+explain that difference. Long-prompt prefill and its first decode are the next
+investigation targets. Later agreement under forced tokens does not clear the
+early mismatch. No cause, independent quality parity, rebuild/reset correctness,
+or 27B throughput is established here.
+
+Compact scores, comparisons, raw-row hashes, sources and logs are retained in
+the linked artifact. Complete raw rows remain on sp10; the local raw download
+is partial. Historical sections below retain their earlier model-support status.
+
+## NVFP4 kernel survey and integration proposal (2026-09-14)
+
+The [GB10 survey](../../benchmarks/2026-09-14-nvfp4-survey/README.md) covers b12x,
+FlashInfer, vLLM Marlin, native Triton FP4 and native cuBLASLt FP8. The
+[implementation plan](../../benchmarks/2026-09-14-nvfp4-survey/INTEGRATION.md) proposes
+3.8-27B dense mixed precision first: native FlashInfer W4A4 plus cuBLASLt FP8,
+then checkpoint-faithful W4A16 dense and routed MoE for 35B. This is a plan and
+kernel evidence; no NVFP4 runtime integration or commits were made.
+
+The checkpoints require different activation precision. Cached NVIDIA 35B
+`6c7f09d4036e97393f82e9f9ecd1a5c35ca5ee92` and NVIDIA 3.6-27B
+`0893e1606ff3d5f97a441f405d5fc541a6bdf404` declare W4A16_NVFP4 plus FP8;
+NVIDIA 3.8-27B `dbb8f445b3145f8a4c18ddc769f032d57d32867c` declares W4A4 NVFP4
+plus FP8. Both the 35B and 3.8 payloads now pass eager vLLM load/generation.
+Preserve explicit per-projection precision and global scales;
+choosing A16/A4 based only on row count would change model semantics.
+
+On actual 27B projection dimensions, native Marlin W4A16 takes 265–271 µs;
+FlashInfer W4A4 including activation quantization takes 293–311 µs. Current
+retained qs3 BF16 cuBLASLt plans take 759–841 µs across M=1, 5, and 16. These are
+128 MiB-evicted matrix measurements, not a predicted end-to-end TPS gain.
+Triton native FP4 also passes all 17 variants, including the full padded
+vocabulary-sized matrix. FlashInfer prefill at M=128 and 512 passes as well. Native FP8
+quantization+cuBLASLt passes six shape/row cases.
+
+All 81 sampled real 35B expert-weight checks pass across Marlin, b12x and
+FlashInfer against the appropriate same-operand reference. All 10,240 expert
+gate/up pairs have matching global scales. A complete real-weight layer with
+all 256 experts also passes six A16 route/batch cases at M=1, 5, and 16.
+b12x's exported ARM host objects link and execute without b12x/CuTe/Python dispatch, including dynamic M
+and scale rebinding. Its A16 tuning sweep reduces the default 430–480 µs dense
+path to 279–304 µs; Marlin remains faster for those tested shapes.
+
+The MTP-sized MoE probe supports keeping both simple and grouped routing under
+consideration. At M=16/top-8 with distinct experts, one packed call and two direct
+M=8 calls are effectively tied at 1.08 ms. With the same eight experts reused,
+packed routing takes 133 µs versus 391 µs for two direct calls. These include
+expert compute and route preparation, exclude router/shared-expert work, and
+use Python-dispatched timing; captured real routes and native timing remain
+necessary before choosing a runtime heuristic.
+
+The original vLLM 0.21 reference image does not dispatch the cached 35B mixed
+W4A16 recipe correctly. Its qualification probe stops before model allocation.
+Official vLLM 0.29 resolves that dispatch issue: the pinned 35B NVFP4 model
+loads and generates `[5,6,24218,10]` for `[1,2,3,4]`, with all 40 MoE layers
+using Marlin A16. The 27B constructor probes select FlashInfer W4A4 for 3.8
+and Marlin W4A16 for 3.6. The 3.8 NVFP4 model also generates successfully;
+its small continuation `[5,0,31,0]` differs from BF16 `[5,0,31,46474]` at the
+fourth prediction. This is smoke validation, not a quality or TPS result.
+Historical benchmark pins remain attached to their evidence.
+
+At 20:37 UTC, pinned 35B and 3.8 NVFP4 downloads were complete and checked;
+3.6 NVFP4 was downloading in an independent container using the default HF
+cache. Exact pins, cache location, container and progress are retained in the
+[saved download status](../../benchmarks/2026-09-14-nvfp4-survey/download-status.json).
+
+## Reference refresh and 3.8 tokenizer boundary (2026-09-14)
+
+The official vLLM 0.29.0 source pin is
+`98dff2a81d747d1dba01a47f939f48c3526d4206`; the immutable ARM64 image and
+three BF16 model revisions are recorded in the
+[reference artifact](../../benchmarks/2026-09-14-vllm-references/README.md).
+All three captures completed: 1051 rows per model, 3153 rows total, with
+248320 float32 values per row. Verification on sp10 checked all row hashes,
+asset hashes, image/model identities, replay bookkeeping and resume provenance
+(3,131,811,840 bytes of logits; 3264 verified files). This establishes complete
+reference artifacts, not qs3 correctness or a speed comparison.
+
+The pinned 3.8 tokenizer contains 248077 contiguous addressable IDs, versus
+248070 for both 3.6 models. IDs 248070–248076 add audio/tts special tokens.
+All three models still have 248320 logit columns. The collector validates the
+per-model ID set and excludes only that model's actual padding when calculating
+addressable logsumexp. Runtime support still needs the corresponding tokenizer
+asset validation and sampled-ID bounds: `src/model/runner/mod.rs` and the score
+diagnostic currently cap IDs at 248070. This does not affect the existing 3.6
+contract; it is an explicit remaining 3.8 integration item in TODO.md.
+
+## Latest validated measurements
+
+The kernel-only changes at `efc9444` (2026-09-13) reach **31.735 tok/s** at
+102/32 and **31.642 tok/s** at 1024/256, exceeding the **31 tok/s** target in
+both workloads. Fresh controls at `8451569` measure 29.665 and 29.528 tok/s;
+throughput improves by **6.98% and 7.16%**. All use the pinned 35B BF16 snapshot,
+device weights through pinned staging, FP32 GDN recurrence, BF16 router output,
+Triton LM head and GDN QKV, and eager execution. There are no CUDA graphs or
+architecture changes in this experiment session.
+
+| Workload / kernel | Prefill p50 ms | Decode p50 ms | Decode tok/s | Evidence |
+| --- | ---: | ---: | ---: | --- |
+| 102/32 control | 196.758 | 33.677 | 29.665 | [JSON](../../benchmarks/2026-09-13T153611.267771164Z-8451569.json) |
+| 102/32 warp argmax + direct MoE | 196.441 | 31.479 | **31.735** | [JSON](../../benchmarks/2026-09-13T160759.262053707Z-efc9444.json) |
+| 1024/256 control | 498.157 | 33.841 | 29.528 | [JSON](../../benchmarks/2026-09-13T153824.583020108Z-8451569.json) |
+| 1024/256 warp argmax + direct MoE | 497.725 | 31.575 | **31.642** | [JSON](../../benchmarks/2026-09-13T161024.273967469Z-efc9444.json) |
+
+All 36 short-run IDs match the control. Sustained generation first differs at
+output index 163; both runs include four warmups. Restricting that comparison
+to the first **159 measured forwards with matching input tokens** gives
+**29.541 versus 31.638 tok/s**, or 33.851 versus 31.608 ms mean latency. This is
+a derived common-prefix subset of the saved samples, not a separate timing run.
+The complete sustained results follow different prefixes after that point.
+Unprofiled and profiled IDs match within each candidate workload. The existing
+loaded 35B reference regression passes with both recurrent precisions; sustained
+identical-prefix score comparisons are recorded separately below.
+
+The short trace attributes **10.506 → 9.387 ms/token** to the complete MoE
+kernel sequence. Its matrix kernels alone change 9.778 → 9.289 ms; removing
+routing preparation is part of the measured gain. Argmax changes
+**0.419 → 0.0217 ms/token**. There are **240 fewer kernel launches and 200 fewer
+memsets per token**, while time without recorded GPU work changes
+**2.906 → 2.167 ms/token**. The existing native MoE operation now launches its
+direct row kernels into the same stream/workspace. Rust scheduling, allocation,
+transaction handling and output delivery are unchanged. Prefill timing is
+essentially unchanged. Unprofiled wall time determines throughput; trace totals
+and gaps must not be added to it or interpreted as isolated CPU costs.
+
+Nsight retains the documented unsupported-UM, unavailable kernel-space CPU
+stacks and possibly missing CUDA events diagnostics. Full trace reductions,
+CPU summaries, kernel launch configurations and raw-artifact paths are in the
+linked JSON files.
+
+### Saved-trace attribution: CPU waiting versus GPU gaps
+
+A read-only analysis of the latest saved **1024/256** trace (`efc9444`) separates
+host completion waits from time without recorded GPU activity. No new inference
+run or CUDA graph implementation was needed. The source is
+`sp10@sp10:/home/sp10/qs3/.prototypes/profiles/2026-09-13T161024.203498622+0000/decode.sqlite`.
+[Analysis script](../../benchmarks/2026-09-13-decode-kernels/trace-gaps.py),
+[derived results](../../benchmarks/2026-09-13-decode-kernels/trace-gaps.json).
+Reproduce with `python3 benchmarks/2026-09-13-decode-kernels/trace-gaps.py /path/to/decode.sqlite`.
+
+| Recorded interval | Mean per token |
+| --- | ---: |
+| GPU kernel span, profiled | 32.0000 ms |
+| Union of GPU kernels and copies within that span | 29.9016 ms |
+| No recorded GPU activity within that span | 2.0985 ms |
+| Within-token gaps, embedding through argmax | 2.0302 ms |
+| Between-token gaps, amortized over all 256 tokens | 0.0683 ms |
+| CPU duration of the sampled-ID DtoH API call | 28.0054 ms |
+| Actual GPU DtoH copy, four bytes | 0.002345 ms |
+
+There are 255 complete boundaries from one argmax's end to the next embedding's
+start. Each averages **72.732 us**, including **68.525 us without recorded GPU
+activity** and the intervening copies. The amortized boundary row uses 256 as
+its denominator so that it adds to the within-token row. The first setup and
+last delivery outside the kernel span are excluded.
+
+Correlating each gap with the next GPU operation's CUDA API call attributes
+**2.0274 ms/token (96.6% of gap time)** to time after that call had already
+returned, **0.0620 ms** before its start, and **0.0090 ms** during the call.
+Every next operation has a matching correlation ID. The conclusion is robust
+to small timestamp errors: **2.0249 ms/token** is in gaps whose next API returned
+at least 10 us before the gap began, and 2.0247 ms retains a 100 us margin.
+Most gap time, **2.0019 ms/token**, consists of individual gaps of 1–5 us.
+
+The sampled-ID download calls overlap **26.2315 ms/token of active GPU work**
+and **1.7738 ms/token of GPU gaps**. Thus much of the GPU's gap time occurs
+while the host has submitted the forward and is waiting for its result. The
+subsequent explicit `cudaStreamSynchronize` averages only **0.671 us**: the wait
+has already occurred inside `cudaMemcpyAsync` to the host token buffer. CPU
+samples corroborate the `sample_logits` / `cuMemcpyDtoHAsync_v2` stack; sample
+counts themselves are not elapsed durations.
+
+This points to device execution/dispatch gaps as the larger remaining issue,
+with a much smaller between-token host turnaround. Returning from an API is
+not proof that its work is ready to execute, and this trace does not distinguish
+hardware dispatch costs, dependencies, driver behavior, and profiler effects.
+Some GPU starts precede their correlated API starts by up to 2.592 us, so the
+fine-grained API split is approximate. The existing missing-event warning also
+applies. A host scheduler can free the waiting CPU thread, but the 28 ms host
+wait is mostly overlapping GPU work and must not be counted as recoverable
+single-request latency. CUDA graph replay could change device dispatch costs;
+its gain remains an experiment, not something established by these gaps.
+
+The following historical context table predates device-backed weights and the
+Triton GDN QKV integration; it is retained for continuity.
+
+Pinned 35B BF16 weights, BF16 caches/convolution history and FP32 GDN recurrence,
+measured on sp10. These measurements precede the uniform BF16 router-logit switch
+and used FP32 router logits. qs3 uses eager AOT execution and FP32 logits; vLLM uses graph
+execution and BF16 projection output. Prompt IDs and generation settings match,
+but these implementation and output-precision differences remain explicit.
+
+| System | Prompt/decode samples | Prefill p50 ms | Decode p50 ms | Decode tok/s | Evidence |
+| --- | ---: | ---: | ---: | ---: | --- |
+| qs3 eager | 102/32 | 242.080 | 40.385 | 24.668 | [JSON](../../benchmarks/2026-09-09T063550.352923789Z-0dc68a2.json) |
+| qs3 eager | 1024/256 | 557.628 | 40.276 | 24.807 | [JSON](../../benchmarks/2026-09-09T063740.799837217Z-0dc68a2.json) |
+| qs3 eager | 4096/256 | 1556.533 | 40.900 | 24.436 | [JSON](../../benchmarks/2026-09-09T065605.711996081Z-b2e6530.json) |
+| vLLM graphs | 102/32 | 181.369 | 32.355 | 30.826 | [JSON](../../benchmarks/2026-09-09T023628Z-vllm-bf16-core/result.json) |
+| vLLM graphs | 1024/256 | 367.629 | 32.481 | 30.769 | [JSON](../../benchmarks/2026-09-09T030615Z-vllm-bf16-core/result.json) |
+| vLLM graphs | 4096/256 | 850.012 | 32.975 | 29.887 | [JSON](../../benchmarks/2026-09-09T065726Z-vllm-bf16-core/result.json) |
+
+The kernel changes represented in this table preserve every generated ID from
+the preceding runs
+(36 short, 260 sustained). The short vLLM sequence matches; the sustained greedy
+sequences first differ at output index 162 for the 1024-token prompt, and at
+index two for the 4096-token prompt. An identical-prefix diagnostic at 1024 tokens now
+finds 256/261 argmax agreement; precision controls and independent sustained
+quality evaluation, 27B runtime support, graphs and NVFP4 remain open. The verified 27B snapshot is
+cached on sp10. The following sections retain the measurements behind this state.
+
+## Measurement contract
+
+Use the gitignored `run_core_benchmark.sh` to transfer the current commit to the
+disposable `sp10@sp10:qs3` checkout and record release JSON in `benchmarks/`.
+Do not run it concurrently with the test script: both replace that checkout.
+Tests run through the gitignored `run_cuda_test.sh`.
+
+The core benchmark now runs both an unprofiled measurement and a separate
+Nsight Systems pass. The existing `run_core_benchmark.sh` / `nix run .#benchmark`
+entrypoint emits one JSON: `measurement` retains the unprofiled timings, while
+`nsight` contains the profiled measurement, kernel timings grouped by full name
+and launch configuration, CUDA API timings, memory totals, and GPU interval-union
+statistics. Both passes must match model, execution settings, prompt, decode
+context and every generated token. Nsight warnings/errors are retained in
+`nsight.diagnostics`; a failed capture or export fails the command.
+
+Nsight is supplied by the GPU host; the Rust benchmark reads the SQLite export
+through `rusqlite` using one read-only connection. SQLite is bundled into the binary.
+Capture now includes process-tree CPU sampling with DWARF backtraces and thread
+scheduling events. The host must permit process-tree perf sampling (on sp10,
+`kernel.perf_event_paranoid=2`); the benchmark checks Nsight's environment before
+loading weights and does not request sudo or change host settings. The Nix
+benchmark retains debug symbols. Raw reports, SQLite and process logs remain in a
+timestamped `.prototypes/profiles/` directory on the execution host, recorded in
+`nsight.artifact_directory`. `QS3_BENCH_ARTIFACT_DIR` changes that parent directory.
+The old separate decode capture/collection scripts are superseded by this path.
+
+`nsight.cpu` reports sampled functions, thread states and scheduling counts within
+the first-to-last GPU kernel span, including samples observed without GPU work.
+Leaf counts refer to stack depth zero; inclusive counts count each sample once
+per function even with recursion. Inclusive counts overlap across functions and
+sample counts are not elapsed durations. Missing CPU samples or stacks fail the
+benchmark instead of silently emitting a GPU-only result. Queries use typed
+`rusqlite` rows; timestamps stay integer nanoseconds until JSON serialization.
+
+Kernel and API totals are sums of recorded durations. GPU activity unions include
+kernels, copies and memsets, clipped to the first-to-last-kernel span; the
+uncovered portion is labelled time without GPU work, not CPU preparation time.
+`ms_per_decode` divides aggregate time by the measured step count, not a latency
+percentile. Host API time can include waits for GPU work, so these columns must
+not be added together. Use `measurement.decode` for throughput comparisons.
+
+Working-tree validation passed five benchmark tests and the combined Nix run,
+including process-tree CPU samples, resolved Rust stacks and matching generated
+IDs. Temporary validation captures live under gitignored
+`.prototypes/benchmark-validation/`; they are not benchmark history entries.
+Record the next official result with `run_core_benchmark.sh` after committing.
+The static archive inspection found no SQLite/rusqlite objects or defined symbols.
+
+Nsight reports unsupported Unified Memory tracing and a possible missing-event
+warning, also present in the earlier `1395050` trace. At paranoid level 2 it also
+warns that kernel-space CPU stacks are unavailable; user-space sampling works.
+Driver-internal symbols often remain unresolved. Diagnostics are printed and
+retained, and unprofiled throughput is measured separately. The host perf setting
+is temporary until reboot; the benchmark checks sampling availability on each run.
+
+`QS3_BENCH_CONTEXT_TOKENS` and `QS3_BENCH_DECODE_SAMPLES` select longer core
+workloads (defaults 102 and 32). Longer prompts repeat the base prompt's token
+IDs. JSON includes the full prompt fingerprint, generated IDs including warmups,
+and explicit GDN state precision. The default workload remains unchanged.
+
+The short core workload uses the pinned Qwen3.6-35B-A3B BF16 snapshot
+`995ad96eacd98c81ed38be0c5b274b04031597b0`, device weights loaded through pinned
+staging (since `8849854`; earlier runs used managed weights), eager execution,
+greedy sampling, a 102-token prompt, 4 decode warmups and 32 measured decode
+steps (contexts 106 through 138). Decode wall time includes the public runner
+call and sampled-token delivery. Tokenizer decode validation occurs outside the
+timed interval. The sustained workload uses 1024 prompt IDs and 256 measured
+decode steps. Both now have vLLM baselines and explicit FP32 recurrence. Prefill
+samples follow resets of the same runner. The early table below used BF16
+recurrence; later comparisons record precision changes explicitly.
+
+| Revision | Decode tok/s | Decode p50 ms | Prefill p50 ms | Evidence |
+| --- | ---: | ---: | ---: | --- |
+| `ba4ad6e` | 7.498 | 133.401 | 1022.074 | [JSON](../../benchmarks/2026-09-09T010751.748761081Z-ba4ad6e.json) |
+| `f32f0e5` | 7.550 | 132.793 | 1023.724 | [JSON](../../benchmarks/2026-09-09T011848.800087754Z-f32f0e5.json) |
+| `6a3d39d` (prepared linear) | 7.638 | 131.361 | 1028.085 | [JSON](../../benchmarks/2026-09-09T013243.445741248Z-6a3d39d.json) |
+| `6bf75db` (norm fix) | 7.515 | 133.235 | 1026.774 | [JSON](../../benchmarks/2026-09-09T014957.161677547Z-6bf75db.json) |
+| `90b52c4` (attention workspace reuse) | 11.905 | 83.701 | 1015.461 | [JSON](../../benchmarks/2026-09-09T021833.133622539Z-90b52c4.json) |
+| `95f87e3` (96-block MoE) | 20.724 | 48.252 | 406.284 | [JSON](../../benchmarks/2026-09-09T025651.359461497Z-95f87e3.json) |
+| `95f87e3` (4-block control) | 11.876 | 83.834 | 1023.041 | [JSON](../../benchmarks/2026-09-09T025757.341711005Z-95f87e3.json) |
+
+The first prepared-linear run is 1.17% higher in decode throughput than the fresh
+baseline, with prefill 0.43% slower. This is one pair of runs and does not resolve
+small effects from run-to-run variation. It does show that removing this host
+preparation alone leaves the overall decode cost close to 131–133 ms/token.
+The norm-fix measurement returned to 7.515 tok/s, reinforcing that these small
+wall-time differences do not yet establish a performance gain.
+
+All runs report GB10, driver 580.142 and CUDA runtime 13.0. Model, precision,
+context, software and kernel choices must remain explicit in comparisons.
+
+## Runtime preparation and correctness
+
+Current conclusion: linear plans, attention planning storage and provider
+resources survive reuse and prefix rebuilds. Transactional failure handling and
+asynchronous staging lifetimes are tested. The norm launch race is fixed without
+serializing launches. These changes do not yet make decode graph-ready.
+
+### Typed model execution
+
+The runner now borrows immutable weights separately from a batch execution
+scope containing scratch, engine access and prepared workspace views. It calls
+the typed backend operations directly: one generic `qscb.linear` accepts BF16
+inputs/weights and a BF16 or FP32 output view. The raw `*Ptrs` snapshots and
+primitive forwarding helpers have been removed. Only model compositions remain
+in the runner; packed Q/gate extraction is a typed backend copy operation.
+
+Buffer views infer dtype from their storage representation and validate capacity,
+shape products and offsets before constructing backend descriptors. In this BF16
+runtime, `u16` storage maps to BF16; byte workspaces have a separate capacity
+check. Final-row projection uses a checked matrix subview. These descriptors
+remain non-owning and launches remain unsafe: dtype and bounds checks do not
+encode asynchronous CUDA completion in Rust lifetimes.
+
+Linear and MoE workspace views are prepared once per batch from their owning
+allocations. Source inspection confirms cuBLASLt receives the descriptor's exact
+pointer/byte count, and the plan key includes workspace capacity and matrix
+alignment; native validation enforces 256-byte linear-workspace alignment. MoE
+checks supplied capacity against the layout for the current token count. GDN
+prefill reuses the same sequence-index upload for convolution and recurrence.
+No allocation policy, recurrent precision or release synchronization was added.
+
+Validation: the full CUDA test script passed (119 library tests, benchmark,
+engine, model and vector tests, and all four native targets). The real 35B BF16
+model regression passed with both BF16 and FP32 GDN state, including its existing
+reference-token and rebuild/reset checks. No performance comparison was run for
+this structural change.
+
+### Prepared dense projections
+
+Inspection found descriptor creation/destruction and
+`cublasLtMatmulAlgoGetHeuristic` in every dense projection, including decode.
+The first optimization gives Rust ownership of reusable native linear plans.
+Keys include dimensions, row strides, output dtype, input/weight/output pointer
+alignment (capped at 256 bytes), and workspace capacity. They belong to one
+execution context. Alpha, beta and addresses can change while that contract
+holds. Native execution checks the contract before addressing device tensors.
+
+Alignment must be an actual heuristic preference, not just a cache key:
+cuBLASLt defaults to 256-byte matrix alignment, while subviews may provide less.
+Workspace requires 256-byte alignment. See the [cuBLASLt reference](https://docs.nvidia.com/cuda/cublas/#cublasltmatmul).
+
+This removes repeated preparation; it is not yet the final static schedule.
+The first call for each key still selects an algorithm, and Rust still looks
+up a plan on execution. Since `1efaee8`, prefix rebuilding retains the execution
+session and its provider handles/plans while replacing only prefix and recurrent
+state. Late-failure rollback tests cover continued execution with retained plans.
+
+### Norm launch race: reproduced and fixed
+
+FlashInfer revision `b3baedbbef2686df91b6dc43818ee56fe26ceba2` calls
+`cudaFuncSetAttribute(MaxDynamicSharedMemorySize, requested_bytes)` immediately
+before each Gemma RMSNorm/fused-add launch. Different hidden widths instantiate
+the same vector-width-8 BF16 kernel. That CUDA function attribute is shared
+across host threads using the device primary context; a smaller-width call can
+lower the limit between another call's setter and launch.
+
+On 2026-09-09, the focused `qwen36_norm_concurrent_widths_keep_launch_configuration_independent`
+regression reproduced the exact `invalid argument` at `norm.cuh:679`: width 2048
+failed on iteration 35 and width 5120 on iteration 102. It creates four independent
+contexts with widths 8, 256, 2048 and 5120. A temporary mutex around only the native
+launch calls made the same test pass. Removing the per-call attribute mutation
+also passed, without serialization. This is direct evidence for the launch race,
+not a prefix-rebuild or stream-lifetime hypothesis.
+
+`qsfi_norm_rope.cu` now launches the same AOT FlashInfer kernels with a zero-initialized
+local CUDA launch configuration, Gemma weight bias 1, and PDL disabled. All Qwen
+shapes fit the default shared-memory allowance; oversized fused norms fail before
+launch. No mutex or stream synchronization was added. CUDA requires explicit
+opt-in for dynamic shared memory above 48 KiB; see the [CUDA programming guide](https://docs.nvidia.com/cuda/cuda-programming-guide/03-advanced/advanced-kernel-programming.html).
+
+Validation (now `./run_cuda_test.sh just norm-validation`) passed:
+115 library tests (3 ignored), 1 benchmark test, 3 engine tests, 16 model tests,
+14 vector tests including 16,000 concurrent norm launches, both native suites,
+and a build of `qsfi_bench_native`. Twenty additional normal-parallelism model
+runs passed all 320 executions. The separate real 35B BF16 regression also passed
+its logits, greedy IDs and reset/replay checks.
+
+### Reusing attention planning storage
+
+The prepare API replaces the one-shot native create entrypoints for both paged
+prefill and decode. Rust retains the plan handle and its full metadata key.
+Candidate key vectors are allocated before reprepare; the key is installed only
+on success. Validation/allocation failure preserves a native plan. A planner or
+upload failure invalidates it until successful preparation, so stale schedule
+metadata cannot execute.
+
+The native plan keeps its device integer workspace and a pool of pinned host
+buffers. Device updates are ordered with attention execution on the same stream.
+Each host buffer records an event after its planning upload and can be overwritten
+only when that event reports completion. If all slots remain busy, preparation
+adds a slot instead of waiting. An event-record failure quarantines that slot.
+Normal synchronous token delivery should need one slot; enqueue-only callers can
+retain more. Teardown releases the buffers and events. No stream synchronization
+was added to preparation or execution.
+
+The queued native regression alternates query offsets, retains every output,
+and compares all results against CPU attention. A short GPU delay makes uploads
+remain in flight in the release suite. It also verifies execution after a rejected
+update. Existing cache tests still reject matches when page IDs or last-page
+lengths change. The device-workspace address now persists across reprepare;
+graph capture still needs persistent batch buffers and explicit metadata updates.
+
+Validation on sp10 (2026-09-09): the prescribed full test script passed 115
+library tests (3 ignored), 1 benchmark test, 3 engine tests, 16 model tests,
+14 vector tests, both native suites, and the native benchmark build. The real
+35B BF16 regression passed separately, including logits, greedy IDs and reset
+replay.
+
+The unprofiled core run now measures **11.905 tok/s**, up 58.4% from the norm-fix
+run, with decode p50 falling from 133.235 to 83.701 ms. Prefill p50 is 1015.461 ms.
+The [repeat Nsight capture](../../benchmarks/2026-09-09T022039Z-90b52c4-decode/README.md)
+contains no pinned allocation/free calls. Across 32 decode steps, event records
+and queries cost 0.591 ms combined. Time without recorded GPU work within the
+first-to-last-kernel span falls from 1539.70 to 97.53 ms; recorded GPU work falls
+only from 2661.11 to 2608.21 ms. This supports host planning allocation removal
+as the main cause of the wall-time improvement. Small differences in GPU time
+remain subject to run variation.
+
+Grouped MoE still takes 58.9% of GPU kernel time with all 2560 launches using four
+blocks. Benchmark wider launches next. Persistent batch metadata and explicit
+GDN parity remain prerequisites for graph replay; this result alone establishes
+neither graph readiness nor competitive vLLM performance.
+
+### Execution resources survive prefix rebuilds
+
+`AttentionSession` now retains provider handles, cuBLASLt and attention plans,
+workspaces and device batch buffers while `PrefixState` owns replaceable
+EngineCore/KV state. Rebuilds allocate candidate KV and GDN state before replacing
+live state. Failure restores the old prefix and recurrent state; the next batch
+uploads its metadata again. Attention keys retain page IDs and last-page lengths,
+and execution binds the current cache pointers. Configuration equality is checked
+before replacing state. No release stream synchronization is added.
+
+The prescribed full suite and native checked/release tests pass. A new narrow
+regression fails at final normalization after every candidate attention layer,
+then compares old-prefix continuation IDs and logits with an uninterrupted
+control. The loaded 35B regression injects the same failure with BF16 and FP32
+GDN recurrence, then verifies the reference continuation, reset and replay; both
+pass. This directly exercises failed candidate GDN/KV updates while keeping
+execution resources alive. Core prefill timing follows; the earlier trace showed
+40.320 ms in pinned-host allocation/free before its main GPU span.
+
+The integrated [short run](../../benchmarks/2026-09-09T052704.174713155Z-1efaee8.json)
+measures 249.572 ms prefill, down from 295.488 ms (15.5%). The
+[1024-token/256-step run](../../benchmarks/2026-09-09T052846.378873097Z-1efaee8.json)
+measures 557.508 ms, down from 605.658 ms (8.0%). These 46–48 ms savings are
+consistent with avoiding provider recreation. All 36/260 generated IDs match
+the preceding core runs. Decode p50 is 42.369/42.461 ms; sustained throughput
+is 23.534 tok/s versus 23.596 previously. The short run has several 48–53 ms
+outliers and averages 22.754 tok/s, so there is no claimed decode gain. The asset
+download was paused during both timings and resumed afterwards; its HTTP stream
+subsequently failed and the downloader resumed from cached partial data. The
+remaining long-prefill gap to vLLM is about 1.52 times latency.
+
+The [updated prefill trace](../../benchmarks/2026-09-09T053235Z-85b30b2-prefill/README.md)
+confirms zero pinned-host allocation/free time, versus 40.320 ms previously.
+Its 545.954 ms kernel span contains only 2.367 ms without GPU work. Grouped MoE
+now accounts for 312.996 ms (58.7% of kernel sum), warp recurrence 132.562 ms
+(24.8%), and parallel convolution outputs 6.445 ms. Prefill optimization should
+now focus on MoE/recurrence work; graphs principally address the larger decode
+gaps. This trace had an active asset download and is diagnostic evidence.
+
+### Validation log
+
+2026-09-09, prepared linear plans: the prescribed script passed 115 library
+tests (3 ignored), 1 benchmark timestamp test, 3 engine integration tests,
+16 model integration tests, 13 vector tests, and both native checked/release
+suites. Native cases cover repeated execution with changed alpha and rejection
+of changed strides, dtype, alignment and workspace. The separately requested
+real BF16 regression passed its prefill/first-decode logit tolerances, greedy
+IDs `[5, 6, 24218, 10]` and reset/replay.
+
+## GPU profiling and kernel changes
+
+Current conclusion: wider MoE launches, warp routing, parallel convolution and
+ordered warp recurrence produce measured gains. The 32-row MoE tile remains
+the default with 128-row controls; concentrated routes can favor a different
+tile. Final-row vocabulary projection saves memory without an established
+prefill speedup. The latest decode trace still contains host gaps and device
+allocations; prefill is dominated by GPU work.
+
+### September 13 kernel-only decode experiments
+
+The [initial sweeps](../../benchmarks/2026-09-13-decode-kernels/README.md) hold the
+existing runtime and weight formats fixed. Direct routed GEMV lowers the full
+one-token MoE microprobe from 276.674 to 221.519 us with 64 threads per row;
+128 threads reaches 218.837 us with more variation. All four GEMV configurations
+agree with one another; relative RMS error versus CUTLASS is 0.00155179 after
+preserving BF16 projection/activation/output rounding. This synthetic screen
+justifies a real-model trial, not a throughput or quality claim.
+
+Greedy argmax's shared-memory tree and 256-thread loop take 160.919 us on
+repeated warm 248320-element logits. Warp reductions take 34.811 us at the same
+block size and 16.384 us with 1024 threads. Processing four adjacent elements
+per thread regresses all three block sizes, so the candidate keeps scalar
+coalesced loads. The full raw sweeps and reproducer sources are linked above.
+
+The argmax candidate is now integrated: 1024 threads for vocabulary width at
+least 65536, 256 for small fixtures, with warp winner reduction and one shared
+exchange. The API, validation, finite-value policy and lowest-ID tie break are
+unchanged; no workspace, extra launch or synchronization is added. New native
+coverage tests widths 65535/65536/248320/248321, final-element winners, cross-warp
+ties, all-equal rows, I32/U32 results and output sentinels. The first fixture
+incorrectly requested strided tensors; the existing API correctly rejected it.
+The corrected contiguous fixture passes all four checked/release native targets.
+Through the prescribed test script, Python's seven tests, three Triton launcher
+tests, 127 library tests (four ignored), five benchmark, three engine, sixteen
+model and fourteen vector tests also pass. An existing Python formatting failure
+was fixed separately before those checks. Integrated timing follows separately.
+
+The integrated argmax run at `af5b043` measures **29.902 tok/s**, 33.427 ms
+p50 and 196.976 ms prefill p50, versus 29.665 tok/s in the fresh control. All
+36 output IDs match the control and profiling pass. The traced argmax cost falls
+from **0.418704 to 0.022606 ms/token**; unprofiled mean latency improves by
+0.267571 ms (0.80% throughput), so the full kernel saving is not a wall-time
+claim. [Raw pass logs and recovery metadata](../../benchmarks/2026-09-13-decode-kernels/argmax-core/recovery.json)
+preserve this result. An in-flight edit to the gitignored wrapper disrupted its
+local result collection after GPU measurement; its unintended local Nix build
+was stopped. This recovered record is deliberately outside the full core JSON
+history. The GPU raw artifacts and original Nsight report remain on sp10.
+
+The `decode_gemv64` MoE candidate is integrated behind the existing MoE API and
+named Rust/native kernel selection. Exact 35B one-token shapes use two direct
+BF16 GEMVs, the existing SiLU kernel, and weighted route reduction. Prefill and
+narrow fixtures use the existing tile32/96 grouped path. Loaded-model and routine
+benchmark defaults select the candidate; the three named CUTLASS controls remain
+forceable. Benchmark `moe` identifies the mixed decode/prefill implementation;
+`moe_cta_tile` and `moe_threadblocks` describe its grouped path. Existing Rust
+schedule, allocations, plans, workspace layout and tensor formats are unchanged.
+There is no graph capture, new synchronization or runtime compilation.
+
+The new exact-shape native fixture uses sparse analytic 256-expert weights,
+nonuniform route scales, duplicate IDs including expert 255, and poisoned
+workspace reuse. Candidate and grouped outputs agree bit-for-bit; the CPU
+calculation checks each BF16 rounding stage. Checked builds reject invalid IDs
+and NaN route scales before addressing weights; release builds safely skip
+out-of-range routes. All four native targets pass, as do the Python/Triton,
+127-library, five-benchmark, three-engine, sixteen-model and fourteen-vector
+checks through the prescribed script. The loaded 35B reference regression passes
+with both BF16 and FP32 recurrence, historical score tolerances, greedy IDs
+`[5, 6, 24218, 10]`, late-failure continuation and reset/replay. Real-model
+performance and sustained identical-prefix comparisons follow separately.
+
+A same-commit **control → candidate** repeat at `efc9444`, using the existing
+unprofiled `--measure-pass` subprocess through the prescribed remote script,
+measures **30.034 → 31.714 tok/s** at 102/32. Both include the new argmax;
+only `QS3_BENCH_MOE_KERNEL` differs (`tile32_blocks96` versus `decode_gemv64`).
+MoE's isolated end-to-end throughput gain in this pair is **5.59%**. All 36 IDs
+match, and the candidate repeat is within 0.07% of the full core measurement.
+[Repeat artifacts](../../benchmarks/2026-09-13-decode-kernels/repeat/decode_gemv64.json),
+[control](../../benchmarks/2026-09-13-decode-kernels/repeat/tile32_blocks96.json), and
+[recipe](../../benchmarks/2026-09-13-decode-kernels/repeat/run.sh) retain exact metadata,
+commit and an empty source diff. These additional unprofiled passes complement
+the complete two-workload Nsight records; they are not separate trace captures.
+
+The [sustained identical-prefix check](../../benchmarks/2026-09-13-decode-kernels/scores/README.md)
+reuses the saved vLLM BF16 reference and captures every full-vocabulary frame.
+All three prefill arrays are bitwise identical to the earlier qs3 control;
+decode arrays change with the GEMV summation order. No short argmax changes,
+one intermediate change (193), and three long changes (26, 148, 539) occur
+relative to that control. Existing real-model score/token/reset/rollback checks
+pass with both recurrent precisions.
+
+| Prompt / measured decode | Earlier qs3 agreement with vLLM | Candidate agreement | Earlier forced mean NLL | Candidate NLL |
+| --- | ---: | ---: | ---: | ---: |
+| 102/32 | 37/37 | 37/37 | 0.000395 | 0.000446 |
+| 500/200 | 204/205 | 205/205 | 0.095672 | 0.093924 |
+| 4000/800 | 798/805 | 799/805 | 0.087547 | 0.088508 |
+
+Counts include prefill and warmups. Candidate-versus-earlier-qs3 mean centered
+logit RMSE is 0.124974/0.112670/0.148895; maximum absolute changes anywhere in the
+full vocabulary are 3.576336/3.905744/4.893288. Relative-to-vLLM score distances
+and likelihood move in both directions. This supports retaining the measured
+kernel improvement under the existing correctness gates, but is not bitwise
+output equivalence or independent quality evidence. The linked report preserves
+all input IDs, per-frame hashes, rankings, margins, likelihoods, source provenance
+and reproduction scripts; raw logits remain in the recorded sp10 directories.
+
+### First steady-decode GPU timeline
+
+The [Nsight capture and summaries](../../benchmarks/2026-09-09T015556Z-0a7eef9-decode/README.md)
+for `0a7eef9` isolate the 32 warmed decode samples. Two costs now have evidence:
+
+- Grouped MoE GEMM: 59.3% of aggregate GPU kernel time, 1.576 seconds across
+  2,560 launches (49.25 ms/token). The pinned FlashInfer grouped-GEMM wrapper
+  hardcodes four thread blocks; the trace confirms `[4,1,1]` for all 2,560
+  launches. Benchmark a wider launch before replacing its arithmetic or adding
+  fusion.
+- Attention replanning: 32 pinned allocations cost 816.15 ms and 32 pinned frees
+  cost 547.49 ms (42.61 ms/token combined). These correspond to the 64 MiB host
+  planning workspace being recreated as each token changes metadata. Reuse this
+  storage with explicit asynchronous-copy lifetime management; weakening the
+  metadata key or adding a release-mode stream synchronization is unnecessary.
+
+The SQLite timeline has 1,539.70 ms without recorded GPU work within a
+4,200.81 ms first-to-last-kernel span. The pinned allocation/free calls have
+zero overlap with recorded GPU work in this capture. Their total also includes
+calls preceding the first kernel, so these interval endpoints differ.
+
+Host and GPU timings in general can overlap and must not be summed into a speedup prediction.
+In particular, blocking host copies include waits for queued GPU work. Confirm
+improvements with the unprofiled core benchmark after each change.
+
+A matched-vLLM baseline can use the existing local container
+`vllm-node@sha256:d966c1831d5da55c0cc52c6bd40f7d02cfc3d83404c3bd599139b055232d3970`.
+Read-only package inspection found vLLM 0.21.0, PyTorch 2.11.0+cu130, and
+Transformers 5.8.1. An initial inference comparison is recorded below; recurrent precision is not
+yet matched. The expected
+27B BF16 cache path is absent; a third-party 27B NVFP4/MTP cache does not satisfy
+the pinned 27B BF16 correctness requirement.
+
+### Wider grouped MoE launch probe
+
+A [two-repetition sweep](../../benchmarks/2026-09-09-moe-block-sweep/README.md) holds
+CUTLASS arithmetic fixed and tests 4, 12, 24, 48 and 96 blocks. Complete staged
+MoE time for one token falls from 1285–1286 µs to 315–317 µs at 96 blocks. The
+16- and 102-token cases improve about 5x. This supports increasing the launch
+grid before replacing arithmetic or adding fusion. The probe uses zero weights
+and device allocations; numerical tests and managed real-model timing are separate
+gates. 96 is the best tested grid, not an established global optimum.
+
+The subsequent output-recording core run `3bb273e` reproduces 11.908 tok/s and
+83.724 ms decode p50 with the original four-block launch. All 36 generated IDs
+(including warmups) match the first 36 vLLM IDs on the fixed prompt. This supports
+short-run greedy agreement; recurrent precision and sustained quality remain open.
+
+### Explicit AOT MoE launch selection
+
+The initial `QwenConfig::moe_bf16_kernel` selections varied only the four/96-block
+grid of the same local two-stage SM80 CUTLASS grouped GEMM, compiled for SM121.
+The default was 96 blocks. Since `0dc68a2`, named tile/grid selections replace
+those variants and the old block-count benchmark variable;
+`QS3_BENCH_MOE_KERNEL=tile128_blocks4` now selects the original comparison launch.
+JSON reports the kernel tile, stages and block count. Native and Rust validation
+reject uncompiled selections before execution.
+The local launch replaces the vendor wrapper's fixed four-block call without
+changing routing, arithmetic, activation, or reduction. No vendor files change.
+
+The full prescribed suite passed on sp10: 115 library tests (3 ignored), one
+benchmark test, three engine tests, 16 model tests, 14 vector tests, both native
+suites and the native benchmark build. Native numerical cases now run at both
+four and 96 blocks, including repeated routes and weighted top-2 accumulation.
+The separate pinned 35B BF16 regression also passed, including prefill/first-decode
+logit tolerances, greedy IDs `[5, 6, 24218, 10]`, and reset/replay. End-to-end
+measurements follow.
+
+
+The unprofiled 96-block core run measures **20.724 tok/s**, **48.252 ms decode
+p50**, and **406.284 ms prefill p50**. The four-block control from the same commit
+returns to 11.876 tok/s, 83.834 ms decode p50 and 1023.041 ms prefill p50. Thus
+changing the grid improves throughput by 74.5% in this pair and reduces prefill
+p50 by 60.3%. All 36 generated IDs match between the runs and match the first
+36 IDs from vLLM. This establishes a real-model gain from wider MoE scheduling,
+beyond the zero-weight microbenchmark. The measured eager result remains below
+vLLM's 30.826 tok/s, and FP32-vs-BF16 recurrence is still a comparison limitation.
+
+The preceding GPU trace also identifies serial router selection as a next target:
+`router_topk_kernel` totals 178.34 ms over 32 decode steps (5.57 ms/token).
+`qscu_router_topk` launches one thread per token; that thread scans all 256 experts
+and maintains the top eight. Test a parallel warp/block selection while preserving
+lower-ID tie-breaking, softmax/sigmoid behavior and route-weight normalization.
+Reprofile after the MoE grid change before assigning its new share of runtime.
+
+
+The [post-change timeline](../../benchmarks/2026-09-09T030025Z-95f87e3-decode/README.md)
+confirms all 2560 MoE launches use 96 blocks. Aggregate MoE time falls from
+1533.57 to 393.82 ms; total kernel time falls from 2603.22 to 1465.65 ms with the
+same 38,948 launches. Time without recorded GPU work stays near 98 ms across
+32 steps, supporting reduced GPU execution time as the cause of this gain.
+Dense cuBLAS GEMV now dominates; serial router top-k remains 178.05 ms (12.1%).
+Prioritize those measured kernels alongside persistent metadata and graph work.
+
+### Parallel Qwen router
+
+The [AOT router probe](../../benchmarks/2026-09-09-router-warp-probe/README.md) improves
+one-token routing from 143.479 to 8.188 µs using one warp. An initial version kept
+old 4096-expert scratch/loop bounds and took 22.542 µs; specializing to the actual
+256-expert/top-eight model removes that excess work. Native and Rust descriptors
+now reject larger shapes before addressing device memory, while narrow numerical
+fixtures remain supported. The scalar kernel is replaced.
+
+The warp computes scores and performs ordered top-k comparison in parallel.
+Expert-order softmax addition and selected-weight normalization remain serial
+to preserve summation order. New tests cover BF16/F32 inputs, widths around warp
+boundaries and the full 256 experts, cross-lane ties, softmax/sigmoid, both
+normalization settings, scaling, checked rejection of nonfinite logits, and
+release nonfinite fallback behavior. The full suite and both native builds pass.
+The pinned real BF16 model passes reference logits/greedy IDs/reset with both
+BF16 and FP32 recurrence.
+
+The integrated [short run](../../benchmarks/2026-09-09T035542.790727701Z-f898d32.json)
+measures 23.208 tok/s and 43.000 ms decode p50; the
+[1024-token/256-step run](../../benchmarks/2026-09-09T035649.557029218Z-f898d32.json)
+measures 23.204 tok/s and 43.060 ms p50. Throughput rises 12.3–12.4% against the
+corresponding FP32-state `bb36781` runs. All 36 and 260 generated IDs respectively
+remain identical to that baseline. Prefill p50 is 403.116 and 1929.128 ms. The
+27B download was paused throughout both measurements to avoid concurrent I/O.
+This is still about 75% of the matched vLLM decode throughput; kernel and host
+work remain to close the gap.
+
+
+Source audit corrected an earlier prefill endpoint description: `execute_active_batch`
+always calls `sample_logits`, including `max_new_tokens=0`. qs3 projects the full
+prompt-row matrix into vocabulary logits and samples/downloads all those rows;
+only the last prediction is needed for this single-request continuation. Test
+projecting/sampling only the final row as a separate prefill optimization, with
+public-runner and vector semantics checked explicitly. This is additional work
+beyond reducing decode preparation or router cost.
+
+The [integrated router trace](../../benchmarks/2026-09-09T035835Z-f898d32-decode/README.md)
+records 8.662 ms for 1280 router calls, down from 178.054 ms in the earlier
+96-block-MoE trace. Dense GEMV remains 774.393 ms, grouped MoE 395.691 ms, and
+there are 93.761 ms without GPU work across 32 decode steps. Kernel sum is
+1300.622 ms. The old trace used BF16 recurrence, so use the matched FP32 core
+runs above for end-to-end attribution. Both GPU projections and host preparation
+remain material targets after removing scalar routing.
+
+### Final-row vocabulary projection
+
+The single-request runner now projects and samples only the final activation
+row for prefill, prefix extension, and decode. Attention/GDN still process every
+input token. `QwenResult.logits_rows` explicitly reports one retained row. This
+reduces a 1024-token FP32 vocabulary buffer from 970 MiB to about 0.95 MiB, and
+avoids projecting the other 1023 rows. Benchmark metadata records `final_token`.
+
+The prescribed full suite passes, including the final-row comparison against the
+existing full-row vector oracle and public prefix/rebuild cases. The real 35B
+reference passes with BF16 and FP32 recurrence, retaining the existing logit
+tolerances and greedy/reset/replay checks. Moving prefill LM-head execution from
+a matrix projection to a single-row projection can change rounding; sustained
+output and prefill timing comparisons follow separately.
+
+The [short core run](../../benchmarks/2026-09-09T040743.919435353Z-f23e557.json)
+measures 405.529 ms prefill p50 and 23.224 tok/s decode. The
+[1024-token/256-step run](../../benchmarks/2026-09-09T040848.201791088Z-f23e557.json)
+measures 1922.211 ms and 23.200 tok/s. Before this change, the corresponding
+prefill medians were 403.116 and 1929.128 ms. These small, oppositely directed
+changes do not establish a prefill speedup; retain the change for the large
+logits-memory reduction and the explicit single-request output contract. All
+36 short-run and 260 sustained-run IDs match the prior warp-router baseline.
+The failed asset-download process had exited before these timing runs. Profile
+prefill itself next: removing unused vocabulary rows does not explain or close
+the much larger prefill gap against vLLM.
+
+### Prefill GPU cost
+
+The [warmed 1024-token prefill trace](../../benchmarks/2026-09-09T041450Z-bf86169-prefill/README.md)
+records 962.632 ms in 30 GDN recurrence calls and 497.233 ms in 30 causal-conv
+calls: 78.7% of its 1854.543 ms kernel sum. Grouped MoE takes another 314.039 ms.
+The capture ran alongside the asset download and is a cost diagnostic, not an
+isolated core-throughput result. Parallel convolution across tokens is the next
+local AOT target; initial/final state and aliasing must remain correct. Chunked
+GDN prefill is the larger subsequent target. The trace also shows 40.320 ms of
+pinned allocation/free with no GPU overlap before the main kernel span, so
+retaining provider resources across prefix rebuilds still matters.
+
+### Parallel prefill convolution
+
+The [standalone AOT convolution probe](../../benchmarks/2026-09-09-conv-prefill-probe/README.md)
+reduces 1024-token/8192-channel convolution with final-state writeback from
+14.368 to 0.190 ms. Outputs and state bytes match the serial reference in 72
+cases covering short/long and empty sequences, negative read slots, BF16/FP32
+state, and separate/same-slot writeback. These are kernel-probe measurements,
+not isolated core timing.
+
+Integration parallelizes prefill outputs over a bounded flat grid, then updates
+final history in a second stream-ordered kernel. No host synchronization is
+added. Decode retains its single-token launch. Prefill output must be disjoint
+from the input projection; the runner already allocates separate buffers, and
+native validation now rejects exact/partial overlap before device addressing.
+Same-slot convolution-state updates remain supported.
+
+The prescribed full suite and real 35B reference pass with BF16 and FP32
+recurrence, including reset/replay. The integrated flat-grid implementation also
+passes the 72-case bitwise probe (14.074 versus 0.188 ms in that repeat). Core
+prefill and sustained token comparisons are the next gate.
+
+The integrated [short core run](../../benchmarks/2026-09-09T043805.584536766Z-b8a0828.json)
+measures 379.641 ms prefill p50, down from 405.529 ms (6.4%). The
+[1024-token/256-step run](../../benchmarks/2026-09-09T043903.622466904Z-b8a0828.json)
+measures 1431.271 ms, down from 1922.211 ms (25.5%). Both have identical generated
+IDs to the final-row-projection baseline (36 and 260 IDs). Decode throughput is
+23.256 and 23.220 tok/s, consistent with the previous approximately 23.2 tok/s.
+The asset download was paused for each timing run and resumed between them.
+The 491 ms longer-prefill reduction is consistent with removing the measured
+serial-convolution cost. GDN recurrence is the next larger prefill target.
+
+### Ordered warp GDN recurrence
+
+The [warp-row recurrence probe](../../benchmarks/2026-09-09-gdn-warp-probe/README.md)
+reproduces the original 128-element FP32 reduction tree using four values per
+lane and warp shuffles. Explicit rounded additions prevent contraction across
+reduction boundaries. Four independent value rows share each 128-thread block;
+there are no block-wide barriers in the token loop.
+
+All output and state bits match in 192 standalone cases covering BF16/FP32
+state, normalization on/off, decode and prefill, short/long and empty sequences,
+negative read slots, same/separate state slots and disabled updates. With FP32
+state and normalization enabled, the 1024-token kernel falls from 32.076 to
+4.390 ms; a single decode token falls from 35.101 to 10.226 microseconds. These
+are kernel probes, not isolated core results.
+
+Integration replaces both old recurrence kernels and their shared-memory helper.
+The benchmark names the selected `qscu_warp4_row128_bf16` path and independently
+records recurrence dtype. The prescribed full suite and both native builds pass;
+the pinned real 35B reference also passes with BF16 and FP32 state, including
+existing logit tolerances, greedy IDs, reset and replay. Core timing follows.
+
+The integrated [short core run](../../benchmarks/2026-09-09T044959.830192700Z-27c8c15.json)
+measures 295.488 ms prefill p50 and 23.554 tok/s decode. The
+[1024-token/256-step run](../../benchmarks/2026-09-09T045052.688328012Z-27c8c15.json)
+measures 605.658 ms prefill and 23.596 tok/s decode (42.345 ms p50). Before the
+warp recurrence, prefill was 379.641/1431.271 ms: reductions of 22.2% and 57.7%.
+The 1024-token prefill is now 68.5% below the 1922.211 ms final-row baseline,
+combining convolution and recurrence improvements. Generated IDs remain identical
+in both comparisons (36 and 260 respectively). The download process had exited,
+so these core runs had no simultaneous asset transfer.
+
+The matched vLLM long-context baseline remains 367.629 ms prefill and 30.769
+tok/s decode. The remaining gap is about 1.65 times prefill latency and 23.3%
+lower decode throughput. Obtain the vLLM GPU trace before choosing the next
+projection/MoE change; retaining resources and graph replay remain open.
+
+### Aligned vLLM decode timeline
+
+The [vLLM graph trace](../../benchmarks/2026-09-09T050426Z-vllm-bf16-decode/README.md)
+and [current qs3 trace](../../benchmarks/2026-09-09T045948Z-262b4f2-decode/README.md)
+each contain 32 model forwards, verified from 1280 MoE and 960 GDN calls. Their
+first 36 generated IDs match. vLLM delivers the prefill token separately, and
+capture had to begin one delivery earlier than the initial attempt to include
+all 32 forwards. Counts, scripts, settings and precision are recorded together.
+
+qs3 has 95.782 ms without GPU work within its 1379.419 ms kernel span; vLLM has
+14.792 ms within 1049.259 ms. vLLM launches 31,104 of its 31,840 kernels as graph
+nodes, versus eager qs3's 38,948 kernels. Kernel durations overlap in the vLLM
+capture, so summed duration exceeds wall span; do not subtract category sums to
+predict end-to-end improvements. Unprofiled long-context core throughput remains
+23.596 versus 30.769 tok/s.
+
+The next small kernel target is decode convolution: 37.418 ms across 960 qs3
+calls versus 2.683 ms for vLLM. qs3 still assigns all 8192 channels to one CTA;
+channels can be tiled independently without changing convolution arithmetic.
+Warp recurrence is now close in captured duration (13.351 versus 13.022 ms),
+although vLLM fuses additional preparation. MoE projection kernels account for
+392.597 versus 324.712 ms, with different tile shapes and fused work. Packed
+projection and MoE changes need controlled AOT probes.
+
+The LM-head signatures expose another precision mismatch: qs3 projects to FP32
+logits, while vLLM projects to BF16. Both receive BF16 model activations. qs3's
+cuBLASLt GEMV signature has FP32 internal input; native matrix layouts confirm
+that the caller still supplies BF16 input, so this reflects cuBLASLt internals. Both have 32 calls at grid 62,080, consistent
+with the padded 248,320 vocabulary and four outputs per block. Captured durations
+are 197.355 and 164.707 ms. This is a candidate for a controlled precision probe
+and identical-prefix score comparison, not evidence that it causes the sustained
+greedy divergence. Graph mode, projection packing, and output precision differ;
+these traces diagnose architecture choices rather than establish strict numerical
+or isolated performance equivalence. The asset download was active during capture.
+
+### Tiled decode convolution
+
+The [AOT probe](../../benchmarks/2026-09-09-conv-decode-probe/README.md) distributes
+independent convolution channels across 256-thread blocks. It preserves all output
+and state bytes in 768 cases covering 8192/10240 channels, BF16/FP32 history,
+multiple sequences, same/separate state slots, disabled updates, negative reads,
+exact input/output alias, activation and bias choices. At the 35B width, event
+mean falls from 18.444 to 4.096 microseconds; the 27B-width probe falls from
+22.522 to 4.100 microseconds. These are standalone measurements.
+
+Integration changes only the decode channel assignment and grid; prefill keeps
+its parallel output/writeback path. The benchmark records `qscu_tiled_channels`.
+The prescribed full suite and native checked/release tests pass, as does the
+loaded 35B regression with both recurrent precisions, including late failed
+rebuild, continuation, reset and replay. Core decode timing follows.
+
+
+
+
+The integrated [short run](../../benchmarks/2026-09-09T054130.766285819Z-d6ad953.json)
+measures 24.199 tok/s, 41.245 ms decode p50 and 250.405 ms prefill. The
+[1024-token/256-step run](../../benchmarks/2026-09-09T054323.171540392Z-affb470.json)
+measures 24.217 tok/s, 41.260 ms decode p50 and 555.079 ms prefill. Against the
+resource-reuse baseline, sustained decode throughput increases 2.9% and p50 falls
+from 42.461 ms. All 36/260 generated IDs remain identical. Both timings ran after
+the asset download and payload checksum scan had finished. The native change is
+`d6ad953`; the sustained run includes only subsequent payload-validation records.
+The remaining sustained throughput gap to vLLM is about 21.3%, and prefill is
+about 1.51 times its latency. Competitive performance and sustained quality
+parity are still open.
+
+### Grouped-MoE tile shape
+
+The [AOT tile probe](../../benchmarks/2026-09-09-moe-tile-probe/README.md) compares
+128x128x32, 32x128x64 and 16x128x64 CTA tiles at 96 blocks. All 72 complete-output
+comparisons are bitwise identical, covering nonzero BF16 values, 1/16/102/1024
+tokens and routes concentrated on 8/32/256 experts. With 256-expert routing, the
+32-row tile reduces one-token time from 324.91 to 283.66 microseconds and
+1024-token time from 9362.59 to 8609.82 microseconds. With 1024 tokens concentrated
+on eight experts it instead increases time from 1865.07 to 2119.45 microseconds.
+The 16-row option has still larger skewed-prefill regressions. Keep the 128-row
+control and test the 32-row candidate on real prompts; sparse-row padding and
+weight reuse favor different tiles. These are probe results, not core speedups.
+
+The production candidate exposes three named Rust/AOT selections:
+`tile128_blocks4`, `tile128_blocks96`, and `tile32_blocks96`. The benchmark uses
+`QS3_BENCH_MOE_KERNEL` and records both CTA shape and block count. The old raw
+block-count selector is removed. The 32-row candidate is the trial default;
+real short/sustained core measurements will determine whether it should remain.
+All Rust tests and all four native checked/release targets pass, with analytic
+MoE checks run for each selection. The native rerun also corrected three stale
+attention rejection-message assertions left by the 27B dispatch change. The
+loaded 35B reference regression passes with BF16 and FP32 GDN recurrence,
+including failed-rebuild continuation and reset/replay.
+
+The integrated 32-row [short run](../../benchmarks/2026-09-09T063550.352923789Z-0dc68a2.json)
+measures 24.668 tok/s, 40.385 ms decode p50 and 242.080 ms prefill. The
+[sustained run](../../benchmarks/2026-09-09T063740.799837217Z-0dc68a2.json) measures
+24.807 tok/s, 40.276 ms decode p50 and 557.628 ms prefill. The same-commit
+[128-row control](../../benchmarks/2026-09-09T063952.232429825Z-0dc68a2.json) measures
+24.163 tok/s, 41.358 ms decode p50 and 554.269 ms prefill. The 32-row tile gains
+2.66% sustained throughput; its 0.6% prefill difference does not establish a
+regression. All 36/260 IDs match the earlier implementation, and both sustained
+tile selections return identical IDs. Retain the 32-row default and forceable
+128-row controls. The sustained throughput gap to the recorded vLLM graph run
+is still 19.4%; the tile improvement does not close the graph or quality work.
+
+The [updated 32-forward decode trace](../../benchmarks/2026-09-09T064138Z-0dc68a2-decode/README.md)
+confirms the kernel savings. Against the earlier aligned qs3 trace, grouped MoE
+time falls from 392.597 to 358.915 ms and decode convolution from 37.418 to
+2.764 ms. GDN recurrence and GEMV time remain close. Kernel span falls from
+1379.419 to 1315.389 ms, while time without GPU work stays near 95 ms. The
+capture contains both optimizations; the same-commit core A/B above isolates
+the tile. Host submission/delivery gaps remain a graph target, and eight device
+allocations/frees remain in the captured decode range. CUDA API duration includes
+waiting and must not be interpreted as independent CPU work.
+
+### Triton AOT GEMV prototype
+
+The [standalone SM121 probe](../../benchmarks/2026-09-09-triton-gemv-probe/README.md)
+compiles 12 kernels using the pinned Triton 3.8.0 wheel and launches them from
+native C++ without runtime Python or JIT. All pass full-output cuBLASLt checks
+and sampled CPU double references. The wheel's bundled Blackwell ptxas 13.3.33
+works on sp10 with the existing driver; the native harness uses CUDA 13.0.88.
+
+The 248320x2048 vocabulary projection, retaining BF16 inputs/weights and FP32
+output, improves from 5.731 to 4.283 ms for repeated weights and 5.738 to
+4.332 ms after cache eviction with the 1-row/4-warp candidate. A second complete
+run confirms approximately the same LM-head timings; maximum absolute error
+against cuBLASLt is 1.43e-6. Smaller projections are mixed: repeated-weight gains
+for Z/output projections reverse after eviction, while QKV gains are modest.
+These synthetic cudaMalloc timings do not establish real managed-weight or
+end-to-end decode improvement. Real-model LM-head score checks and eager timing
+are the next gate; no production kernel is replaced by this experiment.
+
+The follow-up [copied b12x GEMV comparison](../../benchmarks/2026-09-09-b12x-gemv-probe/README.md)
+copies the upstream row/loop kernel bodies unchanged and tests both FP32 and
+BF16 output. All eight configurations pass full-output cuBLASLt and sampled
+CPU references. b12x's default row/eight-warps configuration is best tested:
+4.139 ms repeated and 4.186 ms after eviction for FP32 output, versus
+5.697/5.706 ms cuBLASLt. The earlier qs3 row/four-warps control measures
+4.277/4.326 ms in the same run. FP32 maximum absolute difference is 1.19e-6;
+BF16 output has essentially the same timing. Carry the copied b12x row kernel
+into the next real-model trial instead of retaining a separate custom GEMV.
+These remain synthetic kernel measurements, not end-to-end decode results.
+
+The [triton_kernels comparison](../../benchmarks/2026-09-09-triton-kernels-gemv-probe/README.md)
+imports the unchanged regular matmul from the matching Triton v3.8.0 release
+and tests four tiles with FP32 output. All pass full-output cuBLASLt and sampled
+CPU checks. The best tested tile (16/32/128, four warps) measures 4.293 ms
+repeated and 4.345 ms after eviction, versus 5.687/5.693 ms cuBLASLt. The b12x
+row/eight-warps control remains faster at 4.076/4.123 ms. Keep b12x for the next
+real-model trial. AOT compilation must preserve pointer-alignment hints:
+omitting the normal launcher's 16-byte hints caused a local-memory performance
+cliff in the 256-column matmul tile. The newer vendored triton_kernels HEAD
+also imports an internal helper absent from the pinned compiler wheel; the
+matching release imports and compiles successfully without source changes.
+
+### Integrated Triton LM head: allocation controls the result
+
+The runtime now loads the generated row/eight-warp LM-head module once and uses
+it for final-token logits in prefill and decode. Both Ninja and Nix build the
+AOT artifacts; Python is absent from inference. The typed Rust adapter checks
+dimensions against generated integer constexprs and grid dimensions. Small
+fixture shapes retain cuBLASLt. Validation passed 153 Rust tests, two standalone
+launcher tests, and the real 35B reference test with both BF16 and FP32 GDN state.
+All 248,320 logits were compared against cuBLASLt on identical actual activations
+at prefill and first decode; maximum absolute difference was 2.861023e-6.
+
+The [core result](../../benchmarks/2026-09-10T031951.967883789Z-1395050.json) at
+`1395050` measures **24.791 tok/s**, versus the immediately preceding
+[cuBLASLt baseline](../../benchmarks/2026-09-10T030755.492864205Z-77fbfaf.json) at
+**24.716 tok/s**. Decode p50 is 40.303 versus 40.421 ms; prefill p50 is 239.421
+versus 241.164 ms. Workload, generated IDs, driver 580.142, Nix CUDA 13.0 and
+Rust toolchain match. The 0.3% difference is not a meaningful established gain.
+
+The [new trace](../../benchmarks/2026-09-10T032108Z-1395050-decode/README.md)
+shows the Triton LM head at **6.043 ms**, other dense GEMVs at **18.218 ms** and
+grouped MoE GEMMs at **11.214 ms** per token. GPU idle time within the kernel
+span remains about **2.974 ms/token**. The earlier isolated 4.2 ms result did
+not describe this runtime allocation path.
+
+A [controlled allocation probe](../../benchmarks/2026-09-10-triton-lm-head-memory-probe/README.md)
+uses the identical cubin and varies only weight allocation/initialization:
+
+| Allocation, after eviction | cuBLASLt | Triton |
+| --- | ---: | ---: |
+| cudaMalloc, GPU initialized | 5.698 ms | **4.167 ms** |
+| Managed, GPU initialized | 6.089 ms | 6.110 ms |
+| Managed, CPU initialized | 6.094 ms | 6.105 ms |
+
+Each value is the median of three 50-sample event p50s, with alternating
+candidate/control order. Full-output cuBLASLt and sampled CPU checks pass.
+Managed allocation removes this kernel's advantage even after warmup; changing
+initialization processor does not recover it. This establishes an allocation
+effect in the probe, not a specific page-size, translation, or cache mechanism.
+
+Next: trial device backing for just the real LM-head weight and measure load
+cost as well as eager decode. For further Triton kernels, GDN QKV is the narrow
+next GEMV candidate, but must be tested with actual managed/device weights;
+the previous synthetic gains were modest and smaller gate/output shapes
+regressed after eviction. Routed-expert GEMV has a larger 11.2 ms MoE budget
+but needs a separate correctness/performance prototype against FlashInfer.
+Keep Q/K norm plus partial-RoPE fusion as a smaller launch-reduction candidate,
+with KV append separate. Avoid treating every cuBLAS GEMV as an automatic
+Triton win.
+
+### Real-weight Triton GDN QKV candidates
+
+The [GDN QKV probe](../../benchmarks/2026-09-10-triton-gdn-qkv-probe/README.md) compares
+six AOT SM121 reductions on real 8192x2048 BF16 tensors from layers 0, 18 and 38,
+with synthetic BF16 activations. All 54 cases pass full-output cuBLASLt and
+sampled CPU double references. Maximum absolute output difference is 0.000488281
+across variants, 0.000244141 for the row/eight-warp candidate.
+
+With input/weight/output allocations and one prepared cuBLASLt plan shared
+across candidates, the b12x-derived row/eight-warp kernel is best tested for
+device weights: 198.400 to 185.056 µs after eviction, with median paired saving
+13.312 µs (6.7%) and range 12.288–14.336 µs across nine pairs. Managed CPU-copy
+and managed-upload medians save about 2 µs; CPU-copy pairs include regressions.
+Several multirow variants regress. Repeated device weights show a larger gain,
+but the evicted comparison is the more relevant gate for the model schedule.
+
+The initial sweep recreated allocations and plans between variants; its device
+control shifted from about 197 to 156–157 µs. The shared-allocation repeat keeps
+it near 198–199 µs and changes some rankings. Both sweeps and sources are retained;
+this does not establish the cause of the allocation-sensitive timings.
+
+Thirty GDN layers times the device saving suggest about 0.399 ms/token, an isolated
+kernel extrapolation, not measured end-to-end improvement. Production dispatch
+is unchanged. Loaded-model logits/continuation and timing remain integration
+gates; routed-expert GEMV against the complete existing MoE path is the next
+larger-budget candidate. The prescribed test script ran both probe sweeps
+sequentially on sp10; this prototype-only change did not rerun production tests.
+
+### All-device core benchmark
+
+The core benchmark now constructs the existing `PinnedUploadBackend`: final
+weights use `cudaMalloc`, file reads pass through four event-protected 1 GiB
+pinned buffers, and materialization releases the staging ring. The load timer
+starts before backend construction so it includes ring setup. JSON reports
+`weight_backend: pinned_upload`. This changes the benchmark's loader selection;
+it introduces no new loading backend or tensor-specific configuration.
+
+The [Nix release result](../../benchmarks/2026-09-10T094105.966130733Z-8849854.json)
+at `8849854` reaches **28.504 tok/s**, versus the preceding
+[managed/Triton result](../../benchmarks/2026-09-10T031951.967883789Z-1395050.json)
+at **24.791 tok/s**, a **14.97%** throughput increase. Decode p50 falls from
+40.303 to 35.052 ms, p95 from 40.461 to 35.276 ms, and prefill p50 from 239.421
+to 196.498 ms. All 36 generated IDs and prompt metadata match. Both runs use
+Rust 1.95.0, Nix CUDA 13.0, driver 580.142, FP32 GDN recurrence, the 32-row MoE
+tile and the same Triton LM head; weight backing is the only changed execution
+metadata. Four existing benchmark contract tests pass through the test script.
+
+This confirms the allocation gain in the core benchmark's Nix environment,
+following the separate prototype comparisons. It is one short core measurement,
+not a fresh multi-context or matched vLLM comparison. Its load time is not a
+controlled loader A/B: file-cache residency was not fixed, and the older timer
+excluded backend setup. The independent prototype measurements found faster
+managed loading but faster device-backed inference; kernel timing alone must
+not be used to infer loading cost.
+
+## Numerical agreement and vLLM comparisons
+
+Current conclusion: FP32 recurrence improves agreement on the sustained
+1024-token workload, but identical-prefix scoring still finds five argmax
+differences in 261 positions. Final-logit BF16 rounding alone does not resolve
+the first disagreement. The 4096-token greedy runs diverge at index two.
+These benchmarks do not establish independent language-quality parity.
+
+### First vLLM inference comparison
+
+The [pinned-container run](../../benchmarks/2026-09-09T023628Z-vllm-bf16-core/README.md)
+measures 30.826 tok/s and 32.355 ms decode p50 for the same 35B BF16 weights,
+102-token prompt, greedy sampling and 32 warmed decode forwards. Full decode
+CUDA graphs are enabled. Selected providers include FlashInfer CUTLASS MoE,
+FlashAttention 2, and Triton/FLA GDN prefill. qs3's current eager result is
+11.905 tok/s and 83.701 ms p50. Prefill is 181.369 ms in vLLM, including sampling
+and delivery of its first token, versus qs3's 1015.461 ms prefill call. qs3 also
+samples internally, but returns no generated token for `max_new_tokens=0`.
+
+The effective vLLM GDN recurrent state is **FP32**, while qs3 stores BF16; its
+convolution state is BF16. Thus this is a useful performance target but not the
+matched-precision completion gate. The container rejects explicit BF16 Mamba
+cache arguments and resolves `auto` recurrence to FP32. Record resolved cache
+types, not just requested weight precision. Output tokens are preserved in the
+artifact; output equivalence, longer contexts and sustained quality remain open.
+
+The first vLLM prefill warmup triggers additional JIT and costs 16.592 seconds;
+the second takes 183.219 ms. Neither is included in steady samples. The harness
+includes empty engine steps in token-delivery intervals, preventing asynchronous
+submission from being mistaken for completed inference latency.
+
+### Longer prompt and sustained decode
+
+The [1024-token / 256-step comparison](../../benchmarks/2026-09-09T030615Z-vllm-bf16-core/README.md)
+uses repeated base prompt IDs and contexts 1028 through 1284. qs3 holds at
+20.730 tok/s (48.216 ms decode p50, 1941.522 ms prefill p50); vLLM measures
+30.769 tok/s (32.481 ms decode p50, 367.629 ms prefill p50). Thus the short-context
+qs3 throughput persists across this longer run. This is a synthetic performance
+probe, not a natural-language quality benchmark.
+
+The first 56 generated IDs agree; they diverge at index 56 (qs3 32956, vLLM 33027).
+Subsequent token contexts therefore differ. Recurrent state remains BF16 in qs3
+and FP32 in vLLM, while kernel arithmetic/prefill paths also differ. Do not assign
+a cause from this alone. Native `qscu_gdn_prefill/decode` already support FP32
+state, and `GdnRecurrentState` can describe it; the runner currently allocates
+`DeviceBuffer<u16>`. Expose explicit FP32 runner storage and compare again to
+address the precision gate. Sustained quality and a third context remain open.
+
+### Explicit recurrent-state precision
+
+`QwenConfig::gdn_recurrent_precision` now selects BF16 or FP32 storage while
+keeping BF16 activations and convolution history. Owned typed buffers determine
+the native descriptor dtype; reset and prefix reconstruction allocate/clear the
+selected type. The native AOT kernels already implement both forms, so no new
+runtime kernel selection framework, compilation or synchronization is needed.
+Loaded real models now default to FP32; narrow fixtures retain their BF16 state.
+`QS3_BENCH_GDN_STATE=f32 ./run_core_benchmark.sh` selects FP32, and JSON reports
+the effective state dtype.
+
+The prescribed full suite passed (115 library, 1 benchmark, 3 engine, 16 model,
+14 vector tests and both native suites). The pinned 35B BF16 real-model test now
+runs both recurrent precisions sequentially; both passed the existing prefill
+and first-decode logit checks, greedy IDs `[5, 6, 24218, 10]`, and reset/replay.
+The modes must remain explicit in subsequent throughput and output comparisons.
+
+
+The [FP32 short run](../../benchmarks/2026-09-09T032157.505542859Z-bb36781.json)
+measures 20.653 tok/s and 48.343 ms decode p50, with all 36 generated IDs matching
+vLLM. The [1024-token/256-step run](../../benchmarks/2026-09-09T032256.107210192Z-bb36781.json)
+measures 20.658 tok/s, 48.380 ms decode p50 and 1934.079 ms prefill p50. These
+throughputs are within 0.4% of the corresponding BF16-state measurements; this
+small difference is not resolved beyond run variation.
+
+FP32 recurrence extends the sustained matching prefix from 56 to 162 generated
+IDs. At index 162, qs3 emits 8340 while vLLM emits 79091. Thus matching recurrent
+storage helps this trajectory but does not establish complete output equivalence.
+Different projection/output rounding and prefill algorithms still need attention;
+compare scores under identical token prefixes before assigning a remaining cause.
+Loaded model configurations now default to FP32 recurrence. BF16 remains an
+explicit comparison choice, and benchmark metadata records the effective mode.
+
+### Identical-prefix numerical comparison
+
+The [forced-prefix diagnostic](../../benchmarks/2026-09-09-same-prefix-scores/README.md)
+records both runtimes on the same 1024-token prompt and 260 vLLM-selected decode
+IDs. qs3 uses its real decode path; vLLM records unmodified logits before forcing
+sampling. vLLM reproduces all 260 original greedy IDs. Argmax agrees at 256/261
+positions, with differences at 162, 163, 173, 218 and 223. Mean forced-token NLL
+is 0.108287 versus 0.105211 nats; this is one self-selected benchmark continuation,
+not independent language-quality evidence or an acceptance threshold.
+
+At index 162 qs3 scores IDs 8340/79091 at 21.865154/21.409761, while vLLM scores
+them at 21.125/21.375. Rounding those qs3 logits to BF16 gives 21.875/21.375 and
+does not resolve the disagreement. Earlier computation and projection-algorithm
+differences remain to be isolated. The loaded vLLM router's BF16 input/output is
+now verified directly; qs3 uses FP32 router logits. A controlled router/shared-gate
+precision comparison is warranted before attributing the divergence only to GDN
+state or LM-head output. All captures, score summaries and reproduction scripts
+are linked above; these diagnostic runs make no performance claim.
+
+### Router projection output precision
+
+Discovered build choice for the future build-system design: the MoE router
+projection's output dtype, BF16 or FP32, independently of BF16 weights and
+activations. The runner now uses BF16 uniformly to match the observed pinned
+vLLM router. cuBLASLt still accumulates in FP32; its BF16 result feeds FP32
+softmax, top-eight selection and route-weight normalization. This rounds an
+activation; it does not quantize or repack weights. Shared-expert gate logits
+and vocabulary logits still use FP32. No runtime selector, environment-variable
+selector, build flag or code-generation mechanism is introduced for this choice.
+
+The earlier experiment at `7f60e20` measured 24.747 tok/s with BF16 router output
+versus 24.786 with FP32 on the same commit (1024 prompt tokens, 256 measured
+decode steps); prefill was 558.137 versus 558.463 ms. This pair establishes no
+meaningful throughput improvement. Both identical-prefix comparisons agree with
+vLLM's argmax at 256/261 positions. FP32 differs at 162, 163, 173, 218 and 223;
+BF16 differs at 3, 162, 166, 173 and 185. Mean forced-token NLL is 0.108287 for
+FP32, 0.109096 for BF16 and 0.105211 for vLLM. Some captured distributions move
+closer: at position 162, KL(vLLM || qs3) falls from 0.074231 to 0.017030.
+These are mixed numerical results on one vLLM-selected continuation, not an
+independent quality comparison or proof that either router dtype is better.
+
+The historical first-decode ranking `[6, 9, 9867, 61, 41813]` becomes
+`[6, 9867, 9, 61, 41813]` in the BF16-router experiment. The winner and leading
+membership survive; the secondary order changes. The real-model regression now
+checks that membership, the exact greedy winner, all eight historical reference
+scores with their original tolerances, and the existing winner-margin bound.
+It permits secondary permutations within those score tolerances. Vector oracles
+round router projection outputs to BF16 before computing routes and downstream
+outputs, including a case where rounding changes the top-eight boundary.
+Composed-vector route weights are checked against CPU softmax of the actual,
+independently validated BF16 projection output. This keeps the `1e-5` routing
+tolerance separate from upstream GEMM rounding; independent vector checks still
+cover projected logits, selected IDs and downstream outputs.
+
+Validation on sp10 passes through the prescribed script: 119 library tests
+(4 ignored), the benchmark test, 3 engine tests, 16 model tests, 14 vector tests
+and all four native checked/release targets. The separate loaded 35B regression
+passes with BF16 router logits and both BF16/FP32 GDN state, including reference
+scores, greedy IDs `[5, 6, 24218, 10]`, failed-rebuild continuation and reset/replay.
+
+The experimental public precision API has been removed. Its patch, original
+scripts, raw diagnostic summaries and the two core results are preserved locally
+under `.prototypes/router_precision/2026-09-09-closeout`. Earlier committed
+benchmark records keep their original metadata and locations.
+
+The pinned vLLM image also exposes concrete GDN numerical differences to audit:
+its packed decode kernel uses Q/K normalization epsilon `1e-6`, while qs3 uses
+`1e-8`; its beta computation rounds through the B input dtype before returning
+to FP32, while qs3 retains FP32 sigmoid output. With BF16 B this is BF16 rounding;
+the B dtype at this kernel boundary still needs direct runtime verification.
+vLLM chunk prefill normalizes Q/K into their input dtype (BF16 for BF16 inputs),
+whereas qs3 normalizes inside the FP32 recurrence. Source excerpts and hashes
+are retained with the probe. These are investigation leads, not established
+causes of output divergence; GDN arithmetic is unchanged here.
+
+The reference target is close numerical agreement under identical input
+prefixes and independent sustained quality checks. A fixed greedy winner is
+deterministic given fixed logits, but general run-to-run logit determinism of
+our vLLM setup has not been established. Reproducing its recorded continuation
+does not establish bitwise reproducibility, and free-running divergence alone
+is not a correctness failure.
+
+### Third context: 4096 prompt tokens
+
+The [4096-token comparison](../../benchmarks/2026-09-09T065726Z-vllm-bf16-core/README.md)
+adds 256 measured decode forwards at contexts 4100–4356. qs3 measures 24.436
+tok/s, 40.900 ms decode p50 and 1556.533 ms prefill; vLLM measures 29.887 tok/s,
+32.975 ms and 850.012 ms. Prompt fingerprint `8fdb3ca77a5d0ac3` matches exactly.
+The throughput gap is 18.2%, and qs3 prefill takes 1.83 times as long. These are
+the same synthetic repeated base IDs used for context scaling, with the existing
+BF16 projection-output and execution differences still explicit.
+
+The first two generated IDs match, then qs3 selects 248046 while vLLM selects
+10885 at index two. Consequently these sustained runs follow different token
+prefixes; their timing is not an identical-prefix comparison. The earlier
+1024-token forced-prefix diagnostic does not resolve this case. Several-context
+performance is now recorded, but matched precision, sustained quality and
+competitive performance remain unfinished.
+
+### 27B attention dispatch probe
+
+The [24Q/4KV AOT probe](../../benchmarks/2026-09-09-qwen27-attention-probe/README.md)
+passes the existing native CPU-reference prefill/decode and append cases after
+specializing the fixture to GQA ratio six. Both qs3's plan dispatch and
+FlashInfer's decode launch dispatch need the 6/8 cases; enabling only planning
+would leave execution unsupported. A TU-local dispatch override suffices,
+without changing vendored headers or introducing JIT. Production Rust/native
+validation and checked-build coverage remain to integrate.
+
+### Exact 27B GDN native probe
+
+The [27B GDN probe](../../benchmarks/2026-09-09-qwen27-gdn-probe/README.md) passes checked
+and release builds with 16 Q/K heads, 48 value heads, 128-dimensional heads,
+10240 convolution channels and width four. Analytic decode/prefill checks cover
+BF16 and FP32 state and the final value head's group-three Q/K mapping. Existing
+CPU-reference prep tests cover convolution, Q/K/V split, gate materialization and
+gated RMSNorm. Production integration must replace the fixed 32-head assumptions
+in validation, prep launch specialization, Rust tensor/state views and allocations;
+the warp recurrence already receives its head counts in validated parameters.
+
+
+Native production dispatch now accepts exactly 16Q/2KV or 24Q/4KV attention with
+head dimension 256, and 16Q/16K GDN with 32 or 48 value heads and dimension 128.
+Both FlashInfer planning and launch dispatch include GQA ratio six; no vendored
+source or JIT path is changed. Post-convolution prep and gated RMSNorm instantiate
+separate AOT 32/48-head kernels. Convolution and recurrent descriptors validate
+the matching widths before device addressing.
+
+The prescribed full script now builds and runs dedicated `qsfi_test_qwen27`
+checked/release targets alongside the existing targets. Both models pass attention
+CPU-reference/reprepare/append tests and analytic BF16/FP32 recurrence tests;
+27B also passes prep CPU references and checked metadata rejection. The loaded
+35B BF16 regression passes with both recurrent precisions, including failed
+rebuild continuation and reset/replay. Public 27B model configuration, Rust views,
+scratch/state allocation and loading remain gated pending integration.
+
+The native-extension [35B core regression](../../benchmarks/2026-09-09T060704.072590770Z-7f0e658.json)
+measures 24.281 tok/s, 41.111 ms decode p50 and 245.186 ms prefill. All 36
+returned IDs match the preceding core run. This establishes no observed 35B
+regression from the extra AOT shapes; the small timing differences are not a
+claimed performance improvement.
+
+## Full-snapshot load comparison
+
+The [sp10 load comparison](../../benchmarks/2026-09-09-weight-load-comparison/README.md)
+completes five full-snapshot tests, including the previously interrupted four
+1 GiB pinned buffers. All validate 723 allocations and planned file/zero-fill
+byte counts. Benchmark instrumentation now includes backend initialization;
+the pinned ring's allocation had previously fallen outside the reported time.
+
+The initial managed/pinned/managed sequence gives 38.630/58.803/44.726 s including
+setup, with uncontrolled cache conditions. It does not establish a backend
+ranking. A subsequent pair verifies zero resident shard pages with `mincore`
+after per-file cache eviction before each run. Managed then takes 63.342 s
+including setup, while pinned takes 58.467 s, 7.7% less. The pinned run includes
+1.554 s ring setup, 2.087 s final allocation, 0.404 s event waits and 54.408 s
+file reads across 693 transfers. Read time into managed pointers is 63.035 s;
+it includes destination-memory handling and does not isolate storage bandwidth.
+
+These cold Linux file-cache runs supersede extrapolation from the earlier small
+cached probes for full-load planning. One controlled pair is not exhaustive
+tuning, and the tests do not measure first GPU use or inference from the two
+allocation types. That remains the next backend decision gate. The production
+managed default is unchanged; full logs, storage metadata, cache verification
+and extracted measurements are linked above.
+
+## Architecture to test next
+
+The target is Rust-owned, near-static execution of a small set of exact Qwen
+model schedules with AOT CUDA kernels. Build-time Python for artifacts is
+acceptable; inference must not need Python, NVRTC, or Python-driven JIT. The
+current cuBLASLt setup query is an intermediate preparation mechanism. Ultimately
+kernel choices should be explicit prepared schedule entries; graph replay must
+not select algorithms, allocate storage or compile kernels.
+
+Execution resources now survive prefix transactions, and attention planning
+storage is reused with event-protected pinned slots and complete metadata keys.
+The remaining architecture gates are:
+
+1. Preallocate decode storage and represent changing page metadata, sequence
+   positions, sampled input IDs and GDN state slots in persistent device buffers.
+   Capture only after preparation; page boundaries and prefix resets are
+   correctness gates. Alternating recurrence slots need explicit replay parity.
+2. Use the recorded eager/graph timelines to guide projection packing and MoE
+   probes. Compare identical-prefix scores before changing LM-head output
+   precision. Graph replay and GPU kernel improvements address different costs;
+   the current prefill span has little idle time while decode has larger gaps.
+3. Establish exact 27B BF16 support and matched-vLLM baselines. The pinned payload
+   is verified and native ratio-six attention and 48-value-head GDN are tested;
+   Rust shape/state views, dense materialization and reference inference remain open.
+4. Implement verified NVFP4 packing/scales and actual SM121 AOT kernels after
+   BF16 correctness. An emulation path does not establish competitive quantized
+   execution.
+
+These are hypotheses and implementation gates, not measured speedup claims.

@@ -249,6 +249,21 @@
 
 ## 6. Adopt and measure optimized providers
 
+Current experiment ownership/status is in `FINDINGS.md` (KR01–KR08).
+
+- [ ] KR01: AOT-port and measure vLLM's fused Q/K norm + partial RoPE + gate
+  extraction on the actual 27B geometry; preserve BF16 boundaries and validate
+  prefill/decode, positions, reset/rebuild, and full-model logits.
+- [ ] KR03/KR04: Compare b12x CuTeDSL tensor-FP8/dense-NVFP4 and QuTLASS SM120
+  kernels on real projection shapes, including M=1,2,4,8,16. Include quantization
+  and split-K reduction; promote only after native AOT and model-level validation.
+- [ ] KR05: Audit current cutile-rs for AOT/native launch feasibility on GB10,
+  pinned toolchain requirements, and useful small-batch kernel candidates.
+- [ ] KR06: Probe fused SiLU×up + NVFP4 quantization against current packed
+  activations/scales; retain intermediate-rounding evidence.
+- [ ] KR02: Investigate upstream packed/batched GDN decode with <=16 token
+  sequences and explicit state outputs; do not implement MTP/rollback yet.
+
 - [ ] Experiment in `.prototypes` with GDN prefill fusion for 3.8-27B NVFP4
   on Spark: start with KKT + triangular solve, then consider adding W/U if
   register/shared-memory usage and timings justify it. Use vLLM's fused SM100
