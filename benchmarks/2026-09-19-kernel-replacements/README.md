@@ -38,9 +38,11 @@ from FlashInfer. BF16 caches increase the differences. These timings exclude
 cache construction, and are not end-to-end token latency measurements.
 
 Follow-ups replace the cache with FlashInfer-compatible on-the-fly frequencies
-and sin/cos, then match its eight-values-per-lane norm reduction. Numerical
-qualification and native AOT launch are still in progress. Do not promote the
-copied cache version based only on its speed.
+and sin/cos, then match its eight-values-per-lane norm reduction. The
+[on-the-fly](attention-onfly.json), [matched reduction](attention-matched.json),
+and [FMA](attention-fma.json) probes reduce the differences but leave rare
+BF16 differences at M1024. Numerical qualification and native AOT launch remain
+open. Do not promote the copied cache version based only on its speed.
 
 One early reference timing was invalid because its provider retained the default
 stream during graph capture. The retained results select the capture stream for
@@ -64,8 +66,25 @@ on GB10, but the FP32 reducer supports only two. The probe caps
 [The FP32 rerun](fp8-f32.json) retains the large projection's gain: M1/N10240/K5120
 350.3 → 283.9 µs evicted, with bit-identical output on that fixture. Smaller
 projections gain roughly 2%. Across all shapes, some other rows still differ
-slightly due to reduction order. Native export and real-model validation remain
-open. No production b12x source or provider selection has changed.
+slightly due to reduction order. No production b12x source or provider
+selection has changed.
+
+[Native AOT qualification](fp8-native/native-results.json) now passes: export
+CuTe's GEMM to a `.o`/generated header, compile the two-slice FP32 reducer with
+Triton to a cubin, and launch both from C++ on the caller's stream. No b12x,
+CuTe, or Triton Python API is called during native execution; Python only
+supplies fixtures and timing. Three M1/N10240/K5120 fixtures have 0, 1, and 4
+differing BF16 elements versus qscb, respectively (relative L2 <=3.2e-5).
+Thus the exact first fixture does not imply general bitwise equivalence.
+
+The native reference still uses the container's cuBLASLt; production-library
+and full-model qualification remain open. The native probe includes GEMM and
+reduction, but excludes activation quantization and preparation of unit block
+scales. Build arguments and hashes are retained beside its results. Reproduce
+with `sources/fp8_export.py.txt`, then `sources/fp8_export_native.py.txt`, using
+the pinned container and CuTe overlay, `B12X_DENSE_SPLITK_TURBO=0`,
+`B12X_COMPILE_DISK_CACHE=0`, and `KR03_OUTPUT=kr03-fp8-export`. The native wrapper
+specializes M1/N10240/K5120; small batching needs separate exports/measurements.
 
 ## KR04: QuTLASS NVFP4
 
@@ -100,7 +119,24 @@ The [model comparison](model-logits/comparison.json) matches **69/69 complete
 1024-token prompt, including 68 decode steps. The diagnostic's per-step
 downloads make its timings invalid. Raw rows remain in
 `sp10:qs3/.prototypes/out/kr04-model-logits-7wh3q12h/rows/`; the source overlay
-and hashes are retained here. The standard committed benchmark is next.
+and hashes are retained here.
+
+The standard committed benchmark passes at `f284ac6`
+([log](benchmark.log), [comparison](benchmark-comparison.json)):
+
+| Workload | Baseline prefill ms | New prefill ms | Baseline decode tok/s | New decode tok/s | IDs |
+| --- | ---: | ---: | ---: | ---: | --- |
+| 102/32 | 128.745 | 129.014 | 10.366 | 10.356 | 36/36 exact |
+| 1024/256 | 518.081 | 413.405 | 10.607 | 10.568 | 260/260 exact |
+
+The large workload improves prefill latency **20.2%**; decode remains within
+0.4% with unchanged kernel selection. The full benchmark artifacts are
+[102/32](../2026-09-19T134627.635456349Z-f284ac6.json) and
+[1024/256](../2026-09-19T134653.185391398Z-f284ac6.json).
+The first Nix benchmark build exposed that native source filters excluded
+`.cuh`; `f284ac6` fixes both filters. The successful run includes the actual
+header in the Nix build. Nsight reports its existing unavailable UM/CPU-sampling
+features; CUDA kernel traces and unprofiled measurements are present.
 
 It uses the existing packed values, scale layout, global scale, and BF16 output;
 there is no Hadamard transformation. Row-dependent selection belongs to
@@ -135,15 +171,46 @@ An NVFP4 follow-up using upstream's `linear_tile` example fails compilation for
 SM121 with tileiras 13.3.36 at both 16x16x64 and 128x128x128 tile sizes. The
 same bytecode compiles for SM100 and SM120. The SM120 cubin fails to load on
 GB10 with `CUDA_ERROR_NO_BINARY_FOR_GPU`. An SM120 cubin is therefore not a
-working fallback. `sm_121a` is not an accepted tileiras target spelling. A newer
-isolated compiler is the next check; the SAXPY result does not prove native
-NVFP4 support on this target.
+working fallback. `sm_121a` is not an accepted tileiras target spelling. An isolated upgrade to **tileiras 13.4.92** resolves this: the same bytecode
+compiles for SM121 and launches on GB10. The native NVFP4 driver passes three
+M16/N16/K128 fixtures, **768/768 outputs exact**, covering signed FP4 values,
+varying block scales, and a non-power-of-two global scale
+([log](cutile-nvfp4-native.log)). This uses logical row-major scale storage and
+FP32 output, not qs3's swizzled-scale BF16 projection contract.
+
+All new compiler components live under
+`.prototypes/kernel_replacements/toolchain-latest/nvidia/cu13/` on sp10.
+Run its `bin/tileiras --gpu-name sm_121 --opt-level 3 -o OUTPUT INPUT.bytecode`
+with `LD_LIBRARY_PATH` pointing at its `lib` directory. The bytecode version is
+still 13.3; the compiler and matching libraries are 13.4.92. Host CUDA is
+unchanged. Real-shape performance and a useful fusion remain unmeasured.
+
+## KR06: fused SiLU×up and NVFP4 quantization
+
+The vLLM CUDA kernel is adapted only to separate gate/up pointers. It retains
+the BF16 rounding boundary before quantization. The reference calls actual
+`qscu_silu_and_mul_bf16` followed by qs3's current FlashInfer quantizer.
+[All 42 cases](silu-quant.json) match packed activation bytes and scale bytes
+exactly: K5120/17408, M1/2/4/8/16/128/1024, multipliers 1/64/1024.
+Padded scale storage is zero-initialized in both paths.
+
+Captured warm timing at K17408 is **5.38 → 1.87 µs** for M1 and
+**655.17 → 359.37 µs** for M1024. These are synthetic activation timings;
+there is no full-model result or production integration yet. The next check is
+a small implementation using FlashInfer's existing packed-vector, SiLU, and
+FP4-conversion helpers, avoiding another large helper-header copy. Preserve the
+BF16 boundary, compare packed bytes/scales including tails and graph capture,
+then run full-model logits, required tests, and the committed benchmark.
+
+Sources and native compilation arguments are archived under `sources/`.
+The original probe uses explicit
+`-gencode=arch=compute_121a,code=sm_121a` with host CUDA 13.0.88. Its copied vLLM
+helper headers come from the pinned vLLM source; Torch-only type includes were
+replaced with forward declarations in the isolated probe. Production headers
+are unchanged.
 
 ## Remaining candidates
 
-- KR04: QuTLASS uses N128 tiles on SM120 (M128 below 512 rows, M256 above).
-  Test its raw GEMM with the same packed values/scales. Its Hadamard quantizer
-  cannot be substituted into existing checkpoints as a neutral optimization.
 - KR02: vLLM packed GDN combines post-convolution Q/K/V loads, L2 normalization,
   decay/beta, and FP32 recurrence. Its batch dimension is independent requests,
   not sequential speculative tokens. Its null state index is zero; qs3 uses
@@ -152,8 +219,5 @@ NVFP4 support on this target.
   16-key/48-value-head geometry, but permits only eight state-index columns per
   sequence. Its in-place state/history contract must be adapted before using it
   with qs3's staged state or a future 16-token speculative batch.
-- KR06: vLLM SiLU×up+NVFP4 quantization is a plausible launch/memory saving.
-  qs3 has separate gate/up buffers; preserve its BF16 intermediate boundary and
-  compare packed activation bytes and scales before timing.
 
 Historical findings are preserved in [prior-findings.md](prior-findings.md).

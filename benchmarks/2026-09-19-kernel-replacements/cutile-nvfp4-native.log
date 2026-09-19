@@ -1,0 +1,3 @@
+trial=0 exact=256/256 max_abs=0; native NVFP4 TileIR cubin
+trial=1 exact=256/256 max_abs=0; native NVFP4 TileIR cubin
+trial=2 exact=256/256 max_abs=0; native NVFP4 TileIR cubin

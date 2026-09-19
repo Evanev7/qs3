@@ -1,0 +1,14 @@
+[
+  "nvcc",
+  "-std=c++17",
+  "-O3",
+  "-shared",
+  "-Xcompiler=-fPIC",
+  "-I/repo/.prototypes/out/kr03-fp8-export",
+  "/repo/.prototypes/kernel_replacements/fp8_export_native.cu",
+  "/repo/.prototypes/out/kr03-fp8-export/kr03_densegemmlaunch_0.o",
+  "/toolchain/nvidia_cutlass_dsl/cu13/lib/libcuda_dialect_runtime_static.a",
+  "-lcuda",
+  "-o",
+  "/repo/.prototypes/out/kr03-fp8-export/export-native.so"
+]

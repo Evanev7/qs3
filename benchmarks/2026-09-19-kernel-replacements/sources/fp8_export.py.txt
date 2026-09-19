@@ -1,0 +1,95 @@
+"""KR03: b12x tensor FP8 vs qs3's prepared cuBLASLt, identical E4M3 operands."""
+import ctypes
+import json
+import os
+from pathlib import Path
+import statistics
+import sys
+import torch
+sys.path.insert(0,'/repo/.prototypes/kernel_replacements/vendor/b12x')
+from b12x.gemm.blockscaled._linear import pack_tensor_fp8_linear_weight,tensor_fp8_linear
+from b12x.gemm import tensor_fp8_linear as fp8_api
+from b12x.preparation import PreparationSession, PreparedCall
+# Upstream selects four slices on GB10 but only implements two for FP32 reduction.
+# Restrict the probe to its supported reduction, without changing production b12x.
+if os.environ.get('B12X_DENSE_SPLITK_TURBO') == '0':
+ from b12x._lib import dense_gemm
+ original_slices = dense_gemm._select_block_fp8_decode_slices
+ dense_gemm._select_block_fp8_decode_slices = lambda *args: min(2, original_slices(*args))
+OUT=Path('/repo/.prototypes/out/'+os.environ.get('KR03_OUTPUT','kr03-fp8'));OUT.mkdir(exist_ok=True)
+from b12x._lib import dense_gemm
+original_compile = dense_gemm.b12x_compile
+exports=[]
+def compile_export(fn,*args,**kwargs):
+ compiled=original_compile(fn,*args,**kwargs)
+ name='kr03_'+type(fn).__name__.strip('_').lower()+'_'+str(len(exports))
+ compiled.export_to_c(file_path=str(OUT),file_name=name,function_prefix=name)
+ exports.append(dict(name=name,signature=[str(a) for a in args]))
+ (OUT/'exports.json').write_text(json.dumps(exports,indent=2,default=str)+'\n')
+ return compiled
+dense_gemm.b12x_compile=compile_export
+lib=ctypes.CDLL(str(OUT/'native.so'))
+lib.prepare.argtypes=[ctypes.c_void_p]*7+[ctypes.c_int]*3;lib.prepare.restype=ctypes.c_void_p
+lib.execute.argtypes=[ctypes.c_void_p];lib.execute.restype=ctypes.c_int
+lib.release.argtypes=[ctypes.c_void_p]
+
+def metrics(a,b):
+ d=(a.float()-b.float()).double()
+ return dict(exact=torch.equal(a,b),finite=bool(torch.isfinite(a).all()),relative_l2=float(d.norm()/b.double().norm()),max_abs=float(d.abs().max()),changed=int((a!=b).sum()))
+
+def main():
+ torch.manual_seed(1919);torch.backends.cuda.matmul.allow_tf32=False
+ stream=torch.cuda.Stream()
+ records=[]
+ with torch.cuda.stream(stream):
+  workspace=torch.empty(64<<20,device='cuda',dtype=torch.uint8)
+  flush=torch.zeros((128<<20)//4,device='cuda',dtype=torch.int32)
+  xs=torch.tensor([.03125],device='cuda');ws=torch.tensor([.015625],device='cuda')
+  for n,k in [(10240,5120)]:
+   w=(torch.randn(n,k,device='cuda')*8).to(torch.float8_e4m3fn)
+   packed=pack_tensor_fp8_linear_weight(w,xs*ws)
+   for m in [1]:
+    x=(torch.randn(m,k,device='cuda')*8).to(torch.float8_e4m3fn)
+    y=torch.empty(m,n,device='cuda',dtype=torch.bfloat16)
+    p=lib.prepare(*[t.data_ptr() for t in (x,w,y,xs,ws,workspace)],stream.cuda_stream,m,n,k);assert p
+    def native():
+     assert lib.execute(p)==0
+     return y
+    plan=fp8_api.plan(fp8_api.query_from_call(x,packed,expected_m=m))
+    session=PreparationSession(device=x.device,autotune=False,compile_workers=0)
+    session.__enter__()
+    session.prepare((plan.request(name="tensor_fp8",prepare_call=lambda state:PreparedCall(run=lambda:state.run_tensor_fp8(x,packed.values,packed.scale_mma,packed.block_scale,packed.output_scale,out_dtype=torch.bfloat16,stream=None))),))
+    session.freeze()
+    def candidate():return tensor_fp8_linear(x,packed,plan=plan)
+    native();b=candidate();stream.synchronize()
+    ref=(x.float()@w.float().T)*(xs*ws)
+    row=dict(m=m,n=n,k=k,splitk_turbo=os.environ.get('B12X_DENSE_SPLITK_TURBO','1'),reference='qscb current source, 64 MiB workspace; container cuBLASLt',b12x_vs_qscb=metrics(b,y),b12x_vs_fp32=metrics(b,ref),qscb_vs_fp32=metrics(y,ref),timings={})
+    assert row['b12x_vs_fp32']['finite'] and row['b12x_vs_fp32']['relative_l2']<.005,row
+    graphs={};owners=[]
+    for name,fn in [('qscb',native),('b12x',candidate)]:
+     for _ in range(3):fn()
+     stream.synchronize();g=torch.cuda.CUDAGraph()
+     with torch.cuda.graph(g,stream=stream):owners.append(fn())
+     graphs[name]=g
+    for mode in ['warm','evicted']:
+     samples={name:[] for name in graphs}
+     for repeat in range(30):
+      for name in (list(graphs) if repeat%2==0 else list(reversed(graphs))):
+       if mode=='evicted':flush.add_(1)
+       start=torch.cuda.Event(enable_timing=True);end=torch.cuda.Event(enable_timing=True)
+       start.record(stream);graphs[name].replay();end.record(stream);end.synchronize()
+       samples[name].append(start.elapsed_time(end)*1000)
+     row['timings'][mode]={name:dict(median_us=statistics.median(v),samples_us=v) for name,v in samples.items()}
+    print(json.dumps({key:value for key,value in row.items() if key!='timings'}),flush=True)
+    print(json.dumps({mode:{name:v['median_us'] for name,v in entries.items()} for mode,entries in row['timings'].items()}),flush=True)
+    records.append(row);(OUT/'results.json').write_text(json.dumps(records,indent=2)+'\n')
+    graphs.clear();owners.clear();stream.synchronize();lib.release(p);session.__exit__(None,None,None)
+if __name__=='__main__':
+ main()
+ import triton
+ from triton.compiler import ASTSource
+ from triton.backends.compiler import GPUTarget
+ compiled=triton.compile(ASTSource(dense_gemm._reduce_split_k2_bf16_kernel,signature={"partials":"*fp32","out":"*bf16","total":"i32"},constexprs={"BLOCK":1024}),target=GPUTarget("cuda",121,32))
+ (OUT/'reduce.cubin').write_bytes(compiled.asm['cubin'])
+ (OUT/'reduce.json').write_text(json.dumps(compiled.metadata._asdict(),default=str,indent=2)+'\n')
+

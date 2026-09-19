@@ -1,0 +1,8 @@
+import json,subprocess
+from pathlib import Path
+root=Path(__file__).resolve().parents[2]
+fi=root/'3pty/flashinfer'
+includes=['include','3rdparty/cutlass/include','3rdparty/cutlass/tools/util/include','3rdparty/cccl/libcudacxx/include','3rdparty/cccl/cub','3rdparty/cccl/thrust','csrc/nv_internal','csrc/nv_internal/include']
+out=root/'.prototypes/out/kr06-silu-quant';out.mkdir(exist_ok=True)
+cmd=['/usr/local/cuda/bin/nvcc','-std=c++17','-O3','-gencode=arch=compute_121a,code=sm_121a','--expt-relaxed-constexpr','-shared','-Xcompiler=-fPIC','-DQSFI_ENABLE_CHECKED_VALIDATION=0','-DENABLE_BF16','-DENABLE_FP4','-DENABLE_FP8','-I'+str(root),'-I'+str(root/'build'),*['-I'+str(fi/p) for p in includes],str(root/'.prototypes/kernel_replacements/silu_quant_native.cu'),str(root/'qscu.cu'),*[str(fi/'csrc/nv_internal/cpp/common'/(p+'.cpp')) for p in ['envUtils','logger','stringUtils','tllmException']],'-o',str(out/'native.so')]
+(out/'compile-command.json').write_text(json.dumps(cmd,indent=2)+'\n');subprocess.run(cmd,check=True)

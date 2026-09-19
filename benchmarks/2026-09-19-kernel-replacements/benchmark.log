@@ -1,0 +1,40 @@
+To sp10:qs3
+   5ee8c81..f284ac6  f284ac6f1b78efac26fae407ade8edff503e4eb2 -> refs/qs3/remote
+HEAD is now at f284ac6 Include CUDA headers in Nix native source filters
+Resolved 12 packages in 0.42ms
+Checked 11 packages in 0.09ms
+Using saved setting for 'extra-substituters = https://cache.nixos-cuda.org' from ~/.local/share/nix/trusted-settings.json.
+Using saved setting for 'extra-trusted-public-keys = cache.nixos-cuda.org:74DUi4Ye579gUqzH4ziL9IyiJBlDpMRn9MBN8oNan9M=' from ~/.local/share/nix/trusted-settings.json.
+warning: ignoring untrusted substituter 'https://cache.nixos-cuda.org', you are not a trusted user.
+Run `man nix.conf` for more information on the `substituters` configuration option.
+warning: ignoring the client-specified setting 'trusted-public-keys', because it is a restricted setting and you are not a trusted user
+these 4 derivations will be built:
+  /nix/store/9bp0am4r78i7hszl2paxzp4adgw2xwnh-qs3-native.drv
+  /nix/store/dnspy07crw714jp00lkbyy8zy7dpwmsa-qs3_build_tools.drv
+  /nix/store/i1k7xqpm4c48m51a12m4s1qy3gnvb7bc-qs3-kernels.ninja.drv
+  /nix/store/9qlj3zzxag7664hclkq80wycfgm9p141-qs3-benchmark-0.1.0.drv
+building '/nix/store/9bp0am4r78i7hszl2paxzp4adgw2xwnh-qs3-native.drv'...
+building '/nix/store/dnspy07crw714jp00lkbyy8zy7dpwmsa-qs3_build_tools.drv'...
+building '/nix/store/i1k7xqpm4c48m51a12m4s1qy3gnvb7bc-qs3-kernels.ninja.drv'...
+building '/nix/store/9qlj3zzxag7664hclkq80wycfgm9p141-qs3-benchmark-0.1.0.drv'...
+Benchmark artifacts: /home/sp10/qs3/.prototypes/profiles/2026-09-19T134627.557003958+0000
+Running unprofiled core benchmark
+Capturing warmed decode with Nsight Systems
+Exporting and reducing the CUDA trace
+Nsight diagnostic: {"severity":"Error","text":"CUDA device 0: Unified Memory trace is not supported by the current driver version or configuration."}
+Nsight diagnostic: {"severity":"Warning","text":"Unable to collect CPU kernel IP/backtrace samples. perf event paranoid level is 2. \nChange the paranoid level to 1 to enable CPU kernel sample collection.\nTry\nsudo sh -c 'echo 1 >/proc/sys/kernel/perf_event_paranoid'\n to change the paranoid level to 1."}
+Nsight diagnostic: {"severity":"Warning","text":"Not all CUDA events might have been collected."}
+Using saved setting for 'extra-substituters = https://cache.nixos-cuda.org' from ~/.local/share/nix/trusted-settings.json.
+Using saved setting for 'extra-trusted-public-keys = cache.nixos-cuda.org:74DUi4Ye579gUqzH4ziL9IyiJBlDpMRn9MBN8oNan9M=' from ~/.local/share/nix/trusted-settings.json.
+warning: ignoring untrusted substituter 'https://cache.nixos-cuda.org', you are not a trusted user.
+Run `man nix.conf` for more information on the `substituters` configuration option.
+warning: ignoring the client-specified setting 'trusted-public-keys', because it is a restricted setting and you are not a trusted user
+Benchmark artifacts: /home/sp10/qs3/.prototypes/profiles/2026-09-19T134653.110164012+0000
+Running unprofiled core benchmark
+Capturing warmed decode with Nsight Systems
+Exporting and reducing the CUDA trace
+Nsight diagnostic: {"severity":"Error","text":"CUDA device 0: Unified Memory trace is not supported by the current driver version or configuration."}
+Nsight diagnostic: {"severity":"Warning","text":"Unable to collect CPU kernel IP/backtrace samples. perf event paranoid level is 2. \nChange the paranoid level to 1 to enable CPU kernel sample collection.\nTry\nsudo sh -c 'echo 1 >/proc/sys/kernel/perf_event_paranoid'\n to change the paranoid level to 1."}
+Nsight diagnostic: {"severity":"Warning","text":"Not all CUDA events might have been collected."}
+Recorded benchmark: benchmarks/2026-09-19T134627.635456349Z-f284ac6.json
+Recorded benchmark: benchmarks/2026-09-19T134653.185391398Z-f284ac6.json

@@ -1,0 +1,125 @@
+/*
+ * Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+// Adapted to split gate/up pointers; arithmetic and BF16 boundary retained.
+#include "qscu.h"
+#include <cuda_bf16.h>
+#include "tensorrt_llm/kernels/quantization.cuh"
+#include "vendor/vllm-fp4/launch_bounds_utils.h"
+#define NVFP4_ENABLE_ELTS16 1
+#include "vendor/vllm-fp4/quantization/fp4/nvfp4_utils.cuh"
+namespace vllm {
+
+// Use UE4M3 by default.
+template <class Type, bool UE8M0_SF = false>
+__global__ void __launch_bounds__(512, VLLM_BLOCKS_PER_SM(512))
+    silu_mul_cvt_fp16_to_fp4(int32_t numRows, int32_t numCols,
+                             int32_t num_packed_cols,
+                             Type const* __restrict__ in,
+                             Type const* __restrict__ up,
+                             float const* __restrict__ SFScale,
+                             uint32_t* __restrict__ out,
+                             uint32_t* __restrict__ SFout) {
+  using PackedVec = vllm::PackedVec<Type, CVT_FP4_PACK16>;
+  static constexpr int CVT_FP4_NUM_THREADS_PER_SF =
+      (CVT_FP4_SF_VEC_SIZE / CVT_FP4_ELTS_PER_THREAD);
+  static_assert(sizeof(PackedVec) == sizeof(Type) * CVT_FP4_ELTS_PER_THREAD,
+                "Vec size is not matched.");
+
+  // Precompute SF layout parameter (constant for entire kernel).
+  int32_t const numKTiles = (numCols + 63) / 64;
+
+  // Get the global scaling factor, which will be applied to the SF.
+  // Note SFScale is the same as next GEMM's alpha, which is
+  // (448.f / (Alpha_A / 6.f)).
+  float const SFScaleVal = (SFScale == nullptr) ? 1.0f : SFScale[0];
+
+  int32_t const colIdx = blockDim.x * blockIdx.y + threadIdx.x;
+  int elem_idx = colIdx * CVT_FP4_ELTS_PER_THREAD;
+
+  // Input tensor row/col loops.
+  for (int rowIdx = blockIdx.x; rowIdx < numRows; rowIdx += gridDim.x) {
+    if (colIdx < num_packed_cols) {
+      PackedVec in_vec;
+      PackedVec in_vec2;
+      int64_t inOffset =
+          rowIdx * (numCols / CVT_FP4_ELTS_PER_THREAD) + colIdx;
+      int64_t inOffset2 = rowIdx * (numCols / CVT_FP4_ELTS_PER_THREAD) + colIdx;
+
+      bool valid = (rowIdx < numRows) && (elem_idx < numCols);
+      if constexpr (CVT_FP4_PACK16) {
+        ld256_cg_or_zero(reinterpret_cast<u32x8_t&>(in_vec),
+                         &reinterpret_cast<const uint32_t*>(in)[inOffset * 8],
+                         valid);
+        ld256_cg_or_zero(reinterpret_cast<u32x8_t&>(in_vec2),
+                         &reinterpret_cast<const uint32_t*>(up)[inOffset2 * 8],
+                         valid);
+      } else {
+        ld128_cg_or_zero(reinterpret_cast<uint4&>(in_vec),
+                         &reinterpret_cast<const uint32_t*>(in)[inOffset * 4],
+                         valid);
+        ld128_cg_or_zero(reinterpret_cast<uint4&>(in_vec2),
+                         &reinterpret_cast<const uint32_t*>(up)[inOffset2 * 4],
+                         valid);
+      }
+
+      // Compute silu and mul
+      PackedVec out_silu_mul = compute_silu_mul<Type>(in_vec, in_vec2);
+
+      auto sf_out =
+          cvt_quant_to_fp4_get_sf_out_offset<uint32_t,
+                                             CVT_FP4_NUM_THREADS_PER_SF>(
+              rowIdx, colIdx, numKTiles, SFout);
+
+      auto out_val =
+          cvt_warp_fp16_to_fp4<Type, CVT_FP4_NUM_THREADS_PER_SF, UE8M0_SF>(
+              out_silu_mul, SFScaleVal, sf_out);
+
+      if (valid) {
+        if constexpr (CVT_FP4_PACK16) {
+          int64_t outOffset = rowIdx * (numCols / 8) + colIdx * 2;
+          uint64_t packed64 =
+              (uint64_t(out_val.hi) << 32) | uint64_t(out_val.lo);
+          reinterpret_cast<uint64_t*>(out)[outOffset >> 1] = packed64;
+        } else {
+          int64_t outOffset =
+              rowIdx * (numCols / CVT_FP4_ELTS_PER_THREAD) + colIdx;
+          out[outOffset] = out_val;
+        }
+      }
+    }
+  }
+}
+
+}  // namespace vllm
+
+
+static qsfi_tensor2 mat(void* p,int m,int k){return {p,QSFI_DTYPE_BF16,{m,k},{k,1}};}
+extern "C" int reference(void* gate,void* up,void* mid,void* q,void* sf,void* mult,int m,int k,void* stream) {
+ auto s=(cudaStream_t)stream;
+ qscu_silu_and_mul_desc d{mat(gate,m,k),mat(up,m,k),mat(mid,m,k),(uint32_t)m,(uint32_t)k};
+ auto status=qscu_silu_and_mul_bf16(&d,s);if(status)return status;
+ using namespace tensorrt_llm;using namespace tensorrt_llm::kernels;
+ int threads=std::min(k/CVT_FP16_TO_FP4_ELTS_PER_THREAD,512),blocks=std::min((m+127)/128*128,65535);
+ quantize_with_block_size<BlockScaleQuantizationType::FP16_TO_FP4,__nv_bfloat16,16,false><<<blocks,threads,0,s>>>(1,m,k,k,(__nv_bfloat16*)mid,(float*)mult,q,(uint32_t*)sf,QuantizationSFLayout::SWIZZLED_128x4);
+ return (int)cudaGetLastError();
+}
+extern "C" int fused(void* gate,void* up,void* q,void* sf,void* mult,int m,int k,void* stream) {
+ int threads=std::min(k/ELTS_PER_THREAD,512),gy=(k/CVT_FP4_ELTS_PER_THREAD+threads-1)/threads;
+ int gx=std::min(m,std::max(1,(48*std::min(4,1536/threads))/gy));
+ vllm::silu_mul_cvt_fp16_to_fp4<__nv_bfloat16><<<dim3(gx,gy),threads,0,(cudaStream_t)stream>>>(m,k,k/CVT_FP4_ELTS_PER_THREAD,(__nv_bfloat16*)gate,(__nv_bfloat16*)up,(float*)mult,(uint32_t*)q,(uint32_t*)sf);
+ return (int)cudaGetLastError();
+}

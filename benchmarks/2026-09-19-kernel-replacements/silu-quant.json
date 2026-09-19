@@ -1,0 +1,408 @@
+[
+  {
+    "m": 1,
+    "k": 5120,
+    "multiplier": 1.0,
+    "packed_exact": true,
+    "scale_exact": true,
+    "packed_changed": 0,
+    "scale_changed": 0
+  },
+  {
+    "m": 1,
+    "k": 5120,
+    "multiplier": 64.0,
+    "packed_exact": true,
+    "scale_exact": true,
+    "packed_changed": 0,
+    "scale_changed": 0,
+    "reference_us": 3.5293952828117314,
+    "fused_us": 1.6111694205470382
+  },
+  {
+    "m": 1,
+    "k": 5120,
+    "multiplier": 1024.0,
+    "packed_exact": true,
+    "scale_exact": true,
+    "packed_changed": 0,
+    "scale_changed": 0
+  },
+  {
+    "m": 2,
+    "k": 5120,
+    "multiplier": 1.0,
+    "packed_exact": true,
+    "scale_exact": true,
+    "packed_changed": 0,
+    "scale_changed": 0
+  },
+  {
+    "m": 2,
+    "k": 5120,
+    "multiplier": 64.0,
+    "packed_exact": true,
+    "scale_exact": true,
+    "packed_changed": 0,
+    "scale_changed": 0,
+    "reference_us": 3.6477581950843603,
+    "fused_us": 1.6984653959114535
+  },
+  {
+    "m": 2,
+    "k": 5120,
+    "multiplier": 1024.0,
+    "packed_exact": true,
+    "scale_exact": true,
+    "packed_changed": 0,
+    "scale_changed": 0
+  },
+  {
+    "m": 4,
+    "k": 5120,
+    "multiplier": 1.0,
+    "packed_exact": true,
+    "scale_exact": true,
+    "packed_changed": 0,
+    "scale_changed": 0
+  },
+  {
+    "m": 4,
+    "k": 5120,
+    "multiplier": 64.0,
+    "packed_exact": true,
+    "scale_exact": true,
+    "packed_changed": 0,
+    "scale_changed": 0,
+    "reference_us": 3.6204492380808166,
+    "fused_us": 1.7455624250101078
+  },
+  {
+    "m": 4,
+    "k": 5120,
+    "multiplier": 1024.0,
+    "packed_exact": true,
+    "scale_exact": true,
+    "packed_changed": 0,
+    "scale_changed": 0
+  },
+  {
+    "m": 8,
+    "k": 5120,
+    "multiplier": 1.0,
+    "packed_exact": true,
+    "scale_exact": true,
+    "packed_changed": 0,
+    "scale_changed": 0
+  },
+  {
+    "m": 8,
+    "k": 5120,
+    "multiplier": 64.0,
+    "packed_exact": true,
+    "scale_exact": true,
+    "packed_changed": 0,
+    "scale_changed": 0,
+    "reference_us": 3.752394839537475,
+    "fused_us": 1.8101560779786958
+  },
+  {
+    "m": 8,
+    "k": 5120,
+    "multiplier": 1024.0,
+    "packed_exact": true,
+    "scale_exact": true,
+    "packed_changed": 0,
+    "scale_changed": 0
+  },
+  {
+    "m": 16,
+    "k": 5120,
+    "multiplier": 1.0,
+    "packed_exact": true,
+    "scale_exact": true,
+    "packed_changed": 0,
+    "scale_changed": 0
+  },
+  {
+    "m": 16,
+    "k": 5120,
+    "multiplier": 64.0,
+    "packed_exact": true,
+    "scale_exact": true,
+    "packed_changed": 0,
+    "scale_changed": 0,
+    "reference_us": 4.201589162917726,
+    "fused_us": 1.7349012371465857
+  },
+  {
+    "m": 16,
+    "k": 5120,
+    "multiplier": 1024.0,
+    "packed_exact": true,
+    "scale_exact": true,
+    "packed_changed": 0,
+    "scale_changed": 0
+  },
+  {
+    "m": 128,
+    "k": 5120,
+    "multiplier": 1.0,
+    "packed_exact": true,
+    "scale_exact": true,
+    "packed_changed": 0,
+    "scale_changed": 0
+  },
+  {
+    "m": 128,
+    "k": 5120,
+    "multiplier": 64.0,
+    "packed_exact": true,
+    "scale_exact": true,
+    "packed_changed": 0,
+    "scale_changed": 0,
+    "reference_us": 9.095353617432767,
+    "fused_us": 2.908127327832848
+  },
+  {
+    "m": 128,
+    "k": 5120,
+    "multiplier": 1024.0,
+    "packed_exact": true,
+    "scale_exact": true,
+    "packed_changed": 0,
+    "scale_changed": 0
+  },
+  {
+    "m": 1024,
+    "k": 5120,
+    "multiplier": 1.0,
+    "packed_exact": true,
+    "scale_exact": true,
+    "packed_changed": 0,
+    "scale_changed": 0
+  },
+  {
+    "m": 1024,
+    "k": 5120,
+    "multiplier": 64.0,
+    "packed_exact": true,
+    "scale_exact": true,
+    "packed_changed": 0,
+    "scale_changed": 0,
+    "reference_us": 130.6166505231301,
+    "fused_us": 37.081445046894075
+  },
+  {
+    "m": 1024,
+    "k": 5120,
+    "multiplier": 1024.0,
+    "packed_exact": true,
+    "scale_exact": true,
+    "packed_changed": 0,
+    "scale_changed": 0
+  },
+  {
+    "m": 1,
+    "k": 17408,
+    "multiplier": 1.0,
+    "packed_exact": true,
+    "scale_exact": true,
+    "packed_changed": 0,
+    "scale_changed": 0
+  },
+  {
+    "m": 1,
+    "k": 17408,
+    "multiplier": 64.0,
+    "packed_exact": true,
+    "scale_exact": true,
+    "packed_changed": 0,
+    "scale_changed": 0,
+    "reference_us": 5.380127693559372,
+    "fused_us": 1.8696099064404423
+  },
+  {
+    "m": 1,
+    "k": 17408,
+    "multiplier": 1024.0,
+    "packed_exact": true,
+    "scale_exact": true,
+    "packed_changed": 0,
+    "scale_changed": 0
+  },
+  {
+    "m": 2,
+    "k": 17408,
+    "multiplier": 1.0,
+    "packed_exact": true,
+    "scale_exact": true,
+    "packed_changed": 0,
+    "scale_changed": 0
+  },
+  {
+    "m": 2,
+    "k": 17408,
+    "multiplier": 64.0,
+    "packed_exact": true,
+    "scale_exact": true,
+    "packed_changed": 0,
+    "scale_changed": 0,
+    "reference_us": 5.648708633246003,
+    "fused_us": 1.9357017341561271
+  },
+  {
+    "m": 2,
+    "k": 17408,
+    "multiplier": 1024.0,
+    "packed_exact": true,
+    "scale_exact": true,
+    "packed_changed": 0,
+    "scale_changed": 0
+  },
+  {
+    "m": 4,
+    "k": 17408,
+    "multiplier": 1.0,
+    "packed_exact": true,
+    "scale_exact": true,
+    "packed_changed": 0,
+    "scale_changed": 0
+  },
+  {
+    "m": 4,
+    "k": 17408,
+    "multiplier": 64.0,
+    "packed_exact": true,
+    "scale_exact": true,
+    "packed_changed": 0,
+    "scale_changed": 0,
+    "reference_us": 5.776491002936403,
+    "fused_us": 1.9344455281563886
+  },
+  {
+    "m": 4,
+    "k": 17408,
+    "multiplier": 1024.0,
+    "packed_exact": true,
+    "scale_exact": true,
+    "packed_changed": 0,
+    "scale_changed": 0
+  },
+  {
+    "m": 8,
+    "k": 17408,
+    "multiplier": 1.0,
+    "packed_exact": true,
+    "scale_exact": true,
+    "packed_changed": 0,
+    "scale_changed": 0
+  },
+  {
+    "m": 8,
+    "k": 17408,
+    "multiplier": 64.0,
+    "packed_exact": true,
+    "scale_exact": true,
+    "packed_changed": 0,
+    "scale_changed": 0,
+    "reference_us": 6.4288076829682135,
+    "fused_us": 1.9283779649511048
+  },
+  {
+    "m": 8,
+    "k": 17408,
+    "multiplier": 1024.0,
+    "packed_exact": true,
+    "scale_exact": true,
+    "packed_changed": 0,
+    "scale_changed": 0
+  },
+  {
+    "m": 16,
+    "k": 17408,
+    "multiplier": 1.0,
+    "packed_exact": true,
+    "scale_exact": true,
+    "packed_changed": 0,
+    "scale_changed": 0
+  },
+  {
+    "m": 16,
+    "k": 17408,
+    "multiplier": 64.0,
+    "packed_exact": true,
+    "scale_exact": true,
+    "packed_changed": 0,
+    "scale_changed": 0,
+    "reference_us": 7.7756904658301655,
+    "fused_us": 2.039911551589939
+  },
+  {
+    "m": 16,
+    "k": 17408,
+    "multiplier": 1024.0,
+    "packed_exact": true,
+    "scale_exact": true,
+    "packed_changed": 0,
+    "scale_changed": 0
+  },
+  {
+    "m": 128,
+    "k": 17408,
+    "multiplier": 1.0,
+    "packed_exact": true,
+    "scale_exact": true,
+    "packed_changed": 0,
+    "scale_changed": 0
+  },
+  {
+    "m": 128,
+    "k": 17408,
+    "multiplier": 64.0,
+    "packed_exact": true,
+    "scale_exact": true,
+    "packed_changed": 0,
+    "scale_changed": 0,
+    "reference_us": 25.23645867591119,
+    "fused_us": 7.051844327721479
+  },
+  {
+    "m": 128,
+    "k": 17408,
+    "multiplier": 1024.0,
+    "packed_exact": true,
+    "scale_exact": true,
+    "packed_changed": 0,
+    "scale_changed": 0
+  },
+  {
+    "m": 1024,
+    "k": 17408,
+    "multiplier": 1.0,
+    "packed_exact": true,
+    "scale_exact": true,
+    "packed_changed": 0,
+    "scale_changed": 0
+  },
+  {
+    "m": 1024,
+    "k": 17408,
+    "multiplier": 64.0,
+    "packed_exact": true,
+    "scale_exact": true,
+    "packed_changed": 0,
+    "scale_changed": 0,
+    "reference_us": 655.1675000727571,
+    "fused_us": 359.3654245570086
+  },
+  {
+    "m": 1024,
+    "k": 17408,
+    "multiplier": 1024.0,
+    "packed_exact": true,
+    "scale_exact": true,
+    "packed_changed": 0,
+    "scale_changed": 0
+  }
+]

@@ -1,0 +1,50 @@
+// KR03: native launch of the exported CuTe GEMM and AOT Triton FP32 reducer.
+#include "kr03_densegemmlaunch_0.h"
+#include <cuda.h>
+#include <new>
+
+struct Plan {
+  kr03_densegemmlaunch_0_Kernel_Module_t gemm{};
+  CUmodule reducer{};
+  CUfunction reduce{};
+  unsigned shared{}, threads{};
+};
+
+extern "C" void* create(const char* path, const char* name, int shared, int warps) {
+  auto* p = new (std::nothrow) Plan;
+  if (!p) return nullptr;
+  kr03_densegemmlaunch_0_Kernel_Module_Load(&p->gemm);
+  if (!p->gemm.module || cuModuleLoad(&p->reducer, path) != CUDA_SUCCESS ||
+      cuModuleGetFunction(&p->reduce, p->reducer, name) != CUDA_SUCCESS) {
+    if (p->reducer) cuModuleUnload(p->reducer);
+    if (p->gemm.module) kr03_densegemmlaunch_0_Kernel_Module_Unload(&p->gemm);
+    delete p;
+    return nullptr;
+  }
+  p->shared = shared;
+  p->threads = warps * 32;
+  return p;
+}
+
+extern "C" int run(void* plan, void* x, void* w, void* sfa, void* sfb,
+                   void* partials, void* alpha, void* out, void* stream) {
+  auto* p = static_cast<Plan*>(plan);
+  // Export specializes M1/N10240/K5120, FP32 partials with two split-K slices.
+  auto status = cute_dsl_kr03_densegemmlaunch_0_wrapper(
+      &p->gemm, x, w, sfa, sfb, partials, (void*)16, (void*)16, (void*)16,
+      alpha, 1, static_cast<cudaStream_t>(stream));
+  if (status) return status;
+  int total = 10240;
+  void* global_scratch = nullptr;
+  void* profile_scratch = nullptr;
+  void* args[] = {&partials, &out, &total, &global_scratch, &profile_scratch};
+  return cuLaunchKernel(p->reduce, 10, 1, 1, p->threads, 1, 1, p->shared,
+                        static_cast<CUstream>(stream), args, nullptr);
+}
+
+extern "C" void destroy(void* plan) {
+  auto* p = static_cast<Plan*>(plan);
+  cuModuleUnload(p->reducer);
+  kr03_densegemmlaunch_0_Kernel_Module_Unload(&p->gemm);
+  delete p;
+}

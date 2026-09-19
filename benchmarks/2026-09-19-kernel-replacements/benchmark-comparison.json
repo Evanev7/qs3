@@ -1,0 +1,24 @@
+[
+  {
+    "artifact": "benchmarks/2026-09-19T134627.635456349Z-f284ac6.json",
+    "prompt_tokens": 102,
+    "generated_tokens": 36,
+    "tokens_exact": true,
+    "prefill_ms": 129.013624,
+    "baseline_prefill_ms": 128.745092,
+    "prefill_latency_reduction_percent": -0.2085764947062918,
+    "decode_tok_s": 10.35565116662195,
+    "baseline_decode_tok_s": 10.366223321457696
+  },
+  {
+    "artifact": "benchmarks/2026-09-19T134653.185391398Z-f284ac6.json",
+    "prompt_tokens": 1024,
+    "generated_tokens": 260,
+    "tokens_exact": true,
+    "prefill_ms": 413.404621,
+    "baseline_prefill_ms": 518.0808519999999,
+    "prefill_latency_reduction_percent": 20.20461296647187,
+    "decode_tok_s": 10.567894444928116,
+    "baseline_decode_tok_s": 10.606874309008129
+  }
+]

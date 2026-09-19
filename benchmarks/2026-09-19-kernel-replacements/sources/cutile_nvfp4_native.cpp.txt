@@ -1,0 +1,38 @@
+#include <cuda.h>
+#include <algorithm>
+#include <cmath>
+#include <cstdio>
+#include <vector>
+#define CK(x) do { CUresult r=(x); if(r) {const char* s=nullptr;cuGetErrorString(r,&s);fprintf(stderr,"%s: %s\n",#x,s);return 1;} } while(0)
+float fp4(unsigned v) {const float a[]={0,.5,1,1.5,2,3,4,6};return (v&8)?-a[v&7]:a[v&7];}
+int main(int argc,char** argv) {
+ if(argc!=2)return 2;
+ CK(cuInit(0));CUdevice dev;CK(cuDeviceGet(&dev,0));CUcontext ctx;CK(cuDevicePrimaryCtxRetain(&ctx,dev));CK(cuCtxSetCurrent(ctx));
+ CUmodule mod;CK(cuModuleLoad(&mod,argv[1]));CUfunction fn;CK(cuModuleGetFunction(&fn,mod,"linear_tile_entry"));
+ CUdeviceptr x,y,xs,ys,z;CK(cuMemAlloc(&x,1024));CK(cuMemAlloc(&y,1024));CK(cuMemAlloc(&xs,128));CK(cuMemAlloc(&ys,128));CK(cuMemAlloc(&z,1024));
+ int d=16,kp=64,ks=8,one=1;float alpha=1;
+ void* args[]={&z,&d,&d,&d,&one,&d,&d,&one,&one,&x,&d,&kp,&kp,&one,&y,&d,&kp,&kp,&one,&xs,&d,&ks,&ks,&one,&ys,&d,&ks,&ks,&one,&alpha};
+ for(int trial=0;trial<3;trial++) {
+  std::vector<unsigned char> hx(1024,0x22),hy(1024,0x22),hsx(128,0x38),hsy(128,0x38);
+  if(trial) {
+   for(int i=0;i<1024;i++){hx[i]=(i*17+i/7)%256;hy[i]=(i*23+i/11)%256;}
+   for(int i=0;i<128;i++){hsx[i]=0x28+(i%4)*8;hsy[i]=0x28+((i*3)%4)*8;}
+  }
+  alpha=trial==2?.137f:1.f;
+  CK(cuMemcpyHtoD(x,hx.data(),1024));CK(cuMemcpyHtoD(y,hy.data(),1024));CK(cuMemcpyHtoD(xs,hsx.data(),128));CK(cuMemcpyHtoD(ys,hsy.data(),128));
+  CK(cuLaunchKernel(fn,1,1,1,1,1,1,0,nullptr,args,nullptr));CK(cuCtxSynchronize());
+  float actual[256];CK(cuMemcpyDtoH(actual,z,1024));float maxerr=0;int exact=0;
+  for(int m=0;m<16;m++)for(int n=0;n<16;n++) {
+   float ref=0;
+   for(int k=0;k<128;k++) {
+    float a=fp4((hx[m*64+k/2]>>(4*(k%2)))&15)*std::ldexp(1.f,(hsx[m*8+k/16]>>3)-7);
+    float b=fp4((hy[n*64+k/2]>>(4*(k%2)))&15)*std::ldexp(1.f,(hsy[n*8+k/16]>>3)-7);
+    ref+=a*b;
+   }
+   ref*=alpha;float got=actual[m*16+n];if(!std::isfinite(got))return 3;maxerr=std::max(maxerr,std::abs(got-ref));exact+=got==ref;
+   if(std::abs(got-ref)>1e-5f*std::max(1.f,std::abs(ref))){fprintf(stderr,"mismatch [%d,%d] %g vs %g\n",m,n,got,ref);return 4;}
+  }
+  printf("trial=%d exact=%d/256 max_abs=%g; native NVFP4 TileIR cubin\n",trial,exact,maxerr);
+ }
+ CK(cuMemFree(x));CK(cuMemFree(y));CK(cuMemFree(xs));CK(cuMemFree(ys));CK(cuMemFree(z));CK(cuModuleUnload(mod));CK(cuDevicePrimaryCtxRelease(dev));
+}

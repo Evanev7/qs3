@@ -254,16 +254,24 @@ Current experiment ownership/status is in `FINDINGS.md` (KR01–KR08).
 - [ ] KR01: AOT-port and measure vLLM's fused Q/K norm + partial RoPE + gate
   extraction on the actual 27B geometry; preserve BF16 boundaries and validate
   prefill/decode, positions, reset/rebuild, and full-model logits.
-- [ ] KR03/KR04: Compare b12x CuTeDSL tensor-FP8/dense-NVFP4 and QuTLASS SM120
-  kernels on real projection shapes, including M=1,2,4,8,16. Include quantization
-  and split-K reduction; promote only after native AOT and model-level validation.
+- [x] KR03: Qualify native b12x FP8 CuTe GEMM + AOT Triton FP32 reducer.
+  Three M1/N10240/K5120 fixtures pass tolerance; rare BF16 differences remain.
+- [ ] KR03: Compare against production cuBLASLt, then full-model logits. FP32 split-K probe gains ~19% on largest M1 projection;
+  default BF16 atomics change outputs. Other shapes have smaller gains/regressions.
+- [x] KR04/KR07: Adopt QuTLASS prefill and AOT row selection. Full tests pass;
+  69/69 full-model logit rows and 36/260 benchmark IDs match exactly. Committed
+  1024-token prefill improves 518→413 ms (20.2%); decode is within 0.4%.
 - [x] KR05: Qualify pinned cutile-rs AOT compilation and native cubin launch on
   GB10. Compile-only Rust → TileIR → SM121 cubin → CUDA Driver API passes;
-  isolated CUDA 13.3 compiler libraries are required. See the experiment README.
+  SAXPY is exact; NVFP4 requires isolated tileiras 13.4.92 (768/768 exact).
+  CUDA 13.3 fails the NVFP4 SM121 compile. See the experiment README.
 - [ ] KR05: Measure a useful model fusion with cuTile Rust; AOT feasibility
   alone does not justify adding another compiler to the production build.
-- [ ] KR06: Probe fused SiLU×up + NVFP4 quantization against current packed
-  activations/scales; retain intermediate-rounding evidence.
+- [x] KR06: Probe fused SiLU×up + NVFP4 quantization against current packed
+  activations/scales: all 42 cases exact with BF16 rounding retained.
+- [ ] KR06: Integrate a small fusion using existing FlashInfer conversion helpers;
+  validate full-model logits and required tests, then benchmark. Probe K17408
+  latency is 5.38→1.87 µs at M1 and 655→359 µs at M1024.
 - [ ] KR02: Investigate upstream packed/batched GDN decode with <=16 token
   sequences and explicit state outputs; do not implement MTP/rollback yet.
 

@@ -1,0 +1,97 @@
+"""KR03: exported objects/cubins only at execution; Python supplies fixtures/timing."""
+import ctypes
+import hashlib
+import json
+from pathlib import Path
+import statistics
+import subprocess
+import torch
+
+OUT = Path('/repo/.prototypes/out/kr03-fp8-export')
+SOURCE = Path('/repo/.prototypes/kernel_replacements/fp8_export_native.cu')
+runtime, = Path('/toolchain').rglob('libcuda_dialect_runtime_static.a')
+obj = OUT / 'kr03_densegemmlaunch_0.o'
+command = ['nvcc', '-std=c++17', '-O3', '-shared', '-Xcompiler=-fPIC',
+           '-I'+str(OUT), str(SOURCE), str(obj), str(runtime), '-lcuda',
+           '-o', str(OUT/'export-native.so')]
+(OUT/'native-compile.json').write_text(json.dumps(command, indent=2)+'\n')
+subprocess.run(command, check=True)
+meta = json.loads((OUT/'reduce.json').read_text())
+lib = ctypes.CDLL(str(OUT/'export-native.so'))
+P = ctypes.c_void_p
+lib.create.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_int, ctypes.c_int]
+lib.create.restype = P
+lib.run.argtypes = [P]*9
+lib.run.restype = ctypes.c_int
+lib.destroy.argtypes = [P]
+ref = ctypes.CDLL(str(OUT/'native.so'))
+ref.prepare.argtypes = [P]*7+[ctypes.c_int]*3
+ref.prepare.restype = P
+ref.execute.argtypes = [P]
+ref.execute.restype = ctypes.c_int
+ref.release.argtypes = [P]
+torch.manual_seed(1919)
+torch.backends.cuda.matmul.allow_tf32 = False
+stream = torch.cuda.Stream()
+results = []
+with torch.cuda.stream(stream):
+    workspace = torch.empty(64<<20, device='cuda', dtype=torch.uint8)
+    flush = torch.zeros((128<<20)//4, device='cuda', dtype=torch.int32)
+    sfa = torch.ones(1, 40, device='cuda')
+    sfb = torch.ones(80, 40, device='cuda')
+    partials = torch.empty(2, 1, 10240, device='cuda')
+    p = lib.create(str(OUT/'reduce.cubin').encode(), meta['name'].encode(),
+                   meta['shared'], meta['num_warps'])
+    assert p
+    for trial in range(3):
+        w = (torch.randn(10240,5120,device='cuda')*8).to(torch.float8_e4m3fn)
+        x = (torch.randn(1,5120,device='cuda')*8).to(torch.float8_e4m3fn)
+        xs = torch.tensor([.03125], device='cuda')
+        ws = torch.tensor([.015625 if trial != 2 else .137], device='cuda')
+        alpha = xs*ws
+        y = torch.empty(1,10240,device='cuda',dtype=torch.bfloat16)
+        baseline = torch.empty_like(y)
+        rp = ref.prepare(*[t.data_ptr() for t in (x,w,baseline,xs,ws,workspace)],
+                         stream.cuda_stream,1,10240,5120)
+        assert rp
+        def candidate():
+            assert lib.run(p,*[t.data_ptr() for t in (x,w,sfa,sfb,partials,alpha,y)],
+                           stream.cuda_stream) == 0
+        def reference():
+            assert ref.execute(rp) == 0
+        candidate(); reference(); stream.synchronize()
+        fp32 = (x.float()@w.float().T)*alpha
+        difference = y.float()-baseline.float()
+        row = dict(trial=trial,m=1,n=10240,k=5120,native_aot=True,
+                   exact=torch.equal(y,baseline),changed=int((y!=baseline).sum()),
+                   max_abs=float(difference.abs().max()),
+                   relative_l2=float(difference.double().norm()/baseline.double().norm()),
+                   relative_l2_fp32=float((y.double()-fp32.double()).norm()/fp32.double().norm()))
+        assert bool(torch.isfinite(y).all()) and row['relative_l2_fp32'] < .005
+        graphs = {}
+        for name, fn in [('qscb',reference),('native_b12x',candidate)]:
+            for _ in range(3): fn()
+            stream.synchronize()
+            g = torch.cuda.CUDAGraph()
+            with torch.cuda.graph(g,stream=stream): fn()
+            graphs[name] = g
+        row['timings'] = {}
+        for mode in ['warm','evicted']:
+            samples = {name:[] for name in graphs}
+            for repeat in range(30):
+                for name in (list(graphs) if repeat%2==0 else list(reversed(graphs))):
+                    if mode == 'evicted': flush.add_(1)
+                    start = torch.cuda.Event(enable_timing=True)
+                    end = torch.cuda.Event(enable_timing=True)
+                    start.record(stream); graphs[name].replay(); end.record(stream)
+                    end.synchronize()
+                    samples[name].append(start.elapsed_time(end)*1000)
+            row['timings'][mode] = {name:dict(median_us=statistics.median(v),samples_us=v)
+                                    for name,v in samples.items()}
+        results.append(row)
+        print(json.dumps({k:v for k,v in row.items() if k!='timings'}),flush=True)
+        graphs.clear(); stream.synchronize(); ref.release(rp)
+    lib.destroy(p)
+(OUT/'native-results.json').write_text(json.dumps(results,indent=2)+'\n')
+(OUT/'native-input-hashes.json').write_text(json.dumps({str(p):hashlib.sha256(p.read_bytes()).hexdigest()
+    for p in [obj,OUT/'reduce.cubin',runtime]},indent=2)+'\n')

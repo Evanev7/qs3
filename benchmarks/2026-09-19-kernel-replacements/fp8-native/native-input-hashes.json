@@ -1,0 +1,5 @@
+{
+  "/repo/.prototypes/out/kr03-fp8-export/kr03_densegemmlaunch_0.o": "b874a543948cbeffca6e72dcaa7b812b1935970ff43b46a9f072592f4ba8ec3c",
+  "/repo/.prototypes/out/kr03-fp8-export/reduce.cubin": "918b132f269d90eb64cecf9c726f055b5c030a992d9014dc25e5abc3d8ea59a6",
+  "/toolchain/nvidia_cutlass_dsl/cu13/lib/libcuda_dialect_runtime_static.a": "c7f1e34e75d6bdb64b81a5937698aecdf0474a23006a6cf9292f5a31f287dab6"
+}

@@ -1,0 +1,25 @@
+"""KR06: vLLM fused SiLU*up + NVFP4 quantization, split pointers, same BF16 boundary."""
+import ctypes,json
+from pathlib import Path
+import torch,triton
+OUT=Path('/repo/.prototypes/out/kr06-silu-quant')
+lib=ctypes.CDLL(str(OUT/'native.so'))
+P=ctypes.c_void_p;I=ctypes.c_int
+lib.reference.argtypes=[P]*6+[I,I,P];lib.reference.restype=I
+lib.fused.argtypes=[P]*5+[I,I,P];lib.fused.restype=I
+records=[];torch.manual_seed(1976)
+for k in [5120,17408]:
+ for m in [1,2,4,8,16,128,1024]:
+  gate=(torch.randn(m,k,device='cuda')*3).bfloat16();up=(torch.randn(m,k,device='cuda')*.5).bfloat16()
+  mid=torch.empty_like(gate)
+  for value in [1.,64.,1024.]:
+   mult=torch.tensor([value],device='cuda');rq=torch.zeros(m,k//2,device='cuda',dtype=torch.uint8);q=torch.empty_like(rq)
+   rs=torch.zeros(((m+127)//128*128*k//16,),device='cuda',dtype=torch.uint8);s=torch.zeros_like(rs)
+   def reference():assert lib.reference(*[t.data_ptr() for t in (gate,up,mid,rq,rs,mult)],m,k,torch.cuda.current_stream().cuda_stream)==0
+   def fused():assert lib.fused(*[t.data_ptr() for t in (gate,up,q,s,mult)],m,k,torch.cuda.current_stream().cuda_stream)==0
+   reference();fused();torch.cuda.synchronize()
+   row=dict(m=m,k=k,multiplier=value,packed_exact=torch.equal(q,rq),scale_exact=torch.equal(s,rs),packed_changed=int((q!=rq).sum()),scale_changed=int((s!=rs).sum()))
+   if value==64.:
+    row['reference_us']=triton.testing.do_bench_cudagraph(reference,rep=100)*1000
+    row['fused_us']=triton.testing.do_bench_cudagraph(fused,rep=100)*1000
+   records.append(row);print(json.dumps(row),flush=True);(OUT/'results.json').write_text(json.dumps(records,indent=2)+'\n')
