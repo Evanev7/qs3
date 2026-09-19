@@ -1,14 +1,45 @@
 # Findings and direction
 
 This is the qs3 evidence log on Spark. TODO.md remains the completion checklist.
-The current 3.8-27B BF16 baseline is about **4.5 tok/s**, effectively tied with
-pinned vLLM; NVFP4 is the next priority. Earlier 35B BF16 results reached the
+The current 3.8-27B NVFP4 eager baseline is about **10.6 tok/s**, with 1024-token
+prefill around **516 ms** after the GDN chunk integration. The BF16 baseline is
+about **4.5 tok/s**, effectively tied with pinned vLLM. Earlier 35B BF16 results reached the
 **31 tok/s** eager decode target. Broader cross-runtime correctness remains open.
 
 The current measurements are first; detailed investigations are grouped by
 topic below. Within each topic, observations retain their historical context: an
 early result or proposed next step may be superseded by a later result. Test
 counts and pass claims describe the cited change, not every subsequent revision.
+
+## Qwen3.8-27B NVFP4 performance experiments (2026-09-19)
+
+The [28-case tactic/workspace survey](benchmarks/2026-09-19-nvfp4-performance/README.md)
+finds two candidates on sp10, while retaining the current runtime defaults:
+
+- N=64 DP reduces 1024-token prefill from 519.637 to 437.923 ms (15.7%), but
+  slightly slows decode. Separate captures match N=32 DP bit-for-bit on all 69
+  full logit rows, at both 64 MiB and 16 MiB cuBLASLt workspace. Measure smaller
+  row counts before choosing a crossover; this should support future MTP shapes.
+- Reducing cuBLASLt workspace from 64 to 16 MiB improves decode about 4.8–4.9%,
+  to 11.09 / 11.06 tok/s at 102 / 1024 context. It also changes the numerical
+  path: independent greedy prefixes agree for only 55 / 29 tokens. At their
+  first differing choices, identical-prefix KL(control || candidate) is 0.234 /
+  0.265. Do not treat this as a neutral memory-budget adjustment or demonstrated
+  model-quality improvement.
+
+The standard `b143912` benchmark records 129.391 / 515.756 ms prefill and
+10.374 / 10.616 tok/s decode at 102/32 and 1024/256. Long prefill is about 30%
+faster than the earlier `df6f07e` run; decode has not improved. In the long trace,
+NVFP4 and FP8 matrix kernels account for about 49.75 and 38.56 ms/token;
+local GDN decode recurrence takes 0.94 ms/token. This favors projection work
+over a single-token GDN rewrite. No MTP work was introduced.
+
+The CPU trace reducer now indexes merged GPU intervals instead of scanning the
+whole trace for every CPU sample. Its output exactly matches every field of the
+saved long CPU report; the isolated local reduction takes 0.930 s. The linked
+evidence contains raw samples, source overlays, logit hashes, same-prefix flags,
+and reproduction instructions. These experiments do not establish full-model
+parity with vLLM after GDN chunk integration.
 
 ## Qwen3.8-27B BF16 performance baseline (2026-09-15)
 

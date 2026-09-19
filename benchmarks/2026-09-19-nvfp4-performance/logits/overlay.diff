@@ -1,0 +1,66 @@
+diff --git a/home/sp10/qs3/src/loader/benchmark.rs b/home/sp10/qs3/.prototypes/out/nvfp4-perf-logits-skr3f9xb/checkout/src/loader/benchmark.rs
+index 1afff1b..9df49a7 100644
+--- a/home/sp10/qs3/src/loader/benchmark.rs
++++ b/home/sp10/qs3/.prototypes/out/nvfp4-perf-logits-skr3f9xb/checkout/src/loader/benchmark.rs
+@@ -184,6 +184,7 @@ fn measure_decode_step(
+     tokenizer
+         .decode(&result.generated_tokens)
+         .expect("model generated a non-tokenizer or padded vocabulary ID");
++    dump_logits(runner, result.live_tokens.len());
+     (elapsed, result.live_tokens)
+ }
+ 
+@@ -249,10 +250,16 @@ pub fn run_core_benchmark() -> JsonValue {
+     let weight_load = started.elapsed();
+ 
+     let started = Instant::now();
+-    let (config, weights) = loaded
++    let (mut config, weights) = loaded
+         .into_qwen_model(max_seq_len)
+         .expect("failed to materialize Qwen model weights");
+     let weight_materialize = started.elapsed();
++    config.qscb_workspace_bytes = std::env::var("QS3_PERF_WORKSPACE_MIB").unwrap().parse::<usize>().unwrap() << 20;
++    config.nvfp4_tactic = match std::env::var("QS3_PERF_TACTIC").unwrap().as_str() {
++        "32dp" => Nvfp4Tactic::Tile128x32Dp,
++        "64dp" => Nvfp4Tactic::Tile128x64Dp,
++        _ => panic!("unknown tactic"),
++    };
+     let quantized = weights.is_quantized();
+     let started = Instant::now();
+     let mut runner = ModelRunner::new(ctx.clone(), config, weights, tokenizer.token_count())
+@@ -282,6 +289,7 @@ pub fn run_core_benchmark() -> JsonValue {
+             max_new_tokens: 0,
+         })
+         .expect("decode setup prefill failed");
++    dump_logits(&runner, prefill.live_tokens.len());
+     let mut live_tokens = prefill.live_tokens;
+     let mut decode_warmup_times = Vec::with_capacity(DECODE_WARMUPS);
+     for _ in 0..DECODE_WARMUPS {
+@@ -591,3 +599,10 @@ mod tests {
+         assert_eq!(tokens_per_second(8, Duration::ZERO), None);
+     }
+ }
++
++fn dump_logits(runner: &ModelRunner, tokens: usize) {
++    let logits = runner.last_logits_row_for_test().unwrap();
++    let bytes: Vec<u8> = logits.into_iter().flat_map(f32::to_le_bytes).collect();
++    let directory = std::path::PathBuf::from(std::env::var_os("QS3_PERF_LOGITS").unwrap());
++    std::fs::write(directory.join(format!("{tokens}.f32")), bytes).unwrap();
++}
+diff --git a/home/sp10/qs3/src/model/runner/mod.rs b/home/sp10/qs3/.prototypes/out/nvfp4-perf-logits-skr3f9xb/checkout/src/model/runner/mod.rs
+index 073b6bc..3101f04 100644
+--- a/home/sp10/qs3/src/model/runner/mod.rs
++++ b/home/sp10/qs3/.prototypes/out/nvfp4-perf-logits-skr3f9xb/checkout/src/model/runner/mod.rs
+@@ -1,4 +1,3 @@
+-#[cfg(test)]
+ use crate::dtype::F32;
+ use crate::dtype::{BF16, I32, U8};
+ mod attention;
+@@ -270,7 +269,6 @@ impl ModelRunner {
+         }
+     }
+ 
+-    #[cfg(test)]
+     pub(crate) fn last_logits_row_for_test(&self) -> Result<Vec<f32>, Status> {
+         if self.last_logits_rows == 0 || self.last_logits_vocab_size != self.config.vocab_size() {
+             return Err(Status::InvalidArgument);

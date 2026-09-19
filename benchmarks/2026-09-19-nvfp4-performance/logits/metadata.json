@@ -1,0 +1,5 @@
+{
+  "commit": "b143912b87d6cd2b9250bc9b284f3297db12cb57",
+  "model_revision": "dbb8f445b3145f8a4c18ddc769f032d57d32867c",
+  "scope": "69 full logit rows per case: fresh prefill and 68 independent greedy steps. Timings invalid because of per-step downloads."
+}

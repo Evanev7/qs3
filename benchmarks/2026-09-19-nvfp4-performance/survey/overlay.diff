@@ -1,0 +1,25 @@
+diff --git a/home/sp10/qs3/src/loader/benchmark.rs b/home/sp10/qs3/.prototypes/out/nvfp4-perf-20260919T010630Z-jondmv_u/checkout/src/loader/benchmark.rs
+index 1afff1b..c7754a1 100644
+--- a/home/sp10/qs3/src/loader/benchmark.rs
++++ b/home/sp10/qs3/.prototypes/out/nvfp4-perf-20260919T010630Z-jondmv_u/checkout/src/loader/benchmark.rs
+@@ -249,10 +249,19 @@ pub fn run_core_benchmark() -> JsonValue {
+     let weight_load = started.elapsed();
+ 
+     let started = Instant::now();
+-    let (config, weights) = loaded
++    let (mut config, weights) = loaded
+         .into_qwen_model(max_seq_len)
+         .expect("failed to materialize Qwen model weights");
+     let weight_materialize = started.elapsed();
++    config.nvfp4_tactic = match std::env::var("QS3_PERF_TACTIC").unwrap().as_str() {
++        "32dp" => Nvfp4Tactic::Tile128x32Dp,
++        "32streamk" => Nvfp4Tactic::Tile128x32StreamK,
++        "64dp" => Nvfp4Tactic::Tile128x64Dp,
++        "64streamk" => Nvfp4Tactic::Tile128x64StreamK,
++        _ => panic!("unknown prototype tactic"),
++    };
++    config.qscb_workspace_bytes = std::env::var("QS3_PERF_WORKSPACE_MIB")
++        .unwrap().parse::<usize>().unwrap().checked_mul(1 << 20).unwrap();
+     let quantized = weights.is_quantized();
+     let started = Instant::now();
+     let mut runner = ModelRunner::new(ctx.clone(), config, weights, tokenizer.token_count())

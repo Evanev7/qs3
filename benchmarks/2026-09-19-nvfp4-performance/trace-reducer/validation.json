@@ -1,0 +1,9 @@
+{
+  "source_sha256": "211b28782525e2015178bae73b4cb7046da9e7b6cb595de1b02f34e3c33e05b7",
+  "trace_sha256": "4f344b67c97c36b074e4eb47988ae3c1241644a5eaeb3db52e33e8d10cf0f7ea",
+  "reference": "benchmarks/2026-09-19T005439.162702917Z-b143912.json",
+  "validation": "all CPU report fields exactly equal to the original reducer result; readonly SQLite input; four host reducer unit tests pass",
+  "local_reduction_seconds": 0.93,
+  "note": "local host timing, not a before/after same-host speed ratio; full remote workflow passed in ../full-tests.log",
+  "code_commit": "1516ae4"
+}

@@ -1,0 +1,32 @@
+{
+  "revision": "dbb8f445b3145f8a4c18ddc769f032d57d32867c",
+  "text_bytes_by_dtype": {
+    "F32": 3208,
+    "U8": 9192079360,
+    "F8_E4M3": 8363212800,
+    "BF16": 2595273728
+  },
+  "text_bytes_by_kind": {
+    "lm_head": 715161608,
+    "embedding": 2542796800,
+    "other": 1320960,
+    "gdn": 5587622016,
+    "mlp": 9625929216,
+    "attention": 1677738496
+  },
+  "excluding_embedding_bytes_by_dtype": {
+    "F32": 3208,
+    "U8": 9192079360,
+    "F8_E4M3": 8363212800,
+    "BF16": 52476928
+  },
+  "tensor_count_by_kind": {
+    "lm_head": 4,
+    "embedding": 1,
+    "other": 129,
+    "gdn": 720,
+    "mlp": 768,
+    "attention": 224
+  },
+  "note": "checkpoint storage sizes, not measured DRAM traffic; embeddings are gathered and repeated kernel reads/cache effects are not represented"
+}

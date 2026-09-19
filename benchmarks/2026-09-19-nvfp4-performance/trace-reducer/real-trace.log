@@ -1,0 +1,165 @@
+   Compiling find-msvc-tools v0.1.12
+   Compiling shlex v2.0.1
+   Compiling pkg-config v0.3.34
+   Compiling vcpkg v0.2.15
+   Compiling fallible-streaming-iterator v0.1.9
+   Compiling smallvec v1.16.1
+   Compiling bitflags v2.13.2
+   Compiling fallible-iterator v0.3.0
+   Compiling tinyjson v2.5.1
+   Compiling cc v1.4.6
+   Compiling libsqlite3-sys v0.38.2
+   Compiling rusqlite v0.40.2
+   Compiling qs3-profile-reducer-probe v0.0.0 (/tmp/qs3-profile-reducer)
+warning: function `timestamp` is never used
+ --> src/main.rs:8:4
+  |
+8 | fn timestamp(_: SystemTime) -> String { unreachable!("offline reduction only") }
+  |    ^^^^^^^^^
+  |
+  = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: type alias `Fields` is never used
+  --> src/profile.rs:19:6
+   |
+19 | type Fields = HashMap<String, JsonValue>;
+   |      ^^^^^^
+
+warning: function `text` is never used
+  --> src/profile.rs:22:4
+   |
+22 | fn text(command: &mut Command) -> Result<String> {
+   |    ^^^^
+
+warning: function `logged` is never used
+  --> src/profile.rs:35:4
+   |
+35 | fn logged(command: &mut Command, directory: &Path, name: &str) -> Result<()> {
+   |    ^^^^^^
+
+warning: function `field` is never used
+  --> src/profile.rs:47:4
+   |
+47 | fn field<'a>(value: &'a JsonValue, key: &str) -> Result<&'a JsonValue> {
+   |    ^^^^^
+
+warning: function `number` is never used
+  --> src/profile.rs:54:4
+   |
+54 | fn number(value: &JsonValue, key: &str) -> Result<f64> {
+   |    ^^^^^^
+
+warning: function `rows` is never used
+  --> src/profile.rs:62:4
+   |
+62 | fn rows(value: &JsonValue) -> Result<&Vec<JsonValue>> {
+   |    ^^^^
+
+warning: function `insert` is never used
+  --> src/profile.rs:68:4
+   |
+68 | fn insert(value: &mut JsonValue, key: &str, entry: JsonValue) -> Result<()> {
+   |    ^^^^^^
+
+warning: struct `Timing` is never constructed
+  --> src/profile.rs:98:8
+   |
+98 | struct Timing {
+   |        ^^^^^^
+
+warning: associated items `read` and `json` are never used
+   --> src/profile.rs:107:8
+    |
+106 | impl Timing {
+    | ----------- associated items in this implementation
+107 |     fn read(row: &Row<'_>) -> rusqlite::Result<Self> {
+    |        ^^^^
+...
+117 |     fn json(&self, steps: f64) -> Fields {
+    |        ^^^^
+
+warning: struct `Kernel` is never constructed
+   --> src/profile.rs:129:8
+    |
+129 | struct Kernel {
+    |        ^^^^^^
+
+warning: associated items `read` and `json` are never used
+   --> src/profile.rs:140:8
+    |
+139 | impl Kernel {
+    | ----------- associated items in this implementation
+140 |     fn read(row: &Row<'_>) -> rusqlite::Result<Self> {
+    |        ^^^^
+...
+156 |     fn json(self, steps: f64) -> JsonValue {
+    |        ^^^^
+
+warning: struct `Memory` is never constructed
+   --> src/profile.rs:182:8
+    |
+182 | struct Memory {
+    |        ^^^^^^
+
+warning: method `json` is never used
+   --> src/profile.rs:191:8
+    |
+190 | impl Memory {
+    | ----------- method in this implementation
+191 |     fn json(self, steps: f64) -> JsonValue {
+    |        ^^^^
+
+warning: struct `Api` is never constructed
+   --> src/profile.rs:203:8
+    |
+203 | struct Api {
+    |        ^^^
+
+warning: method `json` is never used
+   --> src/profile.rs:210:8
+    |
+209 | impl Api {
+    | -------- method in this implementation
+210 |     fn json(self, steps: f64) -> JsonValue {
+    |        ^^^^
+
+warning: function `duration` is never used
+   --> src/profile.rs:242:4
+    |
+242 | fn duration(spans: &[Interval]) -> i64 {
+    |    ^^^^^^^^
+
+warning: function `overlap` is never used
+   --> src/profile.rs:246:4
+    |
+246 | fn overlap(a: &[Interval], b: &[Interval]) -> i64 {
+    |    ^^^^^^^
+
+warning: function `summarize` is never used
+   --> src/profile.rs:259:4
+    |
+259 | fn summarize(database: &Connection, steps: f64) -> Result<JsonValue> {
+    |    ^^^^^^^^^
+
+warning: function `read_pass` is never used
+   --> src/profile.rs:440:4
+    |
+440 | fn read_pass(json: &str, profiled: bool) -> Result<JsonValue> {
+    |    ^^^^^^^^^
+
+warning: function `validate_pair` is never used
+   --> src/profile.rs:627:4
+    |
+627 | fn validate_pair(a: &JsonValue, b: &JsonValue) -> Result<()> {
+    |    ^^^^^^^^^^^^^
+
+warning: function `run` is never used
+   --> src/profile.rs:663:15
+    |
+663 | pub(super) fn run() -> Result<JsonValue> {
+    |               ^^^
+
+warning: `qs3-profile-reducer-probe` (bin "qs3-profile-reducer-probe") generated 22 warnings
+    Finished `release` profile [optimized] target(s) in 50.98s
+     Running `/tmp/qs3-profile-reducer/target/release/qs3-profile-reducer-probe .prototypes/out/trace-reducer-validation/decode.sqlite benchmarks/2026-09-19T005439.162702917Z-b143912.json`
+CPU report identical; indexed reduction took 0.930 seconds

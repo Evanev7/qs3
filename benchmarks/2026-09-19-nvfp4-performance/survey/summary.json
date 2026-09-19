@@ -1,0 +1,240 @@
+[
+  {
+    "phase": "tactics",
+    "context": 102,
+    "tactic": "32dp",
+    "workspace_mib": 64,
+    "decode_tok_s": 10.656927825064471,
+    "prefill_p50_ms": 129.870339,
+    "decode_tok_s_runs": [
+      10.678344755432308,
+      10.635510894696633
+    ],
+    "common_prefix_with_control": [
+      68,
+      68
+    ],
+    "repeat_tokens_exact": true
+  },
+  {
+    "phase": "tactics",
+    "context": 102,
+    "tactic": "32streamk",
+    "workspace_mib": 64,
+    "decode_tok_s": 10.643430234675504,
+    "prefill_p50_ms": 130.21257500000002,
+    "decode_tok_s_runs": [
+      10.658364933722767,
+      10.628495535628241
+    ],
+    "common_prefix_with_control": [
+      68,
+      68
+    ],
+    "repeat_tokens_exact": true
+  },
+  {
+    "phase": "tactics",
+    "context": 102,
+    "tactic": "64dp",
+    "workspace_mib": 64,
+    "decode_tok_s": 10.597783277698614,
+    "prefill_p50_ms": 128.980056,
+    "decode_tok_s_runs": [
+      10.604969007276342,
+      10.590597548120886
+    ],
+    "common_prefix_with_control": [
+      68,
+      68
+    ],
+    "repeat_tokens_exact": true
+  },
+  {
+    "phase": "tactics",
+    "context": 102,
+    "tactic": "64streamk",
+    "workspace_mib": 64,
+    "decode_tok_s": 10.603305168319006,
+    "prefill_p50_ms": 172.8830405,
+    "decode_tok_s_runs": [
+      10.60122655492222,
+      10.60538378171579
+    ],
+    "common_prefix_with_control": [
+      68,
+      68
+    ],
+    "repeat_tokens_exact": true
+  },
+  {
+    "phase": "tactics",
+    "context": 1024,
+    "tactic": "32dp",
+    "workspace_mib": 64,
+    "decode_tok_s": 10.558436248173662,
+    "prefill_p50_ms": 519.6370669999999,
+    "decode_tok_s_runs": [
+      10.589085803649827,
+      10.527786692697497
+    ],
+    "common_prefix_with_control": [
+      68,
+      68
+    ],
+    "repeat_tokens_exact": true
+  },
+  {
+    "phase": "tactics",
+    "context": 1024,
+    "tactic": "32streamk",
+    "workspace_mib": 64,
+    "decode_tok_s": 10.568843625614242,
+    "prefill_p50_ms": 1746.6725235,
+    "decode_tok_s_runs": [
+      10.594118512124103,
+      10.543568739104384
+    ],
+    "common_prefix_with_control": [
+      68,
+      68
+    ],
+    "repeat_tokens_exact": true
+  },
+  {
+    "phase": "tactics",
+    "context": 1024,
+    "tactic": "64dp",
+    "workspace_mib": 64,
+    "decode_tok_s": 10.517526197693869,
+    "prefill_p50_ms": 437.92298000000005,
+    "decode_tok_s_runs": [
+      10.539419428848085,
+      10.49563296653965
+    ],
+    "common_prefix_with_control": [
+      68,
+      68
+    ],
+    "repeat_tokens_exact": true
+  },
+  {
+    "phase": "tactics",
+    "context": 1024,
+    "tactic": "64streamk",
+    "workspace_mib": 64,
+    "decode_tok_s": 10.531668955064916,
+    "prefill_p50_ms": 442.96531300000004,
+    "decode_tok_s_runs": [
+      10.52902909775945,
+      10.53430881237038
+    ],
+    "common_prefix_with_control": [
+      68,
+      68
+    ],
+    "repeat_tokens_exact": true
+  },
+  {
+    "phase": "workspace",
+    "context": 102,
+    "tactic": "32dp",
+    "workspace_mib": 16,
+    "decode_tok_s": 11.086583581032558,
+    "prefill_p50_ms": 128.615386,
+    "decode_tok_s_runs": [
+      11.06781801894065,
+      11.105349143124466
+    ],
+    "common_prefix_with_control": [
+      55,
+      55
+    ],
+    "repeat_tokens_exact": true
+  },
+  {
+    "phase": "workspace",
+    "context": 102,
+    "tactic": "32dp",
+    "workspace_mib": 64,
+    "decode_tok_s": 10.580683199998257,
+    "prefill_p50_ms": 130.03722,
+    "decode_tok_s_runs": [
+      10.558243879023125,
+      10.603122520973388
+    ],
+    "common_prefix_with_control": [
+      68,
+      68
+    ],
+    "repeat_tokens_exact": true
+  },
+  {
+    "phase": "workspace",
+    "context": 102,
+    "tactic": "32dp",
+    "workspace_mib": 256,
+    "decode_tok_s": 10.576807484841463,
+    "prefill_p50_ms": 129.2328495,
+    "decode_tok_s_runs": [
+      10.565972696804764,
+      10.587642272878163
+    ],
+    "common_prefix_with_control": [
+      68,
+      68
+    ],
+    "repeat_tokens_exact": true
+  },
+  {
+    "phase": "workspace",
+    "context": 1024,
+    "tactic": "32dp",
+    "workspace_mib": 16,
+    "decode_tok_s": 11.062780197726672,
+    "prefill_p50_ms": 519.126906,
+    "decode_tok_s_runs": [
+      11.074314369475589,
+      11.051246025977756
+    ],
+    "common_prefix_with_control": [
+      29,
+      29
+    ],
+    "repeat_tokens_exact": true
+  },
+  {
+    "phase": "workspace",
+    "context": 1024,
+    "tactic": "32dp",
+    "workspace_mib": 64,
+    "decode_tok_s": 10.54675038243031,
+    "prefill_p50_ms": 522.042668,
+    "decode_tok_s_runs": [
+      10.552547311580811,
+      10.540953453279812
+    ],
+    "common_prefix_with_control": [
+      68,
+      68
+    ],
+    "repeat_tokens_exact": true
+  },
+  {
+    "phase": "workspace",
+    "context": 1024,
+    "tactic": "32dp",
+    "workspace_mib": 256,
+    "decode_tok_s": 10.542614659822025,
+    "prefill_p50_ms": 522.551474,
+    "decode_tok_s_runs": [
+      10.548448153026385,
+      10.536781166617667
+    ],
+    "common_prefix_with_control": [
+      68,
+      68
+    ],
+    "repeat_tokens_exact": true
+  }
+]

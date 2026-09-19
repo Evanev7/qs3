@@ -1,0 +1,13 @@
+{
+  "argv": [
+    "/home/sp10/qs3/target/release/qs3-bench",
+    "--measure-pass"
+  ],
+  "overrides": {
+    "QS3_QWEN36_MODEL_DIR": "/home/sp10/.cache/huggingface/hub/models--nvidia--Qwen3.8-27B-NVFP4/snapshots/dbb8f445b3145f8a4c18ddc769f032d57d32867c",
+    "QS3_PERF_TACTIC": "64dp",
+    "QS3_PERF_WORKSPACE_MIB": "64",
+    "QS3_BENCH_CONTEXT_TOKENS": "102",
+    "QS3_BENCH_DECODE_SAMPLES": "64"
+  }
+}
