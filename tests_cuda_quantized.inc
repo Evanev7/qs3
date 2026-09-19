@@ -369,7 +369,8 @@ static void test_qscb_fp8()
 }
 
 #define QSFI_TEST_NVFP4_TACTIC(ID, N, STREAM_K, LAUNCHER) ID,
-static constexpr qsfi_nvfp4_tactic kNvfp4Tactics[] = { QSFI_NVFP4_TACTICS(QSFI_TEST_NVFP4_TACTIC) };
+static constexpr qsfi_nvfp4_tactic kNvfp4Tactics[]
+    = { QSFI_NVFP4_TACTICS(QSFI_TEST_NVFP4_TACTIC) QSFI_NVFP4_QUTLASS256X128 };
 #undef QSFI_TEST_NVFP4_TACTIC
 
 static void test_qsfi_nvfp4()
@@ -407,7 +408,7 @@ static void test_qsfi_nvfp4()
             }
         }
 swizzle_done:
-    for (int m : { 1, 2, 4, 5, 16, 128, 512 }) {
+    for (int m : { 1, 2, 4, 5, 16, 128, 512, 513 }) {
         std::vector<uint16_t> hx(size_t(m) * k);
         for (size_t i = 0; i < hx.size(); ++i)
             hx[i] = qscb_test_f32_to_bf16(
@@ -659,11 +660,8 @@ static void test_qsfi_nvfp4_qwen_shapes()
     QuantBuffer<float> multiplier(1), alpha(1);
     multiplier.upload({ 2.f });
     alpha.upload({ .0685f });
-    const int shapes[][3] = { { 1, 17408, 5120 },
-                              { 16, 5120, 17408 },
-                              { 128, 17408, 5120 },
-                              { 1, 248320, 5120 },
-                              { 5, 248320, 5120 } };
+    const int shapes[][3] = { { 1, 17408, 5120 },   { 16, 5120, 17408 }, { 128, 17408, 5120 },
+                              { 513, 5120, 17408 }, { 1, 248320, 5120 }, { 5, 248320, 5120 } };
     for (const auto& shape : shapes) {
         const int m = shape[0], n = shape[1], k = shape[2];
         QuantBuffer<uint8_t> w(size_t(n) * k / 2), ws(size_t(n) * k / 16), sw(quant_sf_size(n, k));

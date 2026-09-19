@@ -26,7 +26,6 @@ pub struct QwenConfig {
     /// Override the checkpoint recipe when preparing NVFP4 execution.
     /// None leaves activation precision to the per-projection checkpoint recipe.
     pub nvfp4_activation_override: Option<Nvfp4Activation>,
-    pub nvfp4_tactic: Nvfp4Tactic,
     pub max_live_requests: u32,
     pub max_batch_rows: u32,
     pub max_batch_tokens: u32,
@@ -60,7 +59,6 @@ impl QwenConfig {
         let page_size = 4;
         let config = Self {
             nvfp4_activation_override: None,
-            nvfp4_tactic: Nvfp4Tactic::Tile128x32Dp,
             max_live_requests: 1,
             max_batch_rows: 1,
             max_batch_tokens: max_seq_len,

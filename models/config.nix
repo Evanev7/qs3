@@ -177,7 +177,14 @@ assert
         provider = "cublaslt";
       };
       nvfp4 = {
-        provider = "flashinfer-cutlass";
+        provider = "cutlass";
+        # GB10 measurements: keep narrow decode tiles; widen for prefill.
+        # QuTLASS's SM120 256x128x128 recipe wins at 512/1024 rows.
+        mediumRows = 128;
+        mediumTactic = "tile128x64_dp";
+        prefillRows = 512;
+        prefillTactic = "qutlass256x128";
+        smallTactic = "tile128x32_dp";
         # Available dense W4A4 tactics are tileN × streamK.
         # Preparation chooses one; tests exercise every enabled combination.
         # Each tile compiles both schedulers; streamK controls API availability.

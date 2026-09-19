@@ -6,7 +6,7 @@ use crate::{
     Status,
     backend::{
         DMat, DVec, Operators, Workspace,
-        qsfi::{Nvfp4Plan, scale_count},
+        qsfi::{Nvfp4Plan, Nvfp4Tactic, scale_count},
     },
     dtype::{BF16, F32, Fp8E4M3, Nvfp4E2M1, U8},
     engine::Engine,
@@ -65,7 +65,7 @@ impl QuantizedScratch {
                 k_max = k_max.max(p.shape[1]);
             }
         }
-        self.reserve_shapes(engine, rows, k_max, shapes, config.nvfp4_tactic)?;
+        self.reserve_shapes(engine, rows, k_max, shapes)?;
         self.prepared_rows.insert(rows);
         Ok(())
     }
@@ -76,7 +76,6 @@ impl QuantizedScratch {
         rows: u32,
         k_max: u32,
         shapes: Vec<[u32; 3]>,
-        tactic: crate::model::Nvfp4Tactic,
     ) -> Result<(), Status> {
         let elements = (rows as usize)
             .checked_mul(k_max as usize)
@@ -87,9 +86,12 @@ impl QuantizedScratch {
         for shape in shapes {
             let plan = match self.plans.entry(shape) {
                 Entry::Occupied(e) => e.into_mut(),
-                Entry::Vacant(e) => {
-                    e.insert(engine.operators().qsfi().create_nvfp4_plan(shape, tactic)?)
-                }
+                Entry::Vacant(e) => e.insert(
+                    engine
+                        .operators()
+                        .qsfi()
+                        .create_nvfp4_plan(shape, Nvfp4Tactic::for_rows(shape[0]))?,
+                ),
             };
             self.workspace.realloc(plan.workspace_bytes.max(1))?;
         }

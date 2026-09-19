@@ -2,6 +2,7 @@ use super::Qsfi;
 use crate::{
     Status,
     backend::{DMat, DVec, Workspace, result_from_raw},
+    constants::nvfp4,
     dtype::{BF16, F32, Fp8E4M3, Nvfp4E2M1},
     ffi::sys,
 };
@@ -14,14 +15,50 @@ pub enum Nvfp4Tactic {
     Tile128x32StreamK,
     Tile128x64Dp,
     Tile128x64StreamK,
+    Qutlass256x128,
 }
 impl Nvfp4Tactic {
+    const fn from_name(name: &str) -> Self {
+        match name.as_bytes() {
+            b"tile128x32_dp" => Self::Tile128x32Dp,
+            b"tile128x32_stream_k" => Self::Tile128x32StreamK,
+            b"tile128x64_dp" => Self::Tile128x64Dp,
+            b"tile128x64_stream_k" => Self::Tile128x64StreamK,
+            b"qutlass256x128" => Self::Qutlass256x128,
+            _ => panic!("unknown NVFP4 AOT tactic"),
+        }
+    }
+
+    pub(crate) const fn for_rows(rows: u32) -> Self {
+        const SMALL: Nvfp4Tactic = Nvfp4Tactic::from_name(nvfp4::SMALL_TACTIC);
+        const MEDIUM: Nvfp4Tactic = Nvfp4Tactic::from_name(nvfp4::MEDIUM_TACTIC);
+        const PREFILL: Nvfp4Tactic = Nvfp4Tactic::from_name(nvfp4::PREFILL_TACTIC);
+        if rows >= nvfp4::PREFILL_ROWS {
+            PREFILL
+        } else if rows >= nvfp4::MEDIUM_ROWS {
+            MEDIUM
+        } else {
+            SMALL
+        }
+    }
+
+    pub(crate) const fn name(self) -> &'static str {
+        match self {
+            Self::Tile128x32Dp => "tile128x32_dp",
+            Self::Tile128x32StreamK => "tile128x32_stream_k",
+            Self::Tile128x64Dp => "tile128x64_dp",
+            Self::Tile128x64StreamK => "tile128x64_stream_k",
+            Self::Qutlass256x128 => "qutlass256x128",
+        }
+    }
+
     fn raw(self) -> sys::qsfi_nvfp4_tactic {
         match self {
             Self::Tile128x32Dp => sys::QSFI_NVFP4_TILE128X32_DP,
             Self::Tile128x32StreamK => sys::QSFI_NVFP4_TILE128X32_STREAM_K,
             Self::Tile128x64Dp => sys::QSFI_NVFP4_TILE128X64_DP,
             Self::Tile128x64StreamK => sys::QSFI_NVFP4_TILE128X64_STREAM_K,
+            Self::Qutlass256x128 => sys::QSFI_NVFP4_QUTLASS256X128,
         }
     }
 }

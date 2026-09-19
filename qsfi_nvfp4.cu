@@ -1,8 +1,9 @@
-// FlashInfer-owned dense W4A4 lane. No Python, JIT or device memory ownership.
+// AOT dense W4A4 kernels. No Python, JIT or device memory ownership.
 #include "flashinfer/gemm/cutlass_gemm_configs.h"
 #include "flashinfer/gemm/fp4_gemm_template_sm120.h"
 #include "qsfi_internal.h"
 #include "qsfi_macros.h"
+#include "qsfi_nvfp4_prefill.cuh"
 #include "tensorrt_llm/kernels/quantization.cuh"
 
 #include <algorithm>
@@ -141,6 +142,9 @@ qsfi_status qsfi_nvfp4_plan_create(
         break;
         switch (desc->tactic) {
             QSFI_NVFP4_TACTICS(QSFI_SELECT_NVFP4)
+        case QSFI_NVFP4_QUTLASS256X128:
+            p->launch = &qsfi_nvfp4_prefill::launch;
+            break;
         default:
             return set_invalid_arg(ctx, "NVFP4 tactic is not enabled in this build");
         }

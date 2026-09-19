@@ -492,18 +492,21 @@ pub fn run_core_benchmark() -> JsonValue {
             .get_mut::<HashMap<String, JsonValue>>()
             .unwrap();
         if quantized {
-            let (tile_n, stream_k) = match config.nvfp4_tactic {
-                Nvfp4Tactic::Tile128x32Dp => (32, false),
-                Nvfp4Tactic::Tile128x32StreamK => (32, true),
-                Nvfp4Tactic::Tile128x64Dp => (64, false),
-                Nvfp4Tactic::Tile128x64StreamK => (64, true),
-            };
             execution.insert(
                 "nvfp4".into(),
                 object([
                     ("activation", "a4".to_owned().into()),
-                    ("tile_n", f64::from(tile_n).into()),
-                    ("stream_k", stream_k.into()),
+                    (
+                        "prefill_tactic",
+                        Nvfp4Tactic::for_rows(prompt.len() as u32)
+                            .name()
+                            .to_owned()
+                            .into(),
+                    ),
+                    (
+                        "decode_tactic",
+                        Nvfp4Tactic::for_rows(1).name().to_owned().into(),
+                    ),
                 ]),
             );
         }
@@ -521,7 +524,7 @@ pub fn run_core_benchmark() -> JsonValue {
             execution.insert(
                 "mlp".into(),
                 if quantized {
-                    "flashinfer-cutlass-nvfp4"
+                    "cutlass-nvfp4"
                 } else {
                     "cublaslt_dense_bf16"
                 }

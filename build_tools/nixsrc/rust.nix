@@ -44,6 +44,13 @@ in
     MODEL = string config.engine.model;
     MTP = boolean config.engine.mtp;
   };
+  nvfp4 = {
+    MEDIUM_ROWS = u32 config.kernels.nvfp4.mediumRows;
+    MEDIUM_TACTIC = string config.kernels.nvfp4.mediumTactic;
+    PREFILL_ROWS = u32 config.kernels.nvfp4.prefillRows;
+    PREFILL_TACTIC = string config.kernels.nvfp4.prefillTactic;
+    SMALL_TACTIC = string config.kernels.nvfp4.smallTactic;
+  };
   model = {
     HIDDEN_SIZE = u32 text.hidden_size;
     NUM_HIDDEN_LAYERS = u32 text.num_hidden_layers;

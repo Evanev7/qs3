@@ -32,14 +32,16 @@ typedef struct qsfi_moe_plan qsfi_moe_plan;
  * must be finite nonnegative E4M3. Callers validate values before preparation.
  * Buffers for inputs, outputs, scales and workspace must not overlap.
  */
-/* Supported tactic names. models/config.nix selects the available subset;
- * preparation rejects supported names omitted from that build's tactic set.
+/* Supported tactic names. models/config.nix selects the available FlashInfer
+ * subset; the QuTLASS prefill kernel is also compiled. Preparation rejects
+ * supported names omitted from that build's tactic set.
  */
 typedef enum {
     QSFI_NVFP4_TILE128X32_DP = 0,
     QSFI_NVFP4_TILE128X32_STREAM_K = 1,
     QSFI_NVFP4_TILE128X64_DP = 2,
-    QSFI_NVFP4_TILE128X64_STREAM_K = 3
+    QSFI_NVFP4_TILE128X64_STREAM_K = 3,
+    QSFI_NVFP4_QUTLASS256X128 = 4
 } qsfi_nvfp4_tactic;
 
 typedef struct {

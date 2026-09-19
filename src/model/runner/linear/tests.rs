@@ -2,7 +2,7 @@ use super::*;
 use crate::{
     dtype::DType,
     memory::HostBuffer,
-    model::{ModelRunner, Nvfp4Tactic, QwenRequest},
+    model::{ModelRunner, QwenRequest},
     model::{
         Nvfp4Activation,
         scales::{Fp8Scales, Nvfp4Scales},
@@ -123,15 +123,9 @@ fn mixed_linear_preparation_scales_tails_and_reused_plans_match_reference() {
         })
         .collect();
     ctx.synchronize().unwrap();
-    for rows in [1, 2, 5, 16, 128, 1] {
+    for rows in [1, 2, 5, 16, 128, 512, 513, 1] {
         scratch
-            .reserve_shapes(
-                &mut engine,
-                rows,
-                k,
-                vec![[rows, n, k]],
-                Nvfp4Tactic::Tile128x32Dp,
-            )
+            .reserve_shapes(&mut engine, rows, k, vec![[rows, n, k]])
             .unwrap();
         let values: Vec<f32> = (0..rows * k)
             .map(|i| fp4_value(((i + i / k) % 16) as u8) * 0.125)
@@ -226,7 +220,7 @@ fn mixed_linear_preparation_scales_tails_and_reused_plans_match_reference() {
             }
         }
     }
-    assert_eq!(scratch.plans.len(), 5);
+    assert_eq!(scratch.plans.len(), 7);
 }
 
 fn quantized_fixture(ctx: &Rc<CudaCtx>, config: &QwenConfig) -> QwenWeights {
