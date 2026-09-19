@@ -492,8 +492,19 @@ fn cpu_summary(database: &Connection) -> Result<JsonValue> {
             gpu.push_str(&format!(" UNION ALL SELECT start,end FROM {table}"));
         }
     }
-    let selected = format!("WITH {bounds}, gpu AS ({gpu}), samples AS MATERIALIZED (
-        SELECT e.*, NOT EXISTS(SELECT 1 FROM gpu WHERE gpu.start <= e.start AND gpu.end > e.start) AS in_gpu_gap
+    // Merge first: the latest raw start can belong to a short interval nested
+    // inside longer GPU work. Indexing the disjoint union makes each sample a
+    // predecessor lookup instead of scanning the full trace twice per report.
+    database.execute_batch(
+        "CREATE TEMP TABLE IF NOT EXISTS qs3_gpu_work(start INTEGER PRIMARY KEY, end INTEGER NOT NULL);
+         DELETE FROM qs3_gpu_work;",
+    )?;
+    let mut insert = database.prepare("INSERT INTO qs3_gpu_work VALUES(?1,?2)")?;
+    for (start, end) in merge(intervals(database, &gpu)?)? {
+        insert.execute([start, end])?;
+    }
+    let selected = format!("WITH {bounds}, samples AS MATERIALIZED (
+        SELECT e.*, COALESCE((SELECT end FROM qs3_gpu_work WHERE start <= e.start ORDER BY start DESC LIMIT 1), e.start) <= e.start AS in_gpu_gap
         FROM COMPOSITE_EVENTS e,bounds WHERE e.start >= first AND e.start < last)");
     let functions = query(database, &format!("{selected}
         SELECT s.value AS function, m.value AS module, c.unresolved,
@@ -853,6 +864,42 @@ mod tests {
         assert_eq!(number(&result["functions"][1], "inclusive_samples")?, 2.0);
         assert_eq!(number(&result["functions"][1], "leaf_samples")?, 0.0);
         assert_eq!(number(&result["scheduling"][0], "events")?, 2.0);
+        db.execute_batch(
+            "
+            INSERT INTO CUPTI_ACTIVITY_KIND_KERNEL VALUES(12,13),(18,25);
+            CREATE TABLE CUPTI_ACTIVITY_KIND_MEMCPY(start INTEGER,end INTEGER);
+            INSERT INTO CUPTI_ACTIVITY_KIND_MEMCPY VALUES(27,30);
+            CREATE TABLE CUPTI_ACTIVITY_KIND_MEMSET(start INTEGER,end INTEGER);
+            INSERT INTO CUPTI_ACTIVITY_KIND_MEMSET VALUES(31,40);
+            INSERT INTO COMPOSITE_EVENTS VALUES
+                (5,10,99,1),(6,20,99,1),(7,25,99,1),(8,27,99,1),
+                (9,31,99,1),(10,40,99,1),(11,49,99,1);
+            INSERT INTO SAMPLING_CALLCHAINS
+                SELECT id,1,3,0,0,0 FROM COMPOSITE_EVENTS WHERE id>=5;
+        ",
+        )?;
+        let result = cpu_summary(&db)?;
+        assert_eq!(number(&result, "samples")?, 9.0);
+        // Nested intervals must not hide enclosing work. Starts are included,
+        // ends excluded: samples at 25 and 30 remain in gaps.
+        assert_eq!(
+            number(&result["threads"][0], "samples_without_gpu_work")?,
+            2.0
+        );
+        assert_eq!(
+            number(&result["functions"][0], "leaf_samples_without_gpu_work")?,
+            2.0
+        );
+        db.execute_batch(
+            "
+            INSERT INTO CUPTI_ACTIVITY_KIND_MEMCPY VALUES(25,27),(30,31);
+        ",
+        )?;
+        let result = cpu_summary(&db)?;
+        assert_eq!(
+            number(&result["threads"][0], "samples_without_gpu_work")?,
+            0.0
+        );
         db.execute_batch("DELETE FROM COMPOSITE_EVENTS")?;
         assert!(cpu_summary(&db).is_err());
         Ok(())
