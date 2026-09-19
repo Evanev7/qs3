@@ -216,6 +216,7 @@ def _build_manifest(
                 "gated_rmsnorm": config.rms_eps,
             },
             "source_semantics": [
+                "3pty/vllm/vllm/model_executor/layers/mamba/ops/causal_conv1d.py",
                 (
                     "3pty/vllm/vllm/model_executor/layers/mamba/gdn/"
                     "qwen_gdn_linear_attn.py::prepare_gdn_attention_core_inputs"
@@ -256,7 +257,8 @@ def _build_manifest(
             "math": {
                 "causal_conv": (
                     "depthwise width-4 convolution with zero initial state per "
-                    "case: out[t,d] = silu(sum_i x[t-3+i,d] * w[d,i]); "
+                    "case: out[t,d] = silu(sum_i bf16(x[t-3+i,d] * w[d,i])); "
+                    "products round to BF16 before ordered FP32 accumulation; "
                     "invalid negative positions are zero"
                 ),
                 "qk_l2norm": (
@@ -966,10 +968,12 @@ def _causal_conv1d_silu(
                     if src_local < 0:
                         continue
                     src_token = begin + src_local
-                    acc += (
+                    # Match vLLM: BF16 products, then ordered FP32 accumulation.
+                    product = (
                         x[src_token * config.qkv_dim + channel]
                         * conv_weight[weight_base + tap]
                     )
+                    acc = _f32(acc + bf16_bits_to_float32(_bf16(product)))
                 value = _f32(_silu(acc))
                 out_f32.append(value)
                 out_bf16.append(_bf16(value))
@@ -1348,10 +1352,11 @@ def _continued_conv_row(
             src_local = local_pos - (config.conv_width - 1) + tap
             if src_local < 0:
                 continue
-            acc += (
+            product = (
                 bf16_bits_to_float32(history_rows[src_local][channel])
                 * conv_weight[weight_base + tap]
             )
+            acc = _f32(acc + bf16_bits_to_float32(_bf16(product)))
         value = _f32(_silu(acc))
         out_f32.append(value)
         out_bf16.append(_bf16(value))

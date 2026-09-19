@@ -502,6 +502,103 @@ void test_qscu_qwen36_gdn_causal_conv1d_bf16_cpu_reference()
     cudaFree(d_out);
 }
 
+void test_qscu_qwen36_gdn_conv_product_rounding()
+{
+    // Halfway products and cancellation expose rounding before accumulation.
+    // Exercise every tap, both launch paths, and both history storage dtypes.
+    constexpr int dims = kQscuTestGdnPackedDim;
+    std::vector<uint16_t> x(dims), weight(dims * 4), state(dims * 3), expected(dims);
+    std::vector<float> state_f32(dims * 3), bias(dims);
+    int differs_from_f32 = 0;
+    for (int dim = 0; dim < dims; ++dim) {
+        float rounded = bias[dim] = (dim % 5 - 2) / 128.0f;
+        float unrounded = rounded;
+        for (int tap = 0; tap < 4; ++tap) {
+            const float value = 1.0f + ((dim + tap * 3) % 16) / 128.0f;
+            const float w = (tap % 2 == 0 ? 1.0f : -1.0f) * (1.5f + ((dim * 3 + tap) % 8) / 128.0f);
+            weight[dim * 4 + tap] = qscu_test_f32_to_bf16(w);
+            if (tap < 3) {
+                state[dim * 3 + tap] = qscu_test_f32_to_bf16(value);
+                state_f32[dim * 3 + tap] = value;
+            } else {
+                x[dim] = qscu_test_f32_to_bf16(value);
+            }
+            rounded += bf16_to_f32(qscu_test_f32_to_bf16(value * w));
+            unrounded += value * w;
+        }
+        expected[dim] = qscu_test_f32_to_bf16(rounded);
+        differs_from_f32 += expected[dim] != qscu_test_f32_to_bf16(unrounded);
+    }
+    if (differs_from_f32 <= dims / 2) {
+        std::fprintf(stderr, "FAIL: conv rounding fixture must distinguish FP32 products\n");
+        ++failures;
+    }
+
+    uint16_t *d_x = nullptr, *d_weight = nullptr, *d_state = nullptr, *d_out = nullptr;
+    float *d_state_f32 = nullptr, *d_bias = nullptr;
+    int32_t *d_slot = nullptr, *d_indptr = nullptr;
+    const int32_t slot = 0, indptr[] = { 0, 1 };
+    const bool ok = copy_to_device(&d_x, x.data(), x.size(), "rounding x")
+        && copy_to_device(&d_weight, weight.data(), weight.size(), "rounding weights")
+        && copy_to_device(&d_state, state.data(), state.size(), "rounding BF16 history")
+        && copy_to_device(&d_state_f32, state_f32.data(), state_f32.size(), "rounding FP32 history")
+        && copy_to_device(&d_bias, bias.data(), bias.size(), "rounding bias")
+        && copy_to_device(&d_slot, &slot, 1, "rounding slot")
+        && copy_to_device(&d_indptr, indptr, 2, "rounding indptr")
+        && alloc_device(&d_out, dims, "rounding output");
+    if (ok) {
+        for (bool fp32_state : { false, true }) {
+            for (bool prefill : { false, true }) {
+                qscu_qwen36_gdn_causal_conv1d_desc desc {};
+                desc.x = tensor2_bf16(d_x, 1, dims);
+                desc.weight = tensor2_bf16(d_weight, dims, 4);
+                desc.bias = gdn_tensor1_f32(d_bias, dims);
+                desc.state = fp32_state ? qscu_test_tensor3_f32(d_state_f32, 1, dims, 3)
+                                        : gdn_tensor3_bf16(d_state, 1, dims, 3);
+                desc.state_read_indices = gdn_tensor1_i32(d_slot, 1);
+                desc.seq_indptr = prefill ? d_indptr : nullptr;
+                desc.out = tensor2_bf16(d_out, 1, dims);
+                desc.num_tokens = desc.batch_size = 1;
+                desc.activation = QSCU_ACTIVATION_NONE;
+                desc.update_state = 0;
+                check_status(
+                    qscu_qwen36_gdn_causal_conv1d_bf16(&desc, nullptr),
+                    QSFI_STATUS_OK,
+                    "conv rounded products"
+                );
+                std::vector<uint16_t> out(dims);
+                if (check_cuda(
+                        cudaMemcpy(
+                            out.data(),
+                            d_out,
+                            dims * sizeof(uint16_t),
+                            cudaMemcpyDeviceToHost
+                        ),
+                        "read conv rounded products"
+                    )) {
+                    if (out != expected) {
+                        std::fprintf(
+                            stderr,
+                            "FAIL: conv product rounding (FP32 history=%d, prefill=%d)\n",
+                            fp32_state,
+                            prefill
+                        );
+                        ++failures;
+                    }
+                }
+            }
+        }
+    }
+    cudaFree(d_x);
+    cudaFree(d_weight);
+    cudaFree(d_state);
+    cudaFree(d_state_f32);
+    cudaFree(d_bias);
+    cudaFree(d_slot);
+    cudaFree(d_indptr);
+    cudaFree(d_out);
+}
+
 void test_qscu_qwen36_gdn_post_conv_prepare_bf16_cpu_reference()
 {
     constexpr int kTokens = 2;
@@ -1547,6 +1644,7 @@ void test_qscu_router_nonfinite_logits()
 void test_qscu_gdn_router_helpers()
 {
     test_qscu_qwen36_gdn_causal_conv1d_bf16_cpu_reference();
+    test_qscu_qwen36_gdn_conv_product_rounding();
     test_qscu_qwen36_gdn_post_conv_prepare_bf16_cpu_reference();
     test_qscu_qwen36_gdn_rmsnorm_gated_bf16_cpu_reference();
     test_qscu_router_topk_cpu_reference();

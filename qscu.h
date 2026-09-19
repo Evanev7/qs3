@@ -210,6 +210,7 @@ typedef enum { QSCU_ROUTER_SCORE_SOFTMAX = 0, QSCU_ROUTER_SCORE_SIGMOID = 1 } qs
 
 typedef struct {
     /* packed_dim is 8192 (35B) or 10240 (27B), with 32 or 48 value heads. */
+    /* BF16-rounded products, ordered FP32 accumulation starting from bias. */
     qsfi_tensor2 x; /* bf16 [num_tokens, packed_dim], packed q/k/v projection. */
     qsfi_tensor2 weight; /* bf16 [packed_dim, 4]. */
     qsfi_tensor1 bias; /* optional bf16/f32 [packed_dim]. */

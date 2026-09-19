@@ -579,6 +579,25 @@ struct conv1d_params {
     uint32_t update_state;
 };
 
+__device__ float qwen36_conv_product(float x, float weight)
+{
+    // vLLM causal_conv1d multiplies BF16 operands before adding to its FP32
+    // accumulator. Preserve that rounding boundary; an FP32 FMA differs.
+    return __bfloat162float(__float2bfloat16_rn(x * weight));
+}
+
+__device__ float qwen36_conv_sum(
+    float h0, float h1, float h2, float x, float w0, float w1, float w2, float w3, float bias
+)
+{
+    float acc = bias;
+    acc += qwen36_conv_product(h0, w0);
+    acc += qwen36_conv_product(h1, w1);
+    acc += qwen36_conv_product(h2, w2);
+    acc += qwen36_conv_product(x, w3);
+    return acc;
+}
+
 template <typename StateT>
 __global__ void qwen36_gdn_causal_conv1d_kernel(conv1d_params p, StateT* state)
 {
@@ -628,7 +647,7 @@ __global__ void qwen36_gdn_causal_conv1d_kernel(conv1d_params p, StateT* state)
                 p.x + static_cast<int64_t>(token) * p.x_stride0
                 + static_cast<int64_t>(dim) * p.x_stride1
             );
-            float out_value = h0 * w0 + h1 * w1 + h2 * w2 + x_value * w3 + bias;
+            float out_value = qwen36_conv_sum(h0, h1, h2, x_value, w0, w1, w2, w3, bias);
             out_value = apply_activation(out_value, p.activation);
             store_bf16(
                 p.out + static_cast<int64_t>(token) * p.out_stride0
@@ -700,7 +719,7 @@ __global__ void qwen36_gdn_conv_prefill_outputs(
             0
         );
         const float out
-            = apply_activation(h0 * w0 + h1 * w1 + h2 * w2 + x * w3 + bias, p.activation);
+            = apply_activation(qwen36_conv_sum(h0, h1, h2, x, w0, w1, w2, w3, bias), p.activation);
         store_bf16(p.out + int64_t(token) * p.out_stride0 + int64_t(dim) * p.out_stride1, out);
     }
 }
