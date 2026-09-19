@@ -114,10 +114,15 @@ def signature[T](
 def rust_source(
     stem: str,
     meta: KernelMetadata,
-    grid: list[int],
+    grid: list[int] | None,
     arguments: list[Argument],
     constants: dict[str, Scalar | tl.dtype],
 ) -> str:
+    grid_constant = (
+        f"pub const GRID: [u32; 3] = {json.dumps(grid)};" if grid is not None else ""
+    )
+    grid_param = ", grid: [u32; 3]" if grid is None else ""
+    launch_grid = "grid" if grid is None else "GRID"
     integer_constants = "\n".join(
         f"    pub const {name}: i64 = {value};"
         for name, value in constants.items()
@@ -164,7 +169,7 @@ fn check(code: i32) -> Result<(), i32> {{
     if code == 0 {{ Ok(()) }} else {{ Err(code) }}
 }}
 
-pub const GRID: [u32; 3] = {json.dumps(grid)};
+{grid_constant}
 pub const BLOCK: [u32; 3] = [{meta.num_warps * meta.warp_size}, 1, 1];
 pub const SHARED_BYTES: u32 = {meta.shared};
 
@@ -203,7 +208,7 @@ impl Kernel {{
     /// the element formats, extents and layouts required by the specialization
     /// (see its manifest/source), and remain valid until execution completes.
     /// The caller owns aliasing, ordering and graph/module lifetimes.
-    pub unsafe fn launch(&self, stream: *mut c_void{params}) -> Result<(), i32> {{
+    pub unsafe fn launch(&self, stream: *mut c_void{grid_param}{params}) -> Result<(), i32> {{
 {raw_arguments}
         // Triton's CUDA ABI includes these even when scratch requirements are zero.
         let mut global_scratch: u64 = 0;
@@ -212,7 +217,7 @@ impl Kernel {{
             (&mut global_scratch as *mut u64).cast::<c_void>(),
             (&mut profile_scratch as *mut u64).cast::<c_void>()];
         unsafe {{
-            check(cuLaunchKernel(self.function, GRID[0], GRID[1], GRID[2],
+            check(cuLaunchKernel(self.function, {launch_grid}[0], {launch_grid}[1], {launch_grid}[2],
                 BLOCK[0], BLOCK[1], BLOCK[2], SHARED_BYTES, stream,
                 args.as_mut_ptr(), ptr::null_mut()))
         }}
@@ -233,10 +238,13 @@ def build[T](
     path = Path(kernel.fn.__code__.co_filename).resolve()
     types, constants, arguments = signature(kernel, spec)
     grid = spec.grid
-    if len(grid) != 3 or any(
-        type(n) is not int or not 0 < n <= 0xFFFFFFFF for n in grid
+    if grid is not None and (
+        len(grid) != 3
+        or any(type(n) is not int or not 0 < n <= 0xFFFFFFFF for n in grid)
     ):
-        raise ValueError(f"{prefix}: grid must contain three positive u32 dimensions")
+        raise ValueError(
+            f"{prefix}: grid must be null or three positive u32 dimensions"
+        )
     triton_target = GPUTarget(
         "cuda",
         target.computeCapability.major * 10 + target.computeCapability.minor,

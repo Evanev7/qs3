@@ -4,6 +4,24 @@
 edges; Ninja runs `qstriton` to produce cubins and Rust launchers. Inference uses
 neither Python nor JIT compilation.
 
+## GDN prefill
+
+`gdn_prefill_*.py` adapt the FLA kernels and fused post-convolution preparation
+from vLLM commit `98dff2a81d747d1dba01a47f939f48c3526d4206`:
+`vllm/third_party/flash_linear_attention/ops`, including its GDN preparation kernel.
+See `LICENSE.vllm` and the source headers. The seven stages preserve the upstream
+64-token arithmetic and BF16 intermediates. Autotuning and unused TMA code are
+removed. Fixed algorithm choices live in the kernel sources;
+`models/gdn_prefill.nix` lists each stage's model geometry, storage types, and
+compiler options explicitly.
+
+`ModelRunner` owns the loaded prefill modules. Its scratch contains only the
+reusable buffers and their capacity; the backend receives that storage when it
+validates and launches the stages in `src/backend/gdn_prefill.rs`.
+Prefill reads the live recurrent state and writes
+the staged state; decode retains its existing recurrent kernel. These internal
+64-token chunks are independent of any future scheduler prefill chunk size.
+
 ## Sampling
 
 Configure a runner before starting a request (or after reset/release):

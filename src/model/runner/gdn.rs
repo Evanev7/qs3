@@ -30,7 +30,7 @@ impl BatchExecution<'_> {
         let slots = state.layer_slots(gdn_layer_idx)?;
         let conv_state = state.conv_view()?;
         let recurrent_state = state.recurrent_view()?;
-        let scratch = self.scratch.gdn.as_ref().ok_or(Status::InternalError)?;
+        let scratch = self.scratch.gdn.as_mut().ok_or(Status::InternalError)?;
         let seq_indptr = match kind {
             ActiveRunKind::Append => Some(scratch.seq_indptr.vector(2)?),
             ActiveRunKind::Decode => None,
@@ -101,37 +101,40 @@ impl BatchExecution<'_> {
                 conv_out,
                 1,
             )?;
-            ops.qscu()
-                .qwen36_gdn_post_conv_prepare_bf16(conv_out, a, b, a_log, dt_bias, q, k, v)?;
             match kind {
-                ActiveRunKind::Append => ops.qscu().qwen36_gdn_prefill_bf16(
-                    q,
-                    k,
-                    v,
+                ActiveRunKind::Append => self.gdn_prefill.ok_or(Status::InternalError)?.run(
+                    &mut scratch.prefill,
+                    ctx.stream,
+                    conv_out,
                     a,
                     b,
                     a_log,
                     dt_bias,
-                    recurrent_state,
-                    seq_indptr.ok_or(Status::InternalError)?,
-                    read_indices,
-                    write_indices,
-                    out,
-                    1,
-                )?,
-                ActiveRunKind::Decode => ops.qscu().qwen36_gdn_decode_bf16(
                     q,
                     k,
                     v,
-                    a,
-                    b,
-                    a_log,
-                    dt_bias,
-                    recurrent_state,
-                    read_indices,
-                    write_indices,
+                    state.recurrent_slot(slots.live_slot)?,
+                    state.recurrent_slot(slots.staged_slot)?,
                     out,
                 )?,
+                ActiveRunKind::Decode => {
+                    ops.qscu().qwen36_gdn_post_conv_prepare_bf16(
+                        conv_out, a, b, a_log, dt_bias, q, k, v,
+                    )?;
+                    ops.qscu().qwen36_gdn_decode_bf16(
+                        q,
+                        k,
+                        v,
+                        a,
+                        b,
+                        a_log,
+                        dt_bias,
+                        recurrent_state,
+                        read_indices,
+                        write_indices,
+                        out,
+                    )?;
+                }
             }
             ops.qscu().qwen36_gdn_gated_rmsnorm_bf16(
                 out,

@@ -1,12 +1,12 @@
 use super::{QwenConfig, checked_usize_product, weights::MoeShape};
-use crate::dtype::{BF16, DType, F32, I32, U8};
 use crate::{
     QWEN36_GDN_STATE_SLOTS_PER_LAYER,
-    backend::DVec,
+    backend::{DVec, gdn_prefill::GdnPrefillScratch},
     constants::{
         attention::PACKED_Q_GATE_WIDTH,
         gdn::{KEY_HEAD_DIM, NUM_KEY_HEADS, NUM_VALUE_HEADS, OUTPUT_WIDTH, PACKED_QKV_CHANNELS},
     },
+    dtype::{BF16, DType, F32, I32, U8},
     engine::Status,
     ffi::DevicePtr,
     memory::{CudaCtx, DeviceBuffer, HostBuffer},
@@ -62,6 +62,7 @@ pub(super) struct SharedExpertScratch {
 }
 
 pub(super) struct GdnScratch {
+    pub(super) prefill: GdnPrefillScratch,
     pub(super) packed: DeviceBuffer<BF16>,
     pub(super) conv_out: DeviceBuffer<BF16>,
     pub(super) a: DeviceBuffer<BF16>,
@@ -273,6 +274,7 @@ impl GdnScratch {
         let qk = checked_usize_product(&[rows, NUM_KEY_HEADS, KEY_HEAD_DIM])?;
         let output = checked_usize_product(&[rows, OUTPUT_WIDTH])?;
         Ok(Self {
+            prefill: GdnPrefillScratch::new(ctx.clone(), rows)?,
             packed: DeviceBuffer::with_capacity(ctx.clone(), packed)?,
             conv_out: DeviceBuffer::with_capacity(ctx.clone(), packed)?,
             a: DeviceBuffer::with_capacity(ctx.clone(), heads)?,
@@ -303,6 +305,7 @@ impl GdnScratch {
         let heads = checked_usize_product(&[rows, NUM_VALUE_HEADS])?;
         let qk = checked_usize_product(&[rows, NUM_KEY_HEADS, KEY_HEAD_DIM])?;
         let output = checked_usize_product(&[rows, OUTPUT_WIDTH])?;
+        self.prefill.reserve(rows)?;
         self.packed.realloc(packed)?;
         self.conv_out.realloc(packed)?;
         self.a.realloc(heads)?;

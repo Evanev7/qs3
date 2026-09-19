@@ -30,7 +30,7 @@ class TritonSpec:
     precision: dict[str, str]
     # todo: type these
     constants: dict[str, bool | int | float | str | None | DtypeConstant]
-    grid: list[int]
+    grid: list[int] | None
     # todo: type these
     options: dict[str, bool | int | float | str]
 

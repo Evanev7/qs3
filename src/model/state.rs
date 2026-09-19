@@ -1,26 +1,27 @@
 use super::{QwenConfig, checked_usize_product};
-use crate::dtype::BF16;
 use crate::{
     QWEN36_GDN_STATE_SLOTS_PER_LAYER,
-    backend::{FloatStorage, GdnRecurrentState},
+    backend::{DMat, FloatStorage, GdnConvState, GdnRecurrentState},
     constants::{
         GdnRecurrentDType,
         gdn::{
             CONV_HISTORY_LEN, KEY_HEAD_DIM, NUM_VALUE_HEADS, PACKED_QKV_CHANNELS, VALUE_HEAD_DIM,
         },
+        precision::GDN_RECURRENT_STATE,
     },
+    dtype::{BF16, DType},
     engine::Status,
     ext::SafeVec,
+    ffi::DevicePtr,
     memory::{CudaCtx, DeviceBuffer},
 };
 use std::{mem, rc::Rc};
 
-const GDN_RECURRENT_STORAGE: FloatStorage =
-    match crate::constants::precision::GDN_RECURRENT_STATE.as_bytes() {
-        b"bf16" => FloatStorage::Bf16,
-        b"f32" => FloatStorage::F32,
-        _ => panic!("unsupported compiled GDN recurrent storage"),
-    };
+const GDN_RECURRENT_STORAGE: FloatStorage = match GDN_RECURRENT_STATE.as_bytes() {
+    b"bf16" => FloatStorage::Bf16,
+    b"f32" => FloatStorage::F32,
+    _ => panic!("unsupported compiled GDN recurrent storage"),
+};
 
 pub(super) struct GdnLayerSlots {
     pub(super) live_slot: u32,
@@ -128,13 +129,24 @@ impl GdnState {
         self.recurrent.zero()
     }
 
-    pub(super) fn conv_view(&self) -> Result<crate::backend::GdnConvState, Status> {
+    pub(super) fn conv_view(&self) -> Result<GdnConvState, Status> {
         self.conv
             .tensor3(self.slots.state_pool, PACKED_QKV_CHANNELS, CONV_HISTORY_LEN)?;
-        crate::backend::GdnConvState::contiguous(
-            self.conv.erase(),
-            FloatStorage::Bf16,
-            self.slots.state_pool,
+        GdnConvState::contiguous(self.conv.erase(), FloatStorage::Bf16, self.slots.state_pool)
+    }
+
+    pub(super) fn recurrent_slot(&self, slot: u32) -> Result<DMat<GdnRecurrentDType>, Status> {
+        if slot >= self.slots.state_pool {
+            return Err(Status::InvalidArgument);
+        }
+        let offset = checked_usize_product(&[slot, NUM_VALUE_HEADS, VALUE_HEAD_DIM, KEY_HEAD_DIM])?;
+        let bytes = GdnRecurrentDType::size_of(offset)?;
+        // The slot is within the owned, contiguous state pool; no device metadata is read.
+        let ptr = unsafe { self.recurrent.as_raw().add(bytes) };
+        DMat::contiguous(
+            DevicePtr::new(ptr).ok_or(Status::InvalidArgument)?,
+            NUM_VALUE_HEADS * VALUE_HEAD_DIM,
+            KEY_HEAD_DIM,
         )
     }
 

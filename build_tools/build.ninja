@@ -3,6 +3,7 @@ ninja_required_version = 1.10
 qstriton = ../build_tools/.venv/bin/qstriton
 
 build config_inputs: phony ../models/config.nix $
+    ../models/gdn_prefill.nix $
     ../models/qwen3.6-35b-a3b/model.json $
     ../models/qwen3.6-27b/model.json $
     ../models/qwen3.8-27b/model.json

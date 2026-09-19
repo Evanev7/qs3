@@ -276,7 +276,7 @@ assert
             { provider = "cublaslt"; }
         );
 
-    };
+    } // (import ./gdn_prefill.nix { inherit text precision; });
 
   # Quantized recipes will also need concrete packing and scale layouts.
   # Compiler dependencies stay pinned in flake.lock and build_tools/uv.lock.

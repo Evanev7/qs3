@@ -97,6 +97,12 @@
 
 ## 2. Remove repeated preparation from decode
 
+- [ ] Review `ModelRunner`'s optional execution components, especially
+  `Option<Sampler>` and `Option<LmHead>`. Make greedy/stochastic sampling and
+  projection-provider choices explicit instead of encoding them through missing
+  resources. Audit the related GDN options and distinguish actual model absence
+  from provider selection; avoid invalid combinations of independently optional
+  fields. Keep preparation and resource ownership out of scratch data.
 - [x] First implementation change: retain cuBLASLt linear descriptors and chosen
   algorithms for reuse. Rust now owns prepared plans keyed by dimensions, strides,
   output dtype, actual pointer alignment, and workspace capacity. The prescribed
@@ -243,6 +249,16 @@
 
 ## 6. Adopt and measure optimized providers
 
+- [ ] Experiment in `.prototypes` with GDN prefill fusion for 3.8-27B NVFP4
+  on Spark: start with KKT + triangular solve, then consider adding W/U if
+  register/shared-memory usage and timings justify it. Use vLLM's fused SM100
+  CuTeDSL implementation as a reference, checking SM121 suitability separately.
+  Preserve intermediate BF16 rounding and reduction order; compare outputs and
+  recurrent states against the unfused path on identical inputs, including chunk
+  boundaries and nonzero initial state. Measure launch count, memory traffic,
+  resource usage, and end-to-end prefill latency before adopting. Later candidates
+  are decay cumsum + KKT and output + gated RMSNorm; keep state propagation
+  separate initially to preserve parallel output computation across chunks.
 - [ ] Report selected kernel implementations, precision, graph mode, and workspace
   sizes in benchmarks. Keep alternatives named and forceable in Rust. Current
   core JSON records provider paths, workspace sizes, GDN state dtype, and output

@@ -13,6 +13,7 @@ use crate::{
     ffi::{self, DevicePtr, sys},
 };
 
+pub(crate) mod gdn_prefill;
 pub(crate) mod qscb;
 pub(crate) mod qscu;
 pub(crate) mod qsfi;

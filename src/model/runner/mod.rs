@@ -11,6 +11,7 @@ mod tests;
 
 use crate::{
     backend::{
+        gdn_prefill::GdnPrefill,
         qsfi::{MoeBf16PlanConfig, MoePlan, RmsNormBf16, Workspace},
         qstriton::{GdnQkv, LmHead},
     },
@@ -61,6 +62,7 @@ pub struct ModelRunner {
     qscb_workspace: DeviceBuffer<U8>,
     lm_head: Option<LmHead>,
     gdn_qkv: Option<GdnQkv>,
+    gdn_prefill: Option<GdnPrefill>,
     sampler: Option<Sampler>,
     live_request_id: Option<RequestId>,
     live_tokens: Vec<i32>,
@@ -145,6 +147,10 @@ impl ModelRunner {
             .has_gdn_layers()
             .then(|| GdnState::new(ctx.clone(), &config))
             .transpose()?;
+        let gdn_prefill = config
+            .has_gdn_layers()
+            .then(|| unsafe { GdnPrefill::load() })
+            .transpose()?;
         let gdn_qkv = (!weights.is_quantized()
             && gdn_state.is_some()
             && GdnQkv::supports(config.hidden_size(), PACKED_QKV_CHANNELS))
@@ -160,6 +166,7 @@ impl ModelRunner {
             sampler: None,
             lm_head,
             gdn_qkv,
+            gdn_prefill,
             scratch,
             qscb_workspace,
             config,
@@ -516,6 +523,7 @@ impl ModelRunner {
                 moe_plan: self.moe_plan.as_ref(),
                 lm_head: self.lm_head.as_ref(),
                 gdn_qkv: self.gdn_qkv.as_ref(),
+                gdn_prefill: self.gdn_prefill.as_ref(),
                 linear_workspace,
                 quantized_scratch: self.quantized_scratch.as_ref(),
             },
@@ -657,6 +665,7 @@ struct BatchExecution<'a> {
     moe_plan: Option<&'a MoePlan>,
     lm_head: Option<&'a LmHead>,
     gdn_qkv: Option<&'a GdnQkv>,
+    gdn_prefill: Option<&'a GdnPrefill>,
     linear_workspace: Workspace,
     quantized_scratch: Option<&'a QuantizedScratch>,
 }

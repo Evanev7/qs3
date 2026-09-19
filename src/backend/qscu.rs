@@ -267,41 +267,6 @@ impl<'a> Qscu<'a> {
         result_from_raw(unsafe { sys::qscu_gdn_decode(self.qsfi.as_raw(), &desc) })
             .inspect_err(|_| _ = self.qsfi.last_error())
     }
-
-    pub(crate) unsafe fn qwen36_gdn_prefill_bf16(
-        &mut self,
-        q: Bf16Heads,
-        k: Bf16Heads,
-        v: Bf16Heads,
-        a: DMat<BF16>,
-        b: DMat<BF16>,
-        a_log: DVec<BF16>,
-        dt_bias: DVec<BF16>,
-        state: GdnRecurrentState,
-        seq_indptr: DVec<I32>,
-        state_indices: DVec<I32>,
-        state_out_indices: Option<DVec<I32>>,
-        out: Bf16Heads,
-        batch_size: u32,
-    ) -> Result<(), Status> {
-        let desc = qwen36_gdn_prefill_desc(
-            q,
-            k,
-            v,
-            a,
-            b,
-            a_log,
-            dt_bias,
-            state,
-            seq_indptr,
-            state_indices,
-            state_out_indices,
-            out,
-            batch_size,
-        )?;
-        result_from_raw(unsafe { sys::qscu_gdn_prefill(self.qsfi.as_raw(), &desc) })
-            .inspect_err(|_| _ = self.qsfi.last_error())
-    }
 }
 
 pub(super) fn qwen36_gdn_gated_rmsnorm_desc(
@@ -646,6 +611,8 @@ pub(super) fn qwen36_gdn_decode_desc(
     })
 }
 
+// Descriptor retained only for the independent sequential CUDA reference tests.
+#[cfg(test)]
 pub(super) fn qwen36_gdn_prefill_desc(
     q: Bf16Heads,
     k: Bf16Heads,
