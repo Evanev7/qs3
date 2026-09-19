@@ -10,6 +10,12 @@ sys.path.insert(0,'/repo/.prototypes/kernel_replacements/vendor/b12x')
 from b12x.gemm.blockscaled._linear import pack_tensor_fp8_linear_weight,tensor_fp8_linear
 from b12x.gemm import tensor_fp8_linear as fp8_api
 from b12x.preparation import PreparationSession, PreparedCall
+# Upstream selects four slices on GB10 but only implements two for FP32 reduction.
+# Restrict the probe to its supported reduction, without changing production b12x.
+if os.environ.get('B12X_DENSE_SPLITK_TURBO') == '0':
+ from b12x._lib import dense_gemm
+ original_slices = dense_gemm._select_block_fp8_decode_slices
+ dense_gemm._select_block_fp8_decode_slices = lambda *args: min(2, original_slices(*args))
 OUT=Path('/repo/.prototypes/out/'+os.environ.get('KR03_OUTPUT','kr03-fp8'));OUT.mkdir(exist_ok=True)
 lib=ctypes.CDLL(str(OUT/'native.so'))
 lib.prepare.argtypes=[ctypes.c_void_p]*7+[ctypes.c_int]*3;lib.prepare.restype=ctypes.c_void_p

@@ -27,11 +27,11 @@ Preserve Rust scheduling/state transactions and AOT inference without Python/JIT
 | --- | --- | --- | --- |
 | KR01 | vLLM Triton fused Q/K norm + partial RoPE + gate extraction | 8.13→1.53 µs at M1, 404→253 µs at M1024; gate exact, Q/K differ | Match current RoPE/reduction; native AOT and full model before adoption |
 | KR02 | vLLM packed GDN decode / b12x batched recurrence | Source inspection; current prep + recurrence ~0.99 ms/token | Compare state layout/rounding and small batched sequence semantics; retain separate read/write state slots |
-| KR03 | b12x tensor FP8 / dense NVFP4 CuTeDSL | FP8 M1 evicted 356→283 µs on largest projection, but BF16 atomic split-K changes outputs | Probe FP32 reduction; upstream four-slice selection fails, two-slice restriction needed |
-| KR04 | QuTLASS SM120 NVFP4 GEMM / fused quantization | Native compile and 16 shape checks pass; no decode gain; M1024 ~17% faster than N64DP | Repeat large-prefill comparison and test full-model/native integration cost |
-| KR05 | cuTile Rust | AOT SM121 cubin and native Driver API launch pass, 64/64 exact | Evaluate a useful model fusion; toolchain/library path recorded in experiment README |
+| KR03 | b12x tensor FP8 / dense NVFP4 CuTeDSL | FP32 two-slice reduction: M1 evicted 350→284 µs on largest projection, exact output on fixture | Native export, production-library reference, and real-model comparison; smaller shapes only ~2% gain |
+| KR04 | QuTLASS SM120 NVFP4 GEMM / fused quantization | `b1db445`: full tests pass; 69/69 full-model logit rows exact; raw M1024 ~17% faster than N64DP | Committed standard benchmark next |
+| KR05 | cuTile Rust | SAXPY AOT SM121 + native launch pass; NVFP4 example fails SM121 compilation, SM120 cubin cannot load on GB10 | Try a newer isolated compiler; do not infer NVFP4 support from SAXPY success |
 | KR06 | vLLM fused SiLU×up + NVFP4 quantization | Source available; scope includes BF16 rounding boundary | Same-input packed values/scales against current two-stage path |
-| KR07 | Large-prefill N=64 DP | 15.7% faster at M=1024, 69/69 logit rows exact at both tested workspaces | AOT shape selection after crossover measurement; not a GDN/MTP decode architecture decision |
+| KR07 | Row-dependent NVFP4 selection | `b1db445`: N32 below 128 rows, N64 from 128, QuTLASS from 512; configured AOT | Committed benchmark; small decode/MTP shapes retain N32 |
 | KR08 | 16 MiB cuBLASLt workspace | Hold: ~4.9% faster decode, changes outputs at 55/29 tokens | Same-prefix vLLM reference and selected-algorithm investigation; keep 64 MiB default |
 
 ## Rules for comparing candidates

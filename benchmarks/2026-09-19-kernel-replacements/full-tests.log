@@ -1,0 +1,476 @@
+Everything up-to-date
+HEAD is now at 7454cf6 Record native cuTile feasibility and upstream kernel probes
+Removing qsfi_nvfp4_prefill.cuh
+Resolved 12 packages in 0.44ms
+Checked 11 packages in 0.10ms
+just build_tools/python-test triton-test
+.venv/bin/ruff check --fix . ../triton_kernels
+Found 1 error (1 fixed, 0 remaining).
+.venv/bin/ty check --project . . ../triton_kernels
+All checks passed!
+.venv/bin/python -m pytest tests
+============================= test session starts ==============================
+platform linux -- Python 3.14.6, pytest-9.1.1, pluggy-1.6.0
+rootdir: /home/sp10/qs3/build_tools
+configfile: pyproject.toml
+plugins: asyncio-1.4.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 17 items
+
+tests/test_config.py .......                                             [ 41%]
+tests/test_triton_builder.py ......                                      [ 76%]
+tests/test_vectors.py ....                                               [100%]
+
+============================== 17 passed in 1.68s ==============================
+.venv/bin/ruff format --check . ../triton_kernels
+47 files already formatted
+just --justfile ../justfile ninja
+mkdir -p build/triton
+nix eval --offline --raw --file build_tools/nixsrc/ninja.nix > build/triton/kernels.ninja
+cp build_tools/build.ninja build/build.ninja
+cp build_tools/cuda.ninja build/cuda.ninja
+ninja -C ../build vectors/config.json
+ninja: Entering directory `../build'
+[1/1] REGENERATE
+ninja: no work to do.
+.venv/bin/qwen36-vectors generate-all --config ../build/vectors/config.json --output-root ../build/vectors/python-test --clean
+generated all vector groups: output=../build/vectors/python-test
+.venv/bin/qwen36-vectors check-oracles --input-root ../build/vectors/python-test
+oracle hashes verified: input=../build/vectors/python-test
+mkdir -p ../build/triton-test
+nix eval --json --file ../models/config.nix > ../build/triton-test/config.json
+LIBRARY_PATH="/usr/local/cuda/lib64:/usr/local/cuda/lib::${LIBRARY_PATH:-}" .venv/bin/python pysrc/qstriton/test.py ../build/triton-test/config.json
+mkdir -p build/triton
+nix eval --offline --raw --file build_tools/nixsrc/ninja.nix > build/triton/kernels.ninja
+cp build_tools/build.ninja build/build.ninja
+cp build_tools/cuda.ninja build/cuda.ninja
+ninja -C build
+ninja: Entering directory `build'
+[1/1] REGENERATE
+ninja: no work to do.
+cargo build --lib
+   Compiling qs3 v0.1.0 (/home/sp10/qs3)
+warning: constant `Hg` should have an upper case name
+  --> /home/sp10/qs3/build/triton/gdn_prefill_kkt.rs:29:15
+   |
+29 |     pub const Hg: i64 = 16;
+   |               ^^ help: convert the identifier to upper case: `HG`
+   |
+   = note: `#[warn(non_upper_case_globals)]` (part of `#[warn(nonstandard_style)]`) on by default
+
+warning: constant `Hg` should have an upper case name
+  --> /home/sp10/qs3/build/triton/gdn_prefill_wu.rs:29:15
+   |
+29 |     pub const Hg: i64 = 16;
+   |               ^^ help: convert the identifier to upper case: `HG`
+
+warning: constant `Hg` should have an upper case name
+  --> /home/sp10/qs3/build/triton/gdn_prefill_state.rs:29:15
+   |
+29 |     pub const Hg: i64 = 16;
+   |               ^^ help: convert the identifier to upper case: `HG`
+
+warning: constant `Hg` should have an upper case name
+  --> /home/sp10/qs3/build/triton/gdn_prefill_output.rs:29:15
+   |
+29 |     pub const Hg: i64 = 16;
+   |               ^^ help: convert the identifier to upper case: `HG`
+
+warning: `qs3` (lib) generated 4 warnings (run `cargo fix --lib -p qs3` to apply 4 suggestions)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.51s
+warning: constant `K` is never used
+  --> /home/sp10/qs3/build/triton-test/full/lm_head.rs:28:15
+   |
+28 |     pub const K: i64 = 5120;
+   |               ^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: constant `BLOCK_K` is never used
+  --> /home/sp10/qs3/build/triton-test/full/lm_head.rs:29:15
+   |
+29 |     pub const BLOCK_K: i64 = 8192;
+   |               ^^^^^^^
+
+warning: constant `K` is never used
+  --> /home/sp10/qs3/build/triton-test/tail/lm_head.rs:28:15
+   |
+28 |     pub const K: i64 = 93;
+   |               ^
+
+warning: constant `BLOCK_K` is never used
+  --> /home/sp10/qs3/build/triton-test/tail/lm_head.rs:29:15
+   |
+29 |     pub const BLOCK_K: i64 = 128;
+   |               ^^^^^^^
+
+warning: constant `BLOCK_K` is never used
+  --> /home/sp10/qs3/build/triton-test/full/gdn_qkv.rs:29:15
+   |
+29 |     pub const BLOCK_K: i64 = 8192;
+   |               ^^^^^^^
+
+warning: 5 warnings emitted
+
+
+running 3 tests
+test full_lm_head_f32 ... ok
+test gdn_qkv_bf16 ... ok
+test masked_tail_bf16 ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.37s
+
+/home/sp10/qs3/build/triton-test/full/gdn_prefill_cumsum (kernel): 5 runtime args, grid=None, shared=8
+/home/sp10/qs3/build/triton-test/full/gdn_prefill_kkt (kernel): 7 runtime args, grid=None, shared=16384
+/home/sp10/qs3/build/triton-test/full/gdn_prefill_output (kernel): 10 runtime args, grid=None, shared=24576
+/home/sp10/qs3/build/triton-test/full/gdn_prefill_prep (kernel): 11 runtime args, grid=None, shared=128
+/home/sp10/qs3/build/triton-test/full/gdn_prefill_solve (kernel): 5 runtime args, grid=None, shared=10240
+/home/sp10/qs3/build/triton-test/full/gdn_prefill_state (kernel): 12 runtime args, grid=None, shared=16644
+/home/sp10/qs3/build/triton-test/full/gdn_prefill_wu (kernel): 10 runtime args, grid=None, shared=16384
+/home/sp10/qs3/build/triton-test/full/gdn_qkv (kernel): 3 runtime args, grid=[10240, 1, 1], shared=32
+/home/sp10/qs3/build/triton-test/full/lm_head (kernel): 3 runtime args, grid=[248320, 1, 1], shared=32
+/home/sp10/qs3/build/triton-test/full/sampling_filter (kernel): 7 runtime args, grid=[1, 1, 1], shared=1024
+/home/sp10/qs3/build/triton-test/full/sampling_gumbel (kernel): 8 runtime args, grid=[243, 1, 1], shared=32
+/home/sp10/qs3/build/triton-test/full/sampling_prepare (kernel): 4 runtime args, grid=[243, 1, 1], shared=0
+/home/sp10/qs3/build/triton-test/full/sampling_reduce (kernel): 3 runtime args, grid=[1, 1, 1], shared=16
+/home/sp10/qs3/build/triton-test/tail/gdn_prefill_cumsum (kernel): 5 runtime args, grid=None, shared=8
+/home/sp10/qs3/build/triton-test/tail/gdn_prefill_kkt (kernel): 7 runtime args, grid=None, shared=16384
+/home/sp10/qs3/build/triton-test/tail/gdn_prefill_output (kernel): 10 runtime args, grid=None, shared=24576
+/home/sp10/qs3/build/triton-test/tail/gdn_prefill_prep (kernel): 11 runtime args, grid=None, shared=128
+/home/sp10/qs3/build/triton-test/tail/gdn_prefill_solve (kernel): 5 runtime args, grid=None, shared=10240
+/home/sp10/qs3/build/triton-test/tail/gdn_prefill_state (kernel): 12 runtime args, grid=None, shared=16644
+/home/sp10/qs3/build/triton-test/tail/gdn_prefill_wu (kernel): 10 runtime args, grid=None, shared=16384
+/home/sp10/qs3/build/triton-test/tail/gdn_qkv (kernel): 3 runtime args, grid=[10240, 1, 1], shared=32
+/home/sp10/qs3/build/triton-test/tail/lm_head (kernel): 3 runtime args, grid=[37, 1, 1], shared=16
+/home/sp10/qs3/build/triton-test/tail/sampling_filter (kernel): 7 runtime args, grid=[1, 1, 1], shared=1024
+/home/sp10/qs3/build/triton-test/tail/sampling_gumbel (kernel): 8 runtime args, grid=[243, 1, 1], shared=32
+/home/sp10/qs3/build/triton-test/tail/sampling_prepare (kernel): 4 runtime args, grid=[243, 1, 1], shared=0
+/home/sp10/qs3/build/triton-test/tail/sampling_reduce (kernel): 3 runtime args, grid=[1, 1, 1], shared=16
+just cargo-test cuda-test
+mkdir -p build/triton
+nix eval --offline --raw --file build_tools/nixsrc/ninja.nix > build/triton/kernels.ninja
+cp build_tools/build.ninja build/build.ninja
+cp build_tools/cuda.ninja build/cuda.ninja
+ninja -C build
+ninja: Entering directory `build'
+[1/1] REGENERATE
+ninja: no work to do.
+ninja: Entering directory `../build'
+[1/1] REGENERATE
+cargo build --lib
+warning: constant `Hg` should have an upper case name
+  --> /home/sp10/qs3/build/triton/gdn_prefill_kkt.rs:29:15
+   |
+29 |     pub const Hg: i64 = 16;
+   |               ^^ help: convert the identifier to upper case: `HG`
+   |
+   = note: `#[warn(non_upper_case_globals)]` (part of `#[warn(nonstandard_style)]`) on by default
+
+warning: constant `Hg` should have an upper case name
+  --> /home/sp10/qs3/build/triton/gdn_prefill_wu.rs:29:15
+   |
+29 |     pub const Hg: i64 = 16;
+   |               ^^ help: convert the identifier to upper case: `HG`
+
+warning: constant `Hg` should have an upper case name
+  --> /home/sp10/qs3/build/triton/gdn_prefill_state.rs:29:15
+   |
+29 |     pub const Hg: i64 = 16;
+   |               ^^ help: convert the identifier to upper case: `HG`
+
+warning: constant `Hg` should have an upper case name
+  --> /home/sp10/qs3/build/triton/gdn_prefill_output.rs:29:15
+   |
+29 |     pub const Hg: i64 = 16;
+   |               ^^ help: convert the identifier to upper case: `HG`
+
+warning: `qs3` (lib) generated 4 warnings (run `cargo fix --lib -p qs3` to apply 4 suggestions)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.01s
+just build_tools/generate-vectors
+just --justfile ../justfile ninja
+mkdir -p build/triton
+nix eval --offline --raw --file build_tools/nixsrc/ninja.nix > build/triton/kernels.ninja
+cp build_tools/build.ninja build/build.ninja
+cp build_tools/cuda.ninja build/cuda.ninja
+ninja -C ../build vectors/qwen36_semantics/.oracle-ok
+[1/1] VECTORS qwen36_semantics
+generated all vector groups: output=vectors/qwen36_semantics
+oracle hashes verified: input=vectors/qwen36_semantics
+LIBRARY_PATH="/usr/local/cuda/lib64:/usr/local/cuda/lib:/usr/local/cuda/lib/stubs::${LIBRARY_PATH:-}" cargo test
+warning: constant `Hg` should have an upper case name
+  --> /home/sp10/qs3/build/triton/gdn_prefill_kkt.rs:29:15
+   |
+29 |     pub const Hg: i64 = 16;
+   |               ^^ help: convert the identifier to upper case: `HG`
+   |
+   = note: `#[warn(non_upper_case_globals)]` (part of `#[warn(nonstandard_style)]`) on by default
+
+warning: constant `Hg` should have an upper case name
+  --> /home/sp10/qs3/build/triton/gdn_prefill_wu.rs:29:15
+   |
+29 |     pub const Hg: i64 = 16;
+   |               ^^ help: convert the identifier to upper case: `HG`
+
+warning: constant `Hg` should have an upper case name
+  --> /home/sp10/qs3/build/triton/gdn_prefill_state.rs:29:15
+   |
+29 |     pub const Hg: i64 = 16;
+   |               ^^ help: convert the identifier to upper case: `HG`
+
+warning: constant `Hg` should have an upper case name
+  --> /home/sp10/qs3/build/triton/gdn_prefill_output.rs:29:15
+   |
+29 |     pub const Hg: i64 = 16;
+   |               ^^ help: convert the identifier to upper case: `HG`
+
+   Compiling qs3 v0.1.0 (/home/sp10/qs3)
+warning: `qs3` (lib) generated 4 warnings (run `cargo fix --lib -p qs3` to apply 4 suggestions)
+warning: `qs3` (lib test) generated 4 warnings (4 duplicates)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.20s
+     Running unittests src/lib.rs (target/debug/deps/qs3-62bd84fb6aed3ae4)
+
+running 170 tests
+test backend::qsfi::tests::attention_desc_validation_matches_supported_surface ... ok
+test backend::qsfi::ops::tests::rmsnorm_lowering_preserves_per_head_shape_and_in_place_alias ... ok
+test backend::qsfi::ops::tests::fused_rmsnorm_lowering_aliases_output_to_input ... ok
+test backend::qsfi::tests::paged_kv_plan_validation_checks_csr_shape ... ok
+test backend::qsfi::tests::fused_add_rmsnorm_validation_requires_out_alias ... ok
+test backend::qsfi::tests::kv_cache_validation_checks_layout_shape_and_scale_support ... ok
+test backend::qsfi::tests::moe_plan_validation_checks_supported_backend_and_shape ... ok
+test backend::qsfi::tests::append_desc_validation_checks_kv_and_index_presence ... ok
+test backend::qsfi::tests::execute_desc_validation_checks_shapes_and_page_table ... ok
+test backend::qsfi::tests::moe_bf16_execute_validation_checks_shapes_and_workspace ... ok
+test backend::qsfi::tests::moe_nvfp4_execute_validation_checks_declared_shapes ... ok
+test backend::qsfi::tests::plan_desc_validation_checks_pointer_shape_without_reading_contents ... ok
+test backend::qsfi::tests::qo_plan_validation_checks_token_indptr ... ok
+test backend::qsfi::tests::rmsnorm_validation_checks_dtype_shape_and_eps ... ok
+test backend::qsfi::tests::tensor_validation_rejects_bad_shape_dtype_and_pointer ... ok
+test backend::qsfi::tests::rope_apply_validation_checks_shapes_positions_and_alias_stride ... ok
+test backend::qsfi::tests::unknown_raw_status_maps_to_internal_error ... ok
+test backend::tests::gdn_state_index_policy_validates_host_indices ... ok
+test backend::tests::gdn_prep_descriptors_enforce_qwen36_shapes ... ok
+test backend::tests::gdn_recurrent_descriptors_validate_decode_and_prefill_shapes ... ok
+test backend::tests::generic_vec_and_mat_aliases_preserve_tensor_metadata ... ok
+test backend::tests::handles_reject_null_zero_and_bad_strides ... ok
+test backend::tests::qscb_linear_specializations_encode_the_output_type ... ok
+test backend::tests::qscu_descriptor_builders_validate_shapes_and_modes ... ok
+test backend::tests::qsfi_descriptor_builders_accept_padded_rows ... ok
+test backend_contract_tests::native_operations_have_explicit_backend_types ... ok
+test engine::attention::tests::attention_descriptors_rely_on_pre_rotated_qk ... ok
+test engine::attention::tests::runtime_config_accepts_supported_flashinfer_attention_shape ... ok
+test engine::attention::tests::tensor3_shape_validation_catches_descriptor_errors_before_append ... ok
+test engine::attention::tests::plan_cache_key_includes_full_page_table_metadata ... ok
+test engine::core::tests::zero_attention_layers_are_invalid ... ok
+test engine::attention::tests::runtime_config_rejects_zero_attention_layers ... ok
+test engine::attention::tests::runtime_config_rejects_non_qwen36_attention_grouping ... ok
+test engine::attention::tests::runtime_config_rejects_unsupported_attention_head_dim ... ok
+test engine::core::tests::commit_rejects_missing_layer_on_multi_layer_batch ... ok
+test engine::core::tests::append_rejects_batches_above_token_cap_without_allocating_pages ... ok
+test engine::core::tests::active_batch_is_one_coherent_transaction_view ... ok
+test loader::tests::bench_real_qwen36_bf16_managed_uma_load ... ignored, reads the full real BF16 model into CUDA managed memory
+test engine::core::tests::layer_completion_rejects_wrong_duplicate_and_extra_layers ... ok
+test engine::core::tests::dtype_bits_and_storage_bytes_are_total ... ok
+test engine::core::tests::commit_rejects_batch_without_layer_execution ... ok
+test engine::core::tests::abort_and_reset_restore_pages ... ok
+test engine::core::tests::append_commit_decode_release ... ok
+test engine::core::tests::config_overflow_is_rejected ... ok
+test engine::core::tests::dtype_and_layout_raw_values_match_qsfi ... ok
+test engine::core::tests::decode_validation_and_invalid_commit_keep_batch_active ... ok
+test engine::core::tests::rejects_bad_append_shapes_without_allocating_pages ... ok
+test loader::benchmark::tests::fixed_workload_contract_does_not_drift ... ok
+test loader::benchmark::tests::latency_summaries_handle_odd_even_and_nearest_rank_samples ... ok
+test engine::core::tests::release_rejects_unknown_and_duplicate_ids_without_mutation ... ok
+test loader::benchmark::tests::throughput_rejects_empty_work_and_zero_time ... ok
+test loader::benchmark::tests::token_fingerprint_is_stable_over_little_endian_i32_bytes ... ok
+test loader::tests::bench_real_qwen36_bf16_pinned_upload_load ... ignored, reads the full real BF16 model through pinned staging into CUDA device memory
+test loader::tests::checkpoint::other_checkpoint_is_rejected_before_reading_weight_index ... ok
+test loader::tests::parses_safetensors_header_and_rejects_trailing_data ... ok
+test loader::tests::checkpoint::pinned_checkpoint_matches_selected_build ... ok
+test loader::tests::manifest_preserves_checkpoint_names_shapes_and_synthetic_bias ... ok
+test loader::tests::incompatible_checkpoint_is_rejected_before_reading_weight_index ... ok
+test loader::tests::compiled_model_rejects_checkpoint_geometry_and_math_mismatches ... ok
+test loader::tests::quantization::real_nvfp4_dense_prefill_decode_and_reset ... ignored, full dense checkpoint execution; run explicitly after the required suite
+test loader::tests::quantization::real_nvfp4_loads_both_backends ... ignored, full checkpoint allocations; run explicitly after the required suite
+test loader::tests::quantization::pinned_mixed_recipe_matches_selected_geometry ... ok
+test loader::tests::checkpoint::selected_mlp_fields_and_explicit_head_dim_are_required ... ok
+test loader::tests::real_logit_helper_allows_close_secondary_rank_swaps ... ok
+test loader::tests::real_logit_helper_allows_unstable_ids_after_stable_prefix ... ok
+test loader::tests::real_logit_helper_checks_values_after_stable_prefix - should panic ... ok
+test loader::tests::real_logit_helper_rejects_changed_top_membership - should panic ... ok
+test loader::tests::real_logit_helper_rejects_changed_winner - should panic ... ok
+test loader::tests::real_qwen36_bf16_generates_reference_tokens ... ignored, loads and executes the full real Qwen3.6 BF16 model
+test loader::tests::quantization::mixed_manifest_rejects_missing_extra_and_wrong_recipes ... ok
+test loader::tests::quantization::mixed_manifest_checks_packed_weight_and_scale_headers ... ok
+test loader::tests::rejects_safetensors_gaps_and_wrong_byte_count ... ok
+test loader::tests::scores::real_qwen36_same_prefix_scores ... ignored, loads real BF16 weights and dumps forced-prefix scores for an external comparison
+test loader::tests::quantization::mixed_manifest_parses_quantization_metadata ... ok
+test loader::tests::rejects_bad_layer_schedule ... ok
+test loader::tests::tensor::bf16_manifest_still_rejects_quantized_tensor_storage ... ok
+test loader::tests::tensor::parses_mixed_storage_without_claiming_a_quantization_recipe ... ok
+test loader::tests::rejects_missing_and_wrong_shape_required_tensor ... ok
+test loader::tests::quantization::scale_payload_validation_rejects_nonfinite_negative_and_zero_globals ... ok
+test loader::tests::validates_complete_tensor_table_and_rejects_unexpected_text_tensor ... ok
+test loader::tests::checkpoint::mlp_width_and_expert_fields_cannot_change_the_selected_architecture ... ok
+test loader::tests::failed_finish_drops_transferred_and_remaining_allocations ... ok
+test loader::tests::load_rejects_duplicate_names_before_allocation ... ok
+test loader::tests::executes_validated_plan_against_backend ... ok
+test loader::tests::tensor::pinned_finish_returns_completed_owned_buffers ... ok
+test loader::tests::tensor::bf16_model_rejects_other_storage ... ok
+test loader::tests::quantization::invalid_preparation_scalars_fail_before_device_allocation ... ok
+test loader::tests::tensor::managed_mixed_tensor_handoff_retains_exact_file_bytes ... ok
+test loader::tests::materialization_consumes_every_planned_tensor_once ... ok
+test model::lifecycle_tests::runner_reactivates_bound_device_when_reusing_buffers ... ok
+test loader::tests::load_rejects_mismatched_finished_buffers ... ok
+test loader::tests::quantization::both_load_backends_swizzle_scales_and_zero_padding_before_handoff ... ok
+test loader::tests::loaded_plan_transfers_allocations_into_qwen_weights_once ... ok
+test model::runner::tests::gdn_slot_map_commit_is_explicit_and_uses_gdn_layer_count ... ok
+test model::runner::tests::host_buffer_download_ranges_use_element_offsets_and_zero_full_storage ... ok
+test model::runner::tests::host_buffer_requires_whole_dtype_storage ... ok
+test model::runner::tests::packed_host_buffer_growth_preserves_bytes_and_rejects_half_byte_offsets ... ok
+test loader::tests::quantization::real_nvfp4_manifest_and_scales_validate ... ok
+test loader::tests::validates_selected_checkpoint_manifest_when_available ... ok
+test loader::tests::quantization::fp8_fused_groups_prepare_weights_and_scales_on_both_backends ... ok
+test model::runner::tests::qwen36_full_attention_vectors_validate_output_gate ... ok
+test model::runner::tests::qwen36_full_attention_vectors_validate_packed_q_gate_extraction ... ok
+test model::runner::tests::qwen36_full_attention_vectors_validate_qk_norm_and_rope_pipeline ... ok
+test loader::tests::tensor::selected_bf16_model_retains_all_allocation_owners ... ok
+test loader::tests::quantization::materialization_rejects_missing_scales_and_unconsumed_storage ... ok
+test model::runner::tests::qwen36_gdn_weights_carry_post_attention_shared_moe ... ok
+test model::runner::tests::qwen36_hybrid_schedule_maps_model_layers_to_attention_and_gdn_indices ... ok
+test loader::tests::quantization::quantized_owners_survive_handoff_and_release_on_assembly_failure ... ok
+test model::runner::tests::qwen36_moe_vectors_validate_router_topk_and_renormalized_weights ... ok
+test model::runner::tests::qwen36_moe_vectors_validate_router_unrenormalized_weights ... ok
+test model::runner::tests::qwen36_moe_vectors_validate_shared_expert_gate_add_output ... ok
+test model::runner::tests::qwen36_moe_vectors_validate_staged_bf16_routed_output ... ok
+test model::runner::tests::qwen36_packed_attention_q_gate_extraction_preserves_rows_heads_and_lanes ... ok
+test backend::gdn_prefill::tests::chunk64_boundaries_seeded_state_and_reused_scratch ... ok
+test loader::tests::quantization::both_activation_modes_materialize_and_preserve_scales ... ok
+test model::runner::tests::qwen36_full_attention_block_vector_validates_attention_residual_norm_composition ... ok
+test model::runner::tests::qwen36_full_attention_decoder_slice_chains_attention_into_moe_and_next_norm ... ok
+test model::runner::tests::qwen36_full_attention_block_vector_validates_oracle_seeded_moe_shared_and_next_norm ... ok
+test model::sampling::tests::sampling_parameter_boundaries ... ok
+test model::lifecycle_tests::randomized_dense_model_runs_prefill_and_two_decodes ... ok
+test model::runner::tests::qwen36_model_logits_vector_validates_public_run_logits_handoff ... ok
+test model::sampling::tests::triton_sampling_graph_replay_reads_updated_device_position ... ok
+test model::runner::linear::tests::mixed_linear_preparation_scales_tails_and_reused_plans_match_reference ... ok
+test model::sampling::tests::triton_sampling_invalid_logits_fail_and_negative_infinity_masks ... ok
+test model::scratch::view_tests::dense_scratch_retains_capacity_and_fixed_storage ... ok
+test model::scratch::view_tests::gdn_index_table_survives_growth_commit_and_reset ... ok
+test model::scratch::view_tests::moe_scratch_groups_optional_storage_and_retains_workspace ... ok
+test model::scratch::view_tests::typed_views_check_capacity_offsets_and_shape_overflow ... ok
+test model::scratch::view_tests::workspace_view_checks_requested_bytes ... ok
+test tokenizer::tests::bpe_decode_bytes_can_span_token_boundaries ... ok
+test tokenizer::tests::bpe_rejects_merges_with_missing_inputs_or_outputs ... ok
+test tokenizer::tests::bpe_merges_by_rank_and_then_left_position ... ok
+test tokenizer::tests::bpe_rejects_non_contiguous_ids_and_missing_byte_symbols ... ok
+test tokenizer::tests::bpe_requeues_new_pairs_and_discards_stale_candidates ... ok
+test tokenizer::tests::format_ignores_unknown_fields ... ok
+test tokenizer::tests::format_rejects_pipeline_semantics_it_does_not_implement ... ok
+test tokenizer::tests::format_rejects_gaps_overlaps_and_duplicate_added_token_contents ... ok
+test tokenizer::tests::format_rejects_unsupported_or_ambiguous_added_tokens ... ok
+test tokenizer::tests::format_validates_numeric_id_values ... ok
+test tokenizer::tests::qwen_split_handles_unicode_whitespace_and_crlf_suffixes ... ok
+test tokenizer::tests::qwen_split_matches_line_and_trailing_whitespace_rules ... ok
+test tokenizer::tests::qwen_split_matches_words_punctuation_and_leading_spaces ... ok
+test tokenizer::tests::qwen_split_preserves_ordered_contraction_alternatives ... ok
+test tokenizer::tests::qwen_split_uses_unicode_general_categories ... ok
+test model::runner::tests::qwen36_gdn_decoder_layer_vector_chains_gdn_into_moe_and_next_norm ... ok
+test tokenizer::tests::tokenizer_decode_accumulates_bytes_and_rejects_unknown_ids ... ok
+test tokenizer::tests::tokenizer_exposes_direct_token_ids_and_preserves_added_tokens_on_decode ... ok
+test tokenizer::tests::tokenizer_extracts_added_tokens_before_nfc_with_leftmost_longest_matching ... ok
+test tokenizer::tests::tokenizer_loads_asset_defined_ids_merges_and_added_tokens ... ok
+test tokenizer::tests::tokenizer_normalizes_ordinary_text_without_inserting_control_tokens ... ok
+test model::sampling::tests::triton_sampling_filter_matches_sorted_reference ... ok
+test tokenizer::tests::nfc_matches_exhaustive_hugging_face_oracle ... ok
+test model::lifecycle_tests::failed_prompt_rewrite_keeps_previous_live_state ... ok
+test model::lifecycle_tests::randomized_shared_moe_model_runs_prefill_and_decode ... ok
+test model::runner::tests::qwen36_gdn_qkv_triton_decode_matches_cublaslt ... ok
+test model::lifecycle_tests::oversized_run_request_is_rejected_without_mutating_live_state ... ok
+test model::runner::tests::randomized_full_attention_weights_seed_qwen_norm_raw_weights_as_zero ... ok
+test tokenizer::tests::unicode_classifier_matches_exhaustive_oniguruma_oracle ... ok
+test model::sampling::tests::triton_sampling_distribution_and_position_reproducibility ... ok
+test model::runner::tests::sampling_respects_the_loaded_tokenizer_boundary ... ok
+test tokenizer::tests::real_qwen_tokenizers_match_hugging_face_oracle_when_available ... ok
+test model::runner::tests::shared_moe_execution_produces_routed_and_shared_outputs ... ok
+test model::lifecycle_tests::exact_prefix_extension_accepts_caller_suffix_tokens ... ok
+test model::runner::tests::stochastic_sampling_survives_reset_release_and_failed_rebuild ... ok
+test model::lifecycle_tests::randomized_dense_model_is_repeatable_for_same_seed_and_request ... ok
+test model::lifecycle_tests::prompt_rewrite_behind_live_tail_rebuilds_like_fresh_runner ... ok
+test model::runner::tests::failed_rebuild_after_final_layer_preserves_prefix_and_continuation ... ok
+test model::runner::linear::tests::mixed_dense_runner_prefill_decode_rebuild_and_reset_reuse_preparation ... ok
+test model::runner::tests::runner_rejects_invalid_tokenizer_counts ... ok
+test model::lifecycle_tests::randomized_moe_model_runs_prefill_decode_rebuild_and_failed_rewrite ... ok
+
+test result: ok. 164 passed; 0 failed; 6 ignored; 0 measured; 0 filtered out; finished in 35.98s
+
+     Running unittests src/bin/qs3-bench.rs (target/debug/deps/qs3_bench-ec8e125ba47921a4)
+
+running 5 tests
+test profile::tests::interval_union_and_clipping_do_not_double_count_overlapping_work ... ok
+test utc_timestamps_preserve_subseconds_and_calendar_boundaries ... ok
+test profile::tests::paired_runs_must_match_workload_precision_and_generated_tokens ... ok
+test profile::tests::sqlite_reduction_handles_overlap_lazy_tables_and_launch_shapes ... ok
+test profile::tests::cpu_samples_are_clipped_and_distinguish_leaf_from_inclusive_stacks ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/engine.rs (target/debug/deps/engine-a2b0fa1372febd0c)
+
+running 3 tests
+test engine_rejects_unsupported_native_attention_shapes ... ok
+test append_and_decode_layer_execute ... ok
+test attention_ignores_q_rope_offset_after_explicit_rope ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.61s
+
+     Running tests/runtime_config.rs (target/debug/deps/runtime_config-418b395914876cad)
+
+running 2 tests
+test runtime_capacity_must_fit_its_page_storage_without_overflow ... ok
+test runtime_controls_reject_unsupported_batches_and_missing_workspace ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/vector_harness.rs (target/debug/deps/vector_harness-7caf5af4f71127d4)
+
+running 14 tests
+test moe_vector_exposes_router_and_topk_views_when_present ... ok
+test norm_debug_vector_exposes_typed_views ... ok
+test qwen36_norm_vectors_fail_standard_rmsnorm ... ok
+test qwen36_cuda_rmsnorm_hidden2048_matches_gemma_vector ... ok
+test qwen36_cuda_fused_add_rmsnorm_hidden2048_matches_gemma_vector ... ok
+test qwen36_vector_manifests_load_flat_tensors ... ok
+test qwen36_cuda_gdn_post_conv_raw_split_and_gates_match_vector ... ok
+test qwen36_norm_concurrent_widths_keep_launch_configuration_independent ... ok
+test qwen36_cuda_gdn_gated_rmsnorm_silu_matches_vector ... ok
+test qwen36_cuda_gdn_post_conv_l2norm_matches_vector ... ok
+test qwen36_cuda_gdn_causal_conv_width4_matches_vector ... ok
+test qscu_gdn_prefill_recurrence_matches_vector ... ok
+test qscu_gdn_decode_continuation_matches_vector ... ok
+test qwen36_cuda_gdn_integrated_prefill_decode_state_evolution_matches_vector ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.59s
+
+   Doc-tests qs3
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+ninja -C build tests
+ninja: Entering directory `build'
+[1/7] NVCC CHECKED qscu_gdn_checked.o
+[2/7] LINK qsfi_test_release
+[3/7] NVCC CHECKED qscu_checked.o
+[4/7] LINK qsfi_test_qwen27_release
+[5/7] NVCC CHECKED qsfi_checked.o
+[6/7] LINK CHECKED qsfi_test_qwen27_checked
+[7/7] LINK CHECKED qsfi_test_checked
+build/qsfi_test_checked
+qsfi CUDA tests passed
+build/qsfi_test_release
+qsfi CUDA tests passed
+build/qsfi_test_qwen27_checked
+qsfi Qwen3.6-27B attention and GDN CUDA tests passed
+build/qsfi_test_qwen27_release
+qsfi Qwen3.6-27B attention and GDN CUDA tests passed

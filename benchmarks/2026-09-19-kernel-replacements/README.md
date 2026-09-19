@@ -1,7 +1,7 @@
 # Kernel replacement experiments
 
-Target: GB10 / SM121, Qwen3.8-27B NVFP4. These are isolated probes; no new
-provider has passed full-model validation or been adopted yet. Baseline runtime
+Target: GB10 / SM121, Qwen3.8-27B NVFP4. QuTLASS prefill is integrated in
+`b1db445`; the other providers remain isolated probes. Baseline runtime
 and standard benchmark evidence are in [the preceding experiment](../2026-09-19-nvfp4-performance/README.md).
 
 ## Source and toolchain pins
@@ -58,8 +58,53 @@ At M=1, evicted GEMM latency changes from 356.4 → 282.6 µs for N10240/K5120,
 199.9 → 190.5 µs for N6144/K5120, and 199.9 → 193.5 µs for N5120/K6144.
 M1024 regresses on all three shapes. Outputs differ at small M; b12x defaults
 `B12X_DENSE_SPLITK_TURBO=1`, enabling BF16 atomic partial accumulation.
-The next comparison disables this knob and retains FP32 partial sums. No claim
-of equivalent numerical behavior or model speedup follows from the default run.
+Disabling this knob alone fails preparation: the default selects four slices
+on GB10, but the FP32 reducer supports only two. The probe caps
+`_select_block_fp8_decode_slices` at two for this experiment.
+[The FP32 rerun](fp8-f32.json) retains the large projection's gain: M1/N10240/K5120
+350.3 → 283.9 µs evicted, with bit-identical output on that fixture. Smaller
+projections gain roughly 2%. Across all shapes, some other rows still differ
+slightly due to reduction order. Native export and real-model validation remain
+open. No production b12x source or provider selection has changed.
+
+## KR04: QuTLASS NVFP4
+
+[Native results](qutlass.csv) include three trials per shape/provider, each
+with 30 warmed and 30 weight-evicted samples. Providers 0/1 are FlashInfer N32
+DP/Stream-K, 2/3 N64 DP/Stream-K, and 4 the QuTLASS recipe. All 16 shapes
+pass the same-quantized-operands FP32-reference check (relative L2 <0.005).
+This probe includes raw GEMM and workspace initialization, not activation
+quantization. The fixture, reference, warmups, eviction, and timing code are
+retained in `sources/qutlass_bench.cu.txt`.
+
+| M | N / K | N32 DP evicted µs | N64 DP evicted µs | QuTLASS evicted µs |
+| --- | --- | ---: | ---: | ---: |
+| 1 | 17408 / 5120 | 292.5 | 293.6 | 295.6 |
+| 1 | 5120 / 17408 | 303.8 | 303.8 | 309.0 |
+| 128 | 17408 / 5120 | 307.9 | 302.8 | 311.0 |
+| 128 | 5120 / 17408 | 330.6 | 314.0 | 312.1 |
+| 512 | 17408 / 5120 | 579.3 | 406.2 | 371.6 |
+| 512 | 5120 / 17408 | 622.3 | 415.4 | 382.7 |
+| 1024 | 17408 / 5120 | 1060.5 | 683.7 | 563.9 |
+| 1024 | 5120 / 17408 | 1160.9 | 743.1 | 616.1 |
+
+The large-prefill implementation passes the complete `./remote.sh test`
+workflow ([log](full-tests.log)): 17 Python, 3 Triton launcher, 164 library
+(6 existing ignored), 5/3/2/14 other Rust tests, and all four native CUDA suites.
+The first run exposed an outdated expected cache count in the expanded test:
+adding two row shapes requires seven plans instead of five. This was corrected;
+no numerical assertion was relaxed or test skipped.
+
+The [model comparison](model-logits/comparison.json) matches **69/69 complete
+248320-logit rows bit-for-bit** against the saved N32DP/64 MiB baseline at a
+1024-token prompt, including 68 decode steps. The diagnostic's per-step
+downloads make its timings invalid. Raw rows remain in
+`sp10:qs3/.prototypes/out/kr04-model-logits-7wh3q12h/rows/`; the source overlay
+and hashes are retained here. The standard committed benchmark is next.
+
+It uses the existing packed values, scale layout, global scale, and BF16 output;
+there is no Hadamard transformation. Row-dependent selection belongs to
+`models/config.nix`, with Rust preparing the chosen plan for each matrix shape.
 
 ## KR05: cuTile Rust AOT feasibility
 
@@ -86,6 +131,14 @@ candidate before attempting to replace tensor-core GEMM. The emitted entry ABI
 includes shape/stride/tile parameters even when this particular kernel does not
 use all of them; inspect the generated TileIR rather than guessing arguments.
 
+An NVFP4 follow-up using upstream's `linear_tile` example fails compilation for
+SM121 with tileiras 13.3.36 at both 16x16x64 and 128x128x128 tile sizes. The
+same bytecode compiles for SM100 and SM120. The SM120 cubin fails to load on
+GB10 with `CUDA_ERROR_NO_BINARY_FOR_GPU`. An SM120 cubin is therefore not a
+working fallback. `sm_121a` is not an accepted tileiras target spelling. A newer
+isolated compiler is the next check; the SAXPY result does not prove native
+NVFP4 support on this target.
+
 ## Remaining candidates
 
 - KR04: QuTLASS uses N128 tiles on SM120 (M128 below 512 rows, M256 above).
@@ -95,6 +148,10 @@ use all of them; inspect the generated TileIR rather than guessing arguments.
   decay/beta, and FP32 recurrence. Its batch dimension is independent requests,
   not sequential speculative tokens. Its null state index is zero; qs3 uses
   zero as a valid slot. Preserve explicit source/destination state slots.
+  Current b12x selects CuTeDSL recurrence and Triton output norm for the correct
+  16-key/48-value-head geometry, but permits only eight state-index columns per
+  sequence. Its in-place state/history contract must be adapted before using it
+  with qs3's staged state or a future 16-token speculative batch.
 - KR06: vLLM SiLU×up+NVFP4 quantization is a plausible launch/memory saving.
   qs3 has separate gate/up buffers; preserve its BF16 intermediate boundary and
   compare packed activation bytes and scales before timing.

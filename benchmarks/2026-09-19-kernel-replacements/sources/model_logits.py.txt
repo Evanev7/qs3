@@ -1,0 +1,42 @@
+"""Diagnostic only: compare current AOT prefill policy against saved baseline logits."""
+import hashlib,json,os,shutil,subprocess,tempfile
+from pathlib import Path
+ROOT=Path(__file__).resolve().parents[2]
+BASE=ROOT/'.prototypes/out/nvfp4-perf-logits-skr3f9xb/1024-32dp-64m'
+REV='dbb8f445b3145f8a4c18ddc769f032d57d32867c'
+def replace(p,a,b):
+ s=p.read_text();assert s.count(a)==1,(p,a);p.write_text(s.replace(a,b))
+def main():
+ out=Path(tempfile.mkdtemp(prefix='kr04-model-logits-',dir=ROOT/'.prototypes/out'));print(out,flush=True)
+ work=out/'checkout';work.mkdir()
+ for p in ROOT.iterdir():
+  if p.name not in {'src','target','.git','.prototypes'}:(work/p.name).symlink_to(p,target_is_directory=p.is_dir())
+ shutil.copytree(ROOT/'src',work/'src')
+ runner=work/'src/model/runner/mod.rs'
+ replace(runner,'#[cfg(test)]\nuse crate::dtype::F32;','use crate::dtype::F32;')
+ replace(runner,'    #[cfg(test)]\n    pub(crate) fn last_logits_row_for_test','    pub(crate) fn last_logits_row_for_test')
+ bench=work/'src/loader/benchmark.rs'
+ replace(bench,'    let mut live_tokens = prefill.live_tokens;','    dump_logits(&runner, prefill.live_tokens.len());\n    let mut live_tokens = prefill.live_tokens;')
+ replace(bench,'    (elapsed, result.live_tokens)','    dump_logits(runner, result.live_tokens.len());\n    (elapsed, result.live_tokens)')
+ bench.write_text(bench.read_text()+'''
+fn dump_logits(runner: &ModelRunner, tokens: usize) {
+ let logits=runner.last_logits_row_for_test().unwrap();
+ let bytes:Vec<u8>=logits.into_iter().flat_map(f32::to_le_bytes).collect();
+ let dir=std::path::PathBuf::from(std::env::var_os("QS3_PERF_LOGITS").unwrap());
+ std::fs::write(dir.join(format!("{tokens}.f32")),bytes).unwrap();
+}
+''')
+ with (out/'overlay.diff').open('w') as f:subprocess.run(['git','diff','--no-index',str(ROOT/'src'),str(work/'src')],stdout=f)
+ rows=out/'rows';rows.mkdir()
+ env=dict(os.environ,CARGO_TARGET_DIR=str(ROOT/'target'),QS3_PERF_LOGITS=str(rows),QS3_BENCH_CONTEXT_TOKENS='1024',QS3_BENCH_DECODE_SAMPLES='64',QS3_QWEN36_MODEL_DIR=str(Path.home()/'.cache/huggingface/hub/models--nvidia--Qwen3.8-27B-NVFP4/snapshots'/REV))
+ env.pop('QS3_PROFILE',None)
+ with (out/'build.log').open('w') as f:subprocess.run(['cargo','build','--release','--bin','qs3-bench'],cwd=work,env=env,stdout=f,stderr=subprocess.STDOUT,check=True)
+ with (out/'result.json').open('w') as f,(out/'run.log').open('w') as log:subprocess.run([str(ROOT/'target/release/qs3-bench'),'--measure-pass'],cwd=work,env=env,stdout=f,stderr=log,check=True)
+ checks=[]
+ for p in sorted(rows.glob('*.f32'),key=lambda p:int(p.stem)):
+  b=BASE/p.name;assert b.exists(),b
+  a=p.read_bytes();ref=b.read_bytes();checks.append(dict(tokens=int(p.stem),exact=a==ref,sha256=hashlib.sha256(a).hexdigest(),baseline_sha256=hashlib.sha256(ref).hexdigest()))
+ result=dict(rows=checks,exact_rows=sum(x['exact'] for x in checks),row_count=len(checks),baseline=str(BASE),note='Per-step downloads: timings are invalid. All rows exact also establishes identical prefixes. If rows differ, compare token sequences before interpreting later rows.')
+ (out/'comparison.json').write_text(json.dumps(result,indent=2)+'\n');print(json.dumps(result),flush=True)
+ assert len(checks)==69
+if __name__=='__main__':main()
