@@ -366,6 +366,55 @@ Current experiment ownership/status is in `FINDINGS.md` (KR01–KR08).
   benchmark now uses the existing all-device backend and records 28.504 tok/s;
   see FINDINGS.md for the matched Nix result and loading-timer caveat.
 
+## Deferred csrc / qsfi ownership overhaul
+
+The intended boundary remains typed Qwen-specific Rust operations over small C
+adapters that instantiate upstream kernels and translate their parameters. Keep
+FlashInfer's actual attention scheduling and its coupling to compiled kernel
+specializations; the ownership machinery around it is what needs revisiting.
+This is deferred work, not a prerequisite for the current kernel experiments.
+
+- [ ] Move attention workspace allocation and pinned staging lifecycle into
+  Rust's execution session. Today `qsfi_context_reserve_workspace` allocates
+  float workspace, and native attention plans own device integer workspace,
+  pinned staging slots, and upload events. Rust owns their handles rather than
+  the allocations themselves. Start with `qsfi_context.cu`, `qsfi_attn.cu`, and
+  `src/backend/qsfi/mod.rs`.
+- [ ] Preserve asynchronous safety during that move: staging cannot be reused
+  before upload completion, device schedule updates must remain ordered after
+  prior consumers, and failed planning/uploads must not expose stale executable
+  plans. Retain queued-reprepare, failure, cache-key, and graph regressions;
+  do not introduce release-mode stream waits to simplify ownership.
+- [ ] Separate compiled specialization, prepared attention schedule, and storage
+  lifetimes. Keep opaque upstream plan metadata in C++ where useful, with Rust
+  owning caching, buffers, staging retirement, and graph orchestration. Ensure
+  planner-selected tiles and occupancy estimates match the AOT kernel set.
+- [ ] Establish validated Rust bindings at preparation/binding boundaries and
+  narrow native launch arguments. Reconsider duplicated dtype/shape/stride
+  checks without weakening device-addressing contracts or native test coverage.
+  Dynamic alignment/capacity checks still need a home; pointer lifetime and
+  stream ordering are not proved by shape types alone.
+- [ ] Reconsider the NVFP4 opaque native plan: it stores shape, launcher,
+  configuration, workspace size, and context identity, but no initialized
+  CUTLASS GEMM or scheduling arrays. Evaluate Rust-owned preparation plus native
+  workspace-query/launch functions instead of retaining a context-bound heap
+  object solely to cache these values.
+- [ ] Give CUTLASS GEMMs a `qsct` boundary, including the existing NVFP4 tactics
+  and QuTLASS-derived specialization. Keep FlashInfer quantization in `qsfi`;
+  Rust composes quantization and GEMM. Remove unused FlashInfer launcher
+  parameters and incorrect FlashInfer error attribution from the local adapter.
+  Start with concrete NVFP4 needs, not a generic provider framework.
+
+History for this audit: `718e08d` introduced native-owned workspace and generic
+descriptors in the first FlashInfer wrapper; these were original assumptions,
+not later drift. `3929fc0` moved scheduling storage into native plans.
+`1a9a890` / `29a6738` clarified Rust ownership/backend boundaries while retaining
+that native allocation layer. `90b52c4` added event-protected staging reuse to
+fix costly allocation churn safely; preserve its guarantees when relocating it.
+`6876e84` extended the context/plan pattern to NVFP4, and `b1db445` reused it for
+the QuTLASS-derived kernel. The existing FlashInfer template bridge itself is
+consistent with the intended architecture.
+
 ## Triton AOT builder
 
 - [x] Wire the Nix configuration and selected kernel files into a derivation
