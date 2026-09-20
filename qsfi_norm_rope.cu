@@ -151,6 +151,10 @@ qsfi_status validate_rmsnorm_common(
 // request. That is a shared CUDA function attribute, so another host thread can
 // lower it between the setter and launch. Qwen norms fit within the default
 // 48 KiB limit: launch the same AOT kernels without mutating function attributes.
+// Regression: tests/vector_harness.rs,
+// qwen36_norm_concurrent_widths_keep_launch_configuration_independent.
+// Investigation: benchmarks/2026-09-19-kernel-replacements/prior-findings.md,
+// "Norm launch race: reproduced and fixed".
 template <typename T>
 cudaLaunchConfig_t norm_launch_config(qsfi_context* ctx, uint32_t rows, uint32_t d, bool fused)
 {

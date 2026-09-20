@@ -373,6 +373,162 @@ static constexpr qsfi_nvfp4_tactic kNvfp4Tactics[]
     = { QSFI_NVFP4_TACTICS(QSFI_TEST_NVFP4_TACTIC) QSFI_NVFP4_QUTLASS256X128 };
 #undef QSFI_TEST_NVFP4_TACTIC
 
+static void test_qsfi_nvfp4_silu_mul_quantize()
+{
+    cudaStream_t stream = nullptr;
+    if (!check_cuda(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking), "fused FP4 stream"))
+        return;
+    qsfi_context* ctx = nullptr;
+    qsfi_context_desc cd { 0, stream };
+    if (!check_status(qsfi_context_create(&cd, &ctx), QSFI_STATUS_OK, "fused FP4 context"))
+        return;
+    QuantBuffer<float> multiplier(1);
+    for (int k : { 128, 5120, 17408 }) {
+        for (int m : { 1, 2, 4, 8, 16, 127, 128, 129, 1024 }) {
+            const size_t count = size_t(m) * k, packed = count / 2, sf_count = quant_sf_size(m, k);
+            std::vector<uint16_t> hg(count), hu(count);
+            for (size_t i = 0; i < count; ++i) {
+                float g = float(int((i * 37 + i / 17) % 1025) - 512) / 32;
+                float u = float(int((i * 53 + i / 31) % 257) - 128) / 32;
+                if ((i / 16) % 13 == 0)
+                    g = 0;
+                if (i % 67 == 0)
+                    g = -100;
+                if (i % 71 == 0)
+                    g = 100;
+                hg[i] = qscb_test_f32_to_bf16(g);
+                hu[i] = qscb_test_f32_to_bf16(u);
+            }
+            QuantBuffer<uint16_t> gate(count), up(count), activated(count);
+            gate.upload(hg);
+            up.upload(hu);
+            QuantBuffer<uint8_t> ref(packed), ref_sf(sf_count), out(packed + 32), sf(sf_count + 32);
+            auto g = quant_matrix(gate.data, QSFI_DTYPE_BF16, m, k);
+            auto u = quant_matrix(up.data, QSFI_DTYPE_BF16, m, k);
+            auto a = quant_matrix(activated.data, QSFI_DTYPE_BF16, m, k);
+            qscu_silu_and_mul_desc activation { g, u, a, uint32_t(m), uint32_t(k) };
+            qsfi_nvfp4_quantize_desc reference {
+                a,
+                quant_matrix(ref.data, QSFI_DTYPE_NVFP4_E2M1, m, k),
+                quant_vector(ref_sf.data, QSFI_DTYPE_FP8_E4M3, sf_count),
+                quant_vector(multiplier.data, QSFI_DTYPE_F32, 1)
+            };
+            qsfi_nvfp4_silu_mul_quantize_desc fused {
+                g,
+                u,
+                quant_matrix(out.data + 16, QSFI_DTYPE_NVFP4_E2M1, m, k),
+                quant_vector(sf.data + 16, QSFI_DTYPE_FP8_E4M3, sf_count),
+                reference.quant_multiplier
+            };
+            auto bad = fused;
+            bad.up.shape[1] -= 128;
+            check_status(
+                qsfi_nvfp4_silu_mul_quantize(ctx, &bad),
+                QSFI_STATUS_INVALID_ARGUMENT,
+                "fused FP4 up shape"
+            );
+            bad = fused;
+            bad.scales.shape[0]--;
+            check_status(
+                qsfi_nvfp4_silu_mul_quantize(ctx, &bad),
+                QSFI_STATUS_INVALID_ARGUMENT,
+                "fused FP4 scale size"
+            );
+            bad = fused;
+            bad.gate.data = reinterpret_cast<uint8_t*>(gate.data) + 2;
+            check_status(
+                qsfi_nvfp4_silu_mul_quantize(ctx, &bad),
+                QSFI_STATUS_INVALID_ARGUMENT,
+                "fused FP4 alignment"
+            );
+            for (float mult : { 1.f, 64.f, 1024.f }) {
+                multiplier.upload({ mult });
+                check_cuda(
+                    cudaMemsetAsync(out.data, 0xa5, out.count, stream),
+                    "fused FP4 output poison"
+                );
+                check_cuda(
+                    cudaMemsetAsync(sf.data, 0xa5, sf.count, stream),
+                    "fused FP4 scales poison"
+                );
+                check_status(
+                    qscu_silu_and_mul_bf16(&activation, stream),
+                    QSFI_STATUS_OK,
+                    "fused FP4 reference activation"
+                );
+                check_status(
+                    qsfi_nvfp4_quantize(ctx, &reference),
+                    QSFI_STATUS_OK,
+                    "fused FP4 reference quantization"
+                );
+                check_status(
+                    qsfi_nvfp4_silu_mul_quantize(ctx, &fused),
+                    QSFI_STATUS_OK,
+                    "fused FP4 quantization"
+                );
+                auto verify = [&]() {
+                    auto expected = ref.download(stream), expected_sf = ref_sf.download(stream);
+                    auto actual = out.download(stream), actual_sf = sf.download(stream);
+                    bool ok = std::equal(expected.begin(), expected.end(), actual.begin() + 16)
+                        && std::equal(
+                                  expected_sf.begin(),
+                                  expected_sf.end(),
+                                  actual_sf.begin() + 16
+                        );
+                    for (size_t i = 0; i < 16; ++i)
+                        ok &= actual[i] == 0xa5 && actual[packed + 16 + i] == 0xa5
+                            && actual_sf[i] == 0xa5 && actual_sf[sf_count + 16 + i] == 0xa5;
+                    if (!ok) {
+                        std::fprintf(
+                            stderr,
+                            "FAIL: fused FP4 bytes/scales/guards M%d K%d multiplier=%g\n",
+                            m,
+                            k,
+                            mult
+                        );
+                        ++failures;
+                    }
+                };
+                verify();
+                if (m == 1 && mult == 64.f) {
+                    cudaGraph_t graph = nullptr;
+                    cudaGraphExec_t executable = nullptr;
+                    check_cuda(
+                        cudaStreamBeginCapture(stream, cudaStreamCaptureModeThreadLocal),
+                        "fused FP4 capture"
+                    );
+                    check_status(
+                        qsfi_nvfp4_silu_mul_quantize(ctx, &fused),
+                        QSFI_STATUS_OK,
+                        "fused FP4 captured quantization"
+                    );
+                    check_cuda(cudaStreamEndCapture(stream, &graph), "fused FP4 end capture");
+                    check_cuda(
+                        cudaGraphInstantiate(&executable, graph, nullptr, nullptr, 0),
+                        "fused FP4 instantiate"
+                    );
+                    for (int replay = 0; replay < 2; ++replay) {
+                        check_cuda(
+                            cudaMemsetAsync(out.data + 16, 0xa5, packed, stream),
+                            "fused FP4 replay poison"
+                        );
+                        check_cuda(
+                            cudaMemsetAsync(sf.data + 16, 0xa5, sf_count, stream),
+                            "fused FP4 replay scales poison"
+                        );
+                        check_cuda(cudaGraphLaunch(executable, stream), "fused FP4 replay");
+                        verify();
+                    }
+                    cudaGraphExecDestroy(executable);
+                    cudaGraphDestroy(graph);
+                }
+            }
+        }
+    }
+    qsfi_context_destroy(ctx);
+    cudaStreamDestroy(stream);
+}
+
 static void test_qsfi_nvfp4()
 {
     cudaStream_t stream = nullptr;

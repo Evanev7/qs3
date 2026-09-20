@@ -86,6 +86,17 @@ typedef struct {
 } qsfi_nvfp4_quantize_desc;
 qsfi_status qsfi_nvfp4_quantize(qsfi_context* ctx, const qsfi_nvfp4_quantize_desc* desc);
 
+/* Quantize BF16(silu(gate) * up), preserving the unfused rounding boundary. */
+typedef struct {
+    qsfi_tensor2 gate;
+    qsfi_tensor2 up;
+    qsfi_tensor2 out;
+    qsfi_tensor1 scales;
+    qsfi_tensor1 quant_multiplier;
+} qsfi_nvfp4_silu_mul_quantize_desc;
+qsfi_status
+qsfi_nvfp4_silu_mul_quantize(qsfi_context* ctx, const qsfi_nvfp4_silu_mul_quantize_desc* desc);
+
 /* Load-time scale layout conversion, including zero-filled padded rows.
  * Input is contiguous E4M3 [N,K/16]; output is padded E4M3 128x4 storage.
  * This preserves bytes and never folds the weight_scale_2 global into E4M3.

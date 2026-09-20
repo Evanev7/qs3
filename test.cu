@@ -2715,6 +2715,7 @@ int main()
     test_qsfi_fused_add_rmsnorm_rejects_non_alias_out();
     test_qsfi_rope_apply_bf16_neox_full_head_matches_cpu();
     test_qscb_fp8();
+    test_qsfi_nvfp4_silu_mul_quantize();
     test_qsfi_nvfp4();
     test_qsfi_nvfp4_qwen_shapes();
     test_qscb_context_lifecycle();

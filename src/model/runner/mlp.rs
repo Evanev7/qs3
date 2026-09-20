@@ -149,10 +149,10 @@ impl BatchExecution<'_> {
                 self.quantized_scratch,
                 self.linear_workspace,
             )?;
-            ops.qscu().silu_and_mul_bf16(gate, up, activated)?;
-            ops.linear(
-                activated,
+            ops.silu_mul_linear(
+                [gate, up],
                 weights.down_proj,
+                activated,
                 self.scratch.mlp_out.matrix(rows, hidden)?,
                 self.quantized_scratch,
                 self.linear_workspace,

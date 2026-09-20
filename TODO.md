@@ -13,8 +13,14 @@
    Integrated runtime: full required suite and real-checkpoint reset/replay pass;
    85.126/85.558 ms per token at 102/32 and 1024/256. Evidence:
    `benchmarks/2026-09-20-cute-nvfp4/`.
-3. [ ] After review/commit, run the standard committed benchmark/Nsight pass
-   for the CuTe NVFP4 integration. Working-tree measurements are archived above.
+3. [x] Run the standard committed benchmark/Nsight pass for CuTe NVFP4.
+   `1b298a0`: 84.938/85.606 ms per token at 102/32 and 1024/256.
+4. [x] Integrate KR06 fused SiLU×up + NVFP4 quantization, preserving BF16
+   rounding and zero scale padding. Full tests and real reset/replay pass;
+   81 packed-byte cases exact. Paired 1024-token prefill: 417.179→399.731 ms;
+   decode gain is small relative to drift. All generated IDs match. Evidence:
+   `benchmarks/2026-09-20-silu-nvfp4/`.
+5. [ ] After review/commit, run the standard benchmark/Nsight pass for KR06.
 
 ## Scope
 
@@ -268,6 +274,12 @@
 
 ## 6. Adopt and measure optimized providers
 
+- [ ] Move prototypes into an independent Git repository, gitignored by qs3,
+  with its own history and no submodule linkage. Keep experiment code and
+  reproduction scaffolding there, recording the qs3 commit each prototype
+  targets. Promote accepted implementations and useful benchmark results into
+  qs3 while keeping the experimental archive separate.
+
 Current experiment ownership/status is in `FINDINGS.md` (KR01–KR08, DR01).
 
 - [ ] DR01: Resolve the repeated ~3 ms short-workload decode slowdown after
@@ -441,10 +453,15 @@ This is deferred work, not a prerequisite for the current kernel experiments.
   workspace-query/launch functions instead of retaining a context-bound heap
   object solely to cache these values.
 - [ ] Give CUTLASS GEMMs a `qsct` boundary, including the existing NVFP4 tactics
-  and QuTLASS-derived specialization. Keep FlashInfer quantization in `qsfi`;
+  and QuTLASS-derived specialization. Keep actual FlashInfer entry points in `qsfi`;
   Rust composes quantization and GEMM. Remove unused FlashInfer launcher
   parameters and incorrect FlashInfer error attribution from the local adapter.
   Start with concrete NVFP4 needs, not a generic provider framework.
+- [ ] Audit local CUDA kernels under `qsfi`, including fused SiLU/NVFP4
+  quantization, and give them an explicit home in the backend split. Using
+  FlashInfer's vendored TensorRT-LLM helpers does not make a local kernel a
+  FlashInfer entry point. Keep implementation ownership clear without duplicating
+  upstream helpers or adding another context/plan framework.
 
 History for this audit: `718e08d` introduced native-owned workspace and generic
 descriptors in the first FlashInfer wrapper; these were original assumptions,

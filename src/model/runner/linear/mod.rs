@@ -223,30 +223,77 @@ impl Operators<'_> {
                 unsafe {
                     self.qsfi()
                         .nvfp4_quantize(input, x, x_scales, quant_multiplier)?;
-                    if let Some(kernel) = &scratch.nvfp4
-                        && Nvfp4Linears::supports([m, n, k])
-                    {
-                        return kernel.launch(
-                            *self.stream,
-                            x,
-                            weight,
-                            [x_scales, block_scales],
-                            alpha,
-                            output,
-                        );
-                    }
-                    let plan = scratch.plans.get(&[m, n, k]).ok_or(Status::InternalError)?;
-                    self.qsfi().nvfp4_execute(
-                        plan,
-                        x,
-                        weight,
-                        [x_scales, block_scales],
-                        alpha,
-                        output,
-                        scratch.workspace.workspace(scratch.workspace.len())?,
-                    )
+                    self.nvfp4_linear(x, weight, [x_scales, block_scales], alpha, output, scratch)
                 }
             }
+        }
+    }
+
+    /// Applies SiLU/multiply before the down projection; NVFP4 keeps it in registers.
+    pub(super) unsafe fn silu_mul_linear(
+        &mut self,
+        inputs: [DMat<BF16>; 2],
+        weight: LinearWeight,
+        activated: DMat<BF16>,
+        output: DMat<BF16>,
+        scratch: Option<&QuantizedScratch>,
+        workspace: Workspace,
+    ) -> Result<(), Status> {
+        let [gate, up] = inputs;
+        unsafe {
+            if let LinearWeight::Nvfp4 {
+                weight,
+                block_scales,
+                quant_multiplier,
+                alpha,
+            } = weight
+            {
+                let [m, k] = gate.shape();
+                if up.shape() != [m, k]
+                    || weight.shape()[1] != k
+                    || output.shape() != [m, weight.shape()[0]]
+                {
+                    return Err(Status::InvalidArgument);
+                }
+                let scratch = scratch.ok_or(Status::InternalError)?;
+                let x = scratch.fp4.matrix(m, k)?;
+                let x_scales = scratch.scales.vector(scale_count(m, k)?)?;
+                self.qsfi()
+                    .nvfp4_silu_mul_quantize(gate, up, x, x_scales, quant_multiplier)?;
+                self.nvfp4_linear(x, weight, [x_scales, block_scales], alpha, output, scratch)
+            } else {
+                self.qscu().silu_and_mul_bf16(gate, up, activated)?;
+                self.linear(activated, weight, output, scratch, workspace)
+            }
+        }
+    }
+
+    unsafe fn nvfp4_linear(
+        &mut self,
+        input: DMat<Nvfp4E2M1>,
+        weight: DMat<Nvfp4E2M1>,
+        scales: [DVec<Fp8E4M3>; 2],
+        alpha: DVec<F32>,
+        output: DMat<BF16>,
+        scratch: &QuantizedScratch,
+    ) -> Result<(), Status> {
+        let shape = [input.shape()[0], weight.shape()[0], input.shape()[1]];
+        unsafe {
+            if let Some(kernel) = &scratch.nvfp4
+                && Nvfp4Linears::supports(shape)
+            {
+                return kernel.launch(*self.stream, input, weight, scales, alpha, output);
+            }
+            let plan = scratch.plans.get(&shape).ok_or(Status::InternalError)?;
+            self.qsfi().nvfp4_execute(
+                plan,
+                input,
+                weight,
+                scales,
+                alpha,
+                output,
+                scratch.workspace.workspace(scratch.workspace.len())?,
+            )
         }
     }
 }

@@ -38,6 +38,45 @@ struct qsfi_nvfp4_plan {
 };
 
 namespace qsfi_nvfp4_detail {
+// Split gate/up adaptation of vLLM's fused quantizer, using the vendored
+// TensorRT-LLM arithmetic helpers. One thread owns a complete 16-value scale block.
+__global__ void __launch_bounds__(512, 2) silu_mul_quantize(
+    int rows,
+    int k,
+    const __nv_bfloat16* gate,
+    const __nv_bfloat16* up,
+    const float* multiplier,
+    uint64_t* output,
+    uint32_t* scales
+)
+{
+    using namespace tensorrt_llm::kernels;
+    using Vec = PackedVec<__nv_bfloat16, 16>;
+    const int col = blockIdx.y * blockDim.x + threadIdx.x;
+    if (col >= k / 16)
+        return;
+    const float scale = *multiplier;
+    for (int64_t row = blockIdx.x; row < (rows + 127) / 128 * 128; row += gridDim.x) {
+        auto* sf = cvt_quant_to_fp4_get_sf_out_offset<uint32_t, 16, 1>(row, col, k, scales);
+        if (row >= rows) {
+            *sf = 0;
+            continue;
+        }
+        const int64_t offset = int64_t(row) * (k / 16) + col;
+        Vec g, u;
+        // Two 16-byte loads preserve the existing input alignment contract.
+#pragma unroll
+        for (int part = 0; part < 2; ++part) {
+            reinterpret_cast<uint4*>(&g)[part]
+                = reinterpret_cast<const uint4*>(gate)[offset * 2 + part];
+            reinterpret_cast<uint4*>(&u)[part]
+                = reinterpret_cast<const uint4*>(up)[offset * 2 + part];
+        }
+        silu_and_mul<__nv_bfloat16, 16>(g, u); // Rounds the product to BF16.
+        output[offset] = cvt_warp_fp16_to_fp4<__nv_bfloat16, 16, 16, false>(g, scale, sf);
+    }
+}
+
 bool aligned(const void* p, size_t alignment)
 {
     return p != nullptr && reinterpret_cast<uintptr_t>(p) % alignment == 0;
@@ -243,6 +282,50 @@ qsfi_nvfp4_execute(qsfi_context* ctx, const qsfi_nvfp4_plan* plan, const qsfi_nv
     } catch (const std::exception& ex) {
         return set_flashinfer_error(ctx, "NVFP4 GEMM", ex);
     }
+}
+
+qsfi_status
+qsfi_nvfp4_silu_mul_quantize(qsfi_context* ctx, const qsfi_nvfp4_silu_mul_quantize_desc* d)
+{
+    if (ctx == nullptr)
+        return QSFI_STATUS_INVALID_ARGUMENT;
+    qsfi_clear_error_info(&ctx->last_error);
+    if (d == nullptr || !valid_dimensions(d->gate.shape[0], d->gate.shape[1]))
+        return set_invalid_arg(ctx, "invalid fused NVFP4 quantization dimensions");
+    const int m = d->gate.shape[0], k = d->gate.shape[1];
+    auto status = matrix(ctx, d->gate, QSFI_DTYPE_BF16, m, k);
+    if (status != QSFI_STATUS_OK)
+        return status;
+    status = matrix(ctx, d->up, QSFI_DTYPE_BF16, m, k);
+    if (status != QSFI_STATUS_OK)
+        return status;
+    status = matrix(ctx, d->out, QSFI_DTYPE_NVFP4_E2M1, m, k);
+    if (status != QSFI_STATUS_OK)
+        return status;
+    status = vector(ctx, d->scales, QSFI_DTYPE_FP8_E4M3, scale_count(m, k), 16);
+    if (status != QSFI_STATUS_OK)
+        return status;
+    status = vector(ctx, d->quant_multiplier, QSFI_DTYPE_F32, 1, 4);
+    if (status != QSFI_STATUS_OK)
+        return status;
+    status = activate_context(ctx);
+    if (status != QSFI_STATUS_OK)
+        return status;
+    const int threads = std::min((k / 16 + 31) / 32 * 32, 512);
+    const int cols = (k / 16 + threads - 1) / threads;
+    // GB10: at most four CTAs per SM, including scale-padding work at small M.
+    const int blocks
+        = std::min((m + 127) / 128 * 128, std::max(1, 48 * std::min(4, 1536 / threads) / cols));
+    silu_mul_quantize<<<dim3(blocks, cols), threads, 0, ctx->stream>>>(
+        m,
+        k,
+        static_cast<const __nv_bfloat16*>(d->gate.data),
+        static_cast<const __nv_bfloat16*>(d->up.data),
+        static_cast<const float*>(d->quant_multiplier.data),
+        static_cast<uint64_t*>(d->out.data),
+        static_cast<uint32_t*>(d->scales.data)
+    );
+    return set_cuda_error(ctx, cudaGetLastError(), "fused SiLU/mul NVFP4 quantization");
 }
 
 qsfi_status qsfi_nvfp4_quantize(qsfi_context* ctx, const qsfi_nvfp4_quantize_desc* d)

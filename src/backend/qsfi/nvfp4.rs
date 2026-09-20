@@ -156,6 +156,37 @@ impl Qsfi {
         result_from_raw(unsafe { sys::qsfi_nvfp4_quantize(self.raw.as_ptr(), &desc) })
     }
 
+    /// Fuses SiLU/multiply and quantization with a BF16 rounding boundary.
+    pub(crate) unsafe fn nvfp4_silu_mul_quantize(
+        &mut self,
+        gate: DMat<BF16>,
+        up: DMat<BF16>,
+        output: DMat<Nvfp4E2M1>,
+        scales: DVec<Fp8E4M3>,
+        multiplier: DVec<F32>,
+    ) -> Result<(), Status> {
+        gate.require_contiguous()?;
+        up.require_contiguous()?;
+        output.require_contiguous()?;
+        scales.require_contiguous()?;
+        multiplier.require_contiguous()?;
+        if !gate.same_shape(up)
+            || !gate.same_shape(output)
+            || scales.len != scale_count(gate.rows, gate.cols)?
+            || multiplier.len != 1
+        {
+            return Err(Status::InvalidArgument);
+        }
+        let desc = sys::qsfi_nvfp4_silu_mul_quantize_desc {
+            gate: gate.tensor(),
+            up: up.tensor(),
+            out: output.tensor(),
+            scales: scales.tensor(),
+            quant_multiplier: multiplier.tensor(),
+        };
+        result_from_raw(unsafe { sys::qsfi_nvfp4_silu_mul_quantize(self.raw.as_ptr(), &desc) })
+    }
+
     pub(crate) unsafe fn nvfp4_execute(
         &mut self,
         plan: &Nvfp4Plan,
