@@ -5,7 +5,7 @@ import tempfile
 from pathlib import Path
 import unittest
 
-from render_history import classify_gaps, extract_directory, extract_phase, kernel_kind, summarize_phase
+from render_history import classify_gaps, extract_directory, extract_phase, kernel_kind, summarize_phase, variant_label
 
 
 class TimelineTests(unittest.TestCase):
@@ -95,6 +95,16 @@ class TimelineTests(unittest.TestCase):
         self.assertEqual(classify("GemmUniversal<float_e2m1_t>"), ("Matrix multiplication", "NVFP4 GEMM"))
         self.assertEqual(classify("qwen36_gdn_rmsnorm_gated_kernel"), ("GDN", "Gated normalization"))
         self.assertEqual(classify("embedding_gather_bf16_kernel"), ("Embedding / sampling", "Embedding lookup"))
+
+        # CuTe exports retain the source hash and Python class in their Nsight names.
+        for name, kind in [
+            ("kernel_cutlass_kernel__qscute_source_7b4bc2997e5df419475449fc54ba498f9634feb9cf4d15d14a436444da7b0eb7Fp8Decode_object_at__CopyAtom_ThrID10_TVLayoutSrc1409601_TVLayoutDst1409601_Valuetypef_0", "FP8 GEMM"),
+            ("kernel_cutlass_kernel__qscute_source_561a8ce51f0e04f87de3e56b3b06066119eabfda6309ac63469fb60ccc9db680DenseGemmKernel_object_at__CopyAtom_ThrID10_TVLayoutSrc1819201_TVLayoutDst1819201_Valu_0", "NVFP4 GEMM"),
+        ]:
+            with self.subTest(kind=kind):
+                self.assertEqual(classify(name), ("Matrix multiplication", kind))
+                definition = dict(name=name, kind="kernel", grid=[1, 1, 48])
+                self.assertEqual(variant_label(definition, kind), f"{kind} · qscute · grid 1 × 1 × 48")
 
 
 if __name__ == "__main__":

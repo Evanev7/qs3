@@ -200,6 +200,11 @@ def kernel_kind(definition: dict) -> tuple[str, str]:
     name = definition["name"].lower()
     if definition["kind"] != "kernel":
         return "Memory operations", definition["name"]
+    if "_qscute_source_" in name:
+        if "fp8decode_object" in name:
+            return "Matrix multiplication", "FP8 GEMM"
+        if "densegemmkernel_object" in name:
+            return "Matrix multiplication", "NVFP4 GEMM"
     if "quantize" in name or "quant_to" in name:
         if "fp8_quantize" in name:
             kind = "FP8 quantization"
@@ -255,6 +260,8 @@ def variant_label(definition: dict, kind: str) -> str:
     name = definition["name"]
     tile = re.search(r"_mma_(\d+x\d+x\d+)_", name)
     prefix = f'tile {tile[1].replace("x", " × ")} · ' if tile else ""
+    if "_qscute_source_" in name:
+        prefix = "qscute · " + prefix
     grid = " × ".join(map(str, definition["grid"]))
     return f"{kind} · {prefix}grid {grid}"
 
