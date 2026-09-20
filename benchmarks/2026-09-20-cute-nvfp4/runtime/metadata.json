@@ -1,0 +1,18 @@
+{
+  "started_at": "2026-09-20T11:06:41.924751+00:00",
+  "commit": "ac1313d0aa9eaa097f549eb6a50a511a79c96b31",
+  "working_tree": true,
+  "model_revision": "dbb8f445b3145f8a4c18ddc769f032d57d32867c",
+  "binary_sha256": "00d188de17bf7157d424a97b4fdfcd349fb1e508a5df14742bc82506aa676e33",
+  "sha256": {
+    "cute_kernels/nvfp4_gemm.py": "f55cff77bc59f75d70294c0b22d4759e06f9a633b7fa20fda06656000fe50fbf",
+    "src/backend/qscute/nvfp4.rs": "8873e0de092e300379b73334f320d9d546b35fd0fdcf75c41d1558786440b693",
+    "src/backend/qscute.rs": "97c0c86a475e7cc26a29fd212168504cd28af4464aecc1dff319133569545773",
+    "src/model/runner/linear/mod.rs": "fbe01ef6c8bd8c0602a214c3de941d4b2d96a6b8348382a3c7ac52102d702800",
+    "src/model/runner/mod.rs": "74b556a9056bda809a4f884a7629dfe39396992377fe88d65887b60d238c5887",
+    "models/config.nix": "1e8ddb99ce577791358e50b38fa17cfe5af12307c347efaf3c3ac11cb433f232",
+    "build/libqscute.a": "fb49ff077917b6c809141b9bf2d242f7014695e7faed1b00cc5bf2a44c489c69",
+    "build/libqs_native.a": "21c722168bbdd1ec85e9d068b4c549bf4a1d3791f4b8878a6069b9784581cf5d"
+  },
+  "protocol": "core benchmark --measure-pass; Nix CUDA libraries; no profiler"
+}

@@ -7,21 +7,29 @@ or adopting a candidate. TODO.md is the implementation checklist.
 ## Current baseline
 
 - Target: Qwen3.8-27B NVIDIA NVFP4, GB10 / SM121, eager, no MTP implementation.
-- Source: `f284ac6`; QuTLASS prefill and AOT row selection in `b1db445`.
+- Source: `e1befe1`; CuTe FP8 GDN QKV decode, QuTLASS prefill, AOT row selection.
 - Full `./remote.sh test` and both standard benchmarks pass.
-- 102/32: 129.014 ms prefill, 10.356 tok/s. 1024/256: 413.405 ms, 10.568 tok/s.
-- Large prefill is 20.2% faster than N32 baseline (518.081 ms). Decode is flat
-  within 0.4%; all 36/260 generated IDs and 69/69 diagnostic logit rows match.
+- 102/32: 129.010 ms prefill, 88.668 ms/token, 11.264 tok/s.
+- 1024/256: 414.538 ms prefill, 89.207 ms/token, 11.205 tok/s.
+- Current measurements: `benchmarks/2026-09-20T101832.818774533Z-e1befe1.json`
+  and `benchmarks/2026-09-20T101910.042468648Z-e1befe1.json`.
+- Earlier QuTLASS adoption reduced large prefill from 518 to 413 ms with
+  unchanged logits. CuTe FP8 subsequently reduced decode by about 8 ms/token;
+  its accepted numerical differences are recorded under KR03.
 - Snapshot: `dbb8f445b3145f8a4c18ddc769f032d57d32867c`.
 - [Prior baseline and 28-case survey](benchmarks/2026-09-19-nvfp4-performance/README.md).
 - Full-model vLLM parity after chunked GDN integration remains open. Matching
   independent tokens and matching logits on identical prefixes are different tests.
+- Validated working tree: CuTe NVFP4 linears reduce decode to 85.126/85.558
+  ms/token (11.731/11.685 tok/s). Full tests and real-checkpoint reset/replay pass.
+  See KR09; committed benchmark/Nsight capture awaits review/commit.
 
 ## Active work and ownership
 
 GPU checkout: `sp10@sp10:qs3`; one GPU workflow at a time.
-GPU is idle. KR03's required test suite passes. Numerical drift is accepted
-explicitly, not bitwise parity. DR01 diagnostics are archived below.
+GPU owner: none; CuTe NVFP4 qualification and integrated measurements complete.
+The matched stock vLLM no-MTP baseline is complete (BL01).
+KR03's required test suite passes; its numerical drift is accepted explicitly.
 Working sources: `.prototypes/kernel_replacements/`; curated snapshots/results
 are linked below. Update ownership here before starting another probe.
 Do not run `remote.sh test`, `benchmark`, or another GPU probe concurrently.
@@ -35,8 +43,10 @@ Preserve Rust scheduling/state transactions and AOT inference without Python/JIT
 | KR04 | QuTLASS SM120 NVFP4 GEMM / fused quantization | Adopted `b1db445`/`f284ac6`: tests pass, 69/69 logit rows exact; M1024 prefill 518→413 ms | Preserve this baseline; compare future fusion against it |
 | KR05 | cuTile Rust | AOT SM121 native launches pass: SAXPY 64/64, NVFP4 768/768 exact with isolated tileiras 13.4.92 | Real-shape performance and useful fusion; 13.3 compiler fails NVFP4 on SM121 |
 | KR06 | vLLM fused SiLU×up + NVFP4 quantization | 42/42 packed-value/scale cases exact; K17408 M1 5.38→1.87 µs, M1024 655→359 µs | Small production implementation, then full-model/tests/benchmark |
-| KR07 | Row-dependent NVFP4 selection | Adopted: N32 below 128 rows, N64 from 128, QuTLASS from 512; configured AOT | Small decode/MTP shapes retain N32; revisit when measuring sequential batches |
+| KR07 | Row-dependent NVFP4 selection | N32 below 128 rows, N64 from 128, QuTLASS from 512; KR09 supersedes the 27B M<=16 path with CuTe | Revisit when measuring speculative batches and rollback |
 | DR01 | Decode slowdown following `b143912` | Short workload +3.1 ms; captured FP8 QKV group explains ~2.96 ms; same binary can run fast; workspace-only test negative | [Evidence](benchmarks/2026-09-19-decode-regression/README.md); isolate algorithm and activation/output placement |
+| KR09 | CuTe NVFP4 small-M MLP/LM head | Integrated 32x64x512, no split-K. 360 synthetic cases pass; selected recipe has 1,544/1,544 real intermediates exact. Full tests and real reset/replay pass. Final 102/32 and 1024/256: 85.126/85.558 ms/token. [Evidence](benchmarks/2026-09-20-cute-nvfp4/README.md) | Standard committed benchmark/Nsight after review/commit |
+| BL01 | Stock vLLM NVFP4 without MTP | v0.29.0, same checkpoint; 82.707/83.582 ms per token, 12.093/11.951 tok/s at 102/32 and 1024/256. [Raw samples/settings](benchmarks/2026-09-20-vllm-nvfp4-nomtp/README.md) | CuTe NVFP4 working tree is ~2 ms/token behind vLLM with full decode graphs; independent continuations |
 | KR08 | 16 MiB cuBLASLt workspace | Hold: ~4.9% faster decode, changes outputs at 55/29 tokens | Same-prefix vLLM reference and selected-algorithm investigation; keep 64 MiB default |
 
 ## Rules for comparing candidates
@@ -54,13 +64,9 @@ Current artifacts and pinned sources: [kernel replacement experiments](benchmark
 
 ## Next experiment
 
-Decode is the priority. DR01 narrows the regression to the large FP8 GDN QKV
-projection, but its process-dependent trigger remains unresolved. Compare
-public cuBLASLt algorithm attributes and controlled activation/output bindings.
-KR03 replaces this projection at M1: full tests and production-library comparison
-are complete, with numerical drift accepted. Small batches through 16 rows remain
-future work. KR06 remains an exact-intermediate fusion
-candidate with a smaller expected decode gain.
+After reviewing/committing KR09, run the standard benchmark/Nsight pass and
+inspect the remaining decode costs. KR06 is the next small fusion candidate:
+SiLU×up plus NVFP4 quantization already matches packed intermediates in probes.
 
 ## Ideas to retain
 

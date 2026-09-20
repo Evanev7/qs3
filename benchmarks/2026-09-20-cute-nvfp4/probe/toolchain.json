@@ -1,0 +1,8 @@
+{
+  "python": "3.14.4",
+  "packages": {
+    "nvidia-cutlass-dsl": "4.6.2",
+    "triton": "3.8.0",
+    "cuda-python": "13.4.1"
+  }
+}

@@ -1,0 +1,48 @@
+[
+  {
+    "context": 102,
+    "decode_samples": 32,
+    "qs3_artifact": "2026-09-20T101832.818774533Z-e1befe1.json",
+    "prompt_fingerprint": "6ca602a4cc15238d",
+    "first_generated_token_difference": 18,
+    "matching_generated_tokens": 18,
+    "qs3": {
+      "prefill_p50_ms": 129.009803,
+      "decode_p50_ms": 88.66815749999999,
+      "decode_tok_s": 11.26399869517839
+    },
+    "vllm": {
+      "prefill_p50_ms": 120.53268868476152,
+      "decode_p50_ms": 82.70670869387686,
+      "decode_tok_s": 12.093198095186146
+    },
+    "caveats": [
+      "qs3 eager vs vLLM default graphs",
+      "independent greedy continuations, not same-prefix parity",
+      "vLLM prefill includes first token sampling/delivery; qs3 prefill requests no new token"
+    ]
+  },
+  {
+    "context": 1024,
+    "decode_samples": 256,
+    "qs3_artifact": "2026-09-20T101910.042468648Z-e1befe1.json",
+    "prompt_fingerprint": "c8cd97958d34675c",
+    "first_generated_token_difference": 4,
+    "matching_generated_tokens": 109,
+    "qs3": {
+      "prefill_p50_ms": 414.538003,
+      "decode_p50_ms": 89.206692,
+      "decode_tok_s": 11.205475301211681
+    },
+    "vllm": {
+      "prefill_p50_ms": 386.70108327642083,
+      "decode_p50_ms": 83.58195843175054,
+      "decode_tok_s": 11.95121304349327
+    },
+    "caveats": [
+      "qs3 eager vs vLLM default graphs",
+      "independent greedy continuations, not same-prefix parity",
+      "vLLM prefill includes first token sampling/delivery; qs3 prefill requests no new token"
+    ]
+  }
+]

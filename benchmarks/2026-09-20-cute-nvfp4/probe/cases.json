@@ -1,0 +1,174 @@
+{
+  "donor": "0f3a8cbfd1c11d27f04e3ab37a802d522f4f1c68",
+  "sm_count": 48,
+  "cases": [
+    {
+      "name": "up_r10",
+      "shape": "up",
+      "n": 17408,
+      "k": 5120,
+      "tile": [
+        16,
+        64,
+        256
+      ],
+      "splits": 1,
+      "source": ".prototypes/out/nvfp4-decode-wide-aot/nvfp4_m16n64k256s1.py",
+      "prefix": ".prototypes/out/nvfp4-decode-wide-aot/up_r10"
+    },
+    {
+      "name": "down_r10",
+      "shape": "down",
+      "n": 5120,
+      "k": 17408,
+      "tile": [
+        16,
+        64,
+        256
+      ],
+      "splits": 1,
+      "source": ".prototypes/out/nvfp4-decode-wide-aot/nvfp4_m16n64k256s1.py",
+      "prefix": ".prototypes/out/nvfp4-decode-wide-aot/down_r10"
+    },
+    {
+      "name": "head_r10",
+      "shape": "head",
+      "n": 248320,
+      "k": 5120,
+      "tile": [
+        16,
+        64,
+        256
+      ],
+      "splits": 1,
+      "source": ".prototypes/out/nvfp4-decode-wide-aot/nvfp4_m16n64k256s1.py",
+      "prefix": ".prototypes/out/nvfp4-decode-wide-aot/head_r10"
+    },
+    {
+      "name": "up_r11",
+      "shape": "up",
+      "n": 17408,
+      "k": 5120,
+      "tile": [
+        32,
+        64,
+        256
+      ],
+      "splits": 1,
+      "source": ".prototypes/out/nvfp4-decode-wide-aot/nvfp4_m32n64k256s1.py",
+      "prefix": ".prototypes/out/nvfp4-decode-wide-aot/up_r11"
+    },
+    {
+      "name": "down_r11",
+      "shape": "down",
+      "n": 5120,
+      "k": 17408,
+      "tile": [
+        32,
+        64,
+        256
+      ],
+      "splits": 1,
+      "source": ".prototypes/out/nvfp4-decode-wide-aot/nvfp4_m32n64k256s1.py",
+      "prefix": ".prototypes/out/nvfp4-decode-wide-aot/down_r11"
+    },
+    {
+      "name": "head_r11",
+      "shape": "head",
+      "n": 248320,
+      "k": 5120,
+      "tile": [
+        32,
+        64,
+        256
+      ],
+      "splits": 1,
+      "source": ".prototypes/out/nvfp4-decode-wide-aot/nvfp4_m32n64k256s1.py",
+      "prefix": ".prototypes/out/nvfp4-decode-wide-aot/head_r11"
+    },
+    {
+      "name": "up_r12",
+      "shape": "up",
+      "n": 17408,
+      "k": 5120,
+      "tile": [
+        16,
+        64,
+        512
+      ],
+      "splits": 1,
+      "source": ".prototypes/out/nvfp4-decode-wide-aot/nvfp4_m16n64k512s1.py",
+      "prefix": ".prototypes/out/nvfp4-decode-wide-aot/up_r12"
+    },
+    {
+      "name": "down_r12",
+      "shape": "down",
+      "n": 5120,
+      "k": 17408,
+      "tile": [
+        16,
+        64,
+        512
+      ],
+      "splits": 1,
+      "source": ".prototypes/out/nvfp4-decode-wide-aot/nvfp4_m16n64k512s1.py",
+      "prefix": ".prototypes/out/nvfp4-decode-wide-aot/down_r12"
+    },
+    {
+      "name": "head_r12",
+      "shape": "head",
+      "n": 248320,
+      "k": 5120,
+      "tile": [
+        16,
+        64,
+        512
+      ],
+      "splits": 1,
+      "source": ".prototypes/out/nvfp4-decode-wide-aot/nvfp4_m16n64k512s1.py",
+      "prefix": ".prototypes/out/nvfp4-decode-wide-aot/head_r12"
+    },
+    {
+      "name": "up_r13",
+      "shape": "up",
+      "n": 17408,
+      "k": 5120,
+      "tile": [
+        32,
+        64,
+        512
+      ],
+      "splits": 1,
+      "source": ".prototypes/out/nvfp4-decode-wide-aot/nvfp4_m32n64k512s1.py",
+      "prefix": ".prototypes/out/nvfp4-decode-wide-aot/up_r13"
+    },
+    {
+      "name": "down_r13",
+      "shape": "down",
+      "n": 5120,
+      "k": 17408,
+      "tile": [
+        32,
+        64,
+        512
+      ],
+      "splits": 1,
+      "source": ".prototypes/out/nvfp4-decode-wide-aot/nvfp4_m32n64k512s1.py",
+      "prefix": ".prototypes/out/nvfp4-decode-wide-aot/down_r13"
+    },
+    {
+      "name": "head_r13",
+      "shape": "head",
+      "n": 248320,
+      "k": 5120,
+      "tile": [
+        32,
+        64,
+        512
+      ],
+      "splits": 1,
+      "source": ".prototypes/out/nvfp4-decode-wide-aot/nvfp4_m32n64k512s1.py",
+      "prefix": ".prototypes/out/nvfp4-decode-wide-aot/head_r13"
+    }
+  ]
+}

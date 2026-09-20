@@ -1,0 +1,39 @@
+   Compiling qs3 v0.1.0 (/home/sp10/qs3/.prototypes/out/nvfp4-decode-run-sjpp7_4p/checkout)
+warning: constant `Hg` should have an upper case name
+  --> /home/sp10/qs3/.prototypes/out/nvfp4-decode-run-sjpp7_4p/checkout/build/triton/gdn_prefill_kkt.rs:29:15
+   |
+29 |     pub const Hg: i64 = 16;
+   |               ^^ help: convert the identifier to upper case: `HG`
+   |
+   = note: `#[warn(non_upper_case_globals)]` (part of `#[warn(nonstandard_style)]`) on by default
+
+warning: constant `Hg` should have an upper case name
+  --> /home/sp10/qs3/.prototypes/out/nvfp4-decode-run-sjpp7_4p/checkout/build/triton/gdn_prefill_wu.rs:29:15
+   |
+29 |     pub const Hg: i64 = 16;
+   |               ^^ help: convert the identifier to upper case: `HG`
+
+warning: constant `Hg` should have an upper case name
+  --> /home/sp10/qs3/.prototypes/out/nvfp4-decode-run-sjpp7_4p/checkout/build/triton/gdn_prefill_state.rs:29:15
+   |
+29 |     pub const Hg: i64 = 16;
+   |               ^^ help: convert the identifier to upper case: `HG`
+
+warning: constant `Hg` should have an upper case name
+  --> /home/sp10/qs3/.prototypes/out/nvfp4-decode-run-sjpp7_4p/checkout/build/triton/gdn_prefill_output.rs:29:15
+   |
+29 |     pub const Hg: i64 = 16;
+   |               ^^ help: convert the identifier to upper case: `HG`
+
+warning: `qs3` (lib test) generated 4 warnings (run `cargo fix --lib -p qs3 --tests` to apply 4 suggestions)
+    Finished `release` profile [optimized] target(s) in 5.89s
+     Running unittests src/lib.rs (/home/sp10/qs3/target/release/deps/qs3-b01ca87435d43bb7)
+
+running 1 test
+test loader::tests::quantization::real_nvfp4_dense_prefill_decode_and_reset ... NVFP4 forced-prefix step 0 (id, logit, logprob): [(5, 11.4375, -0.9576229009718613), (3, 9.6875, -2.7076229009718613), (9, 9.6875, -2.7076229009718613), (8687, 9.0625, -3.3326229009718613), (220, 8.625, -3.7701229009718613)]
+NVFP4 forced-prefix step 1 (id, logit, logprob): [(9, 10.875, -1.8561910250774574), (0, 10.375, -2.3561910250774574), (1, 10.0625, -2.6686910250774574), (6, 9.8125, -2.9186910250774574), (8687, 9.75, -2.9811910250774574)]
+NVFP4 forced-prefix step 2 (id, logit, logprob): [(31, 9.875, -2.205605488522963), (2037, 9.5, -2.580605488522963), (198, 9.0, -3.080605488522963), (220, 8.875, -3.205605488522963), (271, 8.375, -3.705605488522963)]
+NVFP4 forced-prefix step 3 (id, logit, logprob): [(46474, 12.375, -1.613908836272051), (0, 11.8125, -2.176408836272051), (2, 11.375, -2.613908836272051), (2037, 10.875, -3.113908836272051), (9, 10.5625, -3.426408836272051)]
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 172 filtered out; finished in 6.62s

@@ -1,0 +1,1 @@
+["cargo", "test", "--release", "--lib", "real_nvfp4_dense_prefill_decode_and_reset", "--", "--ignored", "--nocapture", "--test-threads=1"]

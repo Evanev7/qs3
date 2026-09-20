@@ -1,5 +1,21 @@
 # TODO
 
+## Active GPU queue
+
+1. [x] Record a pinned Qwen3.8-27B NVFP4 vLLM baseline with MTP disabled,
+   matching the 102/32 and 1024/256 core workloads. Record resolved precision,
+   graph/cache settings, prompt fingerprints, and raw timings. vLLM measures
+   82.707/83.582 ms per token (12.093/11.951 tok/s); qs3 `e1befe1` measures
+   88.668/89.207 ms. See `benchmarks/2026-09-20-vllm-nvfp4-nomtp/`.
+2. [x] Qualify CuTe NVFP4 W4A4 MLP/LM-head candidates against the current N32
+   CUTLASS path. Selected 32x64x512: M=1 through 16 qualified, 1,544 real
+   intermediates exact, prototype sustained decode 89.418→85.481 ms/token.
+   Integrated runtime: full required suite and real-checkpoint reset/replay pass;
+   85.126/85.558 ms per token at 102/32 and 1024/256. Evidence:
+   `benchmarks/2026-09-20-cute-nvfp4/`.
+3. [ ] After review/commit, run the standard committed benchmark/Nsight pass
+   for the CuTe NVFP4 integration. Working-tree measurements are archived above.
+
 ## Scope
 
 - Prioritize Qwen3.8-27B, initially text-only: this is the model that matters

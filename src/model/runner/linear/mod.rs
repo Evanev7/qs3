@@ -6,6 +6,7 @@ use crate::{
     Status,
     backend::{
         DMat, DVec, Operators, Workspace,
+        qscute::Nvfp4Linears,
         qsfi::{Nvfp4Plan, Nvfp4Tactic, scale_count},
     },
     dtype::{BF16, F32, Fp8E4M3, Nvfp4E2M1, U8},
@@ -19,6 +20,7 @@ use std::{
 };
 
 pub(super) struct QuantizedScratch {
+    pub(super) nvfp4: Option<Nvfp4Linears>,
     prepared_rows: HashSet<u32>,
     plans: HashMap<[u32; 3], Nvfp4Plan>,
     pub(super) fp8: DeviceBuffer<Fp8E4M3>,
@@ -29,8 +31,13 @@ pub(super) struct QuantizedScratch {
     logits: DeviceBuffer<BF16>,
 }
 impl QuantizedScratch {
-    pub(super) fn new(ctx: Rc<CudaCtx>, vocab: u32) -> Result<Self, Status> {
+    pub(super) fn new(
+        ctx: Rc<CudaCtx>,
+        vocab: u32,
+        nvfp4: Option<Nvfp4Linears>,
+    ) -> Result<Self, Status> {
         Ok(Self {
+            nvfp4,
             prepared_rows: HashSet::new(),
             plans: HashMap::new(),
             fp8: DeviceBuffer::with_capacity(ctx.clone(), 1)?,
@@ -89,6 +96,9 @@ impl QuantizedScratch {
         self.fp4.realloc(elements)?;
         self.scales.realloc(scale_count(rows, k_max)? as usize)?;
         for shape in shapes {
+            if self.nvfp4.is_some() && Nvfp4Linears::supports(shape) {
+                continue;
+            }
             let plan = match self.plans.entry(shape) {
                 Entry::Occupied(e) => e.into_mut(),
                 Entry::Vacant(e) => e.insert(
@@ -208,12 +218,24 @@ impl Operators<'_> {
                 alpha,
             } => {
                 let scratch = scratch.ok_or(Status::InternalError)?;
-                let plan = scratch.plans.get(&[m, n, k]).ok_or(Status::InternalError)?;
                 let x = scratch.fp4.matrix(m, k)?;
                 let x_scales = scratch.scales.vector(scale_count(m, k)?)?;
                 unsafe {
                     self.qsfi()
                         .nvfp4_quantize(input, x, x_scales, quant_multiplier)?;
+                    if let Some(kernel) = &scratch.nvfp4
+                        && Nvfp4Linears::supports([m, n, k])
+                    {
+                        return kernel.launch(
+                            *self.stream,
+                            x,
+                            weight,
+                            [x_scales, block_scales],
+                            alpha,
+                            output,
+                        );
+                    }
+                    let plan = scratch.plans.get(&[m, n, k]).ok_or(Status::InternalError)?;
                     self.qsfi().nvfp4_execute(
                         plan,
                         x,

@@ -1,0 +1,16 @@
+{
+  "102-32": {
+    "generated_ids_equal": true,
+    "generated_id_count": 36,
+    "baseline": "34s2z0ty/model-benchmark.json",
+    "decode_p50_ms": 85.1263295,
+    "baseline_decode_p50_ms": 88.54970800000001
+  },
+  "1024-256": {
+    "generated_ids_equal": true,
+    "generated_id_count": 260,
+    "baseline": "89wvrv9k/model-benchmark.json",
+    "decode_p50_ms": 85.55843250000001,
+    "baseline_decode_p50_ms": 89.4179075
+  }
+}

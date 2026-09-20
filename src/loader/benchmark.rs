@@ -15,7 +15,7 @@ use super::{
 use crate::{
     QwenTokenizer,
     backend::qsfi::MoeBf16Kernel,
-    model::{ModelRunner, Nvfp4Tactic, QwenRequest},
+    model::{ModelRunner, QwenRequest},
 };
 use std::time::Instant;
 
@@ -498,15 +498,9 @@ pub fn run_core_benchmark() -> JsonValue {
                     ("activation", "a4".to_owned().into()),
                     (
                         "prefill_tactic",
-                        Nvfp4Tactic::for_rows(prompt.len() as u32)
-                            .name()
-                            .to_owned()
-                            .into(),
+                        runner.nvfp4_tactic(prompt.len() as u32).to_owned().into(),
                     ),
-                    (
-                        "decode_tactic",
-                        Nvfp4Tactic::for_rows(1).name().to_owned().into(),
-                    ),
+                    ("decode_tactic", runner.nvfp4_tactic(1).to_owned().into()),
                 ]),
             );
         }
@@ -524,7 +518,7 @@ pub fn run_core_benchmark() -> JsonValue {
             execution.insert(
                 "mlp".into(),
                 if quantized {
-                    "cutlass-nvfp4"
+                    runner.nvfp4_tactic(1)
                 } else {
                     "cublaslt_dense_bf16"
                 }

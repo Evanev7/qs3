@@ -285,7 +285,7 @@ impl GdnStateIndexPolicy {
 }
 
 pub(crate) struct Operators<'a> {
-    stream: &'a ffi::CudaStream,
+    pub(crate) stream: &'a ffi::CudaStream,
     qsfi: &'a mut Qsfi,
     qscb: &'a mut Qscb,
 }

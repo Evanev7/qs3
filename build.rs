@@ -53,6 +53,9 @@ fn main() {
     println!("cargo:rustc-link-search=build");
     for artifact in [
         "cute/fp8_decode.rs",
+        "cute/nvfp4_up.rs",
+        "cute/nvfp4_down.rs",
+        "cute/nvfp4_head.rs",
         "libqscute.a",
         "libcuda_dialect_runtime_static.a",
     ] {

@@ -203,3 +203,174 @@ fn fp8_decode_scales_split_partials_guards_stream_ordering_and_reload() {
         }
     }
 }
+
+fn nvfp4_scale_offset(row: usize, group: usize, k: usize) -> usize {
+    ((row / 128 * (k / 64) + group / 4) * 32 + row % 32) * 16 + (row % 128) / 32 * 4 + group % 4
+}
+fn nvfp4_fixture(rows: usize, k: usize, seed: u32) -> (Vec<u8>, Vec<u8>) {
+    let hash = |mut x: u32| {
+        x ^= x >> 16;
+        x = x.wrapping_mul(0x7feb352d);
+        x ^= x >> 15;
+        x = x.wrapping_mul(0x846ca68b);
+        x ^ (x >> 16)
+    };
+    let values = (0..rows * k / 2)
+        .map(|i| hash(i as u32 ^ seed) as u8)
+        .collect();
+    let mut scales = vec![0; rows.div_ceil(128) * 128 * k / 16];
+    for row in 0..rows {
+        for block in 0..k / 16 {
+            scales[nvfp4_scale_offset(row, block, k)] =
+                0x20 + (hash((row * k / 16 + block) as u32 ^ seed) % 40) as u8;
+        }
+    }
+    (values, scales)
+}
+fn nvfp4_value(q: &[u8], sf: &[u8], row: usize, col: usize, k: usize) -> f64 {
+    let i = row * k + col;
+    let code = (q[i / 2] >> (4 * (i % 2))) & 15;
+    let value = [0., 0.5, 1., 1.5, 2., 3., 4., 6.][usize::from(code & 7)];
+    (if code & 8 == 0 { value } else { -value })
+        * f64::from(fp8(sf[nvfp4_scale_offset(row, col / 16, k)]))
+}
+#[test]
+fn nvfp4_small_batches_scales_guards_and_binding_validation() {
+    use crate::{
+        backend::{DMat, Qsfi, qsfi::Nvfp4Tactic},
+        dtype::Nvfp4E2M1,
+        ffi::{DevicePtr, cuda},
+    };
+    let _owner = TEST_LOCK.lock().unwrap();
+    let ctx = Rc::new(CudaCtx::new(0).unwrap());
+    let kernel = unsafe { Nvfp4Linears::load().unwrap() };
+    let mut baseline = Qsfi::new(&ctx).unwrap();
+    for (n, k) in [
+        (Nvfp4Linears::INTERMEDIATE, Nvfp4Linears::HIDDEN),
+        (Nvfp4Linears::HIDDEN, Nvfp4Linears::INTERMEDIATE),
+        (Nvfp4Linears::VOCAB, Nvfp4Linears::HIDDEN),
+    ] {
+        let (w, sf) = nvfp4_fixture(n as usize, k as usize, 17);
+        let weight = device::<Nvfp4E2M1>(&ctx, &w);
+        let weight_scale = device::<Fp8E4M3>(&ctx, &sf);
+        for m in [1u32, 2, 16] {
+            let (x, xsf) = nvfp4_fixture(m as usize, k as usize, 43);
+            let input = device::<Nvfp4E2M1>(&ctx, &x);
+            let input_scale = device::<Fp8E4M3>(&ctx, &xsf);
+            let count = (m * n) as usize;
+            let output = DeviceBuffer::<U8>::with_capacity(ctx.clone(), count * 2 + 32).unwrap();
+            let reference = DeviceBuffer::<BF16>::with_capacity(ctx.clone(), count).unwrap();
+            let plan = baseline
+                .create_nvfp4_plan([m, n, k], Nvfp4Tactic::Tile128x32Dp)
+                .unwrap();
+            let workspace =
+                DeviceBuffer::<U8>::with_capacity(ctx.clone(), plan.workspace_bytes.max(256))
+                    .unwrap();
+            let scales = [
+                input_scale.vector(input_scale.len() as u32).unwrap(),
+                weight_scale.vector(weight_scale.len() as u32).unwrap(),
+            ];
+            let result = DMat::contiguous(
+                DevicePtr::<BF16>::new(unsafe { output.as_raw().add(16) }).unwrap(),
+                m,
+                n,
+            )
+            .unwrap();
+            for alpha in [1f32, 0.137] {
+                let alpha_device = device::<F32>(&ctx, &alpha.to_le_bytes());
+                unsafe {
+                    assert_eq!(
+                        cuda::cudaMemsetAsync(
+                            output.as_raw().cast(),
+                            0xa5,
+                            count * 2 + 32,
+                            ctx.stream
+                        ),
+                        0
+                    );
+                    let misaligned = DMat::contiguous(
+                        DevicePtr::<Nvfp4E2M1>::new(input.as_raw().add(1)).unwrap(),
+                        m,
+                        k,
+                    )
+                    .unwrap();
+                    assert_eq!(
+                        kernel.launch(
+                            ctx.stream,
+                            misaligned,
+                            weight.matrix(n, k).unwrap(),
+                            scales,
+                            alpha_device.vector(1).unwrap(),
+                            result
+                        ),
+                        Err(Status::InvalidArgument)
+                    );
+                    let short_scales = [input_scale.vector(scales[0].len - 1).unwrap(), scales[1]];
+                    assert_eq!(
+                        kernel.launch(
+                            ctx.stream,
+                            input.matrix(m, k).unwrap(),
+                            weight.matrix(n, k).unwrap(),
+                            short_scales,
+                            alpha_device.vector(1).unwrap(),
+                            result
+                        ),
+                        Err(Status::InvalidArgument)
+                    );
+                    kernel
+                        .launch(
+                            ctx.stream,
+                            input.matrix(m, k).unwrap(),
+                            weight.matrix(n, k).unwrap(),
+                            scales,
+                            alpha_device.vector(1).unwrap(),
+                            result,
+                        )
+                        .unwrap();
+                    baseline
+                        .nvfp4_execute(
+                            &plan,
+                            input.matrix(m, k).unwrap(),
+                            weight.matrix(n, k).unwrap(),
+                            scales,
+                            alpha_device.vector(1).unwrap(),
+                            reference.matrix(m, n).unwrap(),
+                            workspace.workspace(workspace.len()).unwrap(),
+                        )
+                        .unwrap();
+                }
+                let actual = download(&ctx, &output);
+                let expected = download(&ctx, &reference);
+                assert!(
+                    actual[..16]
+                        .iter()
+                        .chain(&actual[actual.len() - 16..])
+                        .all(|&b| b == 0xa5)
+                );
+                assert_eq!(
+                    &actual[16..16 + count * 2],
+                    expected.as_slice(),
+                    "M{m} N{n} K{k} alpha={alpha}"
+                );
+                for row in [0, m as usize - 1] {
+                    for col in [0, 63, 64, n as usize - 1] {
+                        let exact = (0..k as usize)
+                            .map(|j| {
+                                nvfp4_value(&x, &xsf, row, j, k as usize)
+                                    * nvfp4_value(&w, &sf, col, j, k as usize)
+                            })
+                            .sum::<f64>()
+                            * f64::from(alpha);
+                        let offset = 2 * (row * n as usize + col);
+                        let got = f32::from_bits(
+                            u32::from(u16::from_le_bytes(
+                                expected[offset..offset + 2].try_into().unwrap(),
+                            )) << 16,
+                        );
+                        assert!((f64::from(got) - exact).abs() <= 0.004 * exact.abs() + 0.02);
+                    }
+                }
+            }
+        }
+    }
+}

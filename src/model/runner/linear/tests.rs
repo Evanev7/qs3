@@ -107,7 +107,7 @@ fn mixed_linear_preparation_scales_tails_and_reused_plans_match_reference() {
     let config = QwenConfig::randomized_dense_tiny_fixture();
     let mut engine = Engine::new(ctx.clone(), config.engine_config()).unwrap();
     let (n, k) = (136, 256); // Scale rows require padding; N is not a CTA multiple.
-    let mut scratch = QuantizedScratch::new(ctx.clone(), n).unwrap();
+    let mut scratch = QuantizedScratch::new(ctx.clone(), n, None).unwrap();
     let workspace = DeviceBuffer::<U8>::with_capacity(ctx.clone(), 8 << 20).unwrap();
     let fp4 = fp4_block(&ctx, n, k);
     let weight_codes: Vec<_> = (0..n * k).map(|i| ((i + i / k * 3) % 16) as u8).collect();

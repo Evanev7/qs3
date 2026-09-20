@@ -1,0 +1,56 @@
+{
+  "donor": "0f3a8cbfd1c11d27f04e3ab37a802d522f4f1c68",
+  "sm_count": 48,
+  "cases": [
+    {
+      "name": "up_r0",
+      "shape": "up",
+      "n": 17408,
+      "k": 5120,
+      "tile": [
+        16,
+        64,
+        128
+      ],
+      "splits": 1,
+      "source": "/home/maia/projects/exo/qs3/.prototypes/out/nvfp4-decode-aot/nvfp4_m16n64k128s1.py",
+      "prefix": "/home/maia/projects/exo/qs3/.prototypes/out/nvfp4-decode-aot/up_r0"
+    },
+    {
+      "name": "down_r0",
+      "shape": "down",
+      "n": 5120,
+      "k": 17408,
+      "tile": [
+        16,
+        64,
+        128
+      ],
+      "splits": 1,
+      "source": "/home/maia/projects/exo/qs3/.prototypes/out/nvfp4-decode-aot/nvfp4_m16n64k128s1.py",
+      "prefix": "/home/maia/projects/exo/qs3/.prototypes/out/nvfp4-decode-aot/down_r0"
+    },
+    {
+      "name": "head_r0",
+      "shape": "head",
+      "n": 248320,
+      "k": 5120,
+      "tile": [
+        16,
+        64,
+        128
+      ],
+      "splits": 1,
+      "source": "/home/maia/projects/exo/qs3/.prototypes/out/nvfp4-decode-aot/nvfp4_m16n64k128s1.py",
+      "prefix": "/home/maia/projects/exo/qs3/.prototypes/out/nvfp4-decode-aot/head_r0"
+    }
+  ],
+  "commit": "e1befe1f61252f21f90383429f319979566d0b3f",
+  "hashes": {
+    ".prototypes/nvfp4_decode/run.py": "6d3aea336026c5aa43e911122fd3293a3d231ad85d277e571ab347f5786543aa",
+    ".prototypes/nvfp4_decode/harness.rs": "18e3786f81862b5ff71b14ea83710ebb5ce643a6087300a0cd46eef4f6857df6",
+    ".prototypes/out/nvfp4-decode-aot/up_r0.o": "8280f77691a846dc8e7d5203afdba75286354c4136b4bafef48545ec4d817faf",
+    ".prototypes/out/nvfp4-decode-aot/down_r0.o": "33bed3885ef54f70d8dde919866ec7be80c01092de4a55618cae22a13b744b2e",
+    ".prototypes/out/nvfp4-decode-aot/head_r0.o": "a0fbe39cc7043e357fa75674c886e189a98ab121bcd15d8a4eb8e92ed2ec1fe0"
+  }
+}

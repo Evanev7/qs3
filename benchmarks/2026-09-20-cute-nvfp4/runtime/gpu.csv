@@ -1,0 +1,2 @@
+name, uuid, driver_version, pstate, temperature.gpu, clocks.current.sm [MHz], clocks.current.memory [MHz], power.draw [W]
+NVIDIA GB10, GPU-86256da9-c7d8-b3d4-b1d6-47335a88ff2f, 580.142, P8, 47, 208 MHz, [N/A], 4.88 W

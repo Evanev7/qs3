@@ -30,6 +30,7 @@ TYPES = {
     "u32": Dtype(cutlass.Uint32, "U32", "u32"),
     "i64": Dtype(cutlass.Int64, None, "i64"),
     "u64": Dtype(cutlass.Uint64, None, "u64"),
+    "nvfp4_e2m1": Dtype(cutlass.Float4E2M1FN, "Nvfp4E2M1", None),
     "fp8_e4m3": Dtype(cutlass.Float8E4M3FN, "Fp8E4M3", None),
 }
 

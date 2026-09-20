@@ -1,0 +1,371 @@
+{
+  "donor": "0f3a8cbfd1c11d27f04e3ab37a802d522f4f1c68",
+  "sm_count": 48,
+  "cases": [
+    {
+      "name": "up_r0",
+      "shape": "up",
+      "n": 17408,
+      "k": 5120,
+      "tile": [
+        16,
+        64,
+        128
+      ],
+      "splits": 1,
+      "source": "/home/maia/projects/exo/qs3/.prototypes/out/nvfp4-decode-aot/nvfp4_m16n64k128s1.py",
+      "prefix": "/home/maia/projects/exo/qs3/.prototypes/out/nvfp4-decode-aot/up_r0"
+    },
+    {
+      "name": "down_r0",
+      "shape": "down",
+      "n": 5120,
+      "k": 17408,
+      "tile": [
+        16,
+        64,
+        128
+      ],
+      "splits": 1,
+      "source": "/home/maia/projects/exo/qs3/.prototypes/out/nvfp4-decode-aot/nvfp4_m16n64k128s1.py",
+      "prefix": "/home/maia/projects/exo/qs3/.prototypes/out/nvfp4-decode-aot/down_r0"
+    },
+    {
+      "name": "head_r0",
+      "shape": "head",
+      "n": 248320,
+      "k": 5120,
+      "tile": [
+        16,
+        64,
+        128
+      ],
+      "splits": 1,
+      "source": "/home/maia/projects/exo/qs3/.prototypes/out/nvfp4-decode-aot/nvfp4_m16n64k128s1.py",
+      "prefix": "/home/maia/projects/exo/qs3/.prototypes/out/nvfp4-decode-aot/head_r0"
+    },
+    {
+      "name": "up_r1",
+      "shape": "up",
+      "n": 17408,
+      "k": 5120,
+      "tile": [
+        16,
+        64,
+        128
+      ],
+      "splits": 2,
+      "source": "/home/maia/projects/exo/qs3/.prototypes/out/nvfp4-decode-aot/nvfp4_m16n64k128s2.py",
+      "prefix": "/home/maia/projects/exo/qs3/.prototypes/out/nvfp4-decode-aot/up_r1"
+    },
+    {
+      "name": "down_r1",
+      "shape": "down",
+      "n": 5120,
+      "k": 17408,
+      "tile": [
+        16,
+        64,
+        128
+      ],
+      "splits": 2,
+      "source": "/home/maia/projects/exo/qs3/.prototypes/out/nvfp4-decode-aot/nvfp4_m16n64k128s2.py",
+      "prefix": "/home/maia/projects/exo/qs3/.prototypes/out/nvfp4-decode-aot/down_r1"
+    },
+    {
+      "name": "head_r1",
+      "shape": "head",
+      "n": 248320,
+      "k": 5120,
+      "tile": [
+        16,
+        64,
+        128
+      ],
+      "splits": 2,
+      "source": "/home/maia/projects/exo/qs3/.prototypes/out/nvfp4-decode-aot/nvfp4_m16n64k128s2.py",
+      "prefix": "/home/maia/projects/exo/qs3/.prototypes/out/nvfp4-decode-aot/head_r1"
+    },
+    {
+      "name": "up_r2",
+      "shape": "up",
+      "n": 17408,
+      "k": 5120,
+      "tile": [
+        16,
+        128,
+        128
+      ],
+      "splits": 1,
+      "source": "/home/maia/projects/exo/qs3/.prototypes/out/nvfp4-decode-aot/nvfp4_m16n128k128s1.py",
+      "prefix": "/home/maia/projects/exo/qs3/.prototypes/out/nvfp4-decode-aot/up_r2"
+    },
+    {
+      "name": "down_r2",
+      "shape": "down",
+      "n": 5120,
+      "k": 17408,
+      "tile": [
+        16,
+        128,
+        128
+      ],
+      "splits": 1,
+      "source": "/home/maia/projects/exo/qs3/.prototypes/out/nvfp4-decode-aot/nvfp4_m16n128k128s1.py",
+      "prefix": "/home/maia/projects/exo/qs3/.prototypes/out/nvfp4-decode-aot/down_r2"
+    },
+    {
+      "name": "head_r2",
+      "shape": "head",
+      "n": 248320,
+      "k": 5120,
+      "tile": [
+        16,
+        128,
+        128
+      ],
+      "splits": 1,
+      "source": "/home/maia/projects/exo/qs3/.prototypes/out/nvfp4-decode-aot/nvfp4_m16n128k128s1.py",
+      "prefix": "/home/maia/projects/exo/qs3/.prototypes/out/nvfp4-decode-aot/head_r2"
+    },
+    {
+      "name": "up_r3",
+      "shape": "up",
+      "n": 17408,
+      "k": 5120,
+      "tile": [
+        16,
+        128,
+        128
+      ],
+      "splits": 2,
+      "source": "/home/maia/projects/exo/qs3/.prototypes/out/nvfp4-decode-aot/nvfp4_m16n128k128s2.py",
+      "prefix": "/home/maia/projects/exo/qs3/.prototypes/out/nvfp4-decode-aot/up_r3"
+    },
+    {
+      "name": "down_r3",
+      "shape": "down",
+      "n": 5120,
+      "k": 17408,
+      "tile": [
+        16,
+        128,
+        128
+      ],
+      "splits": 2,
+      "source": "/home/maia/projects/exo/qs3/.prototypes/out/nvfp4-decode-aot/nvfp4_m16n128k128s2.py",
+      "prefix": "/home/maia/projects/exo/qs3/.prototypes/out/nvfp4-decode-aot/down_r3"
+    },
+    {
+      "name": "head_r3",
+      "shape": "head",
+      "n": 248320,
+      "k": 5120,
+      "tile": [
+        16,
+        128,
+        128
+      ],
+      "splits": 2,
+      "source": "/home/maia/projects/exo/qs3/.prototypes/out/nvfp4-decode-aot/nvfp4_m16n128k128s2.py",
+      "prefix": "/home/maia/projects/exo/qs3/.prototypes/out/nvfp4-decode-aot/head_r3"
+    },
+    {
+      "name": "up_r4",
+      "shape": "up",
+      "n": 17408,
+      "k": 5120,
+      "tile": [
+        32,
+        64,
+        128
+      ],
+      "splits": 1,
+      "source": "/home/maia/projects/exo/qs3/.prototypes/out/nvfp4-decode-aot/nvfp4_m32n64k128s1.py",
+      "prefix": "/home/maia/projects/exo/qs3/.prototypes/out/nvfp4-decode-aot/up_r4"
+    },
+    {
+      "name": "down_r4",
+      "shape": "down",
+      "n": 5120,
+      "k": 17408,
+      "tile": [
+        32,
+        64,
+        128
+      ],
+      "splits": 1,
+      "source": "/home/maia/projects/exo/qs3/.prototypes/out/nvfp4-decode-aot/nvfp4_m32n64k128s1.py",
+      "prefix": "/home/maia/projects/exo/qs3/.prototypes/out/nvfp4-decode-aot/down_r4"
+    },
+    {
+      "name": "head_r4",
+      "shape": "head",
+      "n": 248320,
+      "k": 5120,
+      "tile": [
+        32,
+        64,
+        128
+      ],
+      "splits": 1,
+      "source": "/home/maia/projects/exo/qs3/.prototypes/out/nvfp4-decode-aot/nvfp4_m32n64k128s1.py",
+      "prefix": "/home/maia/projects/exo/qs3/.prototypes/out/nvfp4-decode-aot/head_r4"
+    },
+    {
+      "name": "up_r5",
+      "shape": "up",
+      "n": 17408,
+      "k": 5120,
+      "tile": [
+        32,
+        64,
+        128
+      ],
+      "splits": 2,
+      "source": "/home/maia/projects/exo/qs3/.prototypes/out/nvfp4-decode-aot/nvfp4_m32n64k128s2.py",
+      "prefix": "/home/maia/projects/exo/qs3/.prototypes/out/nvfp4-decode-aot/up_r5"
+    },
+    {
+      "name": "down_r5",
+      "shape": "down",
+      "n": 5120,
+      "k": 17408,
+      "tile": [
+        32,
+        64,
+        128
+      ],
+      "splits": 2,
+      "source": "/home/maia/projects/exo/qs3/.prototypes/out/nvfp4-decode-aot/nvfp4_m32n64k128s2.py",
+      "prefix": "/home/maia/projects/exo/qs3/.prototypes/out/nvfp4-decode-aot/down_r5"
+    },
+    {
+      "name": "head_r5",
+      "shape": "head",
+      "n": 248320,
+      "k": 5120,
+      "tile": [
+        32,
+        64,
+        128
+      ],
+      "splits": 2,
+      "source": "/home/maia/projects/exo/qs3/.prototypes/out/nvfp4-decode-aot/nvfp4_m32n64k128s2.py",
+      "prefix": "/home/maia/projects/exo/qs3/.prototypes/out/nvfp4-decode-aot/head_r5"
+    },
+    {
+      "name": "up_r6",
+      "shape": "up",
+      "n": 17408,
+      "k": 5120,
+      "tile": [
+        32,
+        128,
+        128
+      ],
+      "splits": 1,
+      "source": "/home/maia/projects/exo/qs3/.prototypes/out/nvfp4-decode-aot/nvfp4_m32n128k128s1.py",
+      "prefix": "/home/maia/projects/exo/qs3/.prototypes/out/nvfp4-decode-aot/up_r6"
+    },
+    {
+      "name": "down_r6",
+      "shape": "down",
+      "n": 5120,
+      "k": 17408,
+      "tile": [
+        32,
+        128,
+        128
+      ],
+      "splits": 1,
+      "source": "/home/maia/projects/exo/qs3/.prototypes/out/nvfp4-decode-aot/nvfp4_m32n128k128s1.py",
+      "prefix": "/home/maia/projects/exo/qs3/.prototypes/out/nvfp4-decode-aot/down_r6"
+    },
+    {
+      "name": "head_r6",
+      "shape": "head",
+      "n": 248320,
+      "k": 5120,
+      "tile": [
+        32,
+        128,
+        128
+      ],
+      "splits": 1,
+      "source": "/home/maia/projects/exo/qs3/.prototypes/out/nvfp4-decode-aot/nvfp4_m32n128k128s1.py",
+      "prefix": "/home/maia/projects/exo/qs3/.prototypes/out/nvfp4-decode-aot/head_r6"
+    },
+    {
+      "name": "up_r7",
+      "shape": "up",
+      "n": 17408,
+      "k": 5120,
+      "tile": [
+        32,
+        128,
+        128
+      ],
+      "splits": 2,
+      "source": "/home/maia/projects/exo/qs3/.prototypes/out/nvfp4-decode-aot/nvfp4_m32n128k128s2.py",
+      "prefix": "/home/maia/projects/exo/qs3/.prototypes/out/nvfp4-decode-aot/up_r7"
+    },
+    {
+      "name": "down_r7",
+      "shape": "down",
+      "n": 5120,
+      "k": 17408,
+      "tile": [
+        32,
+        128,
+        128
+      ],
+      "splits": 2,
+      "source": "/home/maia/projects/exo/qs3/.prototypes/out/nvfp4-decode-aot/nvfp4_m32n128k128s2.py",
+      "prefix": "/home/maia/projects/exo/qs3/.prototypes/out/nvfp4-decode-aot/down_r7"
+    },
+    {
+      "name": "head_r7",
+      "shape": "head",
+      "n": 248320,
+      "k": 5120,
+      "tile": [
+        32,
+        128,
+        128
+      ],
+      "splits": 2,
+      "source": "/home/maia/projects/exo/qs3/.prototypes/out/nvfp4-decode-aot/nvfp4_m32n128k128s2.py",
+      "prefix": "/home/maia/projects/exo/qs3/.prototypes/out/nvfp4-decode-aot/head_r7"
+    }
+  ],
+  "commit": "e1befe1f61252f21f90383429f319979566d0b3f",
+  "hashes": {
+    ".prototypes/nvfp4_decode/run.py": "b0ff12e31775b302ddf8a494df6f1e6e791a5de66f62cdd13a7700f7b0bec0d2",
+    ".prototypes/nvfp4_decode/harness.rs": "18e3786f81862b5ff71b14ea83710ebb5ce643a6087300a0cd46eef4f6857df6",
+    ".prototypes/out/nvfp4-decode-aot/up_r0.o": "8280f77691a846dc8e7d5203afdba75286354c4136b4bafef48545ec4d817faf",
+    ".prototypes/out/nvfp4-decode-aot/down_r0.o": "33bed3885ef54f70d8dde919866ec7be80c01092de4a55618cae22a13b744b2e",
+    ".prototypes/out/nvfp4-decode-aot/head_r0.o": "a0fbe39cc7043e357fa75674c886e189a98ab121bcd15d8a4eb8e92ed2ec1fe0",
+    ".prototypes/out/nvfp4-decode-aot/up_r1.o": "b3250280981b801d6acc397124d4655613f221a18d089c693016dcb54a82062e",
+    ".prototypes/out/nvfp4-decode-aot/down_r1.o": "ed1ace781adfd3d4f136a6000e431650fec0ff32d955365dc316dbc040e268ac",
+    ".prototypes/out/nvfp4-decode-aot/head_r1.o": "2e1511823b4871906fe77ef12fe5fb5d4889bab2cb8622b7fff55ddccc6a3a7e",
+    ".prototypes/out/nvfp4-decode-aot/up_r2.o": "152cf4b9ad7b761085b46eeed3769b5cd0d22b431d7a67dd26fd36f5e1b35063",
+    ".prototypes/out/nvfp4-decode-aot/down_r2.o": "2fe594e3f28f390a9f918df59d7421c382430128515c40b78586c2a8a3b88204",
+    ".prototypes/out/nvfp4-decode-aot/head_r2.o": "f7fb3f21f910d258be9e65744c879d154cb5013e632d288a4eb221bdfe9d2d3b",
+    ".prototypes/out/nvfp4-decode-aot/up_r3.o": "a95626905477dd0b1c5bd2aa701105e32d9783b72ea1510b799ef55fa49ed735",
+    ".prototypes/out/nvfp4-decode-aot/down_r3.o": "a457addbf6cda62a92df29a691e7cb68d3b79d495a324fb693f407674f4908c0",
+    ".prototypes/out/nvfp4-decode-aot/head_r3.o": "3167931ee59c0560cc298e486e5db87ffb26dd0b0c325459eb7133060ccb560f",
+    ".prototypes/out/nvfp4-decode-aot/up_r4.o": "b31020a3ae92a244177e908f5b5d5c21b649276a7d3666965e0c3d70f60bde16",
+    ".prototypes/out/nvfp4-decode-aot/down_r4.o": "afc6316c6251973405476b4ab2d814084fe6a8c1f23fa64b7227335cb054b705",
+    ".prototypes/out/nvfp4-decode-aot/head_r4.o": "4a0d4cc24e2e6d8b0392076150063a96454e8f2c0eb1a55172bda5798b54ac8e",
+    ".prototypes/out/nvfp4-decode-aot/up_r5.o": "7184c979067d3fd0720c4135b46da7a534e776eded9a211edd262016e6501bca",
+    ".prototypes/out/nvfp4-decode-aot/down_r5.o": "22127ba3721f5a67069fc10408e9f4f0dfd9ef2d057c93de50629b00c8f641ab",
+    ".prototypes/out/nvfp4-decode-aot/head_r5.o": "c8f31500817d5fffa17ce78289d4636ac3f94f9a12dbcc9b3448e1d655587935",
+    ".prototypes/out/nvfp4-decode-aot/up_r6.o": "b2907aca91904fd75313acf8aa581d5568ba9d8dca7d78bdd49090a550b4bb47",
+    ".prototypes/out/nvfp4-decode-aot/down_r6.o": "7786e4806344224b64d442556ce0d03084cdbee20afff206d7bfe2c3079ed468",
+    ".prototypes/out/nvfp4-decode-aot/head_r6.o": "3d5a1ff64376a9c518e8b2f25c6bb7997d0d7e5f1615c530d2c352ce30da5413",
+    ".prototypes/out/nvfp4-decode-aot/up_r7.o": "332ebc875c6d9ec96ccb1012eab815e2b1c9293db1bd6471388d40ca72549abf",
+    ".prototypes/out/nvfp4-decode-aot/down_r7.o": "10c79001f4c612d4fd86d6fd04296ae9b7d047ddf39962fad0b0154343001731",
+    ".prototypes/out/nvfp4-decode-aot/head_r7.o": "2b83ece882201d13bd782957703bbaca50c5e24991eb388b8a0e8074cfc091d8"
+  }
+}

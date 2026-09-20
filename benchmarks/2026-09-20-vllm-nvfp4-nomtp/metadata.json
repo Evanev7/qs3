@@ -1,0 +1,20 @@
+{
+  "model": "nvidia/Qwen3.8-27B-NVFP4",
+  "revision": "dbb8f445b3145f8a4c18ddc769f032d57d32867c",
+  "config_sha256": "71fa01bb64de20971045cd82a82c0ebb25a54e1b0a3f09ef23cf5479e9c54df8",
+  "image_pin": "vllm/vllm-openai@sha256:c2914767605584b6d8f45686b82de173ecc99e781897aa3d0a66dacd72c51ae1",
+  "image_id": "sha256:c2914767605584b6d8f45686b82de173ecc99e781897aa3d0a66dacd72c51ae1",
+  "qs3_commit": "e1befe1f61252f21f90383429f319979566d0b3f",
+  "workloads": [
+    [
+      102,
+      32
+    ],
+    [
+      1024,
+      256
+    ]
+  ],
+  "protocol": "batch 1 greedy; 2 prefill warmups + 5 samples; 4 decode warmups; independent continuations",
+  "vllm_mode": "stock image, default CUDA graphs, v1 runner, speculative_config=None"
+}

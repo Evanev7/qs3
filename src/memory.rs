@@ -462,7 +462,6 @@ impl<D: DType> HostBuffer<D> {
         })?;
         Ok(buffer)
     }
-
 }
 impl<D: DType> AsRef<[u8]> for HostBuffer<D> {
     fn as_ref(&self) -> &[u8] {

@@ -12,8 +12,8 @@ mod tests;
 use crate::{
     backend::{
         gdn_prefill::GdnPrefill,
-        qscute::Fp8Decode,
-        qsfi::{MoeBf16PlanConfig, MoePlan, RmsNormBf16, Workspace},
+        qscute::{Fp8Decode, Nvfp4Linears},
+        qsfi::{MoeBf16PlanConfig, MoePlan, Nvfp4Tactic, RmsNormBf16, Workspace},
         qstriton::{Fp8Reduce, GdnQkv as Bf16GdnQkv, LmHead},
     },
     constants::gdn::PACKED_QKV_CHANNELS,
@@ -147,7 +147,16 @@ impl ModelRunner {
         };
         let quantized_scratch = weights
             .is_quantized()
-            .then(|| QuantizedScratch::new(ctx.clone(), config.vocab_size()))
+            .then(|| {
+                let nvfp4 = Nvfp4Linears::supports_model(
+                    config.hidden_size(),
+                    config.intermediate_size(),
+                    config.vocab_size(),
+                )
+                .then(|| unsafe { Nvfp4Linears::load() })
+                .transpose()?;
+                QuantizedScratch::new(ctx.clone(), config.vocab_size(), nvfp4)
+            })
             .transpose()?;
         let scratch = RunnerScratch::new(ctx.clone(), &config, moe_workspace_bytes)?;
         let qscb_workspace = DeviceBuffer::with_capacity(ctx.clone(), config.qscb_workspace_bytes)?;
@@ -270,12 +279,31 @@ impl ModelRunner {
     }
 
     pub(crate) fn lm_head_provider(&self) -> &'static str {
-        if self.quantized_scratch.is_some() {
+        if self
+            .quantized_scratch
+            .as_ref()
+            .is_some_and(|s| s.nvfp4.is_some())
+        {
+            "cute-nvfp4"
+        } else if self.quantized_scratch.is_some() {
             "flashinfer-cutlass-nvfp4"
         } else if self.lm_head.is_some() {
             "triton"
         } else {
             "cublaslt"
+        }
+    }
+
+    pub(crate) fn nvfp4_tactic(&self, rows: u32) -> &'static str {
+        if self
+            .quantized_scratch
+            .as_ref()
+            .is_some_and(|s| s.nvfp4.is_some())
+            && (1..=Nvfp4Linears::MAX_ROWS).contains(&rows)
+        {
+            Nvfp4Linears::TACTIC
+        } else {
+            Nvfp4Tactic::for_rows(rows).name()
         }
     }
 
