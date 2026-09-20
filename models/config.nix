@@ -199,6 +199,45 @@ assert
       };
       lm_head = gemv text.vocab_size { precision = precision.lm_head; };
       gdn_qkv = gemv dimensions.gdn.packedQkvChannels { };
+      # KR03: only M=1/N=10240/K=5120 is qualified for this FP8 replacement.
+      fp8_decode = {
+        provider = "cute";
+        source = "cute_kernels/fp8_decode.py";
+        spec = {
+          precision = {
+            x = "fp8_e4m3";
+            w = "fp8_e4m3";
+            partials = "f32";
+            input_scale = "f32";
+            weight_scale = "f32";
+          };
+          alignments = {
+            x = 16;
+            w = 16;
+            partials = 16;
+            input_scale = 4;
+            weight_scale = 4;
+          };
+          constants = {
+            N = 10240;
+            K = 5120;
+          };
+          options = {
+            "gpu-arch" = "sm_121a";
+            "host-target" = "linux-aarch64";
+          };
+        };
+      };
+      fp8_reduce = triton "fp8_reduce" 10 {
+        precision = {
+          partials = "f32";
+          output = "bf16";
+        };
+        constants = {
+          N = 10240;
+          BLOCK = 1024;
+        };
+      };
       sampling_prepare = triton "sampling_prepare" samplingBlocks {
         precision = {
           logits = "f32";
@@ -283,7 +322,8 @@ assert
             { provider = "cublaslt"; }
         );
 
-    } // (import ./gdn_prefill.nix { inherit text precision; });
+    }
+    // (import ./gdn_prefill.nix { inherit text precision; });
 
   # Quantized recipes will also need concrete packing and scale layouts.
   # Compiler dependencies stay pinned in flake.lock and build_tools/uv.lock.

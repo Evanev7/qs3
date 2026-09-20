@@ -1,6 +1,5 @@
 """Link CuTe AOT exports and exercise the generated Rust launchers on CUDA."""
 
-import importlib.metadata
 import json
 import os
 import subprocess
@@ -10,6 +9,7 @@ from pathlib import Path
 from qsutil.config import CudaTarget, CuteSpec, parse
 
 from qscute.builder import compile_source
+from qscute.runtime import runtime_archive
 
 
 def main() -> None:
@@ -19,28 +19,13 @@ def main() -> None:
     output = config_path.parent
     source = Path(__file__).resolve().parent
     root = source.parents[2]
-    objects = []
-    for dtype, block in [("f32", 128), ("bf16", 64)]:
-        prefix = output / ("saxpy_" + dtype)
-        spec = CuteSpec(
-            precision={name: dtype for name in ("x", "y", "output")},
-            alignments={name: 16 for name in ("x", "y", "output")},
-            constants={"BLOCK": block},
-            options={"gpu-arch": "sm_121a"},
-        )
-        compile_source(root / "cute_kernels/saxpy.py", spec, target, str(prefix))
-        objects.append(str(prefix) + ".o")
+    prefix = output / "fp8_decode_test"
+    spec = parse(json.dumps(config["kernels"]["fp8_decode"]["spec"]), CuteSpec)
+    compile_source(root / "cute_kernels/fp8_decode.py", spec, target, str(prefix))
     archive = output / "libqscute_test.a"
     archive.unlink(missing_ok=True)
-    subprocess.run(["ar", "rcs", str(archive), *objects], check=True)
-    package = importlib.metadata.distribution("nvidia-cutlass-dsl-libs-cu13")
-    runtime = Path(
-        str(
-            package.locate_file(
-                "nvidia_cutlass_dsl/cu13/lib/libcuda_dialect_runtime_static.a"
-            )
-        )
-    ).resolve(strict=True)
+    subprocess.run(["ar", "rcs", str(archive), str(prefix) + ".o"], check=True)
+    runtime = runtime_archive()
     subprocess.run(["just", "--justfile", str(root / "justfile"), "build"], check=True)
     subprocess.run(
         [

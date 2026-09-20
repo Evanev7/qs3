@@ -2590,7 +2590,9 @@ fn qwen36_gdn_qkv_triton_decode_matches_cublaslt() {
     let hidden = runner.config.hidden_size();
     let packed = PACKED_QKV_CHANNELS;
     runner.scratch.reserve(1).unwrap();
-    runner.gdn_qkv = Some(unsafe { crate::backend::qstriton::GdnQkv::load().unwrap() });
+    runner.gdn_qkv = Some(super::GdnQkv::Bf16(unsafe {
+        crate::backend::qstriton::GdnQkv::load().unwrap()
+    }));
     assert_eq!(runner.gdn_qkv_provider(), "triton");
 
     // Exactly representable BF16 values with varying signs and magnitudes.

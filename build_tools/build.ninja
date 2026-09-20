@@ -1,6 +1,8 @@
 ninja_required_version = 1.10
 
 qstriton = ../build_tools/.venv/bin/qstriton
+qscute = ../build_tools/.venv/bin/qscute
+qscute_runtime = ../build_tools/.venv/bin/qscute-runtime
 
 build config_inputs: phony ../models/config.nix $
     ../models/gdn_prefill.nix $
@@ -21,12 +23,14 @@ build constants.rs: nix_eval ../build_tools/nixsrc/rust.nix | config_inputs
 build vectors/config.json: nix_eval ../build_tools/nixsrc/vectors.nix | config_inputs
 build qsfi_macros.h: nix_eval ../build_tools/nixsrc/c.nix | config_inputs
 build triton/kernels.ninja: nix_eval ../build_tools/nixsrc/ninja.nix | config_inputs
+build cute/kernels.ninja: nix_eval ../build_tools/nixsrc/cute.nix | config_inputs
 
 build build.ninja cuda.ninja: regenerate | $
-    ../build_tools/build.ninja ../build_tools/cuda.ninja triton/kernels.ninja
+    ../build_tools/build.ninja ../build_tools/cuda.ninja triton/kernels.ninja cute/kernels.ninja
 
 subninja cuda.ninja
 subninja triton/kernels.ninja
+subninja cute/kernels.ninja
 
-build all: phony libqs_native.a triton/kernels constants.rs
+build all: phony libqs_native.a triton/kernels cute/kernels libqscute.a libcuda_dialect_runtime_static.a constants.rs
 default all

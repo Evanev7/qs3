@@ -29,4 +29,14 @@ in
 + builtins.concatStringsSep "\n" (map edge names)
 + ''
   build cute/kernels: phony ${builtins.concatStringsSep " " (map (name: "cute/${name}.rs") names)}
+
+  rule cute_archive
+    command = rm -f $out && ar rcs $out $in
+    description = AR $out
+  build libqscute.a: cute_archive ${builtins.concatStringsSep " " (map (name: "cute/${name}.o") names)}
+
+  rule cute_runtime
+    command = "$qscute_runtime" $out
+    description = CUTE RUNTIME $out
+  build libcuda_dialect_runtime_static.a: cute_runtime | $qscute_runtime ../build_tools/pysrc/qscute/runtime.py ../build_tools/pyproject.toml ../build_tools/uv.lock
 ''

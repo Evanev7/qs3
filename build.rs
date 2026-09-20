@@ -39,6 +39,7 @@ fn main() {
     for kernel in [
         "lm_head",
         "gdn_qkv",
+        "fp8_reduce",
         "sampling_prepare",
         "sampling_filter",
         "sampling_gumbel",
@@ -50,8 +51,17 @@ fn main() {
     }
 
     println!("cargo:rustc-link-search=build");
+    for artifact in [
+        "cute/fp8_decode.rs",
+        "libqscute.a",
+        "libcuda_dialect_runtime_static.a",
+    ] {
+        println!("cargo:rerun-if-changed=build/{artifact}");
+    }
     println!("cargo:rustc-link-lib=static=qs_native");
-    for lib in ["cudart", "cublasLt", "stdc++"] {
+    println!("cargo:rustc-link-lib=static=qscute");
+    println!("cargo:rustc-link-lib=static=cuda_dialect_runtime_static");
+    for lib in ["cuda", "cudart", "cublasLt", "stdc++"] {
         println!("cargo:rustc-link-lib=dylib={lib}");
     }
 

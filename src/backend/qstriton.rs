@@ -46,6 +46,45 @@ mod gdn_qkv {
     ));
 }
 
+mod fp8_reduce {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/build/triton/fp8_reduce.rs"
+    ));
+}
+
+pub(crate) struct Fp8Reduce(fp8_reduce::Kernel);
+
+impl Fp8Reduce {
+    pub(crate) const N: u32 = fp8_reduce::constants::N as u32;
+
+    pub(crate) unsafe fn load() -> Result<Self, Status> {
+        unsafe { fp8_reduce::Kernel::load() }
+            .map(Self)
+            .map_err(|_| Status::CudaError)
+    }
+
+    /// Retain the module and nonaliasing tensor allocations until work completes.
+    pub(crate) unsafe fn launch(
+        &self,
+        stream: ffi::CudaStream,
+        partials: DMat<F32>,
+        output: DMat<BF16>,
+    ) -> Result<(), Status> {
+        if partials.shape() != [2, Self::N] || output.shape() != [1, Self::N] {
+            return Err(Status::InvalidArgument);
+        }
+        partials.require_contiguous()?;
+        output.require_contiguous()?;
+        if !(partials.data.erase() as usize).is_multiple_of(4)
+            || !(output.data.erase() as usize).is_multiple_of(2)
+        {
+            return Err(Status::InvalidArgument);
+        }
+        unsafe { self.0.launch(stream, partials.data, output.data) }.map_err(|_| Status::CudaError)
+    }
+}
+
 macro_rules! qstriton_gemv {
     ($name:ident,$k:ident,$input:ty, $weight:ty, $output:ty) => {
         pub(crate) struct $name($k::Kernel);

@@ -12,8 +12,9 @@ mod tests;
 use crate::{
     backend::{
         gdn_prefill::GdnPrefill,
+        qscute::Fp8Decode,
         qsfi::{MoeBf16PlanConfig, MoePlan, RmsNormBf16, Workspace},
-        qstriton::{GdnQkv, LmHead},
+        qstriton::{Fp8Reduce, GdnQkv as Bf16GdnQkv, LmHead},
     },
     constants::gdn::PACKED_QKV_CHANNELS,
     engine::{AppendBatch, Commit, DecodeBatch, Engine, RequestId, Status},
@@ -30,6 +31,13 @@ use crate::{
 };
 
 use std::{mem, rc::Rc};
+
+enum GdnQkv {
+    Bf16(Bf16GdnQkv),
+    Fp8 { gemm: Fp8Decode, reduce: Fp8Reduce },
+}
+
+const _: () = assert!(Fp8Decode::N == Fp8Reduce::N);
 
 #[derive(Clone, Copy, Debug)]
 pub struct QwenRequest<'a> {
@@ -151,11 +159,22 @@ impl ModelRunner {
             .has_gdn_layers()
             .then(|| unsafe { GdnPrefill::load() })
             .transpose()?;
-        let gdn_qkv = (!weights.is_quantized()
-            && gdn_state.is_some()
-            && GdnQkv::supports(config.hidden_size(), PACKED_QKV_CHANNELS))
-        .then(|| unsafe { GdnQkv::load() })
-        .transpose()?;
+        let gdn_qkv = if gdn_state.is_none() {
+            None
+        } else if weights.is_quantized() {
+            Fp8Decode::supports(config.hidden_size(), PACKED_QKV_CHANNELS)
+                .then(|| unsafe {
+                    Ok::<_, Status>(GdnQkv::Fp8 {
+                        gemm: Fp8Decode::load()?,
+                        reduce: Fp8Reduce::load()?,
+                    })
+                })
+                .transpose()?
+        } else {
+            Bf16GdnQkv::supports(config.hidden_size(), PACKED_QKV_CHANNELS)
+                .then(|| unsafe { Bf16GdnQkv::load().map(GdnQkv::Bf16) })
+                .transpose()?
+        };
         // Engine construction and allocations establish the primary context.
         let lm_head = (!weights.is_quantized()
             && LmHead::supports(config.hidden_size(), config.vocab_size()))
@@ -261,12 +280,11 @@ impl ModelRunner {
     }
 
     pub(crate) fn gdn_qkv_provider(&self) -> &'static str {
-        if self.quantized_scratch.is_some() {
-            "cublaslt-fp8"
-        } else if self.gdn_qkv.is_some() {
-            "triton"
-        } else {
-            "cublaslt"
+        match self.gdn_qkv {
+            Some(GdnQkv::Fp8 { .. }) => "cute-fp8-split2",
+            Some(GdnQkv::Bf16(_)) => "triton",
+            None if self.quantized_scratch.is_some() => "cublaslt-fp8",
+            None => "cublaslt",
         }
     }
 

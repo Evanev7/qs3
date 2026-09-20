@@ -307,6 +307,7 @@ fn quantized_fixture(ctx: &Rc<CudaCtx>, config: &QwenConfig) -> QwenWeights {
 
 #[test]
 fn mixed_dense_runner_prefill_decode_rebuild_and_reset_reuse_preparation() {
+    let _kernel_owner = crate::backend::qscute::TEST_LOCK.lock().unwrap();
     let ctx = Rc::new(CudaCtx::new(0).unwrap());
     let mut config = QwenConfig::randomized_dense_tiny_fixture();
     config.fixture_mut().num_layers = 4;
@@ -319,7 +320,17 @@ fn mixed_dense_runner_prefill_decode_rebuild_and_reset_reuse_preparation() {
     )
     .unwrap();
     assert_eq!(runner.lm_head_provider(), "flashinfer-cutlass-nvfp4");
-    assert_eq!(runner.gdn_qkv_provider(), "cublaslt-fp8");
+    assert_eq!(
+        runner.gdn_qkv_provider(),
+        if crate::backend::qscute::Fp8Decode::supports(
+            config.hidden_size(),
+            crate::constants::gdn::PACKED_QKV_CHANNELS,
+        ) {
+            "cute-fp8-split2"
+        } else {
+            "cublaslt-fp8"
+        }
+    );
     let request = QwenRequest {
         request_id: 17,
         tokens: &[1, 2, 3, 4],

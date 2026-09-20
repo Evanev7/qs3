@@ -1,4 +1,4 @@
-use super::{BatchExecution, Projection, linear::LinearWeight};
+use super::{BatchExecution, GdnQkv, Projection, linear::LinearWeight};
 use crate::{
     backend::DMat,
     constants::gdn::{
@@ -60,8 +60,24 @@ impl BatchExecution<'_> {
                 self.gdn_qkv,
                 layer.in_proj.view(PACKED_QKV_CHANNELS, hidden)?,
             ) {
-                (ActiveRunKind::Decode, Some(kernel), LinearWeight::Bf16(weight)) => {
+                (ActiveRunKind::Decode, Some(GdnQkv::Bf16(kernel)), LinearWeight::Bf16(weight)) => {
                     kernel.launch(ctx.stream, input, weight, packed)?;
+                }
+                (
+                    ActiveRunKind::Decode,
+                    Some(GdnQkv::Fp8 { gemm, reduce }),
+                    LinearWeight::Fp8 {
+                        weight,
+                        input_scale,
+                        weight_scale,
+                    },
+                ) => {
+                    let quantized = self.quantized_scratch.ok_or(Status::InternalError)?;
+                    let x = quantized.fp8.matrix(1, hidden)?;
+                    let partials = quantized.fp8_partials.matrix(2, PACKED_QKV_CHANNELS)?;
+                    ops.qscb().quantize_fp8(input, x, input_scale)?;
+                    gemm.launch(ctx.stream, x, weight, [input_scale, weight_scale], partials)?;
+                    reduce.launch(ctx.stream, partials, packed)?;
                 }
                 (_, _, weight) => ops.linear(
                     input,

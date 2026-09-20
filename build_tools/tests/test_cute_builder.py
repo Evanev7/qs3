@@ -19,12 +19,10 @@ from test_triton_builder import ROOT, evaluate
 
 @pytest.fixture
 def spec() -> CuteSpec:
-    return CuteSpec(
-        precision={"x": "f32", "y": "f32", "output": "f32"},
-        alignments={"x": 16, "y": 16, "output": 16},
-        constants={"BLOCK": 128},
-        options={"gpu-arch": "sm_121a", "host-target": "linux-aarch64"},
-    )
+    config = json.loads(evaluate("models/config.nix", "--json"))
+    result = parse(json.dumps(config["kernels"]["fp8_decode"]["spec"]), CuteSpec)
+    result.options["host-target"] = "linux-aarch64"
+    return result
 
 
 @pytest.fixture
@@ -36,28 +34,23 @@ def target() -> CudaTarget:
 
 
 def test_signature(spec: CuteSpec) -> None:
-    values, args = signature(load_kernel(ROOT / "cute_kernels/saxpy.py"), spec)
-    assert len(values) == 7
+    values, args = signature(load_kernel(ROOT / "cute_kernels/fp8_decode.py"), spec)
+    assert len(values) == 8
     assert [(a.name, a.rust) for a in args] == [
-        ("x", "DevicePtr<F32>"),
-        ("y", "DevicePtr<F32>"),
-        ("output", "DevicePtr<F32>"),
-        ("n", "i32"),
-        ("alpha", "f32"),
+        ("x", "DevicePtr<Fp8E4M3>"),
+        ("w", "DevicePtr<Fp8E4M3>"),
+        ("partials", "DevicePtr<F32>"),
+        ("input_scale", "DevicePtr<F32>"),
+        ("weight_scale", "DevicePtr<F32>"),
         ("stream", "*mut c_void"),
     ]
     assert all(isinstance(ty, Dtype) for ty in TYPES.values())
     assert TYPES["fp8_e4m3"].marker == "Fp8E4M3"
 
 
-@pytest.mark.parametrize("dtype,block", [("f32", 128), ("bf16", 64)])
-def test_real_aot_export(
-    tmp_path: Path, spec: CuteSpec, target: CudaTarget, dtype: str, block: int
-) -> None:
-    spec.precision = {name: dtype for name in spec.precision}
-    spec.constants["BLOCK"] = block
-    prefix = tmp_path / "saxpy"
-    compile_source(ROOT / "cute_kernels/saxpy.py", spec, target, str(prefix))
+def test_real_aot_export(tmp_path: Path, spec: CuteSpec, target: CudaTarget) -> None:
+    prefix = tmp_path / "fp8_decode"
+    compile_source(ROOT / "cute_kernels/fp8_decode.py", spec, target, str(prefix))
     obj = prefix.with_suffix(".o").read_bytes()
     assert obj[:4] == b"\x7fELF"
     assert int.from_bytes(obj[18:20], "little") == 183  # EM_AARCH64, no GPU required.
@@ -72,16 +65,16 @@ def test_real_aot_export(
     )
     assert [a["name"] for a in manifest["arguments"]] == [
         "x",
-        "y",
-        "output",
-        "n",
-        "alpha",
+        "w",
+        "partials",
+        "input_scale",
+        "weight_scale",
         "stream",
     ]
-    assert manifest["spec"]["constants"] == {"BLOCK": block}
-    assert manifest["artifacts"]["saxpy.o"] == hashlib.sha256(obj).hexdigest()
+    assert manifest["spec"]["constants"] == {"K": 5120, "N": 10240}
+    assert manifest["artifacts"]["fp8_decode.o"] == hashlib.sha256(obj).hexdigest()
     depfile = prefix.with_suffix(".d").read_text()
-    assert "cute_kernels/saxpy.py" in depfile and "qscute/signature.py" in depfile
+    assert "cute_kernels/fp8_decode.py" in depfile and "qscute/signature.py" in depfile
     # Type-check the emitted Rust with the real storage marker and DevicePtr sources.
     raw_dtypes = re.findall(
         r"QSFI_(DTYPE_\w+) = (\d+)", (ROOT / "qs_tensor.h").read_text()
@@ -101,7 +94,7 @@ mod ffi {{
     #[path = "{ROOT / "src/ffi/device_ptr.rs"}"] mod pointer;
     pub use pointer::DevicePtr;
 }}
-include!("saxpy.rs");
+include!("fp8_decode.rs");
 ''')
     subprocess.run(
         [
@@ -130,7 +123,7 @@ def test_invalid_source_has_no_artifacts(
 
 
 def test_invalid_contract(spec: CuteSpec, target: CudaTarget) -> None:
-    kernel = load_kernel(ROOT / "cute_kernels/saxpy.py")
+    kernel = load_kernel(ROOT / "cute_kernels/fp8_decode.py")
     invalid = copy.deepcopy(spec)
     invalid.alignments["x"] = 3
     with pytest.raises(ValueError, match="power of two"):
@@ -156,14 +149,18 @@ def test_ninja_recipe(tmp_path: Path, spec: CuteSpec) -> None:
     models.mkdir()
 
     entry = json.dumps(
-        {"provider": "cute", "source": "cute_kernels/saxpy.py", "spec": asdict(spec)}
+        {
+            "provider": "cute",
+            "source": "cute_kernels/fp8_decode.py",
+            "spec": asdict(spec),
+        }
     )
     (models / "config.nix").write_text(
-        f"let base = import {ROOT / 'models/config.nix'}; in base // {{ kernels = {{ saxpy = builtins.fromJSON {json.dumps(entry)}; }}; }}"
+        f"let base = import {ROOT / 'models/config.nix'}; in base // {{ kernels = {{ fp8_decode = builtins.fromJSON {json.dumps(entry)}; }}; }}"
     )
     graph = tmp_path / "cute.ninja"
     graph.write_text(
-        "qscute = /compiler/qscute\n"
+        "qscute = /compiler/qscute\nqscute_runtime = /compiler/qscute-runtime\n"
         + subprocess.check_output(
             [
                 "nix",
@@ -181,5 +178,5 @@ def test_ninja_recipe(tmp_path: Path, spec: CuteSpec) -> None:
     )
     args = shlex.split(command)
     assert args[0] == "/compiler/qscute"
-    assert args[args.index("--source") + 1] == "../cute_kernels/saxpy.py"
+    assert args[args.index("--source") + 1] == "../cute_kernels/fp8_decode.py"
     assert parse(args[args.index("--spec") + 1], CuteSpec) == spec

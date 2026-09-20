@@ -13,6 +13,7 @@ dependencies = [
 [project.scripts]
 qstriton = "qstriton.builder:main"
 qscute = "qscute.builder:main"
+qscute-runtime = "qscute.runtime:main"
 qwen36-vectors = "qwen36_vectors:main"
 
 [build-system]

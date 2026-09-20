@@ -1,14 +1,11 @@
 // Generated-launcher integration test, run by qscute/test.py.
-use dtype::{BF16, DType, F32};
+use dtype::{DType, F32, Fp8E4M3};
 use ffi::DevicePtr;
 use qs3::{dtype, ffi};
 use std::{ffi::c_void, ptr};
 
-mod f32_kernel {
-    include!(concat!(env!("QS3_CUTE_OUTPUT"), "/saxpy_f32.rs"));
-}
-mod bf16_kernel {
-    include!(concat!(env!("QS3_CUTE_OUTPUT"), "/saxpy_bf16.rs"));
+mod fp8_kernel {
+    include!(concat!(env!("QS3_CUTE_OUTPUT"), "/fp8_decode_test.rs"));
 }
 
 #[link(name = "cudart")]
@@ -63,81 +60,97 @@ impl Drop for Stream {
     }
 }
 
-fn bf16(x: f32) -> u16 {
-    let bits = x.to_bits();
-    ((bits + 0x7fff + ((bits >> 16) & 1)) >> 16) as u16
+fn fp8(code: u8) -> f32 {
+    let exponent = (code >> 3) & 15;
+    let mantissa = code & 7;
+    let value = if exponent == 0 {
+        f32::from(mantissa) / 512.0
+    } else {
+        (1.0 + f32::from(mantissa) / 8.0) * 2f32.powi(i32::from(exponent) - 7)
+    };
+    if code & 128 == 0 { value } else { -value }
 }
 
-fn exercise<D: DType, T: Copy + Default + std::fmt::Debug + PartialEq>(
-    stream: &Stream,
-    launch: impl Fn(DevicePtr<D>, DevicePtr<D>, DevicePtr<D>, i32, f32, *mut c_void),
-    encode: impl Fn(f32) -> T,
-    decode: impl Fn(T) -> f32,
-) {
-    for n in [1, 64, 129, 257] {
-        let guard = 16 / std::mem::size_of::<T>();
-        let mut x = vec![T::default(); n + 2 * guard];
-        let mut y = x.clone();
-        for i in 0..n {
-            x[guard + i] = encode((i % 17) as f32 / 16.0 - 0.5);
-            y[guard + i] = encode((i % 13) as f32 / 8.0 - 0.75);
+fn exercise(stream: &Stream, kernel: &fp8_kernel::Kernel) {
+    let n = fp8_kernel::constants::N as usize;
+    let k = fp8_kernel::constants::K as usize;
+    let mut x = vec![0u8; k + 32];
+    let mut w = vec![0u8; n * k + 32];
+    for j in 0..k {
+        x[16 + j] = 0x30 + (j % 16) as u8;
+    }
+    for row in 0..n {
+        for j in 0..k {
+            w[16 + row * k + j] = 0x28 + ((row * 7 + j / 32) % 32) as u8;
         }
-        let dx = Buffer::upload(&x);
-        let dy = Buffer::upload(&y);
-        let bytes = std::mem::size_of_val(&*x);
-        let intermediate = Buffer::new(bytes);
-        let output = Buffer::new(bytes);
-        for buffer in [&intermediate, &output] {
+    }
+    let dx = Buffer::upload(&x);
+    let dw = Buffer::upload(&w);
+    let bytes = 2 * n * 4 + 32;
+    let first = Buffer::new(bytes);
+    let second = Buffer::new(bytes);
+    for [xs, ws] in [[0.125f32, 0.5f32], [0.37, 0.019]] {
+        let sx = Buffer::upload(&[0., 0., 0., 0., xs]);
+        let sw = Buffer::upload(&[0., 0., 0., 0., ws]);
+        for buffer in [&first, &second] {
             assert_eq!(unsafe { cudaMemset(buffer.0, 0xa5, bytes) }, 0);
         }
-        // Finish fixture initialization before using the nonblocking stream.
         assert_eq!(unsafe { cudaStreamSynchronize(ptr::null_mut()) }, 0);
-        launch(
-            dx.data(),
-            dy.data(),
-            intermediate.data(),
-            n as i32,
-            1.5,
-            stream.0,
-        );
-        launch(
-            intermediate.data(),
-            dy.data(),
-            output.data(),
-            n as i32,
-            -0.5,
-            stream.0,
-        );
+        unsafe {
+            kernel
+                .launch(
+                    dx.data::<Fp8E4M3>(),
+                    dw.data::<Fp8E4M3>(),
+                    first.data::<F32>(),
+                    sx.data::<F32>(),
+                    sw.data::<F32>(),
+                    stream.0,
+                )
+                .unwrap();
+            // Depend on the first launch's FP32 result as the next launch's input scale.
+            kernel
+                .launch(
+                    dx.data::<Fp8E4M3>(),
+                    dw.data::<Fp8E4M3>(),
+                    second.data::<F32>(),
+                    first.data::<F32>(),
+                    sw.data::<F32>(),
+                    stream.0,
+                )
+                .unwrap();
+        }
         assert_eq!(unsafe { cudaStreamSynchronize(stream.0) }, 0);
-        for (buffer, second) in [(&intermediate, false), (&output, true)] {
-            let mut result = vec![T::default(); x.len()];
+        let sum = |row: usize, split: usize| -> f32 {
+            (split * k / 2..(split + 1) * k / 2)
+                .map(|j| fp8(x[16 + j]) * fp8(w[16 + row * k + j]))
+                .sum()
+        };
+        let first_scale = sum(0, 0) * (xs * ws);
+        for (buffer, alpha) in [(&first, xs * ws), (&second, first_scale * ws)] {
+            let mut result = vec![0u8; bytes];
             assert_eq!(
                 unsafe { cudaMemcpy(result.as_mut_ptr().cast(), buffer.0, bytes, 2) },
                 0
             );
-            let raw = unsafe { std::slice::from_raw_parts(result.as_ptr().cast::<u8>(), bytes) };
-            assert!(raw[..16].iter().all(|&b| b == 0xa5));
-            assert!(raw[bytes - 16..].iter().all(|&b| b == 0xa5));
-            for i in guard..guard + n {
-                let first = encode(1.5 * decode(x[i]) + decode(y[i]));
-                let expected = if second {
-                    encode(-0.5 * decode(first) + decode(y[i]))
-                } else {
-                    first
-                };
-                assert_eq!(
-                    result[i],
-                    expected,
-                    "n={n}, index={}, second={second}",
-                    i - guard
-                );
+            assert!(result[..16].iter().all(|&b| b == 0xa5));
+            assert!(result[bytes - 16..].iter().all(|&b| b == 0xa5));
+            for split in 0..2 {
+                for row in 0..n {
+                    let offset = 16 + (split * n + row) * 4;
+                    let actual = f32::from_ne_bytes(result[offset..offset + 4].try_into().unwrap());
+                    assert_eq!(
+                        actual,
+                        sum(row, split) * alpha,
+                        "row={row} split={split} alpha={alpha}"
+                    );
+                }
             }
         }
     }
 }
 
 fn assert_duplicate_load_panics() {
-    let panic = std::panic::catch_unwind(|| unsafe { f32_kernel::Kernel::load() })
+    let panic = std::panic::catch_unwind(|| unsafe { fp8_kernel::Kernel::load() })
         .err()
         .expect("duplicate load must panic");
     let message = panic
@@ -146,7 +159,7 @@ fn assert_duplicate_load_panics() {
         .or_else(|| panic.downcast_ref::<String>().map(String::as_str));
     assert_eq!(
         message,
-        Some("CuTe specialization qscute_saxpy_f32 is already loaded"),
+        Some("CuTe specialization qscute_fp8_decode_test is already loaded")
     );
 }
 
@@ -155,27 +168,11 @@ fn typed_launches_stream_ordering_and_reload() {
     let _context = Buffer::new(1);
     let stream = Stream::new();
     for _ in 0..2 {
-        let f32_kernel = unsafe { f32_kernel::Kernel::load().unwrap() };
-        let bf16_kernel = unsafe { bf16_kernel::Kernel::load().unwrap() };
+        let kernel = unsafe { fp8_kernel::Kernel::load().unwrap() };
         assert_duplicate_load_panics();
         std::thread::spawn(assert_duplicate_load_panics)
             .join()
             .unwrap();
-        exercise::<F32, f32>(
-            &stream,
-            |x, y, output, n, alpha, stream| unsafe {
-                f32_kernel.launch(x, y, output, n, alpha, stream).unwrap();
-            },
-            |x| x,
-            |x| x,
-        );
-        exercise::<BF16, u16>(
-            &stream,
-            |x, y, output, n, alpha, stream| unsafe {
-                bf16_kernel.launch(x, y, output, n, alpha, stream).unwrap();
-            },
-            bf16,
-            |x| f32::from_bits((x as u32) << 16),
-        );
+        exercise(&stream, &kernel);
     }
 }

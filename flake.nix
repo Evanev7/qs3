@@ -91,6 +91,8 @@
                 "${toString ./.}/build_tools/uv.lock"
               ]
               || (lib.hasPrefix "${toString ./.}/triton_kernels/" path && lib.hasSuffix ".py" path)
+              || (lib.hasPrefix "${toString ./.}/cute_kernels/" path && lib.hasSuffix ".py" path)
+              || path == "${toString ./.}/build_tools/pysrc/qscute/runtime.py"
               || builtins.match ".*\\.(c|cu|cuh|h|inc|ninja)$" path != null
             );
         };
@@ -143,7 +145,11 @@
           inherit (inputs) uv2nix pyproject-nix pyproject-build-systems;
         };
         kernelNinja = pkgs.writeText "qs3-kernels.ninja" (
-          "qstriton = ${buildTools}/bin/qstriton\n" + import ./build_tools/nixsrc/ninja.nix
+          "qstriton = ${buildTools}/bin/qstriton\n"
+          + "qscute = ${buildTools}/bin/qscute\n"
+          + "qscute_runtime = ${buildTools}/bin/qscute-runtime\n"
+          + import ./build_tools/nixsrc/ninja.nix
+          + import ./build_tools/nixsrc/cute.nix
         );
         rustConstants = pkgs.writeText "qs3-constants.rs" (import ./build_tools/nixsrc/rust.nix);
         cConstants = pkgs.writeText "qs3-macros.h" (import ./build_tools/nixsrc/c.nix);
@@ -173,7 +179,7 @@
             cp ${rustConstants} build/constants.rs
             ln -s ${qsNative}/lib/libqs_native.a build/libqs_native.a
             export TRITON_CACHE_DIR="$TMPDIR/triton-cache"
-            ninja -C build -f ${kernelNinja} triton/kernels
+            ninja -C build -f ${kernelNinja} triton/kernels cute/kernels libqscute.a libcuda_dialect_runtime_static.a
           '';
         };
       in

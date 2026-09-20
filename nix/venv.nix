@@ -25,6 +25,11 @@ let
         lib.composeManyExtensions [
           pyproject-build-systems.overlays.default
           overlay
+          (_: prev: {
+            nvidia-cutlass-dsl-libs-base = prev.nvidia-cutlass-dsl-libs-base.overrideAttrs (_: {
+              autoPatchelfIgnoreMissingDeps = [ "libcuda.so.1" ];
+            });
+          })
         ]
       );
 in

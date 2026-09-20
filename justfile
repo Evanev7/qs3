@@ -100,8 +100,9 @@ real-model-test: ninja
         LIBRARY_PATH="{{cuda_lib_path}}:${LIBRARY_PATH:-}" cargo test --release loader::tests::real_qwen36_bf16_generates_reference_tokens -- --ignored --exact --nocapture --test-threads=1
 
 ninja:
-        mkdir -p build/triton
+        mkdir -p build/triton build/cute
         nix eval --offline --raw --file build_tools/nixsrc/ninja.nix > build/triton/kernels.ninja
+        nix eval --offline --raw --file build_tools/nixsrc/cute.nix > build/cute/kernels.ninja
         cp build_tools/build.ninja build/build.ninja
         cp build_tools/cuda.ninja build/cuda.ninja
 

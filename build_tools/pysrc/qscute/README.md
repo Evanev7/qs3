@@ -3,7 +3,7 @@
 Compile a Python source exposing one `@cute.jit` host entrypoint named `kernel`:
 
 ```sh
-qscute --source cute_kernels/saxpy.py --spec "$spec_json" --target "$target_json" --prefix build/cute/saxpy
+qscute --source cute_kernels/fp8_decode.py --spec "$spec_json" --target "$target_json" --prefix build/cute/fp8_decode
 ```
 
 `CuteSpec` supplies `precision` and byte `alignments` for every `cute.Pointer`
@@ -13,16 +13,9 @@ Cutlass numeric types; exactly one parameter must have type `cuda.CUstream`.
 The source entrypoint owns launch geometry and passes the stream to its device
 kernel. Arguments retain source order; constants disappear from the runtime ABI.
 
-For the SAXPY source, an example spec is:
-
-```json
-{
-  "precision": {"x": "f32", "y": "f32", "output": "f32"},
-  "alignments": {"x": 16, "y": 16, "output": 16},
-  "constants": {"BLOCK": 128},
-  "options": {"gpu-arch": "sm_121a", "host-target": "linux-aarch64"}
-}
-```
+The FP8 decode recipe lives in `models/config.nix`; it specifies E4M3 input and
+weight pointers, FP32 scales/partials, and the measured `N=10240, K=5120` shape.
+Use `host-target=linux-aarch64` to cross compile on a GPU-free host.
 
 The target uses the same JSON as qstriton:
 
@@ -57,11 +50,13 @@ External helper trees need dependency tracking before introducing imports from
 them. Compiler version, source hashes, ABI, and artifact hashes are recorded in
 the manifest.
 
-`nixsrc/cute.nix` emits Ninja rules for recipes with `provider = "cute"`. It is
-not yet connected to the main build, and no model recipe selects CuTe. Local
-unit tests cross compile F32/BF16 SAXPY to SM121/AArch64 and type-check the Rust
-wrapper. `just build_tools/cute-test` links the exported objects directly into
-a Rust executable and exercises F32/BF16 outputs, tail guards, dependent launches
-on a nonblocking stream, duplicate-load panics, and module unload/reload.
-The full required `./remote.sh test` workflow passes on GB10. Model kernel
-integration and qualification remain pending.
+`nixsrc/cute.nix` emits Ninja rules for recipes with `provider = "cute"`.
+Both the development and Nix builds archive the exported objects in `libqscute.a`.
+`qscute-runtime` stages the matching wheel's native runtime archive for Cargo;
+inference does not depend on the Python environment.
+
+Unit tests cross compile the real FP8 decode kernel to SM121/AArch64 and type-check
+its Rust wrapper. `just build_tools/cute-test` exercises the generated launcher,
+using FP8 split outputs and dependent scale inputs to verify exact CPU results,
+guards, stream ordering, duplicate loads and reloads. These run in the full
+`./remote.sh test` workflow.

@@ -21,7 +21,8 @@ use std::{
 pub(super) struct QuantizedScratch {
     prepared_rows: HashSet<u32>,
     plans: HashMap<[u32; 3], Nvfp4Plan>,
-    fp8: DeviceBuffer<Fp8E4M3>,
+    pub(super) fp8: DeviceBuffer<Fp8E4M3>,
+    pub(super) fp8_partials: DeviceBuffer<F32>,
     fp4: DeviceBuffer<Nvfp4E2M1>,
     scales: DeviceBuffer<Fp8E4M3>,
     workspace: DeviceBuffer<U8>,
@@ -33,6 +34,10 @@ impl QuantizedScratch {
             prepared_rows: HashSet::new(),
             plans: HashMap::new(),
             fp8: DeviceBuffer::with_capacity(ctx.clone(), 1)?,
+            fp8_partials: DeviceBuffer::with_capacity(
+                ctx.clone(),
+                2 * crate::backend::qscute::Fp8Decode::N as usize,
+            )?,
             fp4: DeviceBuffer::with_capacity(ctx.clone(), 2)?,
             scales: DeviceBuffer::with_capacity(ctx.clone(), 1)?,
             workspace: DeviceBuffer::with_capacity(ctx.clone(), 1)?,

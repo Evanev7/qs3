@@ -1,0 +1,88 @@
+{
+  "layer": 0,
+  "scales": [
+    0.1121651828289032,
+    0.0009722028626129031
+  ],
+  "mismatch": {
+    "exact": {
+      "cute": 0,
+      "reference": 0
+    },
+    "sum_scale": {
+      "cute": 0,
+      "reference": 0
+    },
+    "split_scale": {
+      "cute": 0,
+      "reference": 0
+    },
+    "xs_ws": {
+      "cute": 0,
+      "reference": 0
+    },
+    "ws_xs": {
+      "cute": 0,
+      "reference": 0
+    }
+  }
+}
+{
+  "layer": 1,
+  "scales": [
+    0.0524553582072258,
+    0.0007455008453689516
+  ],
+  "mismatch": {
+    "exact": {
+      "cute": 0,
+      "reference": 0
+    },
+    "sum_scale": {
+      "cute": 0,
+      "reference": 0
+    },
+    "split_scale": {
+      "cute": 0,
+      "reference": 0
+    },
+    "xs_ws": {
+      "cute": 0,
+      "reference": 0
+    },
+    "ws_xs": {
+      "cute": 0,
+      "reference": 0
+    }
+  }
+}
+{
+  "layer": 2,
+  "scales": [
+    0.0571986623108387,
+    0.0005536761018447578
+  ],
+  "mismatch": {
+    "exact": {
+      "cute": 0,
+      "reference": 1
+    },
+    "sum_scale": {
+      "cute": 0,
+      "reference": 1
+    },
+    "split_scale": {
+      "cute": 0,
+      "reference": 1
+    },
+    "xs_ws": {
+      "cute": 0,
+      "reference": 1
+    },
+    "ws_xs": {
+      "cute": 0,
+      "reference": 1
+    }
+  }
+}
+column 7180 dot -5134.198425292969 cute 0xbe26 reference 0xbe27 variants {'exact': '0xbe26', 'sum_scale': '0xbe26', 'split_scale': '0xbe26', 'xs_ws': '0xbe26', 'ws_xs': '0xbe26'}

@@ -16,6 +16,7 @@ use crate::{
 pub(crate) mod gdn_prefill;
 pub(crate) mod qscb;
 pub(crate) mod qscu;
+pub(crate) mod qscute;
 pub(crate) mod qsfi;
 pub(crate) mod qstriton;
 mod tensor;

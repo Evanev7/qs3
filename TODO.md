@@ -266,15 +266,23 @@ Current experiment ownership/status is in `FINDINGS.md` (KR01–KR08, DR01).
   prefill/decode, positions, reset/rebuild, and full-model logits.
 - [x] KR03: Qualify native b12x FP8 CuTe GEMM + AOT Triton FP32 reducer.
   Three M1/N10240/K5120 fixtures pass tolerance; rare BF16 differences remain.
-- [ ] KR03: Finish qscute build integration and GPU qualification. Isolated
-  compiler, direct Rust MLIR bindings, and SAXPY source exist; 24 local build-tools
-  tests pass, including SM121/AArch64 F32/BF16 exports. Full `./remote.sh test`
-  passes with direct Rust calls: F32/BF16 CUDA execution, stream ordering, tail
-  guards, duplicate-load panics, and unload/reload. Main Ninja/Nix linking and
-  model kernel integration remain pending. For TMA kernels, consider a separate
-  preparation API: b12x currently constructs descriptors in its host entrypoint.
-- [ ] KR03: Compare against production cuBLASLt, then full-model logits. FP32 split-K probe gains ~19% on largest M1 projection;
-  default BF16 atomics change outputs. Other shapes have smaller gains/regressions.
+- [x] KR03: Wire qscute into the runtime and pass the required GPU suite. Main Ninja/Nix static linking,
+  SM121 FP8 QKV decode and Triton split-K reduction are wired. Unused SAXPY is
+  removed; its dedicated compiler/launcher harness uses the FP8 kernel. Backend
+  tests cover CPU partials,
+  cuBLASLt output, guards, scale changes, stream ordering, duplicate load/reload,
+  and descriptor rejection. Full `./remote.sh test` passes, including mixed-model
+  prefill/decode/reset/rebuild. Nix venv build and GPU-free AOT export pass.
+  TMA descriptors remain host work per launch.
+- [x] KR03: Compare against production cuBLASLt and full-model logits. Same-runner
+  forced-prefix comparison: 3/3 prefills exact, 91/96 decode winners match.
+  Identical-input QKV differences are 0–4 BF16 values per layer; feeding cuBLASLt
+  QKV onward restores exact logits for the traced step. The first differing value
+  agrees with the higher-precision CPU result on the CuTe side. Numerical drift
+  accepted for this replacement; retain [evidence](benchmarks/2026-09-20-qscute-fp8/README.md).
+- [x] KR03: Run the standard benchmark for CuTe FP8 QKV decode. Snapshot
+  `c9138b3` measures 88.594/89.306 ms per token at 102/1024 context, versus
+  96.511/94.598 ms for recorded `f284ac6` runs. Other FP8 shapes remain on cuBLASLt.
 - [x] KR04/KR07: Adopt QuTLASS prefill and AOT row selection. Full tests pass;
   69/69 full-model logit rows and 36/260 benchmark IDs match exactly. Committed
   1024-token prefill improves 518→413 ms (20.2%); decode is within 0.4%.
