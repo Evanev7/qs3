@@ -174,6 +174,7 @@ pub const BLOCK: [u32; 3] = [{meta.num_warps * meta.warp_size}, 1, 1];
 pub const SHARED_BYTES: u32 = {meta.shared};
 
 /// Integer constexprs used to compile this specialization.
+#[allow(dead_code, non_upper_case_globals)]
 pub mod constants {{
 {integer_constants}
 }}

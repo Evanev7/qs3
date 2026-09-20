@@ -53,6 +53,7 @@ unsafe extern "C" {{
     fn cudaLibraryUnload(library: *mut c_void) -> i32;
 }}
 
+#[allow(dead_code, non_upper_case_globals)]
 pub mod constants {{
 {integer_constants}
 }}
