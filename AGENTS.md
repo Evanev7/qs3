@@ -3,9 +3,10 @@ this is quasar3, a minimal qwen3.6/8 runtime inspired by dwarfstar4
 rarely record durable facts here unless they took significant information
 gathering
 
-run tests with the gitignored remote.sh script
+run tests with the gitignored remote.sh script. it holds a flock so is safely
+reentrant.
 `sp10@sp10:qs3` is a disposable gpu checkout; tests, benchmarks, and prototypes
-replace it. run those workflows sequentially
+replace it.
 
 ground rules:
 - no cmake
